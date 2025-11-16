@@ -15,6 +15,5 @@ def main():
     updater.start_polling()
     updater.idle()
 
-if _name_ == "_main_":
-    main()
+if __name__ == "__main__":
     main()
