@@ -248,3 +248,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+def cmd_id(update: Update, context: CallbackContext):
+    chat = update.effective_chat
+    update.message.reply_text(f"El ID de este chat es: {chat.id}")
+
+dispatcher.add_handler(CommandHandler("id", cmd_id))
