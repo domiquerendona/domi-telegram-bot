@@ -246,4 +246,5 @@ def main():
     updater.idle()
 
 
-if __
+if __name__=="__main__":
+main()
