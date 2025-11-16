@@ -252,13 +252,11 @@ def main():
     updater = Updater(TOKEN)
     dp = updater.dispatcher
 
-    # comando /id
+    # Comandos simples
+    dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("id", cmd_id))
 
-    # Comando /start
-    dp.add_handler(CommandHandler("start", start))
-
-    # Flujo para /nuevo_pedido
+    # Flujo del pedido
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         states={
@@ -267,7 +265,7 @@ def main():
             PEDIR_FORMA_PAGO: [CallbackQueryHandler(recibir_forma_pago)],
             PEDIR_ZONA: [MessageHandler(Filters.text & ~Filters.command, pedir_confirmacion)],
             CONFIRMAR_PEDIDO: [
-                CallbackQueryHandler(confirmar_pedo, pattern="^confirmar_pedido$"),
+                CallbackQueryHandler(confirmar_pedido, pattern="^confirmar_pedido$"),
                 CallbackQueryHandler(cancelar_pedido, pattern="^cancelar_pedido$"),
             ],
         },
@@ -276,12 +274,8 @@ def main():
 
     dp.add_handler(conv_handler)
 
-    # Handler para "Tomar pedido"
+    # Handler para tomar pedidos
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
 
     updater.start_polling()
     updater.idle()
-
-
-if __name__ == "__main__":
-    main()
