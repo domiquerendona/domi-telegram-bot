@@ -248,8 +248,40 @@ def main():
 
 if __name__ == "__main__":
     main()
-def cmd_id(update: Update, context: CallbackContext):
-    chat = update.effective_chat
-    update.message.reply_text(f"El ID de este chat es: {chat.id}")
+def main():
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
 
-dispatcher.add_handler(CommandHandler("id", cmd_id))
+    # comando /id
+    dp.add_handler(CommandHandler("id", cmd_id))
+
+    # Comando /start
+    dp.add_handler(CommandHandler("start", start))
+
+    # Flujo para /nuevo_pedido
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
+        states={
+            PEDIR_DIRECCION: [MessageHandler(Filters.text & ~Filters.command, pedir_valor)],
+            PEDIR_VALOR_PEDIDO: [MessageHandler(Filters.text & ~Filters.command, pedir_forma_pago)],
+            PEDIR_FORMA_PAGO: [CallbackQueryHandler(recibir_forma_pago)],
+            PEDIR_ZONA: [MessageHandler(Filters.text & ~Filters.command, pedir_confirmacion)],
+            CONFIRMAR_PEDIDO: [
+                CallbackQueryHandler(confirmar_pedo, pattern="^confirmar_pedido$"),
+                CallbackQueryHandler(cancelar_pedido, pattern="^cancelar_pedido$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
+    )
+
+    dp.add_handler(conv_handler)
+
+    # Handler para "Tomar pedido"
+    dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
+
+    updater.start_polling()
+    updater.idle()
+
+
+if _name_ == "_main_":
+    main()
