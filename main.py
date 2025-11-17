@@ -1,4 +1,6 @@
 import os
+from datetime import datetime, timedelta
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Updater,
@@ -24,11 +26,56 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 PEDIR_DIRECCION, PEDIR_VALOR_PEDIDO, PEDIR_FORMA_PAGO, PEDIR_ZONA, CONFIRMAR_PEDIDO = range(5)
 
 # "Base de datos" simple en memoria
-orders = {}
+orders = {}          # order_id -> dict con datos
 next_order_id = 1
+
+# Bloqueos temporales de repartidores: courier_id -> datetime_desbloqueo
+bloqueos = {}
+
+
+# --------- FUNCIONES AUXILIARES ---------
+
+
+def esta_bloqueado(user_id: int) -> bool:
+    """Devuelve True si el repartidor está aún bloqueado."""
+    if user_id in bloqueos:
+        if datetime.now() < bloqueos[user_id]:
+            return True
+        else:
+            # bloqueo expiró, lo quitamos
+            del bloqueos[user_id]
+    return False
+
+
+def enviar_pedido_a_repartidores(order_id: int, context: CallbackContext):
+    """Publica / republica un pedido en el grupo de repartidores."""
+    order = orders.get(order_id)
+    if not order or COURIER_CHAT_ID == 0:
+        return
+
+    texto_couriers = (
+        f"🚨 *Nuevo domicilio disponible #{order_id}*\n\n"
+        f"📍 Dirección: {order['direccion']}\n"
+        f"💰 Valor productos: {order['valor']}\n"
+        f"💳 Forma de pago: {order['forma_pago']}\n"
+        f"📌 Zona: {order['zona']}\n\n"
+        "El primero que toque el botón se queda con la carrera."
+    )
+    keyboard = [
+        [InlineKeyboardButton("🛵 Tomar pedido", callback_data=f"tomar_{order_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    context.bot.send_message(
+        chat_id=COURIER_CHAT_ID,
+        text=texto_couriers,
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
 
 
 # ------------- MANEJADORES -------------
+
 
 def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
@@ -62,7 +109,6 @@ def nuevo_pedido(update: Update, context: CallbackContext):
 
     chat = update.effective_chat
 
-    # Si tenemos configurado RESTAURANT_CHAT_ID y este chat no coincide, no seguimos
     if RESTAURANT_CHAT_ID != 0 and chat.id != RESTAURANT_CHAT_ID:
         update.message.reply_text(
             "Este comando solo funciona en el *grupo de restaurantes*.",
@@ -80,7 +126,9 @@ def nuevo_pedido(update: Update, context: CallbackContext):
         "valor": 0,
         "forma_pago": "",
         "zona": "",
-        "courier_user_id": None,
+        "courier_id": None,
+        "estado": "pendiente",  # pendiente / tomado / esperando
+        "hora_tomado": None,
     }
 
     context.user_data["order_id"] = order_id
@@ -114,7 +162,6 @@ def pedir_forma_pago(update: Update, context: CallbackContext):
         return ConversationHandler.END
 
     texto = update.message.text.strip()
-
     try:
         valor = int(texto)
     except ValueError:
@@ -153,7 +200,6 @@ def recibir_forma_pago(update: Update, context: CallbackContext):
 
     data = query.data  # pago_efectivo o pago_transferencia
     forma = "efectivo" if data == "pago_efectivo" else "transferencia"
-
     orders[order_id]["forma_pago"] = forma
 
     query.edit_message_text(
@@ -209,27 +255,7 @@ def confirmar_pedido(update: Update, context: CallbackContext):
     query.edit_message_text("✅ Pedido confirmado. Buscando domiciliario...")
 
     # Publicar en el grupo de repartidores
-    if COURIER_CHAT_ID != 0:
-        texto_couriers = (
-            f"🚨 *Nuevo domicilio disponible #{order_id}*\n\n"
-            f"📍 Dirección: {order['direccion']}\n"
-            f"💰 Valor productos: {order['valor']}\n"
-            f"💳 Forma de pago: {order['forma_pago']}\n"
-            f"📌 Zona: {order['zona']}\n\n"
-            "El primero que toque el botón se queda con la carrera."
-        )
-
-        keyboard = [
-            [InlineKeyboardButton("🛵 Tomar pedido", callback_data=f"tomar_{order_id}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        context.bot.send_message(
-            chat_id=COURIER_CHAT_ID,
-            text=texto_couriers,
-            reply_markup=reply_markup,
-            parse_mode="Markdown",
-        )
+    enviar_pedido_a_repartidores(order_id, context)
 
     return ConversationHandler.END
 
@@ -247,50 +273,64 @@ def cancelar_pedido(update: Update, context: CallbackContext):
 
 
 def tomar_pedido(update: Update, context: CallbackContext):
-    """Un domiciliario pulsa 'Tomar pedido' en el grupo de repartidores."""
     query = update.callback_query
     query.answer()
 
-    data = query.data  # tomar_X
-    try:
-        order_id = int(data.split("_")[1])
-    except (IndexError, ValueError):
-        query.edit_message_text("Error al leer el pedido.")
-        return
-
+    data = query.data
+    order_id = int(data.split("_")[1])
     order = orders.get(order_id)
+
     if not order:
-        query.edit_message_text("⚠️ Este pedido ya no está disponible.")
+        query.edit_message_text("Este pedido ya no está disponible.")
         return
 
-    if order.get("courier_user_id"):
-        query.edit_message_text("⚠️ Otro domiciliario ya tomó este pedido.")
-        return
-
-    courier = query.from_user
+    courier = update.effective_user
     courier_id = courier.id
 
-    order["courier_user_id"] = courier_id
-    order["courier_name"] = courier.full_name
-    order["courier_username"] = courier.username
+    # 1. Verificar bloqueo
+    if esta_bloqueado(courier_id):
+        desbloqueo = bloqueos[courier_id].strftime("%H:%M")
+        query.answer(f"No puedes tomar pedidos hasta las {desbloqueo}.", show_alert=True)
+        return
 
-    # Editar mensaje en el grupo de repartidores
-    query.edit_message_text(f"✅ Pedido #{order_id} tomado por {courier.full_name}.")
+    # 2. Verificar si ya fue tomado
+    if order["courier_id"] is not None:
+        query.edit_message_text("⚠️ Otro repartidor ya tomó este pedido.")
+        return
 
-    # Mensaje privado al domiciliario
-    texto_courier = (
-        f"✅ *Pedido asignado #{order_id}*\n\n"
-        f"📍 Dirección: {order['direccion']}\n"
-        f"💰 Valor productos: {order['valor']}\n"
-        f"💳 Forma de pago: {order['forma_pago']}\n"
-        f"📌 Zona: {order['zona']}\n\n"
-        "Comunícate con el restaurante para cualquier detalle adicional."
+    # 3. Asignar pedido
+    order["courier_id"] = courier_id
+    order["hora_tomado"] = datetime.now()
+    order["estado"] = "tomado"
+
+    # Mensaje en el grupo de repartidores
+    query.edit_message_text(
+        "🛵 Pedido tomado por un repartidor.\n\n"
+        "⏱ Recuerda: tiene máximo 15 minutos para llegar."
     )
 
+    # Mensaje privado al repartidor
     context.bot.send_message(
         chat_id=courier_id,
-        text=texto_courier,
+        text=(
+            "✅ *Pedido asignado*\n\n"
+            "⚠️ IMPORTANTE\n"
+            "Tienes máximo *15 minutos* para llegar al restaurante.\n"
+            "Si no llegas a tiempo, el restaurante podrá reasignar tu pedido "
+            "y serás *suspendido 2 horas*.\n\n"
+            f"📍 Dirección: {order['direccion']}\n"
+            f"💰 Valor productos: {order['valor']}\n"
+            f"💳 Pago: {order['forma_pago']}\n"
+            f"📌 Zona: {order['zona']}"
+        ),
         parse_mode="Markdown",
+    )
+
+    # 4. Crear temporizador de 15 minutos
+    context.job_queue.run_once(
+        revisar_llegada,
+        15 * 60,
+        context={"order_id": order_id},
     )
 
     # Aviso al restaurante
@@ -299,12 +339,87 @@ def tomar_pedido(update: Update, context: CallbackContext):
         nombre = courier.full_name
         user_link = f"@{courier.username}" if courier.username else ""
         texto_rest = f"🛵 Tu pedido #{order_id} fue tomado por *{nombre}* {user_link}"
-
         context.bot.send_message(
             chat_id=rest_chat_id,
             text=texto_rest,
             parse_mode="Markdown",
         )
+
+
+def revisar_llegada(context: CallbackContext):
+    data = context.job.context
+    order_id = data["order_id"]
+    order = orders.get(order_id)
+
+    if not order:
+        return
+
+    # Si el pedido ya fue completado o reasignado
+    if order["estado"] != "tomado":
+        return
+
+    restaurante_chat = order["restaurante_chat_id"]
+
+    # Enviar opciones al restaurante
+    botones = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Seguir esperando", callback_data=f"esperar_{order_id}"),
+            InlineKeyboardButton("❌ Buscar otro repartidor", callback_data=f"cancelar_{order_id}"),
+        ]
+    ])
+
+    context.bot.send_message(
+        chat_id=restaurante_chat,
+        text=(
+            "⚠️ Han pasado 15 minutos y el repartidor aún no reporta llegada.\n\n"
+            "¿Qué deseas hacer?"
+        ),
+        reply_markup=botones,
+    )
+
+
+def seguir_esperando(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+
+    order_id = int(query.data.split("_")[1])
+    if order_id in orders:
+        orders[order_id]["estado"] = "esperando"
+
+    query.edit_message_text("👌 Seguirás esperando al repartidor.")
+
+
+def cancelar_repartidor(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+
+    order_id = int(query.data.split("_")[1])
+    order = orders.get(order_id)
+
+    if not order:
+        query.edit_message_text("El pedido ya no está disponible.")
+        return
+
+    courier_id = order["courier_id"]
+
+    # Suspender al repartidor 2 horas (solo si había alguno asignado)
+    if courier_id:
+        bloqueos[courier_id] = datetime.now() + timedelta(hours=2)
+
+        # Aviso al repartidor
+        context.bot.send_message(
+            chat_id=courier_id,
+            text="⛔ Has sido suspendido 2 horas por incumplimiento del tiempo máximo de llegada.",
+        )
+
+    # Reasignar pedido
+    order["courier_id"] = None
+    order["estado"] = "pendiente"
+
+    query.edit_message_text("❌ El repartidor fue rechazado. Buscando uno nuevo...")
+
+    # Re-publicar pedido en el grupo de repartidores
+    enviar_pedido_a_repartidores(order_id, context)
 
 
 def cancelar_conversacion(update: Update, context: CallbackContext):
@@ -314,6 +429,7 @@ def cancelar_conversacion(update: Update, context: CallbackContext):
 
 # ------------- FUNCIÓN PRINCIPAL -------------
 
+
 def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -321,7 +437,7 @@ def main():
     # /start
     dp.add_handler(CommandHandler("start", start))
 
-    # Flujo /nuevo_pedido (solo lo controlamos dentro de la función)
+    # Flujo /nuevo_pedido
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         states={
@@ -337,11 +453,14 @@ def main():
         fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
         allow_reentry=True,
     )
-
     dp.add_handler(conv_handler)
 
     # Cuando un domiciliario pulsa "Tomar pedido"
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
+
+    # Callbacks de 15 minutos
+    dp.add_handler(CallbackQueryHandler(seguir_esperando, pattern=r"^esperar_\d+$"))
+    dp.add_handler(CallbackQueryHandler(cancelar_repartidor, pattern=r"^cancelar_\d+$"))
 
     updater.start_polling()
     updater.idle()
