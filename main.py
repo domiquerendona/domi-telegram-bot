@@ -1,13 +1,5 @@
 import os
-import logging
-
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -18,158 +10,171 @@ from telegram.ext import (
     CallbackContext,
 )
 
-# ---------------- CONFIGURACIÓN BÁSICA ----------------
+# ------------- CONFIGURACIÓN BÁSICA -------------
 
-TOKEN = os.getenv("BOT_TOKEN")  # Tu token del bot (lo tienes en Railway)
-COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))  # Grupo de repartidores
+TOKEN = os.getenv("BOT_TOKEN")
 
-# Estados de la conversación para crear pedido
+# ID del grupo de repartidores (Repartidores DOMIQUERENDONA)
+COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
+
+# ID del grupo de restaurantes (ALIADOS ...)
+RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
+
+# Estados para la conversación
 PEDIR_DIRECCION, PEDIR_VALOR_PEDIDO, PEDIR_FORMA_PAGO, PEDIR_ZONA, CONFIRMAR_PEDIDO = range(5)
 
-# “Base de datos” en memoria
+# "Base de datos" simple en memoria
 orders = {}
 next_order_id = 1
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-
-# ---------------- COMANDOS BÁSICOS ----------------
+# ------------- MANEJADORES -------------
 
 def start(update: Update, context: CallbackContext):
-    """
-    Mensaje de bienvenida.
-    Agregamos un teclado con el botón /nuevo_pedido para no tener que escribirlo.
-    """
-    teclado = ReplyKeyboardMarkup(
-        [[KeyboardButton("/nuevo_pedido")]],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+    chat_id = update.effective_chat.id
 
-    update.message.reply_text(
-        "Hola, soy tu bot de domicilios 🚀\n\n"
-        "Comando principal:\n"
-        "🛒 /nuevo_pedido – crear un nuevo domicilio.",
-        reply_markup=teclado,
-    )
+    if chat_id == RESTAURANT_CHAT_ID:
+        texto = (
+            "Hola, soy tu bot de domicilios 🚀\n\n"
+            "Comando principal para *restaurantes*:\n"
+            "/nuevo_pedido – crear un nuevo domicilio."
+        )
+    elif chat_id == COURIER_CHAT_ID:
+        texto = (
+            "Hola domiciliarios 🛵\n\n"
+            "Aquí aparecerán los pedidos nuevos.\n"
+            "Cuando veas uno, toca *Tomar pedido* para asignártelo."
+        )
+    else:
+        texto = (
+            "Hola, soy el bot de domicilios 🚀\n\n"
+            "▫ En el grupo de *restaurantes* se usa /nuevo_pedido.\n"
+            "▫ En el grupo de *repartidores* publico los pedidos para que los tomen."
+        )
 
+    update.message.reply_text(texto, parse_mode="Markdown")
     return ConversationHandler.END
 
 
-def cmd_id(update: Update, context: CallbackContext):
-    """
-    Muestra el ID del chat donde se ejecuta el comando.
-    Útil para configurar nuevos grupos en Railway.
-    """
-    chat = update.effective_chat
-    update.message.reply_text(f"El ID de este chat es: {chat.id}")
-
-
-# ---------------- FLUJO DE NUEVO PEDIDO ----------------
-
 def nuevo_pedido(update: Update, context: CallbackContext):
-    """
-    Inicia la creación de un pedido desde el grupo de restaurantes.
-    """
+    """Inicia la creación de un pedido (solo en grupo de restaurantes)."""
     global next_order_id
+
+    chat = update.effective_chat
+
+    # Si tenemos configurado RESTAURANT_CHAT_ID y este chat no coincide, no seguimos
+    if RESTAURANT_CHAT_ID != 0 and chat.id != RESTAURANT_CHAT_ID:
+        update.message.reply_text(
+            "Este comando solo funciona en el *grupo de restaurantes*.",
+            parse_mode="Markdown",
+        )
+        return ConversationHandler.END
 
     order_id = next_order_id
     next_order_id += 1
 
-    # Guardamos el pedido con el chat del restaurante que lo crea
     orders[order_id] = {
-        "restaurante_id": update.effective_chat.id,
+        "restaurante_chat_id": chat.id,
+        "restaurante_user_id": update.effective_user.id,
         "direccion": "",
         "valor": 0,
         "forma_pago": "",
         "zona": "",
-        "courier_id": None,
-        "courier_nombre": None,
+        "courier_user_id": None,
     }
 
     context.user_data["order_id"] = order_id
 
-    update.message.reply_text("📍 Envíame la *dirección del cliente*:", parse_mode="Markdown")
+    update.message.reply_text(
+        "📍 Envíame la *dirección del cliente*:",
+        parse_mode="Markdown",
+    )
     return PEDIR_DIRECCION
 
 
 def pedir_valor(update: Update, context: CallbackContext):
-    """
-    Guarda la dirección y pide el valor del pedido.
-    """
     order_id = context.user_data.get("order_id")
-    if order_id is None:
-        update.message.reply_text("Hubo un error interno. Escribe /nuevo_pedido otra vez.")
+    if not order_id or order_id not in orders:
+        update.message.reply_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
-    orders[order_id]["direccion"] = update.message.text
+    orders[order_id]["direccion"] = update.message.text.strip()
 
-    update.message.reply_text("💰 ¿Cuál es el *valor de los productos*? (solo números)", parse_mode="Markdown")
+    update.message.reply_text(
+        "💰 ¿Cuál es el *valor de los productos*? (solo números)",
+        parse_mode="Markdown",
+    )
     return PEDIR_VALOR_PEDIDO
 
 
 def pedir_forma_pago(update: Update, context: CallbackContext):
-    """
-    Guarda el valor del pedido y pregunta la forma de pago.
-    """
     order_id = context.user_data.get("order_id")
-    if order_id is None:
-        update.message.reply_text("Hubo un error interno. Escribe /nuevo_pedido otra vez.")
+    if not order_id or order_id not in orders:
+        update.message.reply_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
+    texto = update.message.text.strip()
+
     try:
-        valor = int(update.message.text)
+        valor = int(texto)
     except ValueError:
-        update.message.reply_text("Por favor envíame *solo números* para el valor del pedido.", parse_mode="Markdown")
+        update.message.reply_text(
+            "Por favor envíame *solo números* para el valor de los productos.",
+            parse_mode="Markdown",
+        )
         return PEDIR_VALOR_PEDIDO
 
     orders[order_id]["valor"] = valor
 
     keyboard = [
         [
-            InlineKeyboardButton("💵 Efectivo", callback_data="efectivo"),
-            InlineKeyboardButton("💳 Transferencia", callback_data="transferencia"),
+            InlineKeyboardButton("💵 Efectivo", callback_data="pago_efectivo"),
+            InlineKeyboardButton("💳 Transferencia", callback_data="pago_transferencia"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text("Selecciona la *forma de pago*:", reply_markup=reply_markup, parse_mode="Markdown")
+    update.message.reply_text(
+        "Selecciona la *forma de pago*:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
     return PEDIR_FORMA_PAGO
 
 
 def recibir_forma_pago(update: Update, context: CallbackContext):
-    """
-    Recibe la forma de pago desde el botón y pide la zona/barrio.
-    """
     query = update.callback_query
     query.answer()
 
     order_id = context.user_data.get("order_id")
-    if order_id is None:
-        query.edit_message_text("Hubo un error interno. Escribe /nuevo_pedido otra vez.")
+    if not order_id or order_id not in orders:
+        query.edit_message_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
-    orders[order_id]["forma_pago"] = query.data
+    data = query.data  # pago_efectivo o pago_transferencia
+    forma = "efectivo" if data == "pago_efectivo" else "transferencia"
 
-    query.edit_message_text("✅ Forma de pago registrada.\n\nAhora dime la *zona/barrio*:", parse_mode="Markdown")
+    orders[order_id]["forma_pago"] = forma
+
+    query.edit_message_text(
+        f"✅ Forma de pago: *{forma.capitalize()}*\n\n"
+        "Ahora escribe la *zona/barrio*:",
+        parse_mode="Markdown",
+    )
     return PEDIR_ZONA
 
 
 def pedir_confirmacion(update: Update, context: CallbackContext):
-    """
-    Guarda la zona y muestra resumen para confirmar o cancelar.
-    """
     order_id = context.user_data.get("order_id")
-    if order_id is None:
-        update.message.reply_text("Hubo un error interno. Escribe /nuevo_pedido otra vez.")
+    if not order_id or order_id not in orders:
+        update.message.reply_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
-    orders[order_id]["zona"] = update.message.text
+    orders[order_id]["zona"] = update.message.text.strip()
     order = orders[order_id]
 
     resumen = (
-        f"🧾 *Resumen del pedido #{order_id}:*\n\n"
+        f"🧾 *Resumen del pedido #{order_id}:*\n"
         f"📍 Dirección: {order['direccion']}\n"
         f"💰 Valor productos: {order['valor']}\n"
         f"💳 Forma de pago: {order['forma_pago']}\n"
@@ -190,31 +195,28 @@ def pedir_confirmacion(update: Update, context: CallbackContext):
 
 
 def confirmar_pedido(update: Update, context: CallbackContext):
-    """
-    Cuando el restaurante confirma, se envía el aviso al grupo de repartidores.
-    """
     query = update.callback_query
     query.answer()
 
     order_id = context.user_data.get("order_id")
-    if order_id is None:
-        query.edit_message_text("Hubo un error interno. Escribe /nuevo_pedido otra vez.")
+    if not order_id or order_id not in orders:
+        query.edit_message_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
     order = orders[order_id]
 
-    # Aviso al restaurante
+    # Aviso en el grupo de restaurantes
     query.edit_message_text("✅ Pedido confirmado. Buscando domiciliario...")
 
-    # Mensaje al grupo de domiciliarios
+    # Publicar en el grupo de repartidores
     if COURIER_CHAT_ID != 0:
         texto_couriers = (
-            f"🚨 *Nuevo domicilio disponible* #{order_id}\n\n"
+            f"🚨 *Nuevo domicilio disponible #{order_id}*\n\n"
             f"📍 Dirección: {order['direccion']}\n"
             f"💰 Valor productos: {order['valor']}\n"
             f"💳 Forma de pago: {order['forma_pago']}\n"
             f"📌 Zona: {order['zona']}\n\n"
-            "El primero que acepte se queda con la carrera. 🛵"
+            "El primero que toque el botón se queda con la carrera."
         )
 
         keyboard = [
@@ -233,46 +235,51 @@ def confirmar_pedido(update: Update, context: CallbackContext):
 
 
 def cancelar_pedido(update: Update, context: CallbackContext):
-    """
-    El restaurante cancela antes de enviarlo a los repartidores.
-    """
     query = update.callback_query
     query.answer()
+
+    order_id = context.user_data.get("order_id")
+    if order_id in orders:
+        del orders[order_id]
+
     query.edit_message_text("❌ Pedido cancelado.")
     return ConversationHandler.END
 
 
 def tomar_pedido(update: Update, context: CallbackContext):
-    """
-    Un domiciliario pulsa el botón "Tomar pedido".
-    """
+    """Un domiciliario pulsa 'Tomar pedido' en el grupo de repartidores."""
     query = update.callback_query
     query.answer()
 
-    data = query.data  # ejemplo: "tomar_3"
-    order_id = int(data.split("_")[1])
+    data = query.data  # tomar_X
+    try:
+        order_id = int(data.split("_")[1])
+    except (IndexError, ValueError):
+        query.edit_message_text("Error al leer el pedido.")
+        return
 
     order = orders.get(order_id)
     if not order:
         query.edit_message_text("⚠️ Este pedido ya no está disponible.")
         return
 
-    if order["courier_id"] is not None:
+    if order.get("courier_user_id"):
         query.edit_message_text("⚠️ Otro domiciliario ya tomó este pedido.")
         return
 
-    courier_id = update.effective_user.id
-    courier_nombre = update.effective_user.first_name
+    courier = query.from_user
+    courier_id = courier.id
 
-    order["courier_id"] = courier_id
-    order["courier_nombre"] = courier_nombre
+    order["courier_user_id"] = courier_id
+    order["courier_name"] = courier.full_name
+    order["courier_username"] = courier.username
 
-    # Editamos mensaje en el grupo de repartidores
-    query.edit_message_text(f"✅ Pedido #{order_id} tomado por: *{courier_nombre}*.", parse_mode="Markdown")
+    # Editar mensaje en el grupo de repartidores
+    query.edit_message_text(f"✅ Pedido #{order_id} tomado por {courier.full_name}.")
 
-    # Enviamos detalles al domiciliario por privado
+    # Mensaje privado al domiciliario
     texto_courier = (
-        f"✅ *Pedido asignado* #{order_id}\n\n"
+        f"✅ *Pedido asignado #{order_id}*\n\n"
         f"📍 Dirección: {order['direccion']}\n"
         f"💰 Valor productos: {order['valor']}\n"
         f"💳 Forma de pago: {order['forma_pago']}\n"
@@ -286,37 +293,35 @@ def tomar_pedido(update: Update, context: CallbackContext):
         parse_mode="Markdown",
     )
 
-    # Avisamos al restaurante (grupo donde se creó el pedido)
-    restaurante_id = order["restaurante_id"]
-    try:
+    # Aviso al restaurante
+    rest_chat_id = order.get("restaurante_chat_id")
+    if rest_chat_id:
+        nombre = courier.full_name
+        user_link = f"@{courier.username}" if courier.username else ""
+        texto_rest = f"🛵 Tu pedido #{order_id} fue tomado por *{nombre}* {user_link}"
+
         context.bot.send_message(
-            chat_id=restaurante_id,
-            text=f"🛵 El domiciliario *{courier_nombre}* tomó el pedido #{order_id}.",
+            chat_id=rest_chat_id,
+            text=texto_rest,
             parse_mode="Markdown",
         )
-    except Exception as e:
-        logger.error(f"Error enviando mensaje al restaurante: {e}")
 
 
 def cancelar_conversacion(update: Update, context: CallbackContext):
-    """
-    Permite cortar el flujo con /cancelar.
-    """
-    update.message.reply_text("❌ Conversación cancelada.")
+    update.message.reply_text("Conversación cancelada. Puedes empezar de nuevo con /nuevo_pedido.")
     return ConversationHandler.END
 
 
-# ---------------- MAIN ----------------
+# ------------- FUNCIÓN PRINCIPAL -------------
 
 def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Comandos simples
+    # /start
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("id", cmd_id))
 
-    # Flujo para /nuevo_pedido
+    # Flujo /nuevo_pedido (solo lo controlamos dentro de la función)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         states={
@@ -330,11 +335,12 @@ def main():
             ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
+        allow_reentry=True,
     )
 
     dp.add_handler(conv_handler)
 
-    # Handler para cuando un domiciliario presiona "Tomar pedido"
+    # Cuando un domiciliario pulsa "Tomar pedido"
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
 
     updater.start_polling()
