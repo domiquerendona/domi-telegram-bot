@@ -192,23 +192,77 @@ def tomar_pedido(update: Update, context: CallbackContext):
     courier_username = update.effective_user.username
 
     order["courier_id"] = courier_id
+    order["estado"] = "asignado"
 
     # Editamos mensaje en el grupo de repartidores
     query.edit_message_text("✅ Pedido tomado por un domiciliario.")
 
-    # Enviamos detalles al domiciliario (privado)
+    # 🛵 Mensaje al domiciliario (privado) con botón "Marcar como entregado"
     texto_courier = (
         f"✅ Pedido asignado #{order_id}\n\n"
         f"📍 Dirección: {order['direccion']}\n"
         f"💰 Valor productos: {order['valor']}\n"
         f"💳 Forma de pago: {order['forma_pago']}\n"
         f"📌 Zona: {order['zona']}\n\n"
-        "Comunícate con el restaurante para cualquier detalle adicional."
+        "Cuando entregues el pedido, marca como entregado 👇"
     )
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Marcar como entregado", callback_data=f"entregado_{order_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     query.bot.send_message(
         chat_id=courier_id,
         text=texto_courier,
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
+def tomar_pedido(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+
+    data = query.data  # ejemplo: "tomar_3"
+    order_id = int(data.split("_")[1])
+
+    order = orders.get(order_id)
+    if not order:
+        query.edit_message_text("⚠️ Este pedido ya no está disponible.")
+        return
+
+    if order["courier_id"] is not None:
+        query.edit_message_text("⚠️ Otro domiciliario ya tomó este pedido.")
+        return
+
+    courier_id = update.effective_user.id
+    courier_name = update.effective_user.full_name
+    courier_username = update.effective_user.username
+
+    order["courier_id"] = courier_id
+    order["estado"] = "asignado"
+
+    # Editamos mensaje en el grupo de repartidores
+    query.edit_message_text("✅ Pedido tomado por un domiciliario.")
+
+    # 🛵 Mensaje al domiciliario (privado) con botón "Marcar como entregado"
+    texto_courier = (
+        f"✅ Pedido asignado #{order_id}\n\n"
+        f"📍 Dirección: {order['direccion']}\n"
+        f"💰 Valor productos: {order['valor']}\n"
+        f"💳 Forma de pago: {order['forma_pago']}\n"
+        f"📌 Zona: {order['zona']}\n\n"
+        "Cuando entregues el pedido, marca como entregado 👇"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Marcar como entregado", callback_data=f"entregado_{order_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    query.bot.send_message(
+        chat_id=courier_id,
+        text=texto_courier,
+        reply_markup=reply_markup,
         parse_mode="Markdown",
     )
 
@@ -217,7 +271,6 @@ def tomar_pedido(update: Update, context: CallbackContext):
         f"✅ El pedido #{order_id} ya fue tomado.\n\n"
         f"🛵 Repartidor: {courier_name}"
     )
-
     if courier_username:
         texto_restaurante += f" (@{courier_username})"
 
@@ -227,7 +280,29 @@ def tomar_pedido(update: Update, context: CallbackContext):
         parse_mode="Markdown",
     )
 
-    # Mensaje privado a la persona que creó el pedido (opcional pero útil)
+    # Mensaje privado a la persona que creó el pedido
+    creador_id = order.get("creador_id")
+    if creador_id:
+        query.bot.send_message(
+            chat_id=creador_id,
+            text=texto_restaurante,
+            parse_mode="Markdown",
+        )
+    # Mensaje al grupo del restaurante
+    texto_restaurante = (
+        f"✅ El pedido #{order_id} ya fue tomado.\n\n"
+        f"🛵 Repartidor: {courier_name}"
+    )
+    if courier_username:
+        texto_restaurante += f" (@{courier_username})"
+
+    query.bot.send_message(
+        chat_id=order["restaurante_id"],
+        text=texto_restaurante,
+        parse_mode="Markdown",
+    )
+
+    # Mensaje privado a la persona que creó el pedido
     creador_id = order.get("creador_id")
     if creador_id:
         query.bot.send_message(
