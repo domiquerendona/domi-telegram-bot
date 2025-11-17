@@ -309,22 +309,23 @@ def tomar_pedido(update: Update, context: CallbackContext):
         "⏱ Recuerda: tiene máximo 15 minutos para llegar."
     )
 
-    # Mensaje privado al repartidor
-    context.bot.send_message(
-        chat_id=courier_id,
-        text=(
-            "✅ *Pedido asignado*\n\n"
-            "⚠️ IMPORTANTE\n"
-            "Tienes máximo *15 minutos* para llegar al restaurante.\n"
-            "Si no llegas a tiempo, el restaurante podrá reasignar tu pedido "
-            "y serás *suspendido 2 horas*.\n\n"
-            f"📍 Dirección: {order['direccion']}\n"
-            f"💰 Valor productos: {order['valor']}\n"
-            f"💳 Pago: {order['forma_pago']}\n"
-            f"📌 Zona: {order['zona']}"
-        ),
-        parse_mode="Markdown",
-    )
+   # Mensaje privado al repartidor
+    try:
+        context.bot.send_message(
+            chat_id=courier_id,
+            text=(
+                "✅ *Pedido asignado*\n\n"
+                "⚠️ IMPORTANTE\n"
+                "Tienes máximo *15 minutos* para llegar al restaurante.\n"
+                "Si no llegas a tiempo, el restaurante podrá reasignar tu pedido "
+                "y serás *suspendido 2 horas*.\n\n"
+                f"📍 Dirección: {order['direccion']}\n"
+                f"💰 Valor productos: {order['valor']}\n"
+                f"💳 Pago: {order['forma_pago']}\n"
+                f"📌 Zona: {order['zona']}"
+            ),
+            parse_mode="Markdown",
+        )
 
     # 4. Crear temporizador de 15 minutos
     context.job_queue.run_once(
