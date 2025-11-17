@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta
-
+from urllib.parse import quote_plus  # Para URLs de Google Maps
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Updater,
@@ -14,7 +14,6 @@ from telegram.ext import (
 )
 
 # ------------- CONFIGURACIÓN BÁSICA -------------
-
 TOKEN = os.getenv("BOT_TOKEN")
 
 # ID del grupo de repartidores
@@ -56,9 +55,7 @@ next_order_id = 1    # contador de pedidos
 # Bloqueos de repartidores: courier_id -> datetime de fin de bloqueo
 bloqueos = {}
 
-
 # ------------- BASE DE DATOS (SQLite) -------------
-
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
@@ -100,6 +97,24 @@ def init_db():
             plate TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pendiente',
             created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    # Tabla de pedidos (historial)
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pedidos (
+            id INTEGER PRIMARY KEY,
+            restaurante_user_id INTEGER NOT NULL,
+            courier_user_id INTEGER,
+            direccion_entrega TEXT NOT NULL,
+            valor INTEGER NOT NULL,
+            forma_pago TEXT NOT NULL,
+            zona TEXT NOT NULL,
+            estado TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """
     )
@@ -290,7 +305,6 @@ def repartidor_aprobado(user_id):
 
 
 # ------------- FUNCIONES AUXILIARES (PEDIDOS) -------------
-
 def esta_bloqueado(courier_id: int) -> bool:
     """Devuelve True si el repartidor sigue bloqueado, False si no."""
     if courier_id in bloqueos:
@@ -300,8 +314,81 @@ def esta_bloqueado(courier_id: int) -> bool:
     return False
 
 
+def obtener_direccion_recogida(restaurante_user_id: int) -> str:
+    """
+    Devuelve la dirección de recogida (restaurante) como
+    'address, barrio, city' o 'No registrada' si no se encuentra.
+    """
+    rest = get_restaurant_by_user_id(restaurante_user_id)
+    if not rest:
+        return "No registrada"
+
+    rest_id, business_name, status = rest
+
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT address, city, barrio
+        FROM restaurantes
+        WHERE id = ?
+        """,
+        (rest_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return "No registrada"
+
+    address, city, barrio = row
+    return f"{address}, {barrio}, {city}"
+
+
+def guardar_pedido_en_db(order_id: int) -> None:
+    """Sincroniza el pedido en memoria con la tabla pedidos (historial)."""
+    order = orders.get(order_id)
+    if not order:
+        return
+
+    conn = get_connection()
+    c = conn.cursor()
+    now = datetime.utcnow().isoformat()
+
+    c.execute("SELECT created_at FROM pedidos WHERE id = ?", (order_id,))
+    row = c.fetchone()
+    if row:
+        created_at = row[0]
+    else:
+        created_at = now
+
+    c.execute(
+        """
+        INSERT OR REPLACE INTO pedidos (
+            id, restaurante_user_id, courier_user_id, direccion_entrega,
+            valor, forma_pago, zona, estado, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            order_id,
+            order["restaurante_user_id"],
+            order.get("courier_id"),
+            order["direccion"],
+            order["valor"],
+            order["forma_pago"],
+            order["zona"],
+            order["estado"],
+            created_at,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 def enviar_pedido_a_repartidores(order_id: int, context: CallbackContext) -> None:
-    """Publica o republica un pedido en el grupo de repartidores."""
+    """Publica o republica un pedido en el grupo de repartidores incluyendo dirección de recogida."""
     order = orders.get(order_id)
     if not order:
         return
@@ -309,9 +396,13 @@ def enviar_pedido_a_repartidores(order_id: int, context: CallbackContext) -> Non
     if COURIER_CHAT_ID == 0:
         return
 
+    # Obtener dirección de recogida desde el registro del restaurante
+    pickup_address = obtener_direccion_recogida(order["restaurante_user_id"])
+
     texto = (
-        f"🚨 *Nuevo domicilio disponible #{order_id}*\n\n"
-        f"📍 Dirección: {order['direccion']}\n"
+        f"🚨 Nuevo domicilio disponible #{order_id}\n\n"
+        f"🏪 Recoger en:\n{pickup_address}\n\n"
+        f"📍 Entregar en:\n{order['direccion']}\n\n"
         f"💰 Valor productos: {order['valor']}\n"
         f"💳 Forma de pago: {order['forma_pago']}\n"
         f"📌 Zona: {order['zona']}\n\n"
@@ -329,11 +420,9 @@ def enviar_pedido_a_repartidores(order_id: int, context: CallbackContext) -> Non
 
 
 # ------------- /MI_PERFIL -------------
-
 def mi_perfil(update: Update, context: CallbackContext):
     user = update.effective_user
-    texto = ["👤 *Tu perfil en DOMIQUERENDONA*\n"]
-
+    texto = ["👤 Tu perfil en DOMIQUERENDONA\n"]
     rest = get_restaurant_by_user_id(user.id)
     cour = get_courier_by_user_id(user.id)
 
@@ -348,26 +437,25 @@ def mi_perfil(update: Update, context: CallbackContext):
     if rest:
         rest_id, business_name, status = rest
         texto.append(
-            "🏪 *Restaurante / Aliado*\n"
-            f"ID interno: `{rest_id}`\n"
-            f"Nombre del negocio: *{business_name}*\n"
-            f"Estado: *{status}*\n"
+            "🏪 Restaurante / Aliado\n"
+            f"ID interno: {rest_id}\n"
+            f"Nombre del negocio: {business_name}\n"
+            f"Estado: {status}\n"
         )
 
     if cour:
         cour_id, full_name, status = cour
         texto.append(
-            "🛵 *Repartidor*\n"
-            f"ID interno: `{cour_id}`\n"
-            f"Nombre: *{full_name}*\n"
-            f"Estado: *{status}*\n"
+            "🛵 Repartidor\n"
+            f"ID interno: {cour_id}\n"
+            f"Nombre: {full_name}\n"
+            f"Estado: {status}\n"
         )
 
     update.message.reply_text("\n".join(texto))
 
 
 # ------------- /ADMIN_PANEL -------------
-
 def admin_panel(update: Update, context: CallbackContext):
     user = update.effective_user
     if user.id != ADMIN_USER_ID:
@@ -378,9 +466,9 @@ def admin_panel(update: Update, context: CallbackContext):
     cour_pend = listar_repartidores_por_estado("pendiente")
 
     texto = (
-        "🛠 *Panel de administración DOMIQUERENDONA*\n\n"
-        f"🏪 Aliados pendientes: *{len(rest_pend)}*\n"
-        f"🛵 Repartidores pendientes: *{len(cour_pend)}*\n\n"
+        "🛠 Panel de administración DOMIQUERENDONA\n\n"
+        f"🏪 Aliados pendientes: {len(rest_pend)}\n"
+        f"🛵 Repartidores pendientes: {len(cour_pend)}\n\n"
         "Usa los botones para ver los detalles."
     )
 
@@ -406,10 +494,10 @@ def admin_ver_rest_pend(update: Update, context: CallbackContext):
         query.edit_message_text("No hay aliados pendientes de aprobación en este momento.")
         return
 
-    lineas = ["🏪 *Aliados pendientes de aprobación:*\n"]
+    lineas = ["🏪 Aliados pendientes de aprobación:\n"]
     for (rid, business_name, manager_name, phone, city, barrio, status) in rest_pend:
         lineas.append(
-            f"ID {rid} – *{business_name}*\n"
+            f"ID {rid} – {business_name}\n"
             f"  Encargado: {manager_name}\n"
             f"  Tel: {phone}\n"
             f"  {city} – {barrio}\n"
@@ -432,10 +520,10 @@ def admin_ver_cour_pend(update: Update, context: CallbackContext):
         query.edit_message_text("No hay repartidores pendientes de aprobación en este momento.")
         return
 
-    lineas = ["🛵 *Repartidores pendientes de aprobación:*\n"]
+    lineas = ["🛵 Repartidores pendientes de aprobación:\n"]
     for (cid, full_name, document_number, phone, vehicle_type, plate, status) in cour_pend:
         lineas.append(
-            f"ID {cid} – *{full_name}*\n"
+            f"ID {cid} – {full_name}\n"
             f"  Doc: {document_number}\n"
             f"  Tel: {phone}\n"
             f"  Vehículo: {vehicle_type} – Placa: {plate}\n"
@@ -446,7 +534,6 @@ def admin_ver_cour_pend(update: Update, context: CallbackContext):
 
 
 # ------------- MANEJADORES DE COMANDOS -------------
-
 def start(update: Update, context: CallbackContext):
     chat = update.effective_chat
     msg = (
@@ -465,7 +552,6 @@ def start(update: Update, context: CallbackContext):
 
 
 # ------------- REGISTRO DE RESTAURANTES -------------
-
 def registro_restaurante(update: Update, context: CallbackContext):
     chat = update.effective_chat
     user = update.effective_user
@@ -554,7 +640,6 @@ def reg_rest_barrio(update: Update, context: CallbackContext):
             InlineKeyboardButton("❌ Rechazar", callback_data=f"rechazar_rest_{rest_id}"),
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
@@ -575,7 +660,6 @@ def reg_rest_barrio(update: Update, context: CallbackContext):
 
 
 # ------------- REGISTRO DE REPARTIDORES -------------
-
 def registro_repartidor(update: Update, context: CallbackContext):
     chat = update.effective_chat
     user = update.effective_user
@@ -659,7 +743,6 @@ def reg_cour_placa(update: Update, context: CallbackContext):
             InlineKeyboardButton("❌ Rechazar", callback_data=f"rechazar_cour_{cour_id}"),
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
@@ -679,7 +762,6 @@ def reg_cour_placa(update: Update, context: CallbackContext):
 
 
 # ------------- APROBACIÓN / RECHAZO (ADMIN) -------------
-
 def manejar_aprobacion_restaurante(update: Update, context: CallbackContext):
     query = update.callback_query
     user = query.from_user
@@ -703,7 +785,7 @@ def manejar_aprobacion_restaurante(update: Update, context: CallbackContext):
         actualizar_estado_restaurante(rest_id, "aprobado")
         texto_admin = f"✅ Restaurante {business_name} (ID {rest_id}) fue APROBADO."
         texto_usuario = (
-            "✅ ¡Tu registro como restaurante aliado fue APROBADO!\n\n"
+            "✅ Tu registro como restaurante aliado fue APROBADO.\n\n"
             f"🏪 Negocio: {business_name}\n"
             "Ya puedes usar /nuevo_pedido en el grupo de ALIADOS."
         )
@@ -716,7 +798,6 @@ def manejar_aprobacion_restaurante(update: Update, context: CallbackContext):
         )
 
     query.edit_message_text(texto_admin)
-
     context.bot.send_message(
         chat_id=telegram_user_id,
         text=texto_usuario,
@@ -746,7 +827,7 @@ def manejar_aprobacion_repartidor(update: Update, context: CallbackContext):
         actualizar_estado_repartidor(cour_id, "aprobado")
         texto_admin = f"✅ Repartidor {full_name} (ID {cour_id}) fue APROBADO."
         texto_usuario = (
-            "✅ ¡Tu registro como repartidor fue APROBADO!\n\n"
+            "✅ Tu registro como repartidor fue APROBADO.\n\n"
             "Ya puedes tomar pedidos desde el grupo de repartidores."
         )
     else:
@@ -758,7 +839,6 @@ def manejar_aprobacion_repartidor(update: Update, context: CallbackContext):
         )
 
     query.edit_message_text(texto_admin)
-
     context.bot.send_message(
         chat_id=telegram_user_id,
         text=texto_usuario,
@@ -766,7 +846,6 @@ def manejar_aprobacion_repartidor(update: Update, context: CallbackContext):
 
 
 # ------------- FLUJO /nuevo_pedido (REST. APROBADOS) -------------
-
 def nuevo_pedido(update: Update, context: CallbackContext):
     global next_order_id
 
@@ -807,7 +886,7 @@ def nuevo_pedido(update: Update, context: CallbackContext):
         "forma_pago": "",
         "zona": "",
         "courier_id": None,
-        "estado": "pendiente",
+        "estado": "creando",
     }
 
     context.user_data["order_id"] = order_id
@@ -919,8 +998,11 @@ def confirmar_pedido(update: Update, context: CallbackContext):
         query.edit_message_text("No encuentro el pedido. Usa /nuevo_pedido para empezar de nuevo.")
         return ConversationHandler.END
 
-    query.edit_message_text("✅ Pedido confirmado. Buscando domiciliario...")
+    # Cambiamos estado y guardamos en historial
+    orders[order_id]["estado"] = "publicado"
+    guardar_pedido_en_db(order_id)
 
+    query.edit_message_text("✅ Pedido confirmado. Buscando domiciliario...")
     enviar_pedido_a_repartidores(order_id, context)
     return ConversationHandler.END
 
@@ -931,6 +1013,8 @@ def cancelar_pedido(update: Update, context: CallbackContext):
 
     order_id = context.user_data.get("order_id")
     if order_id in orders:
+        orders[order_id]["estado"] = "cancelado"
+        guardar_pedido_en_db(order_id)
         del orders[order_id]
 
     query.edit_message_text("❌ Pedido cancelado.")
@@ -943,7 +1027,6 @@ def cancelar_conversacion(update: Update, context: CallbackContext):
 
 
 # ------------- TOMAR PEDIDO (REPARTIDOR) -------------
-
 def tomar_pedido(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
@@ -951,7 +1034,6 @@ def tomar_pedido(update: Update, context: CallbackContext):
     data = query.data
     order_id = int(data.split("_")[1])
     order = orders.get(order_id)
-
     if not order:
         query.edit_message_text("Este pedido ya no está disponible.")
         return
@@ -991,24 +1073,43 @@ def tomar_pedido(update: Update, context: CallbackContext):
     order["hora_tomado"] = datetime.now()
     order["estado"] = "tomado"
 
+    # Guardar cambio en historial
+    guardar_pedido_en_db(order_id)
+
     query.edit_message_text(
         "🛵 Pedido tomado por un repartidor.\n\n"
         "⏱ Recuerda: tiene máximo 15 minutos para llegar."
     )
 
+    # Obtener dirección de recogida (restaurante)
+    pickup_address = obtener_direccion_recogida(order["restaurante_user_id"])
+
+    # URLs de Google Maps
+    pickup_query = quote_plus(pickup_address)
+    delivery_query = quote_plus(order["direccion"])
+    maps_url_pickup = f"https://www.google.com/maps/search/?api=1&query={pickup_query}"
+    maps_url_delivery = f"https://www.google.com/maps/search/?api=1&query={delivery_query}"
+
+    # Enviar al repartidor la información completa + botones GPS
+    keyboard = [
+        [InlineKeyboardButton("🏪 Ruta al restaurante", url=maps_url_pickup)],
+        [InlineKeyboardButton("📍 Ruta al cliente", url=maps_url_delivery)],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     context.bot.send_message(
         chat_id=courier_id,
         text=(
             "✅ Pedido asignado\n\n"
-            "Tienes máximo 15 minutos para llegar al restaurante.\n\n"
-            f"🧾 Datos del pedido #{order_id}:\n"
-            f"📍 Dirección: {order['direccion']}\n"
+            f"🏪 Recoger en:\n{pickup_address}\n\n"
+            f"📍 Entregar en:\n{order['direccion']}\n\n"
             f"💰 Valor productos: {order['valor']}\n"
             f"💳 Pago: {order['forma_pago']}\n"
             f"📌 Zona: {order['zona']}\n\n"
-            "Cuando llegues al aliado, él confirmará tu llegada y "
-            "te enviaré un botón para marcar que ya tienes el pedido."
+            "Tienes máximo 15 minutos para llegar.\n"
+            "Cuando estés en el restaurante, el aliado confirmará tu llegada."
         ),
+        reply_markup=reply_markup,
     )
 
     rest_user_id = order.get("restaurante_user_id")
@@ -1019,10 +1120,8 @@ def tomar_pedido(update: Update, context: CallbackContext):
             f"🛵 Tu pedido #{order_id} fue tomado por {nombre} {user_link}.\n\n"
             "Cuando el repartidor llegue a tu negocio, toca el botón de abajo:"
         )
-
         keyboard_rest = [[InlineKeyboardButton("✅ Repartidor llegó", callback_data=f"llego_{order_id}")]]
         reply_markup_rest = InlineKeyboardMarkup(keyboard_rest)
-
         context.bot.send_message(
             chat_id=rest_user_id,
             text=texto_rest,
@@ -1037,14 +1136,12 @@ def tomar_pedido(update: Update, context: CallbackContext):
 
 
 # ------------- LLEGADA A LA TIENDA -------------
-
 def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
 
     order_id = int(query.data.split("_")[1])
     order = orders.get(order_id)
-
     if not order:
         query.edit_message_text("Este pedido ya no está disponible.")
         return
@@ -1055,6 +1152,7 @@ def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
         return
 
     order["estado"] = "en_tienda"
+    guardar_pedido_en_db(order_id)
 
     query.edit_message_text(
         "✅ Marcaste que el repartidor ya llegó a tu negocio."
@@ -1074,7 +1172,6 @@ def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
 
 
 # ------------- FLUJO DEL REPARTIDOR: TENGO PEDIDO / ENTREGADO -------------
-
 def tengo_pedido(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
@@ -1088,6 +1185,7 @@ def tengo_pedido(update: Update, context: CallbackContext):
         return
 
     order["estado"] = "con_pedido"
+    guardar_pedido_en_db(order_id)
 
     keyboard = [[InlineKeyboardButton("📦 Pedido entregado", callback_data=f"entregado_{order_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1112,9 +1210,10 @@ def pedido_entregado(update: Update, context: CallbackContext):
         return
 
     order["estado"] = "entregado"
+    guardar_pedido_en_db(order_id)
 
     query.edit_message_text(
-        "✅ Marcaste este pedido como ENTREGADO. ¡Gracias por tu servicio! 🛵"
+        "✅ Marcaste este pedido como ENTREGADO. Gracias por tu servicio. 🛵"
     )
 
     rest_user_id = order.get("restaurante_user_id")
@@ -1129,12 +1228,10 @@ def pedido_entregado(update: Update, context: CallbackContext):
 
 
 # ------------- REVISIÓN DE LLEGADA (15 MIN) -------------
-
 def revisar_llegada(context: CallbackContext):
     data = context.job.context
     order_id = data["order_id"]
     order = orders.get(order_id)
-
     if not order:
         return
 
@@ -1168,9 +1265,9 @@ def seguir_esperando(update: Update, context: CallbackContext):
     query.answer()
 
     order_id = int(query.data.split("_")[1])
-
     if order_id in orders:
         orders[order_id]["estado"] = "esperando"
+        guardar_pedido_en_db(order_id)
 
     query.edit_message_text("👌 Seguirás esperando al repartidor.")
 
@@ -1181,16 +1278,13 @@ def cancelar_repartidor(update: Update, context: CallbackContext):
 
     order_id = int(query.data.split("_")[1])
     order = orders.get(order_id)
-
     if not order:
         query.edit_message_text("Este pedido ya no está disponible.")
         return
 
     courier_id = order.get("courier_id")
-
     if courier_id:
         bloqueos[courier_id] = datetime.now() + timedelta(hours=2)
-
         context.bot.send_message(
             chat_id=courier_id,
             text="⛔ Has sido suspendido 2 horas por incumplir el tiempo máximo de llegada.",
@@ -1198,14 +1292,13 @@ def cancelar_repartidor(update: Update, context: CallbackContext):
 
     order["courier_id"] = None
     order["estado"] = "pendiente"
+    guardar_pedido_en_db(order_id)
 
     query.edit_message_text("❌ El repartidor fue rechazado. Buscando uno nuevo...")
-
     enviar_pedido_a_repartidores(order_id, context)
 
 
 # ------------- FUNCIÓN PRINCIPAL -------------
-
 def main():
     init_db()
 
@@ -1227,7 +1320,7 @@ def main():
             REG_REST_DIRECCION: [MessageHandler(Filters.text & ~Filters.command, reg_rest_direccion)],
             REG_REST_CIUDAD: [MessageHandler(Filters.text & ~Filters.command, reg_rest_ciudad)],
             REG_REST_BARRIO: [MessageHandler(Filters.text & ~Filters.command, reg_rest_barrio)],
-        },
+        ],
         fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
         allow_reentry=True,
     )
@@ -1242,7 +1335,7 @@ def main():
             REG_COUR_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, reg_cour_telefono)],
             REG_COUR_VEHICULO: [MessageHandler(Filters.text & ~Filters.command, reg_cour_vehiculo)],
             REG_COUR_PLACA: [MessageHandler(Filters.text & ~Filters.command, reg_cour_placa)],
-        },
+        ],
         fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
         allow_reentry=True,
     )
