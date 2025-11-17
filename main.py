@@ -1341,7 +1341,7 @@ def main():
     )
     dp.add_handler(cour_conv)
 
-    # Flujo /nuevo_pedido
+    # # Flujo /nuevo_pedido
     pedido_conv = ConversationHandler(
         entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         states={
@@ -1358,8 +1358,14 @@ def main():
                 MessageHandler(Filters.text & ~Filters.command, pedir_confirmacion)
             ],
             CONFIRMAR_PEDIDO: [
-                CallbackQueryHandler(confirmar_pedido, pattern="^confirmar_pedido$"),
-                CallbackQueryHandler(cancelar_pedido, pattern="^cancelar_pedido$"),
+                CallbackQueryHandler(
+                    confirmar_pedido,
+                    pattern="^confirmar_pedido$"
+                ),
+                CallbackQueryHandler(
+                    cancelar_pedido,
+                    pattern="^cancelar_pedido$"
+                ),
             ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar_conversacion)],
@@ -1376,8 +1382,18 @@ def main():
     dp.add_handler(CallbackQueryHandler(cancelar_repartidor, pattern=r"^cancelar_\d+$"))
 
     # Aprobaciones del admin
-    dp.add_handler(CallbackQueryHandler(manejar_aprobacion_restaurante, pattern=r"^(aprobar_rest_|rechazar_rest_)\d+$"))
-    dp.add_handler(CallbackQueryHandler(manejar_aprobacion_repartidor, pattern=r"^(aprobar_cour_|rechazar_cour_)\d+$"))
+    dp.add_handler(
+        CallbackQueryHandler(
+            manejar_aprobacion_restaurante,
+            pattern=r"^(aprobar_rest_|rechazar_rest_)\d+$"
+        )
+    )
+    dp.add_handler(
+        CallbackQueryHandler(
+            manejar_aprobacion_repartidor,
+            pattern=r"^(aprobar_cour_|rechazar_cour_)\d+$"
+        )
+    )
 
     # Panel admin: ver listas
     dp.add_handler(CallbackQueryHandler(admin_ver_rest_pend, pattern=r"^admin_rest_pend$"))
