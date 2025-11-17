@@ -344,7 +344,7 @@ def main():
 
     # Handler para cuando un domiciliario presiona "Tomar pedido"
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
-
+dp.add_handler(CallbackQueryHandler(marcar_entregado, pattern=r"^entregado_\d+$"))
     updater.start_polling()
     updater.idle()
 
