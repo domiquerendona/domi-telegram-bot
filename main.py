@@ -19,7 +19,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 # ID del grupo de repartidores
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 
-# ID del grupo de restaurantes
+# ID del grupo de restaurantes (ALIADOS)
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
 # Estados de la conversación /nuevo_pedido
@@ -119,8 +119,8 @@ def nuevo_pedido(update: Update, context: CallbackContext):
     next_order_id += 1
 
     orders[order_id] = {
-        "restaurante_chat_id": chat.id,
-        "restaurante_user_id": update.effective_user.id,
+        "restaurante_chat_id": chat.id,              # grupo ALIADOS
+        "restaurante_user_id": update.effective_user.id,  # usuario que crea el pedido
         "direccion": "",
         "valor": 0,
         "forma_pago": "",
@@ -306,7 +306,7 @@ def tomar_pedido(update: Update, context: CallbackContext):
         "⏱ Recuerda: tiene máximo 15 minutos para llegar."
     )
 
-    # 1) Mensaje privado al repartidor con toda la info (SIN botones todavía)
+    # 1) Mensaje privado al repartidor con toda la info (sin botones todavía)
     context.bot.send_message(
         chat_id=courier_id,
         text=(
@@ -323,9 +323,9 @@ def tomar_pedido(update: Update, context: CallbackContext):
         parse_mode="Markdown",
     )
 
-    # 2) Aviso al restaurante con botón "Repartidor llegó"
-    rest_chat_id = order.get("restaurante_chat_id")
-    if rest_chat_id:
+    # 2) Aviso al aliado SOLO EN PRIVADO con botón "Repartidor llegó"
+    rest_user_id = order.get("restaurante_user_id")
+    if rest_user_id:
         courier = update.effective_user
         nombre = courier.full_name
         user_link = f"@{courier.username}" if courier.username else ""
@@ -338,7 +338,7 @@ def tomar_pedido(update: Update, context: CallbackContext):
         reply_markup_rest = InlineKeyboardMarkup(keyboard_rest)
 
         context.bot.send_message(
-            chat_id=rest_chat_id,
+            chat_id=rest_user_id,
             text=texto_rest,
             reply_markup=reply_markup_rest,
             parse_mode="Markdown",
@@ -355,7 +355,7 @@ def tomar_pedido(update: Update, context: CallbackContext):
 # ------------- LLEGADA A LA TIENDA -------------
 
 def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
-    """El aliado confirma que el repartidor llegó a la tienda."""
+    """El aliado confirma que el repartidor llegó a la tienda (desde su privado)."""
     query = update.callback_query
     query.answer()
 
@@ -374,7 +374,7 @@ def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
     # Cambiar estado para que revisar_llegada ya no lo trate como 'tomado'
     order["estado"] = "en_tienda"
 
-    # Respuesta al aliado
+    # Respuesta al aliado (en privado)
     query.edit_message_text(
         "✅ Marcaste que el repartidor *ya llegó* a tu negocio.",
         parse_mode="Markdown",
@@ -446,14 +446,14 @@ def pedido_entregado(update: Update, context: CallbackContext):
         parse_mode="Markdown",
     )
 
-    # Notificación al restaurante
-    rest_chat_id = order.get("restaurante_chat_id")
-    if rest_chat_id:
+    # Notificación al aliado SOLO EN PRIVADO
+    rest_user_id = order.get("restaurante_user_id")
+    if rest_user_id:
         courier = query.from_user
         nombre = courier.full_name
         user_link = f"@{courier.username}" if courier.username else ""
         context.bot.send_message(
-            chat_id=rest_chat_id,
+            chat_id=rest_user_id,
             text=f"✅ Tu pedido #{order_id} fue marcado como *ENTREGADO* por {nombre} {user_link}.",
             parse_mode="Markdown",
         )
@@ -476,7 +476,9 @@ def revisar_llegada(context: CallbackContext):
     if order["estado"] != "tomado":
         return
 
-    restaurante_chat = order["restaurante_chat_id"]
+    rest_user_id = order.get("restaurante_user_id")
+    if not rest_user_id:
+        return
 
     botones = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Repartidor llegó", callback_data=f"llego_{order_id}")],
@@ -487,7 +489,7 @@ def revisar_llegada(context: CallbackContext):
     ])
 
     context.bot.send_message(
-        chat_id=restaurante_chat,
+        chat_id=rest_user_id,
         text=(
             "⚠️ Han pasado 15 minutos y el repartidor aún no reporta llegada.\n\n"
             "¿Qué deseas hacer?"
@@ -505,7 +507,7 @@ def seguir_esperando(update: Update, context: CallbackContext):
     if order_id in orders:
         orders[order_id]["estado"] = "esperando"
 
-    query.edit_message_text("👌 Seguirán esperando al repartidor.")
+    query.edit_message_text("👌 Seguirás esperando al repartidor.")
 
 
 def cancelar_repartidor(update: Update, context: CallbackContext):
@@ -579,14 +581,14 @@ def main():
     # Cuando un domiciliario pulsa "Tomar pedido"
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
 
-    # Botón del aliado: "Repartidor llegó"
+    # Botón del aliado: "Repartidor llegó" (ahora en privado)
     dp.add_handler(CallbackQueryHandler(confirmar_llegada_repartidor, pattern=r"^llego_\d+$"))
 
     # Botones del repartidor en su chat privado
     dp.add_handler(CallbackQueryHandler(tengo_pedido, pattern=r"^tengo_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_entregado, pattern=r"^entregado_\d+$"))
 
-    # Botones del restaurante después de los 15 minutos
+    # Opciones del aliado después de los 15 minutos (en privado)
     dp.add_handler(CallbackQueryHandler(seguir_esperando, pattern=r"^esperar_\d+$"))
     dp.add_handler(CallbackQueryHandler(cancelar_repartidor, pattern=r"^cancelar_\d+$"))
 
