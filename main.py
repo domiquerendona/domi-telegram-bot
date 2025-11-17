@@ -126,7 +126,7 @@ def nuevo_pedido(update: Update, context: CallbackContext):
         "forma_pago": "",
         "zona": "",
         "courier_id": None,
-        "estado": "pendiente",   # pendiente / tomado / esperando
+        "estado": "pendiente",   # pendiente / tomado / en_tienda / esperando / con_pedido / entregado
     }
 
     context.user_data["order_id"] = order_id
@@ -306,46 +306,163 @@ def tomar_pedido(update: Update, context: CallbackContext):
         "⏱ Recuerda: tiene máximo 15 minutos para llegar."
     )
 
-    # Mensaje privado al repartidor
+    # 1) Mensaje privado al repartidor con toda la info (SIN botones todavía)
     context.bot.send_message(
         chat_id=courier_id,
         text=(
             "✅ *Pedido asignado*\n\n"
-            "⚠️ IMPORTANTE\n"
-            "Tienes máximo *15 minutos* para llegar al restaurante.\n"
-            "Si no llegas a tiempo, el restaurante podrá reasignar tu pedido y "
-            "serás *suspendido 2 horas*.\n\n"
+            "Tienes máximo *15 minutos* para llegar al restaurante.\n\n"
+            f"🧾 *Datos del pedido #{order_id}:*\n"
             f"📍 Dirección: {order['direccion']}\n"
             f"💰 Valor productos: {order['valor']}\n"
             f"💳 Pago: {order['forma_pago']}\n"
-            f"📌 Zona: {order['zona']}"
+            f"📌 Zona: {order['zona']}\n\n"
+            "Cuando llegues al aliado, él confirmará tu llegada y "
+            "te enviaré un botón para marcar que *ya tienes el pedido*."
         ),
         parse_mode="Markdown",
     )
 
-    # 4. Temporizador de 15 minutos (puedes cambiar 15*60 por 30 para pruebas)
+    # 2) Aviso al restaurante con botón "Repartidor llegó"
+    rest_chat_id = order.get("restaurante_chat_id")
+    if rest_chat_id:
+        courier = update.effective_user
+        nombre = courier.full_name
+        user_link = f"@{courier.username}" if courier.username else ""
+        texto_rest = (
+            f"🛵 Tu pedido #{order_id} fue tomado por *{nombre}* {user_link}.\n\n"
+            "Cuando el repartidor llegue a tu negocio, toca el botón de abajo:"
+        )
+
+        keyboard_rest = [[InlineKeyboardButton("✅ Repartidor llegó", callback_data=f"llego_{order_id}")]]
+        reply_markup_rest = InlineKeyboardMarkup(keyboard_rest)
+
+        context.bot.send_message(
+            chat_id=rest_chat_id,
+            text=texto_rest,
+            reply_markup=reply_markup_rest,
+            parse_mode="Markdown",
+        )
+
+    # 3) Temporizador de 15 minutos
     context.job_queue.run_once(
         revisar_llegada,
         15 * 60,
         context={"order_id": order_id},
     )
 
-    # Aviso al restaurante
+
+# ------------- LLEGADA A LA TIENDA -------------
+
+def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
+    """El aliado confirma que el repartidor llegó a la tienda."""
+    query = update.callback_query
+    query.answer()
+
+    order_id = int(query.data.split("_")[1])
+    order = orders.get(order_id)
+
+    if not order:
+        query.edit_message_text("Este pedido ya no está disponible.")
+        return
+
+    courier_id = order.get("courier_id")
+    if not courier_id:
+        query.edit_message_text("Aún no hay repartidor asignado para este pedido.")
+        return
+
+    # Cambiar estado para que revisar_llegada ya no lo trate como 'tomado'
+    order["estado"] = "en_tienda"
+
+    # Respuesta al aliado
+    query.edit_message_text(
+        "✅ Marcaste que el repartidor *ya llegó* a tu negocio.",
+        parse_mode="Markdown",
+    )
+
+    # Enviar al repartidor el botón "Ya tengo el pedido"
+    keyboard = [[InlineKeyboardButton("✅ Ya tengo el pedido", callback_data=f"tengo_{order_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    context.bot.send_message(
+        chat_id=courier_id,
+        text=(
+            f"ℹ️ El aliado confirmó que ya llegaste para el pedido #{order_id}.\n\n"
+            "Cuando el aliado te entregue el pedido, toca el botón de abajo:"
+        ),
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
+
+
+# ------------- FLUJO DEL REPARTIDOR: TENGO PEDIDO / ENTREGADO -------------
+
+def tengo_pedido(update: Update, context: CallbackContext):
+    """El repartidor confirma que el aliado ya le entregó el pedido."""
+    query = update.callback_query
+    query.answer()
+
+    order_id = int(query.data.split("_")[1])
+    order = orders.get(order_id)
+    courier_id = query.from_user.id
+
+    if not order or order.get("courier_id") != courier_id:
+        query.answer("No encuentro este pedido o ya no está asignado a ti.", show_alert=True)
+        return
+
+    # Cambiamos el estado
+    order["estado"] = "con_pedido"
+
+    # Mensaje al repartidor con nuevo botón
+    keyboard = [[InlineKeyboardButton("📦 Pedido entregado", callback_data=f"entregado_{order_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    query.edit_message_text(
+        "👌 Marcaste que *ya tienes el pedido*.\n\n"
+        "Cuando lo entregues al cliente, toca el botón de abajo:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+    )
+
+
+def pedido_entregado(update: Update, context: CallbackContext):
+    """El repartidor marca que el pedido fue entregado al cliente."""
+    query = update.callback_query
+    query.answer()
+
+    order_id = int(query.data.split("_")[1])
+    order = orders.get(order_id)
+    courier_id = query.from_user.id
+
+    if not order or order.get("courier_id") != courier_id:
+        query.answer("No encuentro este pedido o ya no está asignado a ti.", show_alert=True)
+        return
+
+    order["estado"] = "entregado"
+
+    # Confirmación al repartidor
+    query.edit_message_text(
+        "✅ Marcaste este pedido como *ENTREGADO*. ¡Gracias por tu servicio! 🛵",
+        parse_mode="Markdown",
+    )
+
+    # Notificación al restaurante
     rest_chat_id = order.get("restaurante_chat_id")
     if rest_chat_id:
-        courier = update.effective_user
+        courier = query.from_user
         nombre = courier.full_name
         user_link = f"@{courier.username}" if courier.username else ""
-        texto_rest = f"🛵 Tu pedido #{order_id} fue tomado por *{nombre}* {user_link}"
-
         context.bot.send_message(
             chat_id=rest_chat_id,
-            text=texto_rest,
+            text=f"✅ Tu pedido #{order_id} fue marcado como *ENTREGADO* por {nombre} {user_link}.",
             parse_mode="Markdown",
         )
 
+    # Si quisieras, aquí podrías borrar el pedido de la "BD":
+    # del orders[order_id]
 
-# ------------- REVISIÓN DE LLEGADA -------------
+
+# ------------- REVISIÓN DE LLEGADA (15 MIN) -------------
 
 def revisar_llegada(context: CallbackContext):
     data = context.job.context
@@ -355,17 +472,18 @@ def revisar_llegada(context: CallbackContext):
     if not order:
         return
 
-    # Si el pedido ya fue completado o reasignado
+    # Si el pedido ya fue completado o el aliado ya confirmó llegada
     if order["estado"] != "tomado":
         return
 
     restaurante_chat = order["restaurante_chat_id"]
 
     botones = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Repartidor llegó", callback_data=f"llego_{order_id}")],
         [
             InlineKeyboardButton("🔄 Seguir esperando", callback_data=f"esperar_{order_id}"),
             InlineKeyboardButton("❌ Buscar otro repartidor", callback_data=f"cancelar_{order_id}"),
-        ]
+        ],
     ])
 
     context.bot.send_message(
@@ -460,6 +578,13 @@ def main():
 
     # Cuando un domiciliario pulsa "Tomar pedido"
     dp.add_handler(CallbackQueryHandler(tomar_pedido, pattern=r"^tomar_\d+$"))
+
+    # Botón del aliado: "Repartidor llegó"
+    dp.add_handler(CallbackQueryHandler(confirmar_llegada_repartidor, pattern=r"^llego_\d+$"))
+
+    # Botones del repartidor en su chat privado
+    dp.add_handler(CallbackQueryHandler(tengo_pedido, pattern=r"^tengo_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pedido_entregado, pattern=r"^entregado_\d+$"))
 
     # Botones del restaurante después de los 15 minutos
     dp.add_handler(CallbackQueryHandler(seguir_esperando, pattern=r"^esperar_\d+$"))
