@@ -45,19 +45,20 @@ def nuevo_pedido(update: Update, context: CallbackContext):
 
     # Creamos el esqueleto del pedido
     orders[order_id] = {
-        "restaurante_id": update.effective_chat.id,
+        "restaurante_id": update.effective_chat.id,   # grupo donde se crea el pedido
+        "creador_id": update.effective_user.id,       # persona que escribió /nuevo_pedido
         "direccion": "",
         "valor": 0,
         "forma_pago": "",
         "zona": "",
         "courier_id": None,
+        "estado": "pendiente",                        # 🔹 NUEVO
     }
 
     context.user_data["order_id"] = order_id
 
     update.message.reply_text("📍 Envíame la dirección del cliente:", parse_mode="Markdown")
     return PEDIR_DIRECCION
-
 
 def pedir_valor(update: Update, context: CallbackContext):
     order_id = context.user_data["order_id"]
@@ -187,12 +188,15 @@ def tomar_pedido(update: Update, context: CallbackContext):
         return
 
     courier_id = update.effective_user.id
+    courier_name = update.effective_user.full_name
+    courier_username = update.effective_user.username
+
     order["courier_id"] = courier_id
 
-    # Editamos mensaje en el grupo
+    # Editamos mensaje en el grupo de repartidores
     query.edit_message_text("✅ Pedido tomado por un domiciliario.")
 
-    # Enviamos detalles al domiciliario
+    # Enviamos detalles al domiciliario (privado)
     texto_courier = (
         f"✅ Pedido asignado #{order_id}\n\n"
         f"📍 Dirección: {order['direccion']}\n"
@@ -207,6 +211,30 @@ def tomar_pedido(update: Update, context: CallbackContext):
         text=texto_courier,
         parse_mode="Markdown",
     )
+
+    # Mensaje al grupo del restaurante
+    texto_restaurante = (
+        f"✅ El pedido #{order_id} ya fue tomado.\n\n"
+        f"🛵 Repartidor: {courier_name}"
+    )
+
+    if courier_username:
+        texto_restaurante += f" (@{courier_username})"
+
+    query.bot.send_message(
+        chat_id=order["restaurante_id"],
+        text=texto_restaurante,
+        parse_mode="Markdown",
+    )
+
+    # Mensaje privado a la persona que creó el pedido (opcional pero útil)
+    creador_id = order.get("creador_id")
+    if creador_id:
+        query.bot.send_message(
+            chat_id=creador_id,
+            text=texto_restaurante,
+            parse_mode="Markdown",
+        )
 
 
 def cancelar_conversacion(update: Update, context: CallbackContext):
