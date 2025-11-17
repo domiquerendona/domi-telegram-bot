@@ -325,7 +325,6 @@ def enviar_pedido_a_repartidores(order_id: int, context: CallbackContext) -> Non
         chat_id=COURIER_CHAT_ID,
         text=texto,
         reply_markup=reply_markup,
-        parse_mode="Markdown",
     )
 
 
@@ -343,7 +342,6 @@ def mi_perfil(update: Update, context: CallbackContext):
             "Aún no tienes ningún perfil registrado.\n\n"
             "▫ Si eres aliado, usa /registro_restaurante.\n"
             "▫ Si eres repartidor, usa /registro_repartidor.",
-            parse_mode="Markdown",
         )
         return
 
@@ -365,7 +363,7 @@ def mi_perfil(update: Update, context: CallbackContext):
             f"Estado: *{status}*\n"
         )
 
-    update.message.reply_text("\n".join(texto), parse_mode="Markdown")
+    update.message.reply_text("\n".join(texto))
 
 
 # ------------- /ADMIN_PANEL -------------
@@ -392,7 +390,7 @@ def admin_panel(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+    update.message.reply_text(texto, reply_markup=reply_markup)
 
 
 def admin_ver_rest_pend(update: Update, context: CallbackContext):
@@ -418,7 +416,7 @@ def admin_ver_rest_pend(update: Update, context: CallbackContext):
         )
 
     texto = "\n".join(lineas)
-    query.edit_message_text(texto, parse_mode="Markdown")
+    query.edit_message_text(texto)
 
 
 def admin_ver_cour_pend(update: Update, context: CallbackContext):
@@ -444,7 +442,7 @@ def admin_ver_cour_pend(update: Update, context: CallbackContext):
         )
 
     texto = "\n".join(lineas)
-    query.edit_message_text(texto, parse_mode="Markdown")
+    query.edit_message_text(texto)
 
 
 # ------------- MANEJADORES DE COMANDOS -------------
@@ -457,12 +455,12 @@ def start(update: Update, context: CallbackContext):
         "▫ /registro_restaurante – registrar un aliado (solo por privado)\n"
         "▫ /registro_repartidor – registrar un repartidor (solo por privado)\n"
         "▫ /mi_perfil – ver tu estado como aliado/repartidor\n"
-        "▫ /nuevo_pedido – crear pedido (solo aliados *aprobados* en el grupo de ALIADOS)\n"
+        "▫ /nuevo_pedido – crear pedido (solo aliados aprobados en el grupo de ALIADOS)\n"
     )
     if chat.type != "private":
         msg += "\nPara registro usa estos comandos escribiéndome en privado."
 
-    update.message.reply_text(msg, parse_mode="Markdown")
+    update.message.reply_text(msg)
     return ConversationHandler.END
 
 
@@ -474,9 +472,8 @@ def registro_restaurante(update: Update, context: CallbackContext):
 
     if chat.type != "private":
         update.message.reply_text(
-            "Por seguridad, el *registro de restaurantes* solo se hace en chat privado.\n"
+            "Por seguridad, el registro de restaurantes solo se hace en chat privado.\n"
             "Envíame un mensaje directo y usa /registro_restaurante.",
-            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
@@ -485,17 +482,15 @@ def registro_restaurante(update: Update, context: CallbackContext):
         rest_id, nombre, estado = existente
         update.message.reply_text(
             f"Ya tienes un registro como restaurante:\n"
-            f"🏪 *{nombre}* (ID interno: {rest_id})\n"
-            f"Estado actual: *{estado}*.\n\n"
+            f"🏪 {nombre} (ID interno: {rest_id})\n"
+            f"Estado actual: {estado}.\n\n"
             "Si necesitas cambios, contacta al administrador.",
-            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     update.message.reply_text(
-        "🧾 *Registro de restaurante*\n\n"
-        "Primero dime el *nombre del negocio*: ",
-        parse_mode="Markdown",
+        "🧾 Registro de restaurante\n\n"
+        "Primero dime el nombre del negocio: "
     )
     return REG_REST_NOMBRE_NEGOCIO
 
@@ -503,31 +498,31 @@ def registro_restaurante(update: Update, context: CallbackContext):
 def reg_rest_nombre_negocio(update: Update, context: CallbackContext):
     context.user_data["rest_reg"] = {}
     context.user_data["rest_reg"]["nombre_negocio"] = update.message.text.strip()
-    update.message.reply_text("Ahora dime el *nombre del encargado*:", parse_mode="Markdown")
+    update.message.reply_text("Ahora dime el nombre del encargado:")
     return REG_REST_ENCARGADO
 
 
 def reg_rest_encargado(update: Update, context: CallbackContext):
     context.user_data["rest_reg"]["encargado"] = update.message.text.strip()
-    update.message.reply_text("📞 Escribe el *teléfono de contacto* (solo números si es posible):")
+    update.message.reply_text("📞 Escribe el teléfono de contacto (solo números si es posible):")
     return REG_REST_TELEFONO
 
 
 def reg_rest_telefono(update: Update, context: CallbackContext):
     context.user_data["rest_reg"]["telefono"] = update.message.text.strip()
-    update.message.reply_text("🧭 Escribe la *dirección del negocio*:")
+    update.message.reply_text("🧭 Escribe la dirección del negocio:")
     return REG_REST_DIRECCION
 
 
 def reg_rest_direccion(update: Update, context: CallbackContext):
     context.user_data["rest_reg"]["direccion"] = update.message.text.strip()
-    update.message.reply_text("🏙️ Escribe la *ciudad* donde está el negocio:")
+    update.message.reply_text("🏙️ Escribe la ciudad donde está el negocio:")
     return REG_REST_CIUDAD
 
 
 def reg_rest_ciudad(update: Update, context: CallbackContext):
     context.user_data["rest_reg"]["ciudad"] = update.message.text.strip()
-    update.message.reply_text("📌 Finalmente, escribe el *barrio* del negocio:")
+    update.message.reply_text("📌 Finalmente, escribe el barrio del negocio:")
     return REG_REST_BARRIO
 
 
@@ -541,17 +536,17 @@ def reg_rest_barrio(update: Update, context: CallbackContext):
     rest_id = crear_restaurante(user.id, chat.id, data)
 
     resumen = (
-        "✅ Tu solicitud de registro como *restaurante* fue enviada para verificación.\n\n"
+        "✅ Tu solicitud de registro como restaurante fue enviada para verificación.\n\n"
         "Estos son los datos que registraste:\n"
-        f"🏪 Negocio: *{data['nombre_negocio']}*\n"
-        f"👤 Encargado: *{data['encargado']}*\n"
+        f"🏪 Negocio: {data['nombre_negocio']}\n"
+        f"👤 Encargado: {data['encargado']}\n"
         f"📞 Teléfono: {data['telefono']}\n"
         f"📍 Dirección: {data['direccion']}\n"
         f"🏙️ Ciudad: {data['ciudad']}\n"
         f"📌 Barrio: {data['barrio']}\n\n"
         "El administrador revisará la información y te notificará si eres aprobado."
     )
-    update.message.reply_text(resumen, parse_mode="Markdown")
+    update.message.reply_text(resumen)
 
     if ADMIN_USER_ID != 0:
         keyboard = [[
@@ -563,10 +558,10 @@ def reg_rest_barrio(update: Update, context: CallbackContext):
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
-                "🧾 *Nuevo registro de restaurante pendiente:*\n\n"
+                "🧾 Nuevo registro de restaurante pendiente:\n\n"
                 f"ID interno: {rest_id}\n"
-                f"🏪 Negocio: *{data['nombre_negocio']}*\n"
-                f"👤 Encargado: *{data['encargado']}*\n"
+                f"🏪 Negocio: {data['nombre_negocio']}\n"
+                f"👤 Encargado: {data['encargado']}\n"
                 f"📞 Teléfono: {data['telefono']}\n"
                 f"📍 Dirección: {data['direccion']}\n"
                 f"🏙️ Ciudad: {data['ciudad']}\n"
@@ -574,7 +569,6 @@ def reg_rest_barrio(update: Update, context: CallbackContext):
                 "¿Aprobar este restaurante?"
             ),
             reply_markup=reply_markup,
-            parse_mode="Markdown",
         )
 
     return ConversationHandler.END
@@ -588,9 +582,8 @@ def registro_repartidor(update: Update, context: CallbackContext):
 
     if chat.type != "private":
         update.message.reply_text(
-            "El *registro de repartidores* también se hace solo en chat privado.\n"
+            "El registro de repartidores también se hace solo en chat privado.\n"
             "Envíame un mensaje directo y usa /registro_repartidor.",
-            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
@@ -599,17 +592,15 @@ def registro_repartidor(update: Update, context: CallbackContext):
         cour_id, nombre, estado = existente
         update.message.reply_text(
             f"Ya tienes un registro como repartidor:\n"
-            f"👤 *{nombre}* (ID interno: {cour_id})\n"
-            f"Estado actual: *{estado}*.\n\n"
+            f"👤 {nombre} (ID interno: {cour_id})\n"
+            f"Estado actual: {estado}.\n\n"
             "Si necesitas cambios, contacta al administrador.",
-            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     update.message.reply_text(
-        "🛵 *Registro de repartidor*\n\n"
-        "Escribe tu *nombre completo*: ",
-        parse_mode="Markdown",
+        "🛵 Registro de repartidor\n\n"
+        "Escribe tu nombre completo: "
     )
     return REG_COUR_NOMBRE
 
@@ -617,27 +608,27 @@ def registro_repartidor(update: Update, context: CallbackContext):
 def reg_cour_nombre(update: Update, context: CallbackContext):
     context.user_data["cour_reg"] = {}
     context.user_data["cour_reg"]["nombre"] = update.message.text.strip()
-    update.message.reply_text("🪪 Escribe tu *número de identificación* (cédula u otro):")
+    update.message.reply_text("🪪 Escribe tu número de identificación (cédula u otro):")
     return REG_COUR_IDENTIFICACION
 
 
 def reg_cour_identificacion(update: Update, context: CallbackContext):
     context.user_data["cour_reg"]["identificacion"] = update.message.text.strip()
-    update.message.reply_text("📞 Escribe tu *teléfono de contacto*:")
+    update.message.reply_text("📞 Escribe tu teléfono de contacto:")
     return REG_COUR_TELEFONO
 
 
 def reg_cour_telefono(update: Update, context: CallbackContext):
     context.user_data["cour_reg"]["telefono"] = update.message.text.strip()
     update.message.reply_text(
-        "🚘 Escribe el *tipo de vehículo* que usas (por ejemplo: moto, bicicleta, carro):"
+        "🚘 Escribe el tipo de vehículo que usas (por ejemplo: moto, bicicleta, carro):"
     )
     return REG_COUR_VEHICULO
 
 
 def reg_cour_vehiculo(update: Update, context: CallbackContext):
     context.user_data["cour_reg"]["vehiculo"] = update.message.text.strip()
-    update.message.reply_text("🔢 Escribe la *placa del vehículo* (si aplica, ej: ABC123):")
+    update.message.reply_text("🔢 Escribe la placa del vehículo (si aplica, ej: ABC123):")
     return REG_COUR_PLACA
 
 
@@ -651,16 +642,16 @@ def reg_cour_placa(update: Update, context: CallbackContext):
     cour_id = crear_repartidor(user.id, chat.id, data)
 
     resumen = (
-        "✅ Tu solicitud de registro como *repartidor* fue enviada para verificación.\n\n"
+        "✅ Tu solicitud de registro como repartidor fue enviada para verificación.\n\n"
         "Datos registrados:\n"
-        f"👤 Nombre completo: *{data['nombre']}*\n"
+        f"👤 Nombre completo: {data['nombre']}\n"
         f"🪪 Identificación: {data['identificacion']}\n"
         f"📞 Teléfono: {data['telefono']}\n"
         f"🚘 Vehículo: {data['vehiculo']}\n"
         f"🔢 Placa: {data['placa']}\n\n"
         "El administrador revisará la información y te notificará si eres aprobado."
     )
-    update.message.reply_text(resumen, parse_mode="Markdown")
+    update.message.reply_text(resumen)
 
     if ADMIN_USER_ID != 0:
         keyboard = [[
@@ -672,9 +663,9 @@ def reg_cour_placa(update: Update, context: CallbackContext):
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
-                "🛵 *Nuevo registro de repartidor pendiente:*\n\n"
+                "🛵 Nuevo registro de repartidor pendiente:\n\n"
                 f"ID interno: {cour_id}\n"
-                f"👤 Nombre: *{data['nombre']}*\n"
+                f"👤 Nombre: {data['nombre']}\n"
                 f"🪪 Identificación: {data['identificacion']}\n"
                 f"📞 Teléfono: {data['telefono']}\n"
                 f"🚘 Vehículo: {data['vehiculo']}\n"
@@ -682,7 +673,6 @@ def reg_cour_placa(update: Update, context: CallbackContext):
                 "¿Aprobar este repartidor?"
             ),
             reply_markup=reply_markup,
-            parse_mode="Markdown",
         )
 
     return ConversationHandler.END
@@ -711,26 +701,25 @@ def manejar_aprobacion_restaurante(update: Update, context: CallbackContext):
 
     if accion == "aprobar":
         actualizar_estado_restaurante(rest_id, "aprobado")
-        texto_admin = f"✅ Restaurante *{business_name}* (ID {rest_id}) fue *APROBADO*."
+        texto_admin = f"✅ Restaurante {business_name} (ID {rest_id}) fue APROBADO."
         texto_usuario = (
-            "✅ ¡Tu registro como *restaurante aliado* fue APROBADO!\n\n"
-            f"🏪 Negocio: *{business_name}*\n"
+            "✅ ¡Tu registro como restaurante aliado fue APROBADO!\n\n"
+            f"🏪 Negocio: {business_name}\n"
             "Ya puedes usar /nuevo_pedido en el grupo de ALIADOS."
         )
     else:
         actualizar_estado_restaurante(rest_id, "rechazado")
-        texto_admin = f"❌ Restaurante *{business_name}* (ID {rest_id}) fue *RECHAZADO*."
+        texto_admin = f"❌ Restaurante {business_name} (ID {rest_id}) fue RECHAZADO."
         texto_usuario = (
-            "❌ Tu registro como *restaurante aliado* fue RECHAZADO.\n\n"
+            "❌ Tu registro como restaurante aliado fue RECHAZADO.\n\n"
             "Si crees que es un error, contacta al administrador."
         )
 
-    query.edit_message_text(texto_admin, parse_mode="Markdown")
+    query.edit_message_text(texto_admin)
 
     context.bot.send_message(
         chat_id=telegram_user_id,
         text=texto_usuario,
-        parse_mode="Markdown",
     )
 
 
@@ -755,25 +744,24 @@ def manejar_aprobacion_repartidor(update: Update, context: CallbackContext):
 
     if accion == "aprobar":
         actualizar_estado_repartidor(cour_id, "aprobado")
-        texto_admin = f"✅ Repartidor *{full_name}* (ID {cour_id}) fue *APROBADO*."
+        texto_admin = f"✅ Repartidor {full_name} (ID {cour_id}) fue APROBADO."
         texto_usuario = (
-            "✅ ¡Tu registro como *repartidor* fue APROBADO!\n\n"
+            "✅ ¡Tu registro como repartidor fue APROBADO!\n\n"
             "Ya puedes tomar pedidos desde el grupo de repartidores."
         )
     else:
         actualizar_estado_repartidor(cour_id, "rechazado")
-        texto_admin = f"❌ Repartidor *{full_name}* (ID {cour_id}) fue *RECHAZADO*."
+        texto_admin = f"❌ Repartidor {full_name} (ID {cour_id}) fue RECHAZADO."
         texto_usuario = (
-            "❌ Tu registro como *repartidor* fue RECHAZADO.\n\n"
+            "❌ Tu registro como repartidor fue RECHAZADO.\n\n"
             "Si crees que es un error, contacta al administrador."
         )
 
-    query.edit_message_text(texto_admin, parse_mode="Markdown")
+    query.edit_message_text(texto_admin)
 
     context.bot.send_message(
         chat_id=telegram_user_id,
         text=texto_usuario,
-        parse_mode="Markdown",
     )
 
 
@@ -787,8 +775,7 @@ def nuevo_pedido(update: Update, context: CallbackContext):
 
     if RESTAURANT_CHAT_ID != 0 and chat.id != RESTAURANT_CHAT_ID:
         update.message.reply_text(
-            "Este comando solo funciona en el *grupo de restaurantes aliados*.",
-            parse_mode="Markdown",
+            "Este comando solo funciona en el grupo de restaurantes aliados.",
         )
         return ConversationHandler.END
 
@@ -801,12 +788,12 @@ def nuevo_pedido(update: Update, context: CallbackContext):
             )
         elif estado == "pendiente":
             txt = (
-                "⏳ Tu registro como restaurante aún está *pendiente de aprobación*.\n"
+                "⏳ Tu registro como restaurante aún está pendiente de aprobación.\n"
                 "Espera a que el administrador lo revise."
             )
         else:
-            txt = "❌ Tu registro como restaurante está *rechazado*. Contacta al administrador."
-        update.message.reply_text(txt, parse_mode="Markdown")
+            txt = "❌ Tu registro como restaurante está rechazado. Contacta al administrador."
+        update.message.reply_text(txt)
         return ConversationHandler.END
 
     order_id = next_order_id
@@ -826,8 +813,7 @@ def nuevo_pedido(update: Update, context: CallbackContext):
     context.user_data["order_id"] = order_id
 
     update.message.reply_text(
-        "📍 Envíame la *dirección del cliente*:",
-        parse_mode="Markdown",
+        "📍 Envíame la dirección del cliente:"
     )
     return PEDIR_DIRECCION
 
@@ -841,8 +827,7 @@ def pedir_valor(update: Update, context: CallbackContext):
     orders[order_id]["direccion"] = update.message.text.strip()
 
     update.message.reply_text(
-        "💰 ¿Cuál es el *valor de los productos*? (solo números)",
-        parse_mode="Markdown",
+        "💰 ¿Cuál es el valor de los productos? (solo números)"
     )
     return PEDIR_VALOR_PEDIDO
 
@@ -858,8 +843,7 @@ def pedir_forma_pago(update: Update, context: CallbackContext):
         valor = int(texto)
     except ValueError:
         update.message.reply_text(
-            "Por favor envíame *solo números* para el valor de los productos.",
-            parse_mode="Markdown",
+            "Por favor envíame solo números para el valor de los productos."
         )
         return PEDIR_VALOR_PEDIDO
 
@@ -872,9 +856,8 @@ def pedir_forma_pago(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     update.message.reply_text(
-        "Selecciona la *forma de pago*:",
+        "Selecciona la forma de pago:",
         reply_markup=reply_markup,
-        parse_mode="Markdown",
     )
     return PEDIR_FORMA_PAGO
 
@@ -893,9 +876,8 @@ def recibir_forma_pago(update: Update, context: CallbackContext):
     orders[order_id]["forma_pago"] = forma
 
     query.edit_message_text(
-        f"✅ Forma de pago: *{forma.capitalize()}*\n\n"
-        "Ahora escribe la *zona/barrio*:",
-        parse_mode="Markdown",
+        f"✅ Forma de pago: {forma.capitalize()}\n\n"
+        "Ahora escribe la zona/barrio:"
     )
     return PEDIR_ZONA
 
@@ -910,7 +892,7 @@ def pedir_confirmacion(update: Update, context: CallbackContext):
     order = orders[order_id]
 
     resumen = (
-        f"🧾 *Resumen del pedido #{order_id}:*\n"
+        f"🧾 Resumen del pedido #{order_id}:\n"
         f"📍 Dirección: {order['direccion']}\n"
         f"💰 Valor productos: {order['valor']}\n"
         f"💳 Forma de pago: {order['forma_pago']}\n"
@@ -924,7 +906,7 @@ def pedir_confirmacion(update: Update, context: CallbackContext):
     ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text(resumen, reply_markup=reply_markup, parse_mode="Markdown")
+    update.message.reply_text(resumen, reply_markup=reply_markup)
     return CONFIRMAR_PEDIDO
 
 
@@ -1017,17 +999,16 @@ def tomar_pedido(update: Update, context: CallbackContext):
     context.bot.send_message(
         chat_id=courier_id,
         text=(
-            "✅ *Pedido asignado*\n\n"
-            "Tienes máximo *15 minutos* para llegar al restaurante.\n\n"
-            f"🧾 *Datos del pedido #{order_id}:*\n"
+            "✅ Pedido asignado\n\n"
+            "Tienes máximo 15 minutos para llegar al restaurante.\n\n"
+            f"🧾 Datos del pedido #{order_id}:\n"
             f"📍 Dirección: {order['direccion']}\n"
             f"💰 Valor productos: {order['valor']}\n"
             f"💳 Pago: {order['forma_pago']}\n"
             f"📌 Zona: {order['zona']}\n\n"
             "Cuando llegues al aliado, él confirmará tu llegada y "
-            "te enviaré un botón para marcar que *ya tienes el pedido*."
+            "te enviaré un botón para marcar que ya tienes el pedido."
         ),
-        parse_mode="Markdown",
     )
 
     rest_user_id = order.get("restaurante_user_id")
@@ -1035,7 +1016,7 @@ def tomar_pedido(update: Update, context: CallbackContext):
         nombre = courier.full_name
         user_link = f"@{courier.username}" if courier.username else ""
         texto_rest = (
-            f"🛵 Tu pedido #{order_id} fue tomado por *{nombre}* {user_link}.\n\n"
+            f"🛵 Tu pedido #{order_id} fue tomado por {nombre} {user_link}.\n\n"
             "Cuando el repartidor llegue a tu negocio, toca el botón de abajo:"
         )
 
@@ -1046,7 +1027,6 @@ def tomar_pedido(update: Update, context: CallbackContext):
             chat_id=rest_user_id,
             text=texto_rest,
             reply_markup=reply_markup_rest,
-            parse_mode="Markdown",
         )
 
     context.job_queue.run_once(
@@ -1077,8 +1057,7 @@ def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
     order["estado"] = "en_tienda"
 
     query.edit_message_text(
-        "✅ Marcaste que el repartidor *ya llegó* a tu negocio.",
-        parse_mode="Markdown",
+        "✅ Marcaste que el repartidor ya llegó a tu negocio."
     )
 
     keyboard = [[InlineKeyboardButton("✅ Ya tengo el pedido", callback_data=f"tengo_{order_id}")]]
@@ -1091,7 +1070,6 @@ def confirmar_llegada_repartidor(update: Update, context: CallbackContext):
             "Cuando el aliado te entregue el pedido, toca el botón de abajo:"
         ),
         reply_markup=reply_markup,
-        parse_mode="Markdown",
     )
 
 
@@ -1115,10 +1093,9 @@ def tengo_pedido(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     query.edit_message_text(
-        "👌 Marcaste que *ya tienes el pedido*.\n\n"
+        "👌 Marcaste que ya tienes el pedido.\n\n"
         "Cuando lo entregues al cliente, toca el botón de abajo:",
         reply_markup=reply_markup,
-        parse_mode="Markdown",
     )
 
 
@@ -1137,8 +1114,7 @@ def pedido_entregado(update: Update, context: CallbackContext):
     order["estado"] = "entregado"
 
     query.edit_message_text(
-        "✅ Marcaste este pedido como *ENTREGADO*. ¡Gracias por tu servicio! 🛵",
-        parse_mode="Markdown",
+        "✅ Marcaste este pedido como ENTREGADO. ¡Gracias por tu servicio! 🛵"
     )
 
     rest_user_id = order.get("restaurante_user_id")
@@ -1148,8 +1124,7 @@ def pedido_entregado(update: Update, context: CallbackContext):
         user_link = f"@{courier.username}" if courier.username else ""
         context.bot.send_message(
             chat_id=rest_user_id,
-            text=f"✅ Tu pedido #{order_id} fue marcado como *ENTREGADO* por {nombre} {user_link}.",
-            parse_mode="Markdown",
+            text=f"✅ Tu pedido #{order_id} fue marcado como ENTREGADO por {nombre} {user_link}.",
         )
 
 
