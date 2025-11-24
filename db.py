@@ -181,5 +181,3 @@ def get_courier_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
-
-5. Dale “Commit changes”.
