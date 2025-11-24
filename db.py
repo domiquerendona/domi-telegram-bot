@@ -4,13 +4,11 @@ import os
 # Ruta del archivo de base de datos
 DB_PATH = os.getenv("DB_PATH", "domiquerendona.db")
 
-
 def get_connection():
     """Devuelve una conexión a la base de datos SQLite."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def init_db():
     """Crea las tablas básicas si no existen."""
@@ -44,9 +42,28 @@ def init_db():
         );
     """)
 
+    # Tabla de repartidores
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS couriers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            full_name TEXT NOT NULL,
+            id_number TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            plate TEXT,
+            bike_type TEXT,
+            code TEXT UNIQUE,
+            status TEXT DEFAULT 'PENDING',   -- PENDING / APPROVED / BLOCKED
+            balance INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    """)
+
     conn.commit()
     conn.close()
-
 
 # ---------- USUARIOS ----------
 
@@ -58,7 +75,6 @@ def get_user_by_telegram_id(telegram_id: int):
     row = cur.fetchone()
     conn.close()
     return row
-
 
 def ensure_user(telegram_id: int, username: str = None):
     """
@@ -79,7 +95,6 @@ def ensure_user(telegram_id: int, username: str = None):
     conn.close()
     return get_user_by_telegram_id(telegram_id)
 
-
 # ---------- ALIADOS ----------
 
 def create_ally(user_id: int, business_name: str, owner_name: str,
@@ -96,7 +111,6 @@ def create_ally(user_id: int, business_name: str, owner_name: str,
     conn.close()
     return ally_id
 
-
 def get_ally_by_user_id(user_id: int):
     """Devuelve el aliado más reciente asociado a un user_id."""
     conn = get_connection()
@@ -108,3 +122,33 @@ def get_ally_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
+# ---------- REPARTIDORES ----------
+
+def create_courier(
+    user_id: int,
+    full_name: str,
+    id_number: str,
+    phone: str,
+    city: str,
+    barrio: str,
+    plate: str,
+    bike_type: str,
+    code: str,
+):
+    """Crea un repartidor en estado PENDING y devuelve su id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO couriers (
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status,
+            balance
