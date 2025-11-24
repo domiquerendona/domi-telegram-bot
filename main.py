@@ -14,6 +14,8 @@ from db import (
     get_user_by_telegram_id,
     create_ally,
     get_ally_by_user_id
+    create_courier,
+    get_courier_by_user_id,
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
