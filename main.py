@@ -32,8 +32,8 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
     COURIER_BARRIO,
     COURIER_PLATE,
     COURIER_BIKETYPE,
-    COURIER_CONFIRM
-) = range(5, 13)
+    COURIER_CONFIRM,
+) = range(8)
 
 def start(update, context):
     update.message.reply_text("🐢 Domiquerendona está en construcción, pero ya estoy viva.")
