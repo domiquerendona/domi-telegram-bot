@@ -29,7 +29,12 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 ) = range(8)
 
 def start(update, context):
-    update.message.reply_text("🐢 Domiquerendona está en construcción, pero ya estoy viva.")
+    update.message.reply_text(
+        "Bienvenido a Domiquerendona.\n\n"
+        "Comandos disponibles:\n"
+        "/soy_aliado - Registrarte como negocio aliado\n"
+        "/soy_repartidor - Registrarte como repartidor",
+    )
 
 def soy_aliado(update, context):
     user = update.effective_user
