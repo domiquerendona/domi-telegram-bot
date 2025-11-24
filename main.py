@@ -104,6 +104,7 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
 
+    dp.add_handler(ally_conv)
     updater.start_polling()
     updater.idle()
 
