@@ -103,7 +103,7 @@ def ally_barrio(update, context):
         parse_mode="Markdown",
     )
     
-  context.user_data.clear()
+context.user_data.clear()
     return ConversationHandler.END
 
 def soy_repartidor(update, context):
