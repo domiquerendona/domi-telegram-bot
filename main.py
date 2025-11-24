@@ -8,15 +8,8 @@ from telegram.ext import (
 )
 
 # Importar funciones de base de datos
-from db import (
-    init_db,
-    ensure_user,
-    get_user_by_telegram_id,
-    create_ally,
-    get_ally_by_user_id
-    create_courier,
-    get_courier_by_user_id,
-)
+
+from db import init_db, ensure_user, get_user_by_telegram_id, create_ally, get_ally_by_user_id, create_courier, get_courier_by_user_id
 
 TOKEN = os.getenv("BOT_TOKEN")
 
