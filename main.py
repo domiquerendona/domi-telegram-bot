@@ -197,7 +197,7 @@ def courier_confirm(update, context):
 
     if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
         update.message.reply_text(
-            "❌ Registro cancelado.\n\n"
+            "Registro cancelado.\n\n"
             "Si deseas intentarlo de nuevo, usa /soy_repartidor."
         )
         context.user_data.clear()
@@ -227,18 +227,17 @@ def courier_confirm(update, context):
     )
 
     update.message.reply_text(
-        "✅ *Repartidor registrado exitosamente*\n\n"
-        f"👤 Nombre: {full_name}\n"
-        f"🆔 Cédula: {id_number}\n"
-        f"📱 Teléfono: {phone}\n"
-        f"🏙 Ciudad: {city}\n"
-        f"📍 Barrio: {barrio}\n"
-        f"🛵 Placa: {plate}\n"
-        f"💺 Tipo de moto: {bike_type}\n"
-        f"🔐 Código interno: *{code}*\n\n"
-        "Tu estado es: *PENDING*.\n"
-        "El administrador deberá aprobarte antes de que puedas tomar pedidos.",
-        parse_mode="Markdown",
+        "Repartidor registrado exitosamente.\n\n"
+        f"Nombre: {full_name}\n"
+        f"Cédula: {id_number}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
+        f"Placa: {plate}\n"
+        f"Tipo de moto: {bike_type}\n"
+        f"Código interno: {code}\n\n"
+        "Tu estado es: PENDING. El administrador deberá aprobarte antes de que "
+        "puedas tomar pedidos."
     )
 
     context.user_data.clear()
