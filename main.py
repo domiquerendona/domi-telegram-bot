@@ -18,10 +18,11 @@ from db import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+# Estados del registro de aliados
+ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
 def start(update, context):
-   ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
-
+    update.message.reply_text("🐢 Domiquerendona está en construcción, pero ya estoy viva.")
 
 def soy_aliado(update, context):
     user = update.effective_user
@@ -35,7 +36,6 @@ def soy_aliado(update, context):
     )
     return ALLY_NAME
 
-
 def ally_name(update, context):
     context.user_data["business_name"] = update.message.text.strip()
     update.message.reply_text(
@@ -43,7 +43,6 @@ def ally_name(update, context):
         parse_mode="Markdown",
     )
     return ALLY_OWNER
-
 
 def ally_owner(update, context):
     context.user_data["owner_name"] = update.message.text.strip()
@@ -53,7 +52,6 @@ def ally_owner(update, context):
     )
     return ALLY_ADDRESS
 
-
 def ally_address(update, context):
     context.user_data["address"] = update.message.text.strip()
     update.message.reply_text(
@@ -62,7 +60,6 @@ def ally_address(update, context):
     )
     return ALLY_CITY
 
-
 def ally_city(update, context):
     context.user_data["city"] = update.message.text.strip()
     update.message.reply_text(
@@ -70,7 +67,6 @@ def ally_city(update, context):
         parse_mode="Markdown",
     )
     return ALLY_BARRIO
-
 
 def ally_barrio(update, context):
     barrio = update.message.text.strip()
@@ -103,7 +99,6 @@ def ally_barrio(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
@@ -115,7 +110,6 @@ ally_conv = ConversationHandler(
     },
     fallbacks=[],
 )
-
 
 def main():
     # Inicializar base de datos
@@ -129,7 +123,6 @@ def main():
 
     updater.start_polling()
     updater.idle()
-
 
 if __name__ == "__main__":
     main()
