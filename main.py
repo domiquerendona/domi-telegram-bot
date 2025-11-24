@@ -1,28 +1,36 @@
 import os
-from telegram.ext import Updater, CommandHandler, ConversationHandler, MessageHandler, Filters
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    ConversationHandler,
+    MessageHandler,
+    Filters
+)
 
-TOKEN = os.getenv("BOT_TOKEN")
-
-def start(update, context):
-    from telegram.ext import ConversationHandler, MessageHandler, Filters
-
-ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
-
+# Importar funciones de base de datos
 from db import (
+    init_db,
     ensure_user,
     get_user_by_telegram_id,
     create_ally,
     get_ally_by_user_id
 )
 
+TOKEN = os.getenv("BOT_TOKEN")
+
+
+def start(update, context):
+   ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
+
 
 def soy_aliado(update, context):
     user = update.effective_user
+    # Crear usuario en BD si no existe
     ensure_user(user.id, user.username)
 
     update.message.reply_text(
-        "🧑‍🍳 Registro de aliado\n\n"
-        "Escribe el nombre del negocio:",
+        "🧑‍🍳 *Registro de aliado*\n\n"
+        "Escribe el *nombre del negocio*:",
         parse_mode="Markdown",
     )
     return ALLY_NAME
@@ -30,25 +38,37 @@ def soy_aliado(update, context):
 
 def ally_name(update, context):
     context.user_data["business_name"] = update.message.text.strip()
-    update.message.reply_text("Escribe el nombre del dueño o administrador:", parse_mode="Markdown")
+    update.message.reply_text(
+        "Escribe el *nombre del dueño o administrador*:",
+        parse_mode="Markdown",
+    )
     return ALLY_OWNER
 
 
 def ally_owner(update, context):
     context.user_data["owner_name"] = update.message.text.strip()
-    update.message.reply_text("Escribe la dirección del negocio:", parse_mode="Markdown")
+    update.message.reply_text(
+        "Escribe la *dirección del negocio*:",
+        parse_mode="Markdown",
+    )
     return ALLY_ADDRESS
 
 
 def ally_address(update, context):
     context.user_data["address"] = update.message.text.strip()
-    update.message.reply_text("Escribe la ciudad del negocio:", parse_mode="Markdown")
+    update.message.reply_text(
+        "Escribe la *ciudad del negocio*:",
+        parse_mode="Markdown",
+    )
     return ALLY_CITY
 
 
 def ally_city(update, context):
     context.user_data["city"] = update.message.text.strip()
-    update.message.reply_text("Escribe el barrio o sector del negocio:", parse_mode="Markdown")
+    update.message.reply_text(
+        "Escribe el *barrio o sector del negocio*:",
+        parse_mode="Markdown",
+    )
     return ALLY_BARRIO
 
 
@@ -72,12 +92,11 @@ def ally_barrio(update, context):
     )
 
     update.message.reply_text(
-        f"✅ Aliado registrado exitosamente\n\n"
+        f"✅ *Aliado registrado exitosamente*\n\n"
         f"🏪 Negocio: {business_name}\n"
         f"👤 Dueño: {owner_name}\n"
         f"📍 Dirección: {address}, {barrio}, {city}\n\n"
-        "Tu estado es: PENDING\n"
-        "(en el futuro lo aprobarás desde el panel de admin)",
+        "Tu estado es: *PENDING*",
         parse_mode="Markdown",
     )
 
@@ -97,15 +116,20 @@ ally_conv = ConversationHandler(
     fallbacks=[],
 )
 
+
 def main():
+    # Inicializar base de datos
+    init_db()
+
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-
     dp.add_handler(ally_conv)
+
     updater.start_polling()
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
