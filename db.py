@@ -152,3 +152,34 @@ def create_courier(
             code,
             status,
             balance
+    ) VALUES 
+(?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
+    """, (
+        user_id,
+        full_name,
+        id_number,
+        phone,
+        city,
+        barrio,
+        plate,
+        bike_type,
+        code,
+    ))
+    conn.commit()
+    courier_id = cur.lastrowid
+    conn.close()
+    return courier_id
+
+def get_courier_by_user_id(user_id: int):
+    """Devuelve el repartidor más reciente asociado a un user_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM couriers WHERE user_id = ? ORDER BY id DESC LIMIT 1;",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+5. Dale “Commit changes”.
