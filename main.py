@@ -168,31 +168,32 @@ def courier_plate(update, context):
     return COURIER_BIKETYPE
     
 def courier_biketype(update, context):
+    # Guardar tipo de moto
     context.user_data["bike_type"] = update.message.text.strip()
 
-    # Sacar los datos para mostrarlos en un resumen
-    full_name = context.user_data["full_name"]
-    id_number = context.user_data["id_number"]
-    phone = context.user_data["phone"]
-    city = context.user_data["city"]
-    barrio = context.user_data["barrio"]
-    plate = context.user_data["plate"]
-    bike_type = context.user_data["bike_type"]
+    # Sacar los datos de forma segura (usando get por si falta alguno)
+    full_name = context.user_data.get("full_name", "")
+    id_number = context.user_data.get("id_number", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("city", "")
+    barrio = context.user_data.get("barrio", "")
+    plate = context.user_data.get("plate", "")
+    bike_type = context.user_data.get("bike_type", "")
 
     resumen = (
-        "✅ *Verifica tus datos de repartidor:*\n\n"
-        f"👤 Nombre: {full_name}\n"
-        f"🆔 Cédula: {id_number}\n"
-        f"📱 Teléfono: {phone}\n"
-        f"🏙 Ciudad: {city}\n"
-        f"📍 Barrio: {barrio}\n"
-        f"🛵 Placa: {plate}\n"
-        f"💺 Tipo de moto: {bike_type}\n\n"
-        "Si todo está bien escribe: *SI*\n"
+        "Verifica tus datos de repartidor:\n\n"
+        f"Nombre: {full_name}\n"
+        f"Cédula: {id_number}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
+        f"Placa: {plate}\n"
+        f"Tipo de moto: {bike_type}\n\n"
+        "Si todo está bien escribe: SI\n"
         "Si quieres corregir, cancela y vuelve a usar /soy_repartidor"
     )
 
-    update.message.reply_text(resumen, parse_mode="Markdown")
+    update.message.reply_text(resumen)
     return COURIER_CONFIRM
 
 def courier_confirm(update, context):
@@ -200,6 +201,7 @@ def courier_confirm(update, context):
     user = update.effective_user
     db_user = get_user_by_telegram_id(user.id)
 
+    # Si el usuario no escribe SI, cancelamos
     if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
         update.message.reply_text(
             "Registro cancelado.\n\n"
@@ -208,13 +210,14 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    full_name = context.user_data["full_name"]
-    id_number = context.user_data["id_number"]
-    phone = context.user_data["phone"]
-    city = context.user_data["city"]
-    barrio = context.user_data["barrio"]
-    plate = context.user_data["plate"]
-    bike_type = context.user_data["bike_type"]
+    # Tomar los datos de forma segura
+    full_name = context.user_data.get("full_name", "")
+    id_number = context.user_data.get("id_number", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("city", "")
+    barrio = context.user_data.get("barrio", "")
+    plate = context.user_data.get("plate", "")
+    bike_type = context.user_data.get("bike_type", "")
 
     # Código interno simple basado en id de usuario
     code = f"R-{db_user['id']:04d}"
@@ -231,7 +234,7 @@ def courier_confirm(update, context):
         code=code,
     )
 
-    update.message.reply_text(
+    mensaje_final = (
         "Repartidor registrado exitosamente.\n\n"
         f"Nombre: {full_name}\n"
         f"Cédula: {id_number}\n"
@@ -241,10 +244,11 @@ def courier_confirm(update, context):
         f"Placa: {plate}\n"
         f"Tipo de moto: {bike_type}\n"
         f"Código interno: {code}\n\n"
-        "Tu estado es: PENDING. El administrador deberá aprobarte antes de que "
-        "puedas tomar pedidos."
+        "Tu estado es: PENDING. El administrador deberá aprobarte "
+        "antes de que puedas tomar pedidos."
     )
 
+    update.message.reply_text(mensaje_final)
     context.user_data.clear()
     return ConversationHandler.END
     
