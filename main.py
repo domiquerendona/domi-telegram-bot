@@ -96,7 +96,6 @@ ally_conv = ConversationHandler(
     },
     fallbacks=[],
 )
-    update.message.reply_text("🐢 Domiquerendona está en construcción, pero ya estoy viva.")
 
 def main():
     updater = Updater(TOKEN, use_context=True)
