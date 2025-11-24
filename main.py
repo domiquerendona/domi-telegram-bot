@@ -21,6 +21,18 @@ TOKEN = os.getenv("BOT_TOKEN")
 # Estados del registro de aliados
 ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
+# Estados para registro de repartidores
+(
+    COURIER_FULLNAME,
+    COURIER_IDNUMBER,
+    COURIER_PHONE,
+    COURIER_CITY,
+    COURIER_BARRIO,
+    COURIER_PLATE,
+    COURIER_BIKETYPE,
+    COURIER_CONFIRM
+) = range(5, 13)
+
 def start(update, context):
     update.message.reply_text("🐢 Domiquerendona está en construcción, pero ya estoy viva.")
 
