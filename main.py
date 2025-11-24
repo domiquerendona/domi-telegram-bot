@@ -102,9 +102,6 @@ def ally_barrio(update, context):
         "Tu estado es: *PENDING*",
         parse_mode="Markdown",
     )
-    
-context.user_data.clear()
-    return ConversationHandler.END
 
 def soy_repartidor(update, context):
     user = update.effective_user
