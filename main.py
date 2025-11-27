@@ -329,6 +329,42 @@ def courier_confirm(update, context):
     context.user_data.clear()
     return ConversationHandler.END
     
+    def nuevo_pedido(update, context):
+    """Comando temporal de prueba para /nuevo_pedido."""
+    user = update.effective_user
+
+    # Buscar el usuario en la BD
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        update.message.reply_text(
+            "Aún no estás registrado en el sistema. Usa /start primero."
+        )
+        return
+
+    # Verificar si es aliado
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        update.message.reply_text(
+            "Aún no estás registrado como aliado.\n\n"
+            "Si tienes un negocio, regístrate con /soy_aliado."
+        )
+        return
+
+    # Verificar estado del aliado
+    if ally["status"] != "APPROVED":
+        update.message.reply_text(
+            "Tu registro como aliado todavía no ha sido aprobado por el administrador.\n\n"
+            "Cuando tu estado sea APPROVED podrás crear pedidos con /nuevo_pedido."
+        )
+        return
+
+    # Si todo está bien
+    update.message.reply_text(
+        "✅ Perfecto, eres un aliado APROBADO.\n\n"
+        "Más adelante aquí armaremos el flujo completo para crear un nuevo pedido.\n"
+        "Por ahora /nuevo_pedido está en construcción 🛠️"
+    )
+
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
@@ -382,6 +418,7 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
+    dp.add_handler(CommandHandler("nuevo_pedido", nuevo_pedido))
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
