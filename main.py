@@ -446,7 +446,7 @@ entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         ],
     },
 
-    fallbacks=[CommandHandler("cancelar", cancelar)],
+    fallbacks=[CommandHandler("cancel", cancel)],
     )
 
 def main():
