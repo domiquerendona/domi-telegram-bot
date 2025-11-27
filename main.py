@@ -102,7 +102,7 @@ def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
 
-def cancel(update, context):
+def "cancelar" cancel(update, context):
     """Permite cancelar cualquier proceso y limpiar datos temporales."""
     context.user_data.clear()
     update.message.reply_text(
