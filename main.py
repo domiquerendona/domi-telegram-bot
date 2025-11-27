@@ -56,6 +56,8 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
     COURIER_CONFIRM,
 ) = range(8)
 
+PEDIDO_NOMBRE, PEDIDO_TELEFONO = range(2)
+
 def start(update, context):
     """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
     user_tg = update.effective_user
@@ -368,6 +370,11 @@ def nuevo_pedido(update, context):
         "Más adelante aquí armaremos el flujo completo para crear un nuevo pedido.\n"
         "Por ahora /nuevo_pedido está en construcción 🛠️"
     )
+    
+def pedido_nombre_cliente(update, context):
+    context.user_data["customer_name"] = update.message.text.strip()
+    update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
+    return PEDIDO_TELEFONO
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
@@ -379,7 +386,7 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
     },
     fallbacks=[],
-)
+    )
 
 courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
@@ -410,7 +417,23 @@ courier_conv = ConversationHandler(
         ],
     },
     fallbacks=[],
-)
+    )
+
+# Conversación para /nuevo_pedido
+    nuevo_pedido_conv = ConversationHandler(
+    entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
+
+    states={
+        PEDIDO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
+        ],
+        PEDIDO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
+        ],
+    },
+
+    fallbacks=[CommandHandler("cancelar", cancelar)],
+    )
 
 def main():
     # Inicializar base de datos
@@ -423,6 +446,7 @@ def main():
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
     dp.add_handler(CommandHandler("nuevo_pedido", nuevo_pedido))
+    dp.add_handler(nuevo_pedido_conv)
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
