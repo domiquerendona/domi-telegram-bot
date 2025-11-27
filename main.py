@@ -449,11 +449,11 @@ entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         PEDIDO_TELEFONO: [
             MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
         ],
-    },
         PEDIDO_DIRECCION: [
         MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
-    ],
-
+        ],
+    },   
+        
     fallbacks=[CommandHandler("cancel", cancel)],
     )
 
