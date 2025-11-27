@@ -56,12 +56,24 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
     COURIER_CONFIRM,
 ) = range(8)
 
-def start(update, context):
+def create_menu(update: Update, context: CallbackContext):
+    keyboard = [
+        [
+            InlineKeyboardButton("🧑‍🍳 Soy Aliado", callback_data="soy_aliado"),
+            InlineKeyboardButton("🛵 Soy Repartidor", callback_data="soy_repartidor")
+        ],
+        [
+            InlineKeyboardButton("❓ Ayuda", callback_data="ayuda_menu")
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     update.message.reply_text(
-        "Bienvenido a Domiquerendona.\n\n"
-        "Comandos disponibles:\n"
-        "/soy_aliado - Registrarte como negocio aliado\n"
-        "/soy_repartidor - Registrarte como repartidor",
+        "Bienvenido a *Domiquerendona*.\n\n"
+        "Selecciona una opción para comenzar:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
 def soy_aliado(update, context):
