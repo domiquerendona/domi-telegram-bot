@@ -433,13 +433,6 @@ def pedido_direccion_cliente(update, context):
     update.message.reply_text(texto)
     return ConversationHandler.END
 
-def pedido_direccion_cliente(update, context):
-    context.user_data["customer_address"] = update.message.text.strip()
-    update.message.reply_text(
-        "Dirección guardada.\n\n(El flujo completo de pedidos seguirá en el próximo paso.)"
-    )
-    return ConversationHandler.END
-
     # Buscar el usuario en la BD
     db_user = get_user_by_telegram_id(user.id)
     if not db_user:
