@@ -102,6 +102,13 @@ def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
 
+def cancel(update, context):
+    """Permite cancelar cualquier proceso y limpiar datos temporales."""
+    context.user_data.clear()
+    update.message.reply_text(
+        "Operación cancelada.\n\nPuedes usar /menu o /start para volver al inicio."
+    )
+    
 def soy_aliado(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
@@ -374,6 +381,7 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
+    dp.add_handler(CommandHandler("cancel", cancel))
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
