@@ -57,14 +57,23 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 ) = range(8)
 
 def start(update, context):
-    """Comando /start y /menu: mensaje de bienvenida profesional con estado del usuario."""
+    """Comando /start y /menu: mensaje de bienvenida seguro y profesional."""
+
+    # Aseguramos que siempre haya un objeto message válido
+    message = update.message or update.effective_chat
+
     user_tg = update.effective_user
 
-    # Aseguramos que el usuario exista en la tabla users
+    # Evitar errores si Telegram no envía user
+    if not user_tg:
+        message.reply_text("Bienvenido a Domiquerendona.")
+        return
+
+    # Crear usuario en BD si no existe
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    # Revisamos si ya es aliado y/o repartidor
+    # Revisión de roles
     ally = get_ally_by_user_id(user_db_id)
     courier = get_courier_by_user_id(user_db_id)
 
@@ -72,14 +81,12 @@ def start(update, context):
 
     if ally:
         estado_lineas.append(
-            f"• Aliado: *{ally['business_name']}* (estado: *{ally['status']}*)."
+            f"• Aliado: {ally['business_name']} (estado: {ally['status']})."
         )
-
     if courier:
-        # courier['code'] y courier['status'] vienen de la tabla couriers
         codigo = courier["code"] if courier["code"] else "sin código"
         estado_lineas.append(
-            f"• Repartidor código interno: *{codigo}* (estado: *{courier['status']}*)."
+            f"• Repartidor código interno: {codigo} (estado: {courier['status']})."
         )
 
     if not estado_lineas:
@@ -87,7 +94,7 @@ def start(update, context):
     else:
         estado_text = "\n".join(estado_lineas)
 
-    mensaje = (
+    texto = (
         "🐢 *Bienvenido a Domiquerendona* 🐢\n\n"
         "Un sistema para conectar negocios aliados con repartidores de confianza.\n\n"
         "*Tu estado actual:*\n"
@@ -99,7 +106,8 @@ def start(update, context):
         "• /menu – Volver a ver este menú\n"
     )
 
-    update.message.reply_text(mensaje, parse_mode="Markdown")
+    # Enviar menú sin riesgo de errores de Markdown
+    message.reply_text(texto, parse_mode="Markdown", disable_web_page_preview=True)
 
 def soy_aliado(update, context):
     user = update.effective_user
