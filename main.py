@@ -352,12 +352,34 @@ def courier_confirm(update, context):
     return ConversationHandler.END
     
 def nuevo_pedido(update, context):
-    """Inicio del flujo para crear un nuevo pedido."""
+    user = update.effective_user                      
+    db_user = get_user_by_telegram_id(user.id)
+
     update.message.reply_text(
-        "Crear nuevo pedido.\n\n"
-        "Perfecto, empecemos.\n"
-        "Primero escribe el nombre del cliente."
+        "Crear nuevo pedido.\n\nPerfecto, empecemos.\nPrimero escribe el nombre del cliente."
     )
+
+    return PEDIDO_NOMBRE
+
+
+def pedido_nombre_cliente(update, context):
+    context.user_data["customer_name"] = update.message.text.strip()
+    update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
+    return PEDIDO_TELEFONO
+
+
+def pedido_telefono_cliente(update, context):
+    context.user_data["customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Ahora escribe la dirección del cliente.")
+    return PEDIDO_DIRECCION
+
+
+def pedido_direccion_cliente(update, context):
+    context.user_data["customer_address"] = update.message.text.strip()
+    update.message.reply_text(
+        "Dirección guardada.\n\n(El flujo completo de pedidos seguirá en el próximo paso.)"
+    )
+    return ConversationHandler.END
 
     # Buscar el usuario en la BD
     db_user = get_user_by_telegram_id(user.id)
