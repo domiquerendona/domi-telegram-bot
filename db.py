@@ -4,11 +4,13 @@ import os
 # Ruta del archivo de base de datos
 DB_PATH = os.getenv("DB_PATH", "domiquerendona.db")
 
+
 def get_connection():
     """Devuelve una conexión a la base de datos SQLite."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     """Crea las tablas básicas si no existen."""
@@ -55,15 +57,12 @@ def init_db():
             plate TEXT,
             bike_type TEXT,
             code TEXT UNIQUE,
-            status TEXT DEFAULT 'PENDING',   -- PENDING / APPROVED / BLOCKED
+            status TEXT DEFAULT 'PENDING',  -- PENDING / APPROVED / BLOCKED
             balance INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
-
-    conn.commit()
-    conn.close()
 
     # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
     cur.execute("""
@@ -152,6 +151,9 @@ def init_db():
         );
     """)
 
+    conn.commit()
+    conn.close()
+
 
 # ---------- USUARIOS ----------
 
@@ -164,27 +166,6 @@ def get_user_by_telegram_id(telegram_id: int):
     conn.close()
     return row
 
-def get_setting(key: str, default: str = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key = ?;", (key,))
-    row = cur.fetchone()
-    conn.close()
-    if row is None:
-        return default
-    # row puede ser tupla o Row, usamos [0] para que sirva en ambos casos
-    return row[0]
-
-def set_setting(key: str, value: str):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO settings (key, value)
-        VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-    """, (key, value))
-    conn.commit()
-    conn.close(
 
 def ensure_user(telegram_id: int, username: str = None):
     """
@@ -205,6 +186,32 @@ def ensure_user(telegram_id: int, username: str = None):
     conn.close()
     return get_user_by_telegram_id(telegram_id)
 
+
+# ---------- CONFIGURACIÓN GLOBAL (settings) ----------
+
+def get_setting(key: str, default: str = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM settings WHERE key = ?;", (key,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return default
+    return row[0]
+
+
+def set_setting(key: str, value: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+
 # ---------- ALIADOS ----------
 
 def create_ally(user_id: int, business_name: str, owner_name: str,
@@ -221,6 +228,7 @@ def create_ally(user_id: int, business_name: str, owner_name: str,
     conn.close()
     return ally_id
 
+
 def get_ally_by_user_id(user_id: int):
     """Devuelve el aliado más reciente asociado a un user_id."""
     conn = get_connection()
@@ -232,7 +240,8 @@ def get_ally_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
-    
+
+
 # ---------- DIRECCIONES DE ALIADOS (ally_locations) ----------
 
 def create_ally_location(
@@ -337,7 +346,8 @@ def delete_ally_location(location_id: int, ally_id: int):
     )
     conn.commit()
     conn.close()
-    
+
+
 # ---------- PEDIDOS (orders) ----------
 
 def create_order(
@@ -485,6 +495,7 @@ def get_orders_by_courier(courier_id: int, limit: int = 50):
     conn.close()
     return rows
 
+
 # ---------- CALIFICACIONES DEL REPARTIDOR ----------
 
 def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str = None):
@@ -497,6 +508,7 @@ def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str
     """, (order_id, courier_id, rating, comment))
     conn.commit()
     conn.close()
+
 
 # ---------- REPARTIDORES ----------
 
@@ -527,8 +539,7 @@ def create_courier(
             code,
             status,
             balance
-    ) VALUES 
-(?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
     """, (
         user_id,
         full_name,
@@ -544,6 +555,7 @@ def create_courier(
     courier_id = cur.lastrowid
     conn.close()
     return courier_id
+
 
 def get_courier_by_user_id(user_id: int):
     """Devuelve el repartidor más reciente asociado a un user_id."""
