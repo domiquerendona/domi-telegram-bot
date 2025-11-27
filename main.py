@@ -331,7 +331,10 @@ def courier_confirm(update, context):
     
     def nuevo_pedido(update, context):
     """Comando temporal de prueba para /nuevo_pedido."""
-    user = update.effective_user
+    update.message.reply_text(
+        "Has activado /nuevo_pedido.\n\n"
+        "Por ahora este comando es solo una prueba para verificar que funciona."
+    )
 
     # Buscar el usuario en la BD
     db_user = get_user_by_telegram_id(user.id)
