@@ -232,6 +232,271 @@ def get_ally_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+    
+# ---------- DIRECCIONES DE ALIADOS (ally_locations) ----------
+
+def create_ally_location(
+    ally_id: int,
+    label: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str = None,
+    is_default: bool = False,
+):
+    """Crea una dirección de recogida para un aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if is_default:
+        # Si esta será la principal, poner las demás en 0
+        cur.execute(
+            "UPDATE ally_locations SET is_default = 0 WHERE ally_id = ?;",
+            (ally_id,),
+        )
+
+    cur.execute("""
+        INSERT INTO ally_locations (
+            ally_id, label, address, city, barrio, phone, is_default
+        ) VALUES (?, ?, ?, ?, ?, ?, ?);
+    """, (ally_id, label, address, city, barrio, phone, 1 if is_default else 0))
+
+    conn.commit()
+    location_id = cur.lastrowid
+    conn.close()
+    return location_id
+
+
+def get_ally_locations(ally_id: int):
+    """Devuelve todas las direcciones de un aliado, principal primero."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at
+        FROM ally_locations
+        WHERE ally_id = ?
+        ORDER BY is_default DESC, id ASC;
+    """, (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_default_ally_location(ally_id: int):
+    """Devuelve la dirección principal de un aliado (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at
+        FROM ally_locations
+        WHERE ally_id = ? AND is_default = 1
+        ORDER BY id ASC
+        LIMIT 1;
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_default_ally_location(location_id: int, ally_id: int):
+    """Marca una dirección como principal para ese aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE ally_locations SET is_default = 0 WHERE ally_id = ?;",
+        (ally_id,),
+    )
+    cur.execute(
+        "UPDATE ally_locations SET is_default = 1 WHERE id = ? AND ally_id = ?;",
+        (location_id, ally_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_ally_location(location_id: int, address: str, city: str, barrio: str, phone: str = None):
+    """Actualiza los datos de una dirección."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_locations
+        SET address = ?, city = ?, barrio = ?, phone = ?
+        WHERE id = ?;
+    """, (address, city, barrio, phone, location_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_ally_location(location_id: int, ally_id: int):
+    """Elimina una dirección de un aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM ally_locations WHERE id = ? AND ally_id = ?;",
+        (location_id, ally_id),
+    )
+    conn.commit()
+    conn.close()
+    
+# ---------- PEDIDOS (orders) ----------
+
+def create_order(
+    ally_id: int,
+    customer_name: str,
+    customer_phone: str,
+    customer_address: str,
+    customer_city: str,
+    customer_barrio: str,
+    pickup_location_id: int,
+    pay_at_store_required: bool,
+    pay_at_store_amount: int,
+    base_fee: int,
+    distance_km: float,
+    rain_extra: int,
+    high_demand_extra: int,
+    night_extra: int,
+    additional_incentive: int,
+    total_fee: int,
+    instructions: str,
+):
+    """Crea un pedido en estado CREATED y devuelve su id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO orders (
+            ally_id,
+            courier_id,
+            status,
+            customer_name,
+            customer_phone,
+            customer_address,
+            customer_city,
+            customer_barrio,
+            pickup_location_id,
+            pay_at_store_required,
+            pay_at_store_amount,
+            base_fee,
+            distance_km,
+            rain_extra,
+            high_demand_extra,
+            night_extra,
+            additional_incentive,
+            total_fee,
+            instructions
+        ) VALUES (?, NULL, 'CREATED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """, (
+        ally_id,
+        customer_name,
+        customer_phone,
+        customer_address,
+        customer_city,
+        customer_barrio,
+        pickup_location_id,
+        1 if pay_at_store_required else 0,
+        pay_at_store_amount,
+        base_fee,
+        distance_km,
+        rain_extra,
+        high_demand_extra,
+        night_extra,
+        additional_incentive,
+        total_fee,
+        instructions,
+    ))
+    conn.commit()
+    order_id = cur.lastrowid
+    conn.close()
+    return order_id
+
+
+def set_order_status(order_id: int, status: str, timestamp_field: str = None):
+    """
+    Actualiza el estado de un pedido.
+    Si timestamp_field no es None, también actualiza ese campo de tiempo con datetime('now').
+    Ejemplos de timestamp_field: 'published_at', 'accepted_at', 'pickup_confirmed_at', 'delivered_at', 'canceled_at'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if timestamp_field:
+        query = f"UPDATE orders SET status = ?, {timestamp_field} = datetime('now') WHERE id = ?;"
+        cur.execute(query, (status, order_id))
+    else:
+        cur.execute("UPDATE orders SET status = ? WHERE id = ?;", (status, order_id))
+
+    conn.commit()
+    conn.close()
+
+
+def assign_order_to_courier(order_id: int, courier_id: int):
+    """Asigna un pedido a un repartidor y marca accepted_at."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
+        WHERE id = ?;
+    """, (courier_id, order_id))
+    conn.commit()
+    conn.close()
+
+
+def get_order_by_id(order_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE id = ?;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_orders_by_ally(ally_id: int, limit: int = 50):
+    """Devuelve los últimos pedidos de un aliado (para historial)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE ally_id = ?
+        ORDER BY id DESC
+        LIMIT ?;
+    """, (ally_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_orders_by_courier(courier_id: int, limit: int = 50):
+    """Devuelve los últimos pedidos de un repartidor."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE courier_id = ?
+        ORDER BY id DESC
+        LIMIT ?;
+    """, (courier_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+# ---------- CALIFICACIONES DEL REPARTIDOR ----------
+
+def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str = None):
+    """Registra una calificación para un repartidor."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO courier_ratings (order_id, courier_id, rating, comment)
+        VALUES (?, ?, ?, ?);
+    """, (order_id, courier_id, rating, comment))
+    conn.commit()
+    conn.close()
 
 # ---------- REPARTIDORES ----------
 
