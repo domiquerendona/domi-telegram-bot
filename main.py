@@ -606,7 +606,6 @@ def botones_aliados(update, context):
     # Si llega algo inesperado
     query.edit_message_text("Comando no reconocido.")
 
-
 def main():
     # Inicializar base de datos
     init_db()
@@ -614,16 +613,22 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    # Comandos generales
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
-    
-    dp.add_handler(nuevo_pedido_conv)
-    
+
+    # Conversaciones de registro
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
+
+    # Aprobación de aliados (ADMIN)
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CallbackQueryHandler(botones_aliados))
+
+    # Flujo de /nuevo_pedido
+    dp.add_handler(CommandHandler("nuevo_pedido", nuevo_pedido))
+    dp.add_handler(nuevo_pedido_conv)
 
     updater.start_polling()
     updater.idle()
