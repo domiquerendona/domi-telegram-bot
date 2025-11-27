@@ -56,7 +56,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
     COURIER_CONFIRM,
 ) = range(8)
 
-PEDIDO_NOMBRE, PEDIDO_TELEFONO = range(2)
+PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(3)
 
 def start(update, context):
     """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
@@ -110,6 +110,11 @@ def cancel(update, context):
     update.message.reply_text(
         "Operación cancelada.\n\nPuedes usar /menu o /start para volver al inicio."
     )
+    
+def pedido_telefono_cliente(update, context):
+    context.user_data["customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Ahora escribe la dirección del cliente.")
+    return PEDIDO_DIRECCION
     
 def soy_aliado(update, context):
     user = update.effective_user
@@ -445,6 +450,9 @@ entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
             MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
         ],
     },
+        PEDIDO_DIRECCION: [
+        MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
+    ],
 
     fallbacks=[CommandHandler("cancel", cancel)],
     )
