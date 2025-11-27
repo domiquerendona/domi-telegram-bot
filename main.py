@@ -57,36 +57,26 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 ) = range(8)
 
 def start(update, context):
-    """Comando /start y /menu: mensaje de bienvenida simple y seguro (sin Markdown)."""
-
-    chat = update.effective_chat
+    """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
     user_tg = update.effective_user
 
-    if not chat:
-        return  # por seguridad, pero casi nunca pasa
-
-    if not user_tg:
-        context.bot.send_message(chat_id=chat.id, text="Bienvenido a Domiquerendona.")
-        return
-
-    # Crear / obtener usuario en BD
+    # Aseguramos que el usuario exista en la tabla users
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    # Revisar si ya es aliado o repartidor
+    # Revisamos si ya es aliado y/o repartidor
     ally = get_ally_by_user_id(user_db_id)
     courier = get_courier_by_user_id(user_db_id)
 
     estado_lineas = []
-
     if ally:
         estado_lineas.append(
-            f"- Aliado: {ally['business_name']} (estado: {ally['status']})."
+            f"• Aliado: {ally['business_name']} (estado: {ally['status']})."
         )
     if courier:
         codigo = courier["code"] if courier["code"] else "sin código"
         estado_lineas.append(
-            f"- Repartidor código interno: {codigo} (estado: {courier['status']})."
+            f"• Repartidor código interno: {codigo} (estado: {courier['status']})."
         )
 
     if not estado_lineas:
@@ -94,20 +84,19 @@ def start(update, context):
     else:
         estado_text = "\n".join(estado_lineas)
 
-    texto = (
+    mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
         "Sistema para conectar negocios aliados con repartidores de confianza.\n\n"
         "Tu estado actual:\n"
         f"{estado_text}\n\n"
         "Comandos principales:\n"
-        "- /soy_aliado  Registrar o administrar tu negocio aliado\n"
-        "- /soy_repartidor  Registrarte como repartidor\n"
-        "- /nuevo_pedido  Crear un nuevo pedido (aliados aprobados)\n"
-        "- /menu  Volver a ver este menú\n"
+        "• /soy_aliado  - Registrar tu negocio aliado\n"
+        "• /soy_repartidor  - Registrarte como repartidor\n"
+        "• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)\n"
+        "• /menu  - Volver a ver este menú\n"
     )
 
-    # IMPORTANTE: sin parse_mode, todo es texto plano (no hay errores de Markdown)
-    context.bot.send_message(chat_id=chat.id, text=texto)
+    update.message.reply_text(mensaje)
 
 def soy_aliado(update, context):
     user = update.effective_user
@@ -118,12 +107,14 @@ def soy_aliado(update, context):
     )
     return ALLY_NAME
 
+
 def ally_name(update, context):
     context.user_data["business_name"] = update.message.text.strip()
     update.message.reply_text(
         "Escribe el nombre del dueño o administrador:"
     )
     return ALLY_OWNER
+
 
 def ally_owner(update, context):
     context.user_data["owner_name"] = update.message.text.strip()
@@ -132,12 +123,14 @@ def ally_owner(update, context):
     )
     return ALLY_ADDRESS
 
+
 def ally_address(update, context):
     context.user_data["address"] = update.message.text.strip()
     update.message.reply_text(
         "Escribe la ciudad del negocio:"
     )
     return ALLY_CITY
+
 
 def ally_city(update, context):
     context.user_data["city"] = update.message.text.strip()
@@ -146,10 +139,12 @@ def ally_city(update, context):
     )
     return ALLY_BARRIO
 
+
 def ally_barrio(update, context):
     barrio = update.message.text.strip()
     user = update.effective_user
     db_user = get_user_by_telegram_id(user.id)
+
     business_name = context.user_data["business_name"]
     owner_name = context.user_data["owner_name"]
     address = context.user_data["address"]
