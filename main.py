@@ -57,23 +57,23 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 ) = range(8)
 
 def start(update, context):
-    """Comando /start y /menu: mensaje de bienvenida seguro y profesional."""
+    """Comando /start y /menu: mensaje de bienvenida simple y seguro (sin Markdown)."""
 
-    # Aseguramos que siempre haya un objeto message válido
-    message = update.message or update.effective_chat
-
+    chat = update.effective_chat
     user_tg = update.effective_user
 
-    # Evitar errores si Telegram no envía user
+    if not chat:
+        return  # por seguridad, pero casi nunca pasa
+
     if not user_tg:
-        message.reply_text("Bienvenido a Domiquerendona.")
+        context.bot.send_message(chat_id=chat.id, text="Bienvenido a Domiquerendona.")
         return
 
-    # Crear usuario en BD si no existe
+    # Crear / obtener usuario en BD
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    # Revisión de roles
+    # Revisar si ya es aliado o repartidor
     ally = get_ally_by_user_id(user_db_id)
     courier = get_courier_by_user_id(user_db_id)
 
@@ -81,12 +81,12 @@ def start(update, context):
 
     if ally:
         estado_lineas.append(
-            f"• Aliado: {ally['business_name']} (estado: {ally['status']})."
+            f"- Aliado: {ally['business_name']} (estado: {ally['status']})."
         )
     if courier:
         codigo = courier["code"] if courier["code"] else "sin código"
         estado_lineas.append(
-            f"• Repartidor código interno: {codigo} (estado: {courier['status']})."
+            f"- Repartidor código interno: {codigo} (estado: {courier['status']})."
         )
 
     if not estado_lineas:
@@ -95,19 +95,19 @@ def start(update, context):
         estado_text = "\n".join(estado_lineas)
 
     texto = (
-        "🐢 *Bienvenido a Domiquerendona* 🐢\n\n"
-        "Un sistema para conectar negocios aliados con repartidores de confianza.\n\n"
-        "*Tu estado actual:*\n"
+        "🐢 Bienvenido a Domiquerendona 🐢\n\n"
+        "Sistema para conectar negocios aliados con repartidores de confianza.\n\n"
+        "Tu estado actual:\n"
         f"{estado_text}\n\n"
-        "*Comandos principales:*\n"
-        "• /soy_aliado – Registrar o administrar tu negocio aliado\n"
-        "• /soy_repartidor – Registrarte como repartidor\n"
-        "• /nuevo_pedido – Crear un nuevo pedido (aliados aprobados)\n"
-        "• /menu – Volver a ver este menú\n"
+        "Comandos principales:\n"
+        "- /soy_aliado  Registrar o administrar tu negocio aliado\n"
+        "- /soy_repartidor  Registrarte como repartidor\n"
+        "- /nuevo_pedido  Crear un nuevo pedido (aliados aprobados)\n"
+        "- /menu  Volver a ver este menú\n"
     )
 
-    # Enviar menú sin riesgo de errores de Markdown
-    message.reply_text(texto, parse_mode="Markdown", disable_web_page_preview=True)
+    # IMPORTANTE: sin parse_mode, todo es texto plano (no hay errores de Markdown)
+    context.bot.send_message(chat_id=chat.id, text=texto)
 
 def soy_aliado(update, context):
     user = update.effective_user
