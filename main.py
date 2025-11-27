@@ -420,7 +420,7 @@ courier_conv = ConversationHandler(
     )
 
 # Conversación para /nuevo_pedido
-    nuevo_pedido_conv = ConversationHandler(
+nuevo_pedido_conv = ConversationHandler(
     entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
 
     states={
