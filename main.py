@@ -56,25 +56,50 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
     COURIER_CONFIRM,
 ) = range(8)
 
-def create_menu(update: Update, context: CallbackContext):
-    keyboard = [
-        [
-            InlineKeyboardButton("🧑‍🍳 Soy Aliado", callback_data="soy_aliado"),
-            InlineKeyboardButton("🛵 Soy Repartidor", callback_data="soy_repartidor")
-        ],
-        [
-            InlineKeyboardButton("❓ Ayuda", callback_data="ayuda_menu")
-        ]
-    ]
+def start(update, context):
+    """Comando /start y /menu: mensaje de bienvenida profesional con estado del usuario."""
+    user_tg = update.effective_user
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Aseguramos que el usuario exista en la tabla users
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
 
-    update.message.reply_text(
-        "Bienvenido a *Domiquerendona*.\n\n"
-        "Selecciona una opción para comenzar:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+    # Revisamos si ya es aliado y/o repartidor
+    ally = get_ally_by_user_id(user_db_id)
+    courier = get_courier_by_user_id(user_db_id)
+
+    estado_lineas = []
+
+    if ally:
+        estado_lineas.append(
+            f"• Aliado: *{ally['business_name']}* (estado: *{ally['status']}*)."
+        )
+
+    if courier:
+        # courier['code'] y courier['status'] vienen de la tabla couriers
+        codigo = courier["code"] if courier["code"] else "sin código"
+        estado_lineas.append(
+            f"• Repartidor código interno: *{codigo}* (estado: *{courier['status']}*)."
+        )
+
+    if not estado_lineas:
+        estado_text = "Aún no estás registrado como aliado ni como repartidor."
+    else:
+        estado_text = "\n".join(estado_lineas)
+
+    mensaje = (
+        "🐢 *Bienvenido a Domiquerendona* 🐢\n\n"
+        "Un sistema para conectar negocios aliados con repartidores de confianza.\n\n"
+        "*Tu estado actual:*\n"
+        f"{estado_text}\n\n"
+        "*Comandos principales:*\n"
+        "• /soy_aliado – Registrar o administrar tu negocio aliado\n"
+        "• /soy_repartidor – Registrarte como repartidor\n"
+        "• /nuevo_pedido – Crear un nuevo pedido (aliados aprobados)\n"
+        "• /menu – Volver a ver este menú\n"
     )
+
+    update.message.reply_text(mensaje, parse_mode="Markdown")
 
 def soy_aliado(update, context):
     user = update.effective_user
