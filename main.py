@@ -415,10 +415,9 @@ def pedido_direccion_cliente(update, context):
         return
 
     # Si todo está bien
-    update.message.reply_text(
-        "✅ Perfecto, eres un aliado APROBADO.\n\n"
-        "Más adelante aquí armaremos el flujo completo para crear un nuevo pedido.\n"
-        "Por ahora /nuevo_pedido está en construcción 🛠️"
+        update.message.reply_text(
+    "✅ Perfecto, eres un aliado APROBADO.\n"
+    "Desde ahora puedes usar /nuevo_pedido para crear pedidos."
     )
     
 def pedido_nombre_cliente(update, context):
