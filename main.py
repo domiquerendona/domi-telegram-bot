@@ -487,42 +487,45 @@ def pedido_telefono_cliente(update, context):
     return ConversationHandler.END
     
 def aliados_pendientes(update, context):
-    """Solo el administrador puede ver aliados pendientes."""
-    user = update.effective_user
+    """Lista aliados PENDING solo para el administrador."""
+    user_id = update.effective_user.id
 
-    ADMIN_ID = int(os.getenv("ADMIN_USER_ID", "0"))
-    if user.id != ADMIN_ID:
-        update.message.reply_text("No tienes permiso para usar este comando.")
+    # Solo el admin puede usar este comando
+    if user_id != ADMIN_USER_ID:
+        update.message.reply_text("Este comando es solo para el administrador.")
         return
 
-    pendientes = get_pending_allies()
-
-    if not pendientes:
-        update.message.reply_text("No hay aliados pendientes.")
+    # Intentar leer aliados pendientes de la BD
+    try:
+        allies = get_pending_allies()
+    except Exception as e:
+        # Esto evita que el bot se caiga si hay un error en la BD
+        print(f"Error en aliados_pendientes: {e}")
+        update.message.reply_text(
+            "Ocurrió un error al leer la lista de aliados pendientes."
+        )
         return
 
-    for ally in pendientes:
-        ally_id = ally["id"]
-        texto = (
-            f"📌 *Aliado pendiente*\n"
-            f"ID: {ally_id}\n"
+    if not allies:
+        update.message.reply_text("No hay aliados pendientes por aprobar.")
+        return
+
+    # Construir texto con la lista de aliados
+    lineas = ["Aliados pendientes:\n"]
+    for ally in allies:
+        lineas.append(
+            f"ID interno: {ally['id']}\n"
             f"Negocio: {ally['business_name']}\n"
             f"Dueño: {ally['owner_name']}\n"
-            f"Ciudad: {ally['city']}\n"
-            f"Barrio: {ally['barrio']}"
+            f"Teléfono: {ally['phone']}\n"
+            f"Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
+            f"Estado: {ally['status']}\n"
+            "------------------------------"
         )
 
-        botones = [
-            [
-                InlineKeyboardButton("✅ Aprobar", callback_data=f"aprobar_{ally_id}"),
-                InlineKeyboardButton("❌ Rechazar", callback_data=f"rechazar_{ally_id}")
-            ]
-        ]
+    texto = "\n".join(lineas)
+    update.message.reply_text(texto)
 
-        update.message.reply_text(
-            texto,
-            reply_markup=InlineKeyboardMarkup(botones)
-        )
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
@@ -605,6 +608,11 @@ def botones_aliados(update, context):
 
     # Si llega algo inesperado
     query.edit_message_text("Comando no reconocido.")
+    
+def show_id(update, context):
+    """Muestra el ID de Telegram del usuario que envía el comando."""
+    user_id = update.effective_user.id
+    update.message.reply_text(f"Tu ID de usuario es: {user_id}")
 
 def main():
     # Inicializar base de datos
@@ -618,7 +626,7 @@ def main():
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
     dp.add_handler(CommandHandler("id", show_chat_id))
-
+    
     # Conversaciones de registro
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
@@ -628,10 +636,9 @@ def main():
 
     # 🔹 Comando SOLO para el administrador:
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-
+    
     updater.start_polling()
     updater.idle()
-
 
 if __name__ == "__main__":
     main()
