@@ -98,6 +98,10 @@ def start(update, context):
 
     update.message.reply_text(mensaje)
 
+def menu(update, context):
+    """Alias de /start para mostrar el menú principal."""
+    return start(update, context)
+
 def soy_aliado(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
@@ -107,14 +111,12 @@ def soy_aliado(update, context):
     )
     return ALLY_NAME
 
-
 def ally_name(update, context):
     context.user_data["business_name"] = update.message.text.strip()
     update.message.reply_text(
         "Escribe el nombre del dueño o administrador:"
     )
     return ALLY_OWNER
-
 
 def ally_owner(update, context):
     context.user_data["owner_name"] = update.message.text.strip()
@@ -123,7 +125,6 @@ def ally_owner(update, context):
     )
     return ALLY_ADDRESS
 
-
 def ally_address(update, context):
     context.user_data["address"] = update.message.text.strip()
     update.message.reply_text(
@@ -131,14 +132,14 @@ def ally_address(update, context):
     )
     return ALLY_CITY
 
-
 def ally_city(update, context):
     context.user_data["city"] = update.message.text.strip()
     update.message.reply_text(
         "Escribe el barrio o sector del negocio:"
     )
     return ALLY_BARRIO
-
+    
+from telegram.ext import ConversationHandler  # ya está importado arriba, no lo borres
 
 def ally_barrio(update, context):
     barrio = update.message.text.strip()
@@ -150,7 +151,8 @@ def ally_barrio(update, context):
     address = context.user_data["address"]
     city = context.user_data["city"]
 
-    create_ally(
+    # 1) Crear el aliado en la tabla allies
+    ally_id = create_ally(
         user_id=db_user["id"],
         business_name=business_name,
         owner_name=owner_name,
@@ -159,14 +161,30 @@ def ally_barrio(update, context):
         barrio=barrio,
     )
 
-    texto = (
-        "✅ Aliado registrado exitosamente\n\n"
-        f"Negocio: {business_name}\n"
-        f"Dueño: {owner_name}\n"
-        f"Dirección: {address}, {barrio}, {city}\n\n"
-        "Tu estado es: PENDING"
+    # 2) Crear su dirección principal en ally_locations
+    create_ally_location(
+        ally_id=ally_id,
+        label="Sede principal",
+        address=address,
+        city=city,
+        barrio=barrio,
+        phone=None,
+        is_default=True,
     )
-    update.message.reply_text(texto)
+
+    # 3) Confirmar al usuario
+    update.message.reply_text(
+        f"✅ *Aliado registrado exitosamente*\n\n"
+        f"🏪 Negocio: {business_name}\n"
+        f"👤 Dueño: {owner_name}\n"
+        f"📍 Dirección: {address}, {barrio}, {city}\n\n"
+        "Tu estado es: *PENDING*",
+        parse_mode="Markdown",
+    )
+
+    # Limpiar datos temporales y terminar la conversación
+    context.user_data.clear()
+    return ConversationHandler.END
 
 def soy_repartidor(update, context):
     user = update.effective_user
@@ -355,6 +373,7 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
