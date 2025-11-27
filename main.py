@@ -112,23 +112,31 @@ def cancel(update, context):
     )
     
 def pedido_telefono_cliente(update, context):
+    # Guardar teléfono del cliente
     context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la dirección del cliente.")
+
+    # Pedir ahora la dirección de entrega
+    update.message.reply_text("Ahora escribe la dirección de entrega del cliente.")
     return PEDIDO_DIRECCION
     
 def pedido_direccion_cliente(update, context):
-    # Guardar la dirección que escribe el aliado
+    # Guardar dirección del cliente
     context.user_data["customer_address"] = update.message.text.strip()
 
-    # Mensaje de prueba (luego aquí seguiremos con tarifa y publicación)
-    update.message.reply_text(
-        "Perfecto. Dirección guardada.\n\n"
-        "Por ahora este flujo es solo de prueba. "
-        "Más adelante aquí calcularemos la tarifa y publicaremos el pedido."
+    # Recuperar datos para mostrarlos al final
+    nombre = context.user_data.get("customer_name", "")
+    telefono = context.user_data.get("customer_phone", "")
+    direccion = context.user_data.get("customer_address", "")
+
+    texto = (
+        "Por ahora /nuevo_pedido está en construcción.\n"
+        "Hemos guardado estos datos del cliente:\n"
+        f"- Nombre: {nombre}\n"
+        f"- Teléfono: {telefono}\n"
+        f"- Dirección: {direccion}"
     )
 
-    # Cerrar la conversación de /nuevo_pedido por ahora
-    from telegram.ext import ConversationHandler
+    update.message.reply_text(texto)
     return ConversationHandler.END
     
 def soy_aliado(update, context):
