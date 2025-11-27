@@ -360,27 +360,78 @@ def courier_confirm(update, context):
     return ConversationHandler.END
     
 def nuevo_pedido(update, context):
-    user = update.effective_user                      
+    user = update.effective_user
+
+    # Asegurar usuario en BD
+    ensure_user(user.id, user.username)
     db_user = get_user_by_telegram_id(user.id)
 
-    update.message.reply_text(
-        "Crear nuevo pedido.\n\nPerfecto, empecemos.\nPrimero escribe el nombre del cliente."
-    )
+    if not db_user:
+        update.message.reply_text(
+            "Aún no estás registrado en el sistema. Usa /start primero."
+        )
+        return ConversationHandler.END
 
+    # Verificar si es aliado
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        update.message.reply_text(
+            "Aún no estás registrado como aliado.\n"
+            "Si tienes un negocio, regístrate con /soy_aliado."
+        )
+        return ConversationHandler.END
+
+    # Verificar estado del aliado
+    if ally["status"] != "APPROVED":
+        update.message.reply_text(
+            "Tu registro como aliado todavía no ha sido aprobado por el administrador.\n"
+            "Cuando tu estado sea APPROVED podrás crear pedidos con /nuevo_pedido."
+        )
+        return ConversationHandler.END
+
+    # Si todo está bien, empezar conversación del pedido
+    update.message.reply_text(
+        "Crear nuevo pedido.\n\n"
+        "Perfecto, empecemos.\n"
+        "Primero escribe el nombre del cliente."
+    )
     return PEDIDO_NOMBRE
 
-
 def pedido_nombre_cliente(update, context):
+    # Guardar nombre del cliente
     context.user_data["customer_name"] = update.message.text.strip()
+
+    # Pedir teléfono
     update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
     return PEDIDO_TELEFONO
 
-
 def pedido_telefono_cliente(update, context):
+    # Guardar teléfono del cliente
     context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la dirección del cliente.")
-    return PEDIDO_DIRECCION
 
+    # Pedir ahora la dirección
+    update.message.reply_text("Ahora escribe la dirección de entrega del cliente.")
+    return PEDIDO_DIRECCION
+    
+def pedido_direccion_cliente(update, context):
+    # Guardar dirección del cliente
+    context.user_data["customer_address"] = update.message.text.strip()
+
+    # Recuperar datos para mostrarlos al final
+    nombre = context.user_data.get("customer_name", "")
+    telefono = context.user_data.get("customer_phone", "")
+    direccion = context.user_data.get("customer_address", "")
+
+    texto = (
+        "Por ahora /nuevo_pedido está en construcción.\n"
+        "Hemos guardado estos datos del cliente:\n"
+        f"- Nombre: {nombre}\n"
+        f"- Teléfono: {telefono}\n"
+        f"- Dirección: {direccion}"
+    )
+
+    update.message.reply_text(texto)
+    return ConversationHandler.END
 
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
@@ -484,8 +535,7 @@ courier_conv = ConversationHandler(
 
 # Conversación para /nuevo_pedido
 nuevo_pedido_conv = ConversationHandler(
-entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
-
+    entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
     states={
         PEDIDO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
@@ -496,10 +546,9 @@ entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
-    },   
-        
+    },
     fallbacks=[CommandHandler("cancel", cancel)],
-    )
+)
 
 def main():
     # Inicializar base de datos
