@@ -7,6 +7,9 @@ from telegram.ext import (
     Filters
 )
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
+
 # Importar funciones de base de datos
 
 from db import (
@@ -482,6 +485,44 @@ def pedido_telefono_cliente(update, context):
     # Terminamos la conversación de /nuevo_pedido
     from telegram.ext import ConversationHandler
     return ConversationHandler.END
+    
+def aliados_pendientes(update, context):
+    """Solo el administrador puede ver aliados pendientes."""
+    user = update.effective_user
+
+    ADMIN_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+    if user.id != ADMIN_ID:
+        update.message.reply_text("No tienes permiso para usar este comando.")
+        return
+
+    pendientes = get_pending_allies()
+
+    if not pendientes:
+        update.message.reply_text("No hay aliados pendientes.")
+        return
+
+    for ally in pendientes:
+        ally_id = ally["id"]
+        texto = (
+            f"📌 *Aliado pendiente*\n"
+            f"ID: {ally_id}\n"
+            f"Negocio: {ally['business_name']}\n"
+            f"Dueño: {ally['owner_name']}\n"
+            f"Ciudad: {ally['city']}\n"
+            f"Barrio: {ally['barrio']}"
+        )
+
+        botones = [
+            [
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"aprobar_{ally_id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"rechazar_{ally_id}")
+            ]
+        ]
+
+        update.message.reply_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(botones)
+        )
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
@@ -543,6 +584,29 @@ nuevo_pedido_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel)],
 )
 
+def botones_aliados(update, context):
+    """Maneja los botones de aprobar o rechazar aliados."""
+    query = update.callback_query
+    query.answer()
+
+    data = query.data  # Ej: "aprobar_3" o "rechazar_5"
+
+    if data.startswith("aprobar_"):
+        ally_id = int(data.split("_")[1])
+        update_ally_status(ally_id, "APPROVED")
+        query.edit_message_text("✅ Aliado aprobado exitosamente.")
+        return
+
+    if data.startswith("rechazar_"):
+        ally_id = int(data.split("_")[1])
+        update_ally_status(ally_id, "REJECTED")
+        query.edit_message_text("❌ Aliado rechazado.")
+        return
+
+    # Si llega algo inesperado
+    query.edit_message_text("Comando no reconocido.")
+
+
 def main():
     # Inicializar base de datos
     init_db()
@@ -558,6 +622,8 @@ def main():
     
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
+    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+    dp.add_handler(CallbackQueryHandler(botones_aliados))
 
     updater.start_polling()
     updater.idle()
