@@ -329,7 +329,7 @@ def courier_confirm(update, context):
     context.user_data.clear()
     return ConversationHandler.END
     
-    def nuevo_pedido(update, context):
+def nuevo_pedido(update, context):
     """Comando temporal de prueba para /nuevo_pedido."""
     update.message.reply_text(
         "Has activado /nuevo_pedido.\n\n"
