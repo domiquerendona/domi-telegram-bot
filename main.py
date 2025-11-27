@@ -613,25 +613,25 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Comandos generales
+    # Comandos principales
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
+    dp.add_handler(CommandHandler("id", show_chat_id))
 
     # Conversaciones de registro
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
-    # Aprobación de aliados (ADMIN)
-    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-    dp.add_handler(CallbackQueryHandler(botones_aliados))
-
-    # Flujo de /nuevo_pedido
-    dp.add_handler(CommandHandler("nuevo_pedido", nuevo_pedido))
+    # Conversación para /nuevo_pedido
     dp.add_handler(nuevo_pedido_conv)
+
+    # 🔹 Comando SOLO para el administrador:
+    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
 
     updater.start_polling()
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
