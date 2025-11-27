@@ -113,7 +113,12 @@ def cancel(update, context):
     update.message.reply_text(
         "Operación cancelada.\n\nPuedes usar /menu o /start para volver al inicio."
     )
-    
+
+def cmd_id(update, context):
+    """Muestra el user_id de Telegram del usuario."""
+    user = update.effective_user
+    update.message.reply_text(f"Tu user_id es: {user.id}")
+
 def pedido_telefono_cliente(update, context):
     # Guardar teléfono del cliente
     context.user_data["customer_phone"] = update.message.text.strip()
@@ -621,22 +626,18 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Comandos principales
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
-    dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CommandHandler("id", show_chat_id))
-    
-    # Conversaciones de registro
+    dp.add_handler(CommandHandler("soy_aliado", soy_aliado))
+    dp.add_handler(CommandHandler("soy_repartidor", soy_repartidor))
+
+    dp.add_handler(CommandHandler("id", cmd_id))
+    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
-
-    # Conversación para /nuevo_pedido
     dp.add_handler(nuevo_pedido_conv)
 
-    # 🔹 Comando SOLO para el administrador:
-    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-    
     updater.start_polling()
     updater.idle()
 
