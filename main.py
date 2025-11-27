@@ -9,7 +9,35 @@ from telegram.ext import (
 
 # Importar funciones de base de datos
 
-from db import init_db, ensure_user, get_user_by_telegram_id, create_ally, get_ally_by_user_id, create_courier, get_courier_by_user_id
+from db import (
+    init_db,
+    ensure_user,
+    get_user_by_telegram_id,
+    get_setting,
+    set_setting,
+    # Aliados
+    create_ally,
+    get_ally_by_user_id,
+    # Direcciones de aliados
+    create_ally_location,
+    get_ally_locations,
+    get_default_ally_location,
+    set_default_ally_location,
+    update_ally_location,
+    delete_ally_location,
+    # Repartidores
+    create_courier,
+    get_courier_by_user_id,
+    # Pedidos
+    create_order,
+    set_order_status,
+    assign_order_to_courier,
+    get_order_by_id,
+    get_orders_by_ally,
+    get_orders_by_courier,
+    # Calificaciones
+    add_courier_rating,
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
