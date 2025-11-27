@@ -330,10 +330,11 @@ def courier_confirm(update, context):
     return ConversationHandler.END
     
 def nuevo_pedido(update, context):
-    """Comando temporal de prueba para /nuevo_pedido."""
+    """Inicio del flujo para crear un nuevo pedido."""
     update.message.reply_text(
-        "Has activado /nuevo_pedido.\n\n"
-        "Por ahora este comando es solo una prueba para verificar que funciona."
+        "Crear nuevo pedido.\n\n"
+        "Perfecto, empecemos.\n"
+        "Primero escribe el nombre del cliente."
     )
 
     # Buscar el usuario en la BD
