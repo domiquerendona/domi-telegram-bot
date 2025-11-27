@@ -504,8 +504,9 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
     dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CommandHandler("nuevo_pedido", nuevo_pedido))
+    
     dp.add_handler(nuevo_pedido_conv)
+    
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
 
