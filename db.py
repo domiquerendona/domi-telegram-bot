@@ -240,7 +240,50 @@ def get_ally_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+    
+def get_ally_by_id(ally_id: int):
+    """Devuelve un aliado por su ID (o None si no existe)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM allies WHERE id = ? LIMIT 1;",
+        (ally_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
+def get_pending_allies(limit: int = 20):
+    """
+    Devuelve una lista de aliados con estado PENDING,
+    ordenados del más reciente al más antiguo.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM allies
+        WHERE status = 'PENDING'
+        ORDER BY id DESC
+        LIMIT ?;
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def update_ally_status(ally_id: int, status: str):
+    """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE allies SET status = ? WHERE id = ?;",
+        (status, ally_id),
+    )
+    conn.commit()
+    conn.close()
 
 # ---------- DIRECCIONES DE ALIADOS (ally_locations) ----------
 
