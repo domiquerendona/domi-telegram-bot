@@ -116,6 +116,21 @@ def pedido_telefono_cliente(update, context):
     update.message.reply_text("Ahora escribe la dirección del cliente.")
     return PEDIDO_DIRECCION
     
+def pedido_direccion_cliente(update, context):
+    # Guardar la dirección que escribe el aliado
+    context.user_data["customer_address"] = update.message.text.strip()
+
+    # Mensaje de prueba (luego aquí seguiremos con tarifa y publicación)
+    update.message.reply_text(
+        "Perfecto. Dirección guardada.\n\n"
+        "Por ahora este flujo es solo de prueba. "
+        "Más adelante aquí calcularemos la tarifa y publicaremos el pedido."
+    )
+
+    # Cerrar la conversación de /nuevo_pedido por ahora
+    from telegram.ext import ConversationHandler
+    return ConversationHandler.END
+    
 def soy_aliado(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
