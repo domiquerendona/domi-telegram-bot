@@ -375,6 +375,20 @@ def pedido_nombre_cliente(update, context):
     context.user_data["customer_name"] = update.message.text.strip()
     update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
     return PEDIDO_TELEFONO
+    
+def pedido_telefono_cliente(update, context):
+    # Guardamos el teléfono del cliente
+    context.user_data["customer_phone"] = update.message.text.strip()
+
+    # Mensaje de cierre temporal
+    update.message.reply_text(
+        "Por ahora /nuevo_pedido está en construcción.\n"
+        "Hemos guardado el nombre y el teléfono del cliente."
+    )
+
+    # Terminamos la conversación de /nuevo_pedido
+    from telegram.ext import ConversationHandler
+    return ConversationHandler.END
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
