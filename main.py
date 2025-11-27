@@ -111,45 +111,38 @@ def start(update, context):
 
 def soy_aliado(update, context):
     user = update.effective_user
-    # Crear usuario en BD si no existe
     ensure_user(user.id, user.username)
-
     update.message.reply_text(
-        "🧑‍🍳 *Registro de aliado*\n\n"
-        "Escribe el *nombre del negocio*:",
-        parse_mode="Markdown",
+        "🧑‍🍳 Registro de aliado\n\n"
+        "Escribe el nombre del negocio:"
     )
     return ALLY_NAME
 
 def ally_name(update, context):
     context.user_data["business_name"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe el *nombre del dueño o administrador*:",
-        parse_mode="Markdown",
+        "Escribe el nombre del dueño o administrador:"
     )
     return ALLY_OWNER
 
 def ally_owner(update, context):
     context.user_data["owner_name"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe la *dirección del negocio*:",
-        parse_mode="Markdown",
+        "Escribe la dirección del negocio:"
     )
     return ALLY_ADDRESS
 
 def ally_address(update, context):
     context.user_data["address"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe la *ciudad del negocio*:",
-        parse_mode="Markdown",
+        "Escribe la ciudad del negocio:"
     )
     return ALLY_CITY
 
 def ally_city(update, context):
     context.user_data["city"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe el *barrio o sector del negocio*:",
-        parse_mode="Markdown",
+        "Escribe el barrio o sector del negocio:"
     )
     return ALLY_BARRIO
 
@@ -157,7 +150,6 @@ def ally_barrio(update, context):
     barrio = update.message.text.strip()
     user = update.effective_user
     db_user = get_user_by_telegram_id(user.id)
-
     business_name = context.user_data["business_name"]
     owner_name = context.user_data["owner_name"]
     address = context.user_data["address"]
@@ -172,71 +164,63 @@ def ally_barrio(update, context):
         barrio=barrio,
     )
 
-    update.message.reply_text(
-        f"✅ *Aliado registrado exitosamente*\n\n"
-        f"🏪 Negocio: {business_name}\n"
-        f"👤 Dueño: {owner_name}\n"
-        f"📍 Dirección: {address}, {barrio}, {city}\n\n"
-        "Tu estado es: *PENDING*",
-        parse_mode="Markdown",
+    texto = (
+        "✅ Aliado registrado exitosamente\n\n"
+        f"Negocio: {business_name}\n"
+        f"Dueño: {owner_name}\n"
+        f"Dirección: {address}, {barrio}, {city}\n\n"
+        "Tu estado es: PENDING"
     )
+    update.message.reply_text(texto)
 
 def soy_repartidor(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
-
     update.message.reply_text(
-        "🛵 *Registro de repartidor*\n\n"
-        "Escribe tu *nombre completo*:",
-        parse_mode="Markdown",
+        "🛵 Registro de repartidor\n\n"
+        "Escribe tu nombre completo:"
     )
     return COURIER_FULLNAME
 
 def courier_fullname(update, context):
     context.user_data["full_name"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe tu *número de identificación*:",
-        parse_mode="Markdown",
+        "Escribe tu número de identificación:"
     )
     return COURIER_IDNUMBER
-    
+
 def courier_idnumber(update, context):
     context.user_data["id_number"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe tu *número de celular*:",
-        parse_mode="Markdown",
+        "Escribe tu número de celular:"
     )
     return COURIER_PHONE
-    
+
 def courier_phone(update, context):
     context.user_data["phone"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe la *ciudad donde trabajas*:",
-        parse_mode="Markdown",
+        "Escribe la ciudad donde trabajas:"
     )
     return COURIER_CITY
-    
+
 def courier_city(update, context):
     context.user_data["city"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe el *barrio o sector principal donde trabajas*:",
-        parse_mode="Markdown",
+        "Escribe el barrio o sector principal donde trabajas:"
     )
     return COURIER_BARRIO
-    
+
 def courier_barrio(update, context):
     context.user_data["barrio"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe la *placa de tu moto* (o escribe 'ninguna' si no tienes):",
-        parse_mode="Markdown",
+        "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
     )
     return COURIER_PLATE
 
 def courier_plate(update, context):
     context.user_data["plate"] = update.message.text.strip()
     update.message.reply_text(
-        "Escribe el *tipo de moto* (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):",
-        parse_mode="Markdown",
+        "Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):"
     )
     return COURIER_BIKETYPE
     
