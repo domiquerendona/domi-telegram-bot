@@ -566,7 +566,7 @@ def aliados_pendientes(update, context):
             f"🆔 ID interno: {ally['id']}\n"
             f"🏪 Negocio: {ally['business_name']}\n"
             f"👤 Dueño: {ally['owner_name']}\n"
-            f"📞 Teléfono: {ally['phone']}\n”
+            f"📞 Teléfono: {ally['phone']}\n"
             f"📍 Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
             f"📌 Estado: {ally['status']}\n"
             "--------------------------\n"
