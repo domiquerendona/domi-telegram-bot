@@ -673,21 +673,24 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    # Comandos básicos
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
-    dp.add_handler(CommandHandler("soy_aliado", soy_aliado))
-    dp.add_handler(CommandHandler("soy_repartidor", soy_repartidor))
 
+    # Comandos administrativos
     dp.add_handler(CommandHandler("id", cmd_id))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel_conversacion))
 
-    dp.add_handler(ally_conv)
-    dp.add_handler(courier_conv)
-    dp.add_handler(nuevo_pedido_conv)
+    # Conversaciones completas
+    dp.add_handler(ally_conv)            # /soy_aliado
+    dp.add_handler(courier_conv)         # /soy_repartidor
+    dp.add_handler(nuevo_pedido_conv)    # /nuevo_pedido
 
+    # Iniciar el bot
     updater.start_polling()
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
