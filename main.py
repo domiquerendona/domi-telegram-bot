@@ -562,7 +562,7 @@ def aliados_pendientes(update, context):
 
     # Construir texto con la lista de aliados
     lineas = ["Aliados pendientes:\n"]
-for ally in allies:
+    for ally in allies:
     lineas.append(
         f"🆔 ID interno: {ally['id']}\n"
         f"🏪 Negocio: {ally['business_name']}\n"
