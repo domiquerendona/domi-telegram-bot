@@ -35,25 +35,14 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
-
-TOKEN = os.getenv("BOT_TOKEN")
-
 # Estados del registro de aliados
 ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
-# Estados para registro de repartidores
-(
-    COURIER_FULLNAME,
-    COURIER_IDNUMBER,
-    COURIER_PHONE,
-    COURIER_CITY,
-    COURIER_BARRIO,
-    COURIER_PLATE,
-    COURIER_BIKETYPE,
-    COURIER_CONFIRM,
-) = range(8)
+# Estados del registro de repartidores
+COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE = range(5, 11)
 
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(3)
+# Estados para crear un pedido
+PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(11, 14)
 
 def start(update, context):
     """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
@@ -609,32 +598,32 @@ courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
     states={
         COURIER_FULLNAME: [
-            MessageHandler(Filters.text & ~Filters.command, courier_fullname)
+            MessageHandler(filters.text & ~filters.command, courier_fullname)
         ],
         COURIER_IDNUMBER: [
-            MessageHandler(Filters.text & ~Filters.command, courier_idnumber)
+            MessageHandler(filters.text & ~filters.command, courier_idnumber)
         ],
         COURIER_PHONE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_phone)
+            MessageHandler(filters.text & ~filters.command, courier_phone)
         ],
         COURIER_CITY: [
-            MessageHandler(Filters.text & ~Filters.command, courier_city)
+            MessageHandler(filters.text & ~filters.command, courier_city)
         ],
         COURIER_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, courier_barrio)
+            MessageHandler(filters.text & ~filters.command, courier_barrio)
         ],
         COURIER_PLATE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_plate)
+            MessageHandler(filters.text & ~filters.command, courier_plate)
         ],
         COURIER_BIKETYPE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_biketype)
+            MessageHandler(filters.text & ~filters.command, courier_biketype)
         ],
         COURIER_CONFIRM: [
-            MessageHandler(Filters.text & ~Filters.command, courier_confirm)
+            MessageHandler(filters.text & ~filters.command, courier_confirm)
         ],
     },
-    fallbacks=[],
-    )
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
 
 # Conversación para /nuevo_pedido
 nuevo_pedido_conv = ConversationHandler(
