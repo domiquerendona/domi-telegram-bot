@@ -38,11 +38,11 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 # Estados del registro de aliados
 ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
-# Estados del registro de repartidores
-COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE = range(5, 11)
+# Estados para registro de repartidores
+COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE, COURIER_BIKETYPE, COURIER_CONFIRM = range(5, 13)
 
 # Estados para crear un pedido
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(11, 14)
+PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(13, 16)
 
 def start(update, context):
     """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
