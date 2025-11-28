@@ -211,20 +211,31 @@ def set_setting(key: str, value: str):
 
 # ---------- ALIADOS ----------
 
-def create_ally(user_id: int, business_name: str, owner_name: str,
-                address: str, city: str, barrio: str):
-    """Crea un aliado en estado PENDING y devuelve su id."""
+def create_ally(
+    user_id: int,
+    business_name: str,
+    owner_name: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str,
+):
+    """Crea un registro de aliado en la tabla allies y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO allies (user_id, business_name, owner_name, address, city, barrio, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'PENDING');
-    """, (user_id, business_name, owner_name, address, city, barrio))
-    conn.commit()
+
+    cur.execute(
+        """
+        INSERT INTO allies (user_id, business_name, owner_name, address, city, barrio, phone)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, business_name, owner_name, address, city, barrio, phone),
+    )
+
     ally_id = cur.lastrowid
+    conn.commit()
     conn.close()
     return ally_id
-
 
 def get_ally_by_user_id(user_id: int):
     """Devuelve el aliado más reciente asociado a un user_id."""
