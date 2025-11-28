@@ -264,13 +264,15 @@ def ally_barrio(update, context):
         )
         print("[DEBUG] Dirección principal creada")
 
-    except Exception as e:
-        print(f"[ERROR] Error al crear aliado o su dirección: {e}")
-        update.message.reply_text(
-            "Ocurrió un error al guardar tu registro de aliado. "
-            "Por favor, inténtalo de nuevo más tarde."
-        )
-        return ConversationHandler.END
+   except Exception as e:
+    print(f"[ERROR] Error al crear aliado o su dirección: {e}")
+
+    # Mostrar el error técnico directamente en Telegram
+    update.message.reply_text(
+        f"⚠️ Error técnico al guardar tu registro de aliado:\n{e}"
+    )
+
+    return ConversationHandler.END
 
     # Confirmar al usuario (SIN parse_mode)
     update.message.reply_text(
