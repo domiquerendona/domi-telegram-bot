@@ -671,8 +671,6 @@ def show_id(update, context):
     
 from telegram.ext import ConversationHandler 
 
-    return ConversationHandler.END
-
 def ally_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar aliados."""
     query = update.callback_query
