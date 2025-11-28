@@ -681,7 +681,7 @@ def get_courier_by_user_id(user_id: int):
     conn.close()
     return row
     
-    def get_pending_couriers():
+   def get_pending_couriers():
     """Devuelve todos los repartidores con estado PENDING."""
     conn = get_connection()
     cur = conn.cursor()
@@ -707,6 +707,7 @@ def get_courier_by_user_id(user_id: int):
     rows = cur.fetchall()
     conn.close()
     return rows
+
 
 
 def update_courier_status(courier_id: int, new_status: str):
