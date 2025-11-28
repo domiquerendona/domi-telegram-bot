@@ -221,23 +221,32 @@ def ally_barrio(update, context):
     if "ally_phone" not in context.user_data:
         phone = text
         context.user_data["ally_phone"] = phone
-        print(f"[DEBUG] ally_barrio (teléfono): user_id={user_id}, phone={phone}")
+        print(f"[DEBUG] ally_barrio (teléfono): user_id={user_id}, phone={phone!r}")
 
         update.message.reply_text("Escribe el barrio o sector del negocio:")
         # Seguimos en el mismo estado ALLY_BARRIO, pero ahora esperando el barrio
         return ALLY_BARRIO
 
-    # 2) Si ya hay teléfono guardado, ahora este mensaje es el barrio
+    # 2) Ya hay teléfono guardado, ahora este mensaje es el barrio
     barrio = text
+    context.user_data["barrio"] = barrio
     context.user_data["ally_barrio"] = barrio
-    print(f"[DEBUG] ally_barrio (barrio): user_id={user_id}, barrio={barrio}")
+    print(f"[DEBUG] ally_barrio (barrio): user_id={user_id}, barrio={barrio!r}")
 
-    # Recuperar todos los datos del aliado
-    business_name = context.user_data.get("ally_business_name")
-    owner_name = context.user_data.get("ally_owner_name")
-    address = context.user_data.get("ally_address")
-    city = context.user_data.get("ally_city")
+    # Recuperar todos los datos del aliado, usando las MISMAS claves que
+    # guardamos en ally_name, ally_owner, ally_address, ally_city
+    business_name = context.user_data.get("business_name")
+    owner_name = context.user_data.get("owner_name")
+    address = context.user_data.get("address")
+    city = context.user_data.get("city")
     phone = context.user_data.get("ally_phone")
+
+    print(
+        "[DEBUG] Datos antes de create_ally: "
+        f"user_id={user_id}, business_name={business_name!r}, "
+        f"owner_name={owner_name!r}, address={address!r}, "
+        f"city={city!r}, barrio={barrio!r}, phone={phone!r}"
+    )
 
     try:
         # Crear aliado en la tabla allies (incluyendo teléfono)
@@ -250,6 +259,7 @@ def ally_barrio(update, context):
             barrio=barrio,
             phone=phone,
         )
+
         print(f"[DEBUG] Aliado creado en la BD con id={ally_id}")
 
         # Crear dirección principal en ally_locations
@@ -259,29 +269,27 @@ def ally_barrio(update, context):
             address=address,
             city=city,
             barrio=barrio,
-            phone=None,       # si luego quieres, aquí también puedes usar phone
+            phone=phone,      # usamos el mismo teléfono del negocio
             is_default=True,
         )
+
         print("[DEBUG] Dirección principal creada")
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado o su dirección: {e}")
-        
-        # Mostrar error técnico directamente en Telegram
         update.message.reply_text(
             f"⚠️ Error técnico al guardar tu registro de aliado:\n{e}"
         )
-
         return ConversationHandler.END
 
-    # Confirmar al usuario (SIN parse_mode)
+    # Confirmar al usuario
     update.message.reply_text(
         "✅ Aliado registrado exitosamente!\n\n"
         f"🏪 Negocio: {business_name}\n"
         f"👤 Dueño: {owner_name}\n"
         f"📞 Teléfono: {phone}\n"
         f"📍 Dirección: {address}, {barrio}, {city}\n"
-        'Tu estado es "PENDING".'
+        "Tu estado es 'PENDING'."
     )
 
     # Limpiar datos temporales
