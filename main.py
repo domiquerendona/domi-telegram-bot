@@ -147,87 +147,125 @@ def pedido_direccion_cliente(update, context):
     update.message.reply_text(texto)
     return ConversationHandler.END
     
+# ----- REGISTRO DE ALIADO -----
+
 def soy_aliado(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
+    print(f"[DEBUG] soy_aliado llamado por user_id={user.id}")
     update.message.reply_text(
-        "🧑‍🍳 Registro de aliado\n\n"
+        "👨‍🍳 Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
     )
     return ALLY_NAME
 
+
 def ally_name(update, context):
-    context.user_data["business_name"] = update.message.text.strip()
-    update.message.reply_text(
-        "Escribe el nombre del dueño o administrador:"
-    )
+    texto = update.message.text.strip()
+    print(f"[DEBUG] ally_name, texto recibido = {texto!r}")
+    if not texto:
+        update.message.reply_text("El nombre del negocio no puede estar vacío. Escríbelo de nuevo:")
+        return ALLY_NAME
+
+    context.user_data["business_name"] = texto
+    update.message.reply_text("Escribe el nombre del dueño o administrador:")
     return ALLY_OWNER
 
+
 def ally_owner(update, context):
-    context.user_data["owner_name"] = update.message.text.strip()
-    update.message.reply_text(
-        "Escribe la dirección del negocio:"
-    )
+    texto = update.message.text.strip()
+    print(f"[DEBUG] ally_owner, texto recibido = {texto!r}")
+    if not texto:
+        update.message.reply_text("El nombre del dueño no puede estar vacío. Escríbelo de nuevo:")
+        return ALLY_OWNER
+
+    context.user_data["owner_name"] = texto
+    update.message.reply_text("Escribe la dirección del negocio:")
     return ALLY_ADDRESS
 
+
 def ally_address(update, context):
-    context.user_data["address"] = update.message.text.strip()
-    update.message.reply_text(
-        "Escribe la ciudad del negocio:"
-    )
+    texto = update.message.text.strip()
+    print(f"[DEBUG] ally_address, texto recibido = {texto!r}")
+    context.user_data["address"] = texto
+    update.message.reply_text("Escribe la ciudad del negocio:")
     return ALLY_CITY
 
+
 def ally_city(update, context):
-    context.user_data["city"] = update.message.text.strip()
-    update.message.reply_text(
-        "Escribe el barrio o sector del negocio:"
-    )
+    texto = update.message.text.strip()
+    print(f"[DEBUG] ally_city, texto recibido = {texto!r}")
+    context.user_data["city"] = texto
+    update.message.reply_text("Escribe el barrio o sector del negocio:")
     return ALLY_BARRIO
-    
-from telegram.ext import ConversationHandler  # ya está importado arriba, no lo borres
+
 
 def ally_barrio(update, context):
+    from db import create_ally, create_ally_location, get_user_by_telegram_id
+
     barrio = update.message.text.strip()
+    print(f"[DEBUG] ally_barrio, barrio recibido = {barrio!r}")
+
     user = update.effective_user
     db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        print(f"[ERROR] No se encontró usuario en BD para telegram_id={user.id}")
+        update.message.reply_text(
+            "Ocurrió un problema al validar tu usuario. "
+            "Por favor, intenta enviar /soy_aliado de nuevo."
+        )
+        return ConversationHandler.END
 
-    business_name = context.user_data["business_name"]
-    owner_name = context.user_data["owner_name"]
-    address = context.user_data["address"]
-    city = context.user_data["city"]
+    business_name = context.user_data.get("business_name", "")
+    owner_name = context.user_data.get("owner_name", "")
+    address = context.user_data.get("address", "")
+    city = context.user_data.get("city", "")
 
-    # 1) Crear el aliado en la tabla allies
-    ally_id = create_ally(
-        user_id=db_user["id"],
-        business_name=business_name,
-        owner_name=owner_name,
-        address=address,
-        city=city,
-        barrio=barrio,
-    )
+    print(f"[DEBUG] Datos para crear aliado: "
+          f"{business_name=}, {owner_name=}, {address=}, {city=}, {barrio=}")
 
-    # 2) Crear su dirección principal en ally_locations
-    create_ally_location(
-        ally_id=ally_id,
-        label="Sede principal",
-        address=address,
-        city=city,
-        barrio=barrio,
-        phone=None,
-        is_default=True,
-    )
+    try:
+        # 1) Crear el aliado en la tabla allies
+        ally_id = create_ally(
+            user_id=db_user["id"],
+            business_name=business_name,
+            owner_name=owner_name,
+            address=address,
+            city=city,
+            barrio=barrio,
+        )
+        print(f"[DEBUG] Ally creado con ID {ally_id}")
 
-    # 3) Confirmar al usuario
+        # 2) Crear su dirección principal
+        create_ally_location(
+            ally_id=ally_id,
+            label="Sede principal",
+            address=address,
+            city=city,
+            barrio=barrio,
+            phone=None,
+            is_default=True,
+        )
+        print("[DEBUG] Dirección principal creada")
+
+    except Exception as e:
+        print(f"[ERROR] Error al crear aliado o su dirección: {e}")
+        update.message.reply_text(
+            "Ocurrió un error al guardar tu registro de aliado. "
+            "Por favor, inténtalo de nuevo más tarde."
+        )
+        return ConversationHandler.END
+
+    # 3) Confirmar al usuario (SIN parse_mode)
     update.message.reply_text(
-        f"✅ *Aliado registrado exitosamente*\n\n"
+        "✅ Aliado registrado exitosamente!\n\n"
         f"🏪 Negocio: {business_name}\n"
         f"👤 Dueño: {owner_name}\n"
-        f"📍 Dirección: {address}, {barrio}, {city}\n\n"
-        "Tu estado es: *PENDING*",
-        parse_mode="Markdown",
+        f"📍 Dirección: {address}, {barrio}, {city}\n"
+        'Tu estado es "PENDING".'
     )
 
-    # Limpiar datos temporales y terminar la conversación
+    # Limpiar datos temporales
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -541,8 +579,10 @@ ally_conv = ConversationHandler(
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
     },
-    fallbacks=[],
-    )
+   fallbacks=[
+        CommandHandler("cancel", cancel_conversacion)
+    ],
+)
 
 courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
