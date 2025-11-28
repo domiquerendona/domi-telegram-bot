@@ -32,6 +32,8 @@ from db import (
     # Repartidores
     create_courier,
     get_courier_by_user_id,
+    get_pending_couriers,      # ← NUEVO
+    update_courier_status,     # ← NUEVO
     # Pedidos
     create_order,
     set_order_status,
@@ -595,6 +597,75 @@ def aliados_pendientes(update, context):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
+def repartidores_pendientes(update, context):
+    """Lista repartidores PENDING solo para el administrador."""
+    user_id = update.effective_user.id
+    print(f"[DEBUG] user_id que envía /repartidores_pendientes: {user_id}")
+    print(f"[DEBUG] ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
+
+    # Solo el admin puede usar este comando
+    if user_id != ADMIN_USER_ID:
+        update.message.reply_text("Este comando es solo para el administrador.")
+        return
+
+    # Intentar leer repartidores pendientes de la BD
+    try:
+        couriers = get_pending_couriers()
+    except Exception as e:
+        print(f"[ERROR] en get_pending_couriers(): {e}")
+        update.message.reply_text("Error interno al consultar repartidores pendientes.")
+        return
+
+    if not couriers:
+        update.message.reply_text("No hay repartidores pendientes por aprobar.")
+        return
+
+    # Enviar un mensaje por cada repartidor pendiente, con botones
+    for row in couriers:
+        (
+            courier_id,
+            user_id_db,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status,
+        ) = row
+
+        texto = (
+            "Repartidores pendientes:\n"
+            "------------------------------\n"
+            f"ID interno: {courier_id}\n"
+            f"Nombre: {full_name}\n"
+            f"Cédula: {id_number}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n"
+            f"Placa: {plate}\n"
+            f"Tipo de moto: {bike_type}\n"
+            f"Código interno: {code}\n"
+            f"Estado: {status}\n"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"Aprobar {courier_id}",
+                    callback_data=f"courier_approve_{courier_id}",
+                ),
+                InlineKeyboardButton(
+                    f"Rechazar {courier_id}",
+                    callback_data=f"courier_reject_{courier_id}",
+                ),
+            ]
+        ]
+
+        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
@@ -734,6 +805,56 @@ def ally_approval_callback(update, context):
     query.answer(f"Aliado {texto_estado}.")
     query.edit_message_text(f"Aliado {ally_id} ha sido {texto_estado.upper()}.")
 
+def courier_approval_callback(update, context):
+    """Maneja los botones de aprobar / rechazar repartidores."""
+    query = update.callback_query
+    data = query.data  # Ej: 'courier_approve_3' o 'courier_reject_5'
+    user_id = query.from_user.id
+
+    # Solo el administrador puede usar estos botones
+    if user_id != ADMIN_USER_ID:
+        query.answer("Solo el administrador puede usar estos botones.", show_alert=True)
+        return
+
+    if not data.startswith("courier_"):
+        query.answer("Comando no reconocido.")
+        return
+
+    partes = data.split("_")  # ["courier", "approve", "3"]
+    if len(partes) != 3:
+        query.answer("Datos de botón no válidos.", show_alert=True)
+        return
+
+    _, accion, courier_id_str = partes
+
+    try:
+        courier_id = int(courier_id_str)
+    except ValueError:
+        query.answer("ID de repartidor no válido.", show_alert=True)
+        return
+
+    if accion == "approve":
+        nuevo_estado = "APPROVED"
+        texto_estado = "APROBADO"
+    elif accion == "reject":
+        nuevo_estado = "REJECTED"
+        texto_estado = "RECHAZADO"
+    else:
+        query.answer("Acción no reconocida.", show_alert=True)
+        return
+
+    try:
+        update_courier_status(courier_id, nuevo_estado)
+    except Exception as e:
+        print(f"[ERROR] courier_approval_callback: {e}")
+        query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
+        return
+
+    # Confirmar al admin y editar el mensaje del botón
+    query.answer(f"Repartidor {texto_estado}.")
+    query.edit_message_text(f"Repartidor {courier_id} ha sido {texto_estado}.")
+
+
 def main():
     # Inicializar base de datos
     init_db()
@@ -756,6 +877,11 @@ def main():
     dp.add_handler(ally_conv)            # /soy_aliado
     dp.add_handler(courier_conv)         # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)    # /nuevo_pedido
+    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
+
+    # Callbacks de aprobación
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
 
     # Iniciar el bot
     updater.start_polling()
