@@ -666,6 +666,26 @@ def repartidores_pendientes(update, context):
 
         update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
+def pendientes(update, context):
+    """Menú rápido para ver registros pendientes."""
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_USER_ID:
+        update.message.reply_text("Solo el administrador puede usar este comando.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🟦 Aliados pendientes", callback_data="menu_aliados_pendientes"),
+            InlineKeyboardButton("🟧 Repartidores pendientes", callback_data="menu_repartidores_pendientes")
+        ]
+    ]
+
+    update.message.reply_text(
+        "Seleccione qué desea revisar:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
@@ -805,6 +825,22 @@ def ally_approval_callback(update, context):
     query.answer(f"Aliado {texto_estado}.")
     query.edit_message_text(f"Aliado {ally_id} ha sido {texto_estado.upper()}.")
 
+def pendientes_callback(update, context):
+    query = update.callback_query
+    data = query.data
+
+    if data == "menu_aliados_pendientes":
+        query.answer()
+        aliados_pendientes(update, context)
+        return
+
+    if data == "menu_repartidores_pendientes":
+        query.answer()
+        repartidores_pendientes(update, context)
+        return
+
+    query.answer("Opción no reconocida.", show_alert=True)
+
 def courier_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar repartidores."""
     query = update.callback_query
@@ -873,15 +909,16 @@ def main():
 
 
     # Conversaciones completas
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
     dp.add_handler(ally_conv)            # /soy_aliado
     dp.add_handler(courier_conv)         # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)    # /nuevo_pedido
     dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
-
+    dp.add_handler(CommandHandler("pendientes", pendientes))
     # Callbacks de aprobación
     dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
     dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
+    dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern="menu_"))
 
     # Iniciar el bot
     updater.start_polling()
