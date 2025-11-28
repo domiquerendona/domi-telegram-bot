@@ -11,7 +11,6 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     """Crea las tablas básicas si no existen."""
     conn = get_connection()
@@ -28,22 +27,22 @@ def init_db():
         );
     """)
 
-  # Tabla de aliados (negocios)
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS allies (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        business_name TEXT NOT NULL,
-        owner_name TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        address TEXT NOT NULL,
-        city TEXT NOT NULL,
-        barrio TEXT NOT NULL,
-        status TEXT DEFAULT 'PENDING',
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    );
-""")
+    # Tabla de aliados (negocios)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS allies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            business_name TEXT NOT NULL,
+            owner_name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    """)
 
     # Tabla de repartidores
     cur.execute("""
@@ -56,14 +55,14 @@ cur.execute("""
             city TEXT NOT NULL,
             barrio TEXT NOT NULL,
             plate TEXT,
-            bike_type TEXT,
-            code TEXT UNIQUE,
-            status TEXT DEFAULT 'PENDING',  -- PENDING / APPROVED / BLOCKED
-            balance INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now')),
+            status TEXT DEFAULT 'PENDING',
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
+
+    conn.commit()
+    conn.close()
 
     # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
     cur.execute("""
