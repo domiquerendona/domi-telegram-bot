@@ -28,21 +28,22 @@ def init_db():
         );
     """)
 
-    # Tabla de aliados (negocios)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS allies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            business_name TEXT NOT NULL,
-            owner_name TEXT NOT NULL,
-            address TEXT NOT NULL,
-            city TEXT NOT NULL,
-            barrio TEXT NOT NULL,
-            status TEXT DEFAULT 'PENDING',
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    """)
+  # Tabla de aliados (negocios)
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS allies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        business_name TEXT NOT NULL,
+        owner_name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        address TEXT NOT NULL,
+        city TEXT NOT NULL,
+        barrio TEXT NOT NULL,
+        status TEXT DEFAULT 'PENDING',
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+""")
 
     # Tabla de repartidores
     cur.execute("""
