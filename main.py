@@ -639,7 +639,7 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel)],
+    fallbacks=[],
 )
 
 def botones_aliados(update, context):
