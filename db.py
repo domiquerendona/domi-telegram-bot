@@ -253,23 +253,26 @@ def get_ally_by_id(ally_id: int):
     conn.close()
     return row
 
-def get_pending_allies(limit: int = 20):
-    """
-    Devuelve una lista de aliados con estado PENDING,
-    ordenados del más reciente al más antiguo.
-    """
+def get_pending_allies():
+    """Devuelve todos los aliados con estado PENDING."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
+
+    cur.execute("""
+        SELECT
+            id,
+            business_name,
+            owner_name,
+            address,
+            city,
+            barrio,
+            phone,
+            status
         FROM allies
         WHERE status = 'PENDING'
-        ORDER BY id DESC
-        LIMIT ?;
-        """,
-        (limit,),
-    )
+        ORDER BY created_at ASC
+    """)
+
     rows = cur.fetchall()
     conn.close()
     return rows
