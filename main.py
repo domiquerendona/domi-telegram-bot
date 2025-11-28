@@ -575,9 +575,7 @@ ally_conv = ConversationHandler(
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
     },
-   fallbacks=[
-        CommandHandler("cancel", cancel_conversacion)
-    ],
+   fallbacks=[],
 )
 
 courier_conv = ConversationHandler(
