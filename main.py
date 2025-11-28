@@ -26,6 +26,7 @@ from db import (
     # Aliados
     create_ally,
     get_ally_by_user_id,
+    get_pending_allies,
     # Direcciones de aliados
     create_ally_location,
     get_ally_locations,
