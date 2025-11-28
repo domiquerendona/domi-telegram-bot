@@ -671,15 +671,6 @@ def show_id(update, context):
     
 from telegram.ext import ConversationHandler 
 
-def cancel_conversacion(update, context):
-    """Cancelar cualquier conversación en curso."""
-    # Borramos los datos temporales de este usuario
-    context.user_data.clear()
-
-    update.message.reply_text(
-        "Has cancelado la operación actual. Puedes volver al menú con /menu."
-    )
-
     return ConversationHandler.END
 
 def ally_approval_callback(update, context):
