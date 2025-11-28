@@ -735,7 +735,8 @@ def main():
     # Comandos administrativos
     dp.add_handler(CommandHandler("id", cmd_id))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-    dp.add_handler(CommandHandler("cancel", cancel_conversacion))
+    dp.add_handler(CommandHandler("cancel", cancel))
+
 
     # Conversaciones completas
     dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
