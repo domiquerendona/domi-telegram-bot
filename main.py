@@ -1,10 +1,23 @@
 import os
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    ConversationHandler,
-    MessageHandler,
-    Filters
+from db import (
+    init_db,
+    ensure_user,
+    get_user_by_telegram_id,
+    get_setting,
+    set_setting,
+    # Aliados
+    create_ally,
+    get_ally_by_user_id,
+    get_pending_allies,
+    get_ally_by_id,
+    update_ally_status,
+    # Direcciones de aliados
+    create_ally_location,
+    get_ally_locations,
+    set_default_ally_location,
+    unset_default_ally_location,
+    update_ally_location,
+    delete_ally_location,
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
