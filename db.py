@@ -224,13 +224,18 @@ def create_ally(
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        INSERT INTO allies (user_id, business_name, owner_name, address, city, barrio, phone)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (user_id, business_name, owner_name, address, city, barrio, phone),
-    )
+    cur.execute("""
+    INSERT INTO allies (user_id, business_name, owner_name, address, city, barrio, phone)
+    VALUES (?, ?, ?, ?, ?, ?, ?);
+""", (
+    user_id,
+    business_name,
+    owner_name,
+    address,
+    city,
+    barrio,
+    phone
+))
 
     ally_id = cur.lastrowid
     conn.commit()
