@@ -26,7 +26,6 @@ from db import (
     create_ally_location,
     get_ally_locations,
     set_default_ally_location,
-    unset_default_ally_location,
     update_ally_location,
     delete_ally_location,
 )
