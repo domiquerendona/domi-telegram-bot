@@ -680,3 +680,43 @@ def get_courier_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+    
+    def get_pending_couriers():
+    """Devuelve todos los repartidores con estado PENDING."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status
+        FROM couriers
+        WHERE status = 'PENDING'
+        ORDER BY id ASC;
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def update_courier_status(courier_id: int, new_status: str):
+    """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE couriers SET status = ? WHERE id = ?;",
+        (new_status, courier_id),
+    )
+    conn.commit()
+    conn.close()
+
