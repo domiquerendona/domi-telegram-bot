@@ -25,9 +25,22 @@ from db import (
     # Direcciones de aliados
     create_ally_location,
     get_ally_locations,
+    get_default_ally_location,
     set_default_ally_location,
     update_ally_location,
     delete_ally_location,
+    # Repartidores
+    create_courier,
+    get_courier_by_user_id,
+    # Pedidos
+    create_order,
+    set_order_status,
+    assign_order_to_courier,
+    get_order_by_id,
+    get_orders_by_ally,
+    get_orders_by_courier,
+    # Calificaciones
+    add_courier_rating,
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
