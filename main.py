@@ -547,14 +547,13 @@ def aliados_pendientes(update, context):
         return
 
     # Intentar leer aliados pendientes de la BD
-    try:
-        allies = get_pending_allies()
-    except Exception as e:
-        print(f"Error en aliados_pendientes: {e}")
-        update.message.reply_text(
-            "Ocurrió un error al leer la lista de aliados pendientes."
-        )
-        return
+   try:
+    allies = get_pending_allies()
+except Exception as e:
+    update.message.reply_text(
+        f"⚠️ Error interno en aliados_pendientes:\n{e}"
+    )
+    return
 
     if not allies:
         update.message.reply_text("No hay aliados pendientes por aprobar.")
