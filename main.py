@@ -524,10 +524,6 @@ def pedido_telefono_cliente(update, context):
         "Por ahora /nuevo_pedido está en construcción.\n"
         "Hemos guardado el nombre y el teléfono del cliente."
     )
-
-    # Terminamos la conversación de /nuevo_pedido
-    from telegram.ext import ConversationHandler
-    return ConversationHandler.END
     
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el administrador."""
@@ -658,6 +654,19 @@ def show_id(update, context):
     """Muestra el ID de Telegram del usuario que envía el comando."""
     user_id = update.effective_user.id
     update.message.reply_text(f"Tu ID de usuario es: {user_id}")
+    
+from telegram.ext import ConversationHandler 
+
+def cancel_conversacion(update, context):
+    """Cancelar cualquier conversación en curso."""
+    # Borramos los datos temporales de este usuario
+    context.user_data.clear()
+
+    update.message.reply_text(
+        "Has cancelado la operación actual. Puedes volver al menú con /menu."
+    )
+
+    return ConversationHandler.END
 
 def main():
     # Inicializar base de datos
@@ -673,6 +682,7 @@ def main():
 
     dp.add_handler(CommandHandler("id", cmd_id))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+    dp.add_handler(CommandHandler("cancel", cancel_conversacion))
 
     dp.add_handler(ally_conv)
     dp.add_handler(courier_conv)
