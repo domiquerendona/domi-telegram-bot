@@ -7,6 +7,11 @@ from telegram.ext import (
     Filters
 )
 
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
+RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 
@@ -529,6 +534,12 @@ def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el administrador."""
     user_id = update.effective_user.id
 
+    # DEBUG: mostrar los IDs que el bot está usando
+    update.message.reply_text(
+        f"user_id que envía el comando: {user_id}\n"
+        f"ADMIN_USER_ID configurado: {ADMIN_USER_ID}"
+    )
+
     # Solo el admin puede usar este comando
     if user_id != ADMIN_USER_ID:
         update.message.reply_text("Este comando es solo para el administrador.")
@@ -538,7 +549,6 @@ def aliados_pendientes(update, context):
     try:
         allies = get_pending_allies()
     except Exception as e:
-        # Esto evita que el bot se caiga si hay un error en la BD
         print(f"Error en aliados_pendientes: {e}")
         update.message.reply_text(
             "Ocurrió un error al leer la lista de aliados pendientes."
@@ -559,12 +569,11 @@ def aliados_pendientes(update, context):
             f"Teléfono: {ally['phone']}\n"
             f"Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
             f"Estado: {ally['status']}\n"
-            "------------------------------"
+            "------------------------"
         )
 
     texto = "\n".join(lineas)
     update.message.reply_text(texto)
-
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
