@@ -44,7 +44,7 @@ def init_db():
         );
     """)
 
-    # Tabla de repartidores
+# Tabla de repartidores
     cur.execute("""
         CREATE TABLE IF NOT EXISTS couriers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,11 +55,48 @@ def init_db():
             city TEXT NOT NULL,
             barrio TEXT NOT NULL,
             plate TEXT,
+            bike_type TEXT,
+            code TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             status TEXT DEFAULT 'PENDING',
+            balance REAL DEFAULT 0,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
+
+    # --- Migración para bases ya existentes ---
+
+    import sqlite3  # déjalo aquí solo si no estaba antes arriba
+
+    # Asegurar columna bike_type
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN bike_type TEXT")
+        print("[DB] Columna bike_type añadida a couriers.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            pass
+        else:
+            raise
+
+    # Asegurar columna code
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN code TEXT")
+        print("[DB] Columna code añadida a couriers.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            pass
+        else:
+            raise
+
+    # Asegurar columna balance
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN balance REAL DEFAULT 0")
+        print("[DB] Columna balance añadida a couriers.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            pass
+        else:
+            raise
 
     # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
     cur.execute("""
