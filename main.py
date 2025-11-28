@@ -233,20 +233,17 @@ def ally_barrio(update, context):
     context.user_data["ally_barrio"] = barrio
     print(f"[DEBUG] ally_barrio (barrio): user_id={user_id}, barrio={barrio!r}")
 
-    # Recuperar todos los datos del aliado, usando las MISMAS claves que
-    # guardamos en ally_name, ally_owner, ally_address, ally_city
-    business_name = context.user_data.get("business_name")
-    owner_name = context.user_data.get("owner_name")
-    address = context.user_data.get("address")
-    city = context.user_data.get("city")
-    phone = context.user_data.get("ally_phone")
+# Recuperar todos los datos del aliado
+        business_name = context.user_data.get("business_name")
+        owner_name = context.user_data.get("owner_name")
+        address = context.user_data.get("address")
+        city = context.user_data.get("city")
+        barrio = context.user_data.get("ally_barrio")
+        phone = context.user_data.get("ally_phone")
 
-    print(
-        "[DEBUG] Datos antes de create_ally: "
-        f"user_id={user_id}, business_name={business_name!r}, "
-        f"owner_name={owner_name!r}, address={address!r}, "
-        f"city={city!r}, barrio={barrio!r}, phone={phone!r}"
-    )
+        print(f"[DEBUG] Datos para create_ally: user_id={user_id}, "
+              f"business_name={business_name}, owner_name={owner_name}, "
+              f"address={address}, city={city}, barrio={barrio}, phone={phone}")
 
     try:
         # Crear aliado en la tabla allies (incluyendo teléfono)
