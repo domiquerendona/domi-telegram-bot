@@ -598,28 +598,28 @@ courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
     states={
         COURIER_FULLNAME: [
-            MessageHandler(filters.text & ~filters.command, courier_fullname)
+            MessageHandler(Filters.text & ~Filters.command, courier_fullname)
         ],
         COURIER_IDNUMBER: [
-            MessageHandler(filters.text & ~filters.command, courier_idnumber)
+            MessageHandler(Filters.text & ~Filters.command, courier_idnumber)
         ],
         COURIER_PHONE: [
-            MessageHandler(filters.text & ~filters.command, courier_phone)
+            MessageHandler(Filters.text & ~Filters.command, courier_phone)
         ],
         COURIER_CITY: [
-            MessageHandler(filters.text & ~filters.command, courier_city)
+            MessageHandler(Filters.text & ~Filters.command, courier_city)
         ],
         COURIER_BARRIO: [
-            MessageHandler(filters.text & ~filters.command, courier_barrio)
+            MessageHandler(Filters.text & ~Filters.command, courier_barrio)
         ],
         COURIER_PLATE: [
-            MessageHandler(filters.text & ~filters.command, courier_plate)
+            MessageHandler(Filters.text & ~Filters.command, courier_plate)
         ],
         COURIER_BIKETYPE: [
-            MessageHandler(filters.text & ~filters.command, courier_biketype)
+            MessageHandler(Filters.text & ~Filters.command, courier_biketype)
         ],
         COURIER_CONFIRM: [
-            MessageHandler(filters.text & ~filters.command, courier_confirm)
+            MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
