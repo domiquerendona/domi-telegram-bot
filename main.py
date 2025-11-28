@@ -535,12 +535,6 @@ def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el administrador."""
     user_id = update.effective_user.id
 
-    # DEBUG: mostrar los IDs que el bot está usando
-    update.message.reply_text(
-        f"user_id que envía el comando: {user_id}\n"
-        f"ADMIN_USER_ID configurado: {ADMIN_USER_ID}"
-    )
-
     # Solo el admin puede usar este comando
     if user_id != ADMIN_USER_ID:
         update.message.reply_text("Este comando es solo para el administrador.")
@@ -550,9 +544,8 @@ def aliados_pendientes(update, context):
     try:
         allies = get_pending_allies()
     except Exception as e:
-        update.message.reply_text(
-            f"⚠️ Error interno en aliados_pendientes:\n{e}"
-        )
+        print(f"[ERROR] aliados_pendientes: {e}")
+        update.message.reply_text("Ocurrió un error al leer la lista de aliados pendientes.")
         return
 
     if not allies:
@@ -561,19 +554,35 @@ def aliados_pendientes(update, context):
 
     # Construir texto con la lista de aliados
     lineas = ["Aliados pendientes:\n"]
+    botones = []
+
     for ally in allies:
         lineas.append(
-            f"🆔 ID interno: {ally['id']}\n"
-            f"🏪 Negocio: {ally['business_name']}\n"
-            f"👤 Dueño: {ally['owner_name']}\n"
-            f"📞 Teléfono: {ally['phone']}\n"
-            f"📍 Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
-            f"📌 Estado: {ally['status']}\n"
-            "--------------------------\n"
+            "-----------------------------\n"
+            f"ID interno: {ally['id']}\n"
+            f"Negocio: {ally['business_name']}\n"
+            f"Dueño: {ally['owner_name']}\n"
+            f"Teléfono: {ally['phone']}\n"
+            f"Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
+            f"Estado: {ally['status']}\n"
         )
 
+        # Botones para este aliado
+        botones.append([
+            InlineKeyboardButton(
+                f"Aprobar {ally['id']}",
+                callback_data=f"ally_approve_{ally['id']}"
+            ),
+            InlineKeyboardButton(
+                f"Rechazar {ally['id']}",
+                callback_data=f"ally_reject_{ally['id']}"
+            ),
+        ])
+
     texto = "\n".join(lineas)
-    update.message.reply_text(texto)
+    keyboard = InlineKeyboardMarkup(botones)
+
+    update.message.reply_text(texto, reply_markup=keyboard)
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
@@ -675,6 +684,52 @@ def cancel_conversacion(update, context):
 
     return ConversationHandler.END
 
+def ally_approval_callback(update, context):
+    """Maneja los botones de aprobar / rechazar aliados."""
+    query = update.callback_query
+    data = query.data  # Ej: "ally_approve_3" o "ally_reject_5"
+    user_id = query.from_user.id
+
+    # Solo el administrador puede usar estos botones
+    if user_id != ADMIN_USER_ID:
+        query.answer("Solo el administrador puede usar estos botones.", show_alert=True)
+        return
+
+    partes = data.split("_")
+    if len(partes) != 3:
+        query.answer("Datos de botón no válidos.")
+        return
+
+    _, accion, ally_id_str = partes
+
+    try:
+        ally_id = int(ally_id_str)
+    except ValueError:
+        query.answer("ID de aliado no válido.")
+        return
+
+    if accion == "approve":
+        nuevo_estado = "APPROVED"
+        texto_estado = "aprobado"
+    elif accion == "reject":
+        nuevo_estado = "REJECTED"
+        texto_estado = "rechazado"
+    else:
+        query.answer("Acción no reconocida.")
+        return
+
+    # Actualizar en la BD
+    try:
+        update_ally_status(ally_id, nuevo_estado)
+    except Exception as e:
+        print(f"[ERROR] ally_approval_callback: {e}")
+        query.answer("Error al actualizar el estado del aliado.", show_alert=True)
+        return
+
+    # Confirmar al admin y editar el mensaje
+    query.answer(f"Aliado {texto_estado}.")
+    query.edit_message_text(f"Aliado {ally_id} ha sido {texto_estado.upper()}.")
+
 def main():
     # Inicializar base de datos
     init_db()
@@ -692,6 +747,7 @@ def main():
     dp.add_handler(CommandHandler("cancel", cancel_conversacion))
 
     # Conversaciones completas
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
     dp.add_handler(ally_conv)            # /soy_aliado
     dp.add_handler(courier_conv)         # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)    # /nuevo_pedido
