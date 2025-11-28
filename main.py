@@ -560,18 +560,18 @@ def aliados_pendientes(update, context):
         update.message.reply_text("No hay aliados pendientes por aprobar.")
         return
 
-    # Construir texto con la lista de aliados
+   # Construir texto con la lista de aliados
     lineas = ["Aliados pendientes:\n"]
     for ally in allies:
-    lineas.append(
-        f"🆔 ID interno: {ally['id']}\n"
-        f"🏪 Negocio: {ally['business_name']}\n"
-        f"👤 Dueño: {ally['owner_name']}\n"
-        # f"📞 Teléfono: {ally['phone']}\n"  # <- QUITAMOS ESTA LÍNEA POR AHORA
-        f"📍 Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
-        f"📌 Estado: {ally['status']}\n"
-        "---------------------------"
-    )
+        lineas.append(
+            f"🆔 ID interno: {ally['id']}\n"
+            f"🏪 Negocio: {ally['business_name']}\n"
+            f"👤 Dueño: {ally['owner_name']}\n"
+            # f"📞 Teléfono: {ally['phone']}\n"  # <- ESTA LA DEJAMOS COMENTADA
+            f"📍 Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
+            f"📌 Estado: {ally['status']}\n"
+            "------------------------"
+        )
 
     texto = "\n".join(lineas)
     update.message.reply_text(texto)
