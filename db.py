@@ -668,7 +668,6 @@ def create_courier(
     conn.close()
     return courier_id
 
-
 def get_courier_by_user_id(user_id: int):
     """Devuelve el repartidor más reciente asociado a un user_id."""
     conn = get_connection()
@@ -681,7 +680,7 @@ def get_courier_by_user_id(user_id: int):
     conn.close()
     return row
     
-  def get_pending_couriers():
+def get_pending_couriers():
     """Devuelve todos los repartidores con estado PENDING."""
     conn = get_connection()
     cur = conn.cursor()
