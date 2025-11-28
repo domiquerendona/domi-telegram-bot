@@ -622,7 +622,7 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[],
 )
 
 # Conversación para /nuevo_pedido
