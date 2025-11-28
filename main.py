@@ -1,4 +1,15 @@
 import os
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    ConversationHandler,
+    MessageHandler,
+    Filters,
+    CallbackQueryHandler,
+)
+
 from db import (
     init_db,
     ensure_user,
@@ -15,6 +26,7 @@ from db import (
     create_ally_location,
     get_ally_locations,
     set_default_ally_location,
+    unset_default_ally_location,
     update_ally_location,
     delete_ally_location,
 )
@@ -24,41 +36,6 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
-
-# Importar funciones de base de datos
-
-from db import (
-    init_db,
-    ensure_user,
-    get_user_by_telegram_id,
-    get_setting,
-    set_setting,
-    # Aliados
-    create_ally,
-    get_ally_by_user_id,
-    get_pending_allies,
-    # Direcciones de aliados
-    create_ally_location,
-    get_ally_locations,
-    get_default_ally_location,
-    set_default_ally_location,
-    update_ally_location,
-    delete_ally_location,
-    # Repartidores
-    create_courier,
-    get_courier_by_user_id,
-    # Pedidos
-    create_order,
-    set_order_status,
-    assign_order_to_courier,
-    get_order_by_id,
-    get_orders_by_ally,
-    get_orders_by_courier,
-    # Calificaciones
-    add_courier_rating,
-)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
