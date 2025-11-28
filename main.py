@@ -547,29 +547,29 @@ def aliados_pendientes(update, context):
         return
 
     # Intentar leer aliados pendientes de la BD
-   try:
-    allies = get_pending_allies()
-except Exception as e:
-    update.message.reply_text(
-        f"⚠️ Error interno en aliados_pendientes:\n{e}"
-    )
-    return
+    try:
+        allies = get_pending_allies()
+    except Exception as e:
+        update.message.reply_text(
+            f"⚠️ Error interno en aliados_pendientes:\n{e}"
+        )
+        return
 
     if not allies:
         update.message.reply_text("No hay aliados pendientes por aprobar.")
         return
 
-   # Construir texto con la lista de aliados
+    # Construir texto con la lista de aliados
     lineas = ["Aliados pendientes:\n"]
     for ally in allies:
         lineas.append(
             f"🆔 ID interno: {ally['id']}\n"
             f"🏪 Negocio: {ally['business_name']}\n"
             f"👤 Dueño: {ally['owner_name']}\n"
-            # f"📞 Teléfono: {ally['phone']}\n"  # <- ESTA LA DEJAMOS COMENTADA
+            f"📞 Teléfono: {ally['phone']}\n"
             f"📍 Dirección: {ally['address']}, {ally['barrio']}, {ally['city']}\n"
             f"📌 Estado: {ally['status']}\n"
-            "------------------------"
+            "--------------------------\n"
         )
 
     texto = "\n".join(lineas)
