@@ -61,9 +61,6 @@ def init_db():
         );
     """)
 
-    conn.commit()
-    conn.close()
-
     # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ally_locations (
@@ -102,7 +99,7 @@ def init_db():
             customer_address TEXT,
             customer_city TEXT,
             customer_barrio TEXT,
-
+    
             -- Dirección de recogida
             pickup_location_id INTEGER,   -- referencia a ally_locations
 
