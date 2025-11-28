@@ -219,23 +219,36 @@ def create_ally(
     city: str,
     barrio: str,
     phone: str,
-):
-    """Crea un registro de aliado en la tabla allies y devuelve su id."""
+) -> int:
+    """Crea un aliado en la tabla allies y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
-    INSERT INTO allies (user_id, business_name, owner_name, address, city, barrio, phone)
-    VALUES (?, ?, ?, ?, ?, ?, ?);
-""", (
-    user_id,
-    business_name,
-    owner_name,
-    address,
-    city,
-    barrio,
-    phone
-))
+    # DEBUG: ver qué datos se están guardando
+    print("[DEBUG] create_ally() datos recibidos:")
+    print(f"  user_id={user_id}")
+    print(f"  business_name={business_name!r}")
+    print(f"  owner_name={owner_name!r}")
+    print(f"  address={address!r}")
+    print(f"  city={city!r}")
+    print(f"  barrio={barrio!r}")
+    print(f"  phone={phone!r}")
+
+    cur.execute(
+        """
+        INSERT INTO allies (
+            user_id,
+            business_name,
+            owner_name,
+            address,
+            city,
+            barrio,
+            phone
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?);
+        """,
+        (user_id, business_name, owner_name, address, city, barrio, phone),
+    )
 
     ally_id = cur.lastrowid
     conn.commit()
