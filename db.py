@@ -283,7 +283,6 @@ def get_pending_allies():
     """Devuelve todos los aliados con estado PENDING."""
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
         SELECT
             id,
@@ -296,19 +295,23 @@ def get_pending_allies():
             status
         FROM allies
         WHERE status = 'PENDING'
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC;
     """)
-
     rows = cur.fetchall()
     conn.close()
     return rows
+
 
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE allies SET status = ? WHERE id = ?;",
+        """
+        UPDATE allies
+        SET status = ?
+        WHERE id = ?;
+        """,
         (status, ally_id),
     )
     conn.commit()
