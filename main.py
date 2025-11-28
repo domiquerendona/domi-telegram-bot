@@ -199,13 +199,21 @@ def ally_address(update, context):
 
 def ally_city(update, context):
     """Guarda la ciudad y pide el teléfono de contacto del negocio."""
+    texto = update.message.text.strip()
     user_id = update.effective_user.id
-    city = update.message.text.strip()
-    context.user_data["ally_city"] = city
-    print(f"[DEBUG] ally_city: user_id={user_id}, city={city}")
+
+    if not texto:
+        update.message.reply_text("La ciudad del negocio no puede estar vacía. Escríbela de nuevo:")
+        return ALLY_CITY
+
+    city = texto
+
+    # 🔹 Guardar la ciudad en user_data
+    context.user_data["city"] = city
+    print(f"[DEBUG] ally_city: user_id={user_id}, city={city!r}")
 
     update.message.reply_text("Escribe el teléfono de contacto del negocio:")
-    # Nos quedamos en el mismo estado ALLY_BARRIO para el siguiente paso (teléfono)
+    # Pasamos al estado donde pedimos teléfono/barrio
     return ALLY_BARRIO
 
 def ally_barrio(update, context):
