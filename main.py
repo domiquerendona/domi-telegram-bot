@@ -550,13 +550,14 @@ def pedido_telefono_cliente(update, context):
     
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el administrador."""
+    message = update.effective_message
     user_id = update.effective_user.id
-    print(f"user_id que envía el comando: {user_id}")
-    print(f"ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
+    print(f"[DEBUG] user_id que envía el comando: {user_id}")
+    print(f"[DEBUG] ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
 
     # Solo el admin puede usar este comando
     if user_id != ADMIN_USER_ID:
-        update.message.reply_text("Este comando es solo para el administrador.")
+        message.reply_text("Este comando es solo para el administrador.")
         return
 
     # Intentar leer aliados pendientes de la BD
@@ -564,11 +565,11 @@ def aliados_pendientes(update, context):
         allies = get_pending_allies()
     except Exception as e:
         print(f"[ERROR] en get_pending_allies(): {e}")
-        update.message.reply_text("⚠️ Error interno al consultar aliados pendientes.")
+        message.reply_text("⚠️ Error interno al consultar aliados pendientes.")
         return
 
     if not allies:
-        update.message.reply_text("No hay aliados pendientes por aprobar.")
+        message.reply_text("No hay aliados pendientes por aprobar.")
         return
 
     # Enviar un mensaje por cada aliado pendiente, con botones
@@ -577,7 +578,7 @@ def aliados_pendientes(update, context):
 
         texto = (
             "Aliados pendientes:\n"
-            "-----------------------------\n"
+            "------------------------\n"
             f"ID interno: {ally_id}\n"
             f"Negocio: {business_name}\n"
             f"Dueño: {owner_name}\n"
@@ -587,25 +588,26 @@ def aliados_pendientes(update, context):
 
         keyboard = [
             [
-                InlineKeyboardButton("✅ Aprobar",  callback_data=f"ally_approve_{ally_id}"),
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"ally_approve_{ally_id}"),
                 InlineKeyboardButton("❌ Rechazar", callback_data=f"ally_reject_{ally_id}"),
             ]
         ]
 
-        update.message.reply_text(
+        message.reply_text(
             texto,
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
 def repartidores_pendientes(update, context):
     """Lista repartidores PENDING solo para el administrador."""
+    message = update.effective_message
     user_id = update.effective_user.id
     print(f"[DEBUG] user_id que envía /repartidores_pendientes: {user_id}")
     print(f"[DEBUG] ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
 
     # Solo el admin puede usar este comando
     if user_id != ADMIN_USER_ID:
-        update.message.reply_text("Este comando es solo para el administrador.")
+        message.reply_text("Este comando es solo para el administrador.")
         return
 
     # Intentar leer repartidores pendientes de la BD
@@ -613,11 +615,11 @@ def repartidores_pendientes(update, context):
         couriers = get_pending_couriers()
     except Exception as e:
         print(f"[ERROR] en get_pending_couriers(): {e}")
-        update.message.reply_text("Error interno al consultar repartidores pendientes.")
+        message.reply_text("⚠️ Error interno al consultar repartidores pendientes.")
         return
 
     if not couriers:
-        update.message.reply_text("No hay repartidores pendientes por aprobar.")
+        message.reply_text("No hay repartidores pendientes por aprobar.")
         return
 
     # Enviar un mensaje por cada repartidor pendiente, con botones
@@ -638,7 +640,7 @@ def repartidores_pendientes(update, context):
 
         texto = (
             "Repartidores pendientes:\n"
-            "------------------------------\n"
+            "------------------------\n"
             f"ID interno: {courier_id}\n"
             f"Nombre: {full_name}\n"
             f"Cédula: {id_number}\n"
@@ -664,7 +666,10 @@ def repartidores_pendientes(update, context):
             ]
         ]
 
-        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        message.reply_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         
 def admin_menu(update, context):
     """Menú principal de administración."""
