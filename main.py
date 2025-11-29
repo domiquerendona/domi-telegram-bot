@@ -665,6 +665,80 @@ def repartidores_pendientes(update, context):
         ]
 
         update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+def admin_menu(update, context):
+    """Menú principal de administración."""
+    user = update.effective_user
+    user_id = user.id
+
+    # Solo el administrador puede usar este comando
+    if user_id != ADMIN_USER_ID:
+        update.message.reply_text("Este comando es solo para el administrador.")
+        return
+
+    texto = (
+        "Menú de administración.\n"
+        "¿Qué deseas revisar?"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
+        [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
+        [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
+        [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
+        [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
+        [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+    ]
+
+    update.message.reply_text(
+        texto,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    
+def admin_menu_callback(update, context):
+    """Maneja los botones del menú de administración."""
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    # Solo el administrador puede usar estos botones
+    if user_id != ADMIN_USER_ID:
+        query.answer("Solo el administrador puede usar este menú.", show_alert=True)
+        return
+
+    # Botón: Aliados pendientes
+    if data == "admin_aliados_pendientes":
+        query.answer()
+        # Reutilizamos la función existente
+        aliados_pendientes(update, context)
+        return
+
+    # Botón: Repartidores pendientes
+    if data == "admin_repartidores_pendientes":
+        query.answer()
+        # Reutilizamos la función existente
+        repartidores_pendientes(update, context)
+        return
+
+    # Botones aún no implementados (placeholders)
+    if data == "admin_pedidos":
+        query.answer("La sección de pedidos aún no está implementada.")
+        return
+
+    if data == "admin_config":
+        query.answer("La sección de configuraciones aún no está implementada.")
+        return
+
+    if data == "admin_tarifas":
+        query.answer("La sección de tarifas aún no está implementada.")
+        return
+
+    if data == "admin_finanzas":
+        query.answer("La sección de finanzas aún no está implementada.")
+        return
+
+    # Por si llega algo raro
+    query.answer("Opción no reconocida.", show_alert=True)
 
 def pendientes(update, context):
     """Menú rápido para ver registros pendientes."""
@@ -919,6 +993,17 @@ def main():
     dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
     dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
     dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern="menu_"))
+    # Callbacks de aprobación
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="ally_"))
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="courier_"))
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="admin_"))  # ← NUEVO
+
+    # Comandos administrativos
+    dp.add_handler(CommandHandler("id", cmd_id))
+    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
+    dp.add_handler(CommandHandler("cancel", cancel))
+    dp.add_handler(CommandHandler("admin", admin_menu))   # ← NUEVO
 
     # Iniciar el bot
     updater.start_polling()
