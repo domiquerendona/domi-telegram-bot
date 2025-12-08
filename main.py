@@ -283,6 +283,34 @@ def ally_barrio(update, context):
             is_default=True,
         )
         print("[DEBUG] Dirección principal creada")
+        
+# 🔔 Notificar al administrador que hay un nuevo aliado pendiente
+try:
+    context.bot.send_message(
+        chat_id=ADMIN_USER_ID,
+        text=(
+            "🔔 *Nuevo registro de ALIADO pendiente*\n\n"
+            f"• Negocio: {business_name}\n"
+            f"• Dueño: {owner_name}\n"
+            f"• Teléfono: {phone}\n"
+            f"• Ciudad: {city}\n"
+            f"• Barrio: {barrio}\n\n"
+            "Usa /aliados_pendientes o el menú /admin para revisarlo."
+        )
+    )
+    
+except Exception as e:
+    print("Error enviando notificación de nuevo aliado:", e)
+
+# CONFIRMAR AL USUARIO
+update.message.reply_text(
+    "✓ Aliado registrado exitosamente!\n\n"
+    f"• Negocio: {business_name}\n"
+    f"• Dueño: {owner_name}\n"
+    f"• Teléfono: {phone}\n"
+    f"• Dirección: {address}, {barrio}, {city}\n"
+    "Tu estado es *PENDING*."
+)
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado o su dirección: {e}")
@@ -441,6 +469,29 @@ def courier_confirm(update, context):
     context.user_data.clear()
     return ConversationHandler.END
     
+  # Notificar al administrador de nuevo aliado pendiente
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ALIADO pendiente:\n\n"
+                "Negocio: {}\n"
+                "Propietario: {}\n"
+                "Teléfono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n\n"
+                "Usa /aliados_pendientes o el menú /admin para revisarlo."
+            ).format(
+                business_name,   # usa las mismas variables que ya usas al crear el aliado
+                owner_name,
+                ally_phone,
+                city,
+                barrio,
+            )
+        )
+    except Exception as e:
+        print("Error enviando notificación de nuevo aliado:", e)
+  
 def nuevo_pedido(update, context):
     user = update.effective_user
 
@@ -887,11 +938,13 @@ def ally_approval_callback(update, context):
         query.answer("Solo el administrador puede usar estos botones.", show_alert=True)
         return
 
-    # Separar la data del botón
-    # ally_approve_3  -> ["ally", "approve", "3"]
-    partes = data.split("_")
+    if not data.startswith("ally_"):
+        query.answer("Comando no reconocido.", show_alert=True)
+        return
+
+    partes = data.split("_")    # ["ally", "approve", "3"]
     if len(partes) != 3:
-        query.answer("Datos de botón no válidos.")
+        query.answer("Datos de botón no válidos.", show_alert=True)
         return
 
     _, accion, ally_id_str = partes
@@ -900,32 +953,94 @@ def ally_approval_callback(update, context):
     try:
         ally_id = int(ally_id_str)
     except ValueError:
-        query.answer("ID de aliado no válido.")
+        query.answer("ID de aliado no válido.", show_alert=True)
         return
 
-    # Definir estado según el botón
+    # -------------------------------------------------------------
+    # APROBAR ALIADO
+    # -------------------------------------------------------------
     if accion == "approve":
         nuevo_estado = "APPROVED"
-        texto_estado = "aprobado"
+
+        # Actualizar en la BD
+        try:
+            update_ally_status(ally_id, nuevo_estado)
+        except Exception as e:
+            print(f"[ERROR] ally_approval_callback (approve): {e}")
+            query.answer(f"Error al actualizar el estado del aliado:\n{e}", show_alert=True)
+            return
+
+        # Obtener datos del aliado
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado después de actualizar.")
+            return
+
+        # id, user_id, business_name, owner_name, phone, address, city, barrio, status
+        ally_user_id = ally[1]
+        business_name = ally[2]
+
+        # Notificar al aliado
+        try:
+            context.bot.send_message(
+                chat_id=ally_user_id,
+                text=(
+                    "Tu registro como aliado '{}' ha sido APROBADO.\n"
+                    "Ya puedes usar el bot para crear pedidos."
+                ).format(business_name)
+            )
+        except Exception as e:
+            print("Error notificando aliado aprobado:", e)
+
+        # Confirmar al admin
+        query.edit_message_text("El aliado '{}' ha sido APROBADO.".format(business_name))
+        return
+
+    # -------------------------------------------------------------
+    # RECHAZAR ALIADO
+    # -------------------------------------------------------------
     elif accion == "reject":
         nuevo_estado = "REJECTED"
-        texto_estado = "rechazado"
+
+        # Actualizar en la BD
+        try:
+            update_ally_status(ally_id, nuevo_estado)
+        except Exception as e:
+            print(f"[ERROR] ally_approval_callback (reject): {e}")
+            query.answer(f"Error al actualizar el estado del aliado:\n{e}", show_alert=True)
+            return
+
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado después de actualizar.")
+            return
+
+        ally_user_id = ally[1]
+        business_name = ally[2]
+
+        # Notificar al aliado
+        try:
+            context.bot.send_message(
+                chat_id=ally_user_id,
+                text=(
+                    "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
+                    "Si crees que es un error, comunícate con el administrador."
+                ).format(business_name)
+            )
+        except Exception as e:
+            print("Error notificando aliado rechazado:", e)
+
+        # Confirmar al admin
+        query.edit_message_text("El aliado '{}' ha sido RECHAZADO.".format(business_name))
+        return
+
+    # -------------------------------------------------------------
+    # ACCIÓN NO RECONOCIDA
+    # -------------------------------------------------------------
     else:
-        query.answer("Acción no reconocida.")
+        query.answer("Acción no reconocida.", show_alert=True)
         return
-
-    # Actualizar en la BD
-    try:
-        update_ally_status(ally_id, nuevo_estado)
-    except Exception as e:
-        print(f"[ERROR] ally_approval_callback: {e}")
-        query.answer(f"Error al actualizar el estado del aliado:\n{e}", show_alert=True)
-        return
-
-    # Confirmar al admin y editar el mensaje del botón
-    query.answer(f"Aliado {texto_estado}.")
-    query.edit_message_text(f"Aliado {ally_id} ha sido {texto_estado.upper()}.")
-
+        
 def pendientes_callback(update, context):
     query = update.callback_query
     data = query.data
@@ -941,11 +1056,11 @@ def pendientes_callback(update, context):
         return
 
     query.answer("Opción no reconocida.", show_alert=True)
-
+    
 def courier_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar repartidores."""
     query = update.callback_query
-    data = query.data  # Ej: 'courier_approve_3' o 'courier_reject_5'
+    data = query.data  # Ej: "courier_approve_3" o "courier_reject_5"
     user_id = query.from_user.id
 
     # Solo el administrador puede usar estos botones
@@ -954,7 +1069,7 @@ def courier_approval_callback(update, context):
         return
 
     if not data.startswith("courier_"):
-        query.answer("Comando no reconocido.")
+        query.answer("Comando no reconocido.", show_alert=True)
         return
 
     partes = data.split("_")  # ["courier", "approve", "3"]
@@ -970,26 +1085,87 @@ def courier_approval_callback(update, context):
         query.answer("ID de repartidor no válido.", show_alert=True)
         return
 
+    # -------------------------------------------------------------
+    # APROBAR REPARTIDOR
+    # -------------------------------------------------------------
     if accion == "approve":
         nuevo_estado = "APPROVED"
-        texto_estado = "APROBADO"
+
+        # Actualizar en la BD
+        try:
+            update_courier_status(courier_id, nuevo_estado)
+        except Exception as e:
+            print(f"[ERROR] courier_approval_callback (approve): {e}")
+            query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
+            return
+
+        # Obtener datos del repartidor
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor después de actualizar.")
+            return
+
+        # id, user_id, full_name, id_number, phone, city, barrio, plate, bike_type, code, status
+        courier_user_id = courier[1]
+        full_name = courier[2]
+
+        # Notificar al repartidor
+        try:
+            context.bot.send_message(
+                chat_id=courier_user_id,
+                text="Tu registro como repartidor ha sido APROBADO. Bienvenido, {}.".format(full_name)
+            )
+        except Exception as e:
+            print("Error notificando repartidor aprobado:", e)
+
+        # Confirmar al admin
+        query.edit_message_text("El repartidor '{}' ha sido APROBADO.".format(full_name))
+        return
+
+    # -------------------------------------------------------------
+    # RECHAZAR REPARTIDOR
+    # -------------------------------------------------------------
     elif accion == "reject":
         nuevo_estado = "REJECTED"
-        texto_estado = "RECHAZADO"
+
+        # Actualizar en la BD
+        try:
+            update_courier_status(courier_id, nuevo_estado)
+        except Exception as e:
+            print(f"[ERROR] courier_approval_callback (reject): {e}")
+            query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
+            return
+
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor después de actualizar.")
+            return
+
+        courier_user_id = courier[1]
+        full_name = courier[2]
+
+        # Notificar al repartidor
+        try:
+            context.bot.send_message(
+                chat_id=courier_user_id,
+                text=(
+                    "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
+                    "Si crees que es un error, comunícate con el administrador."
+                ).format(full_name)
+            )
+        except Exception as e:
+            print("Error notificando repartidor rechazado:", e)
+
+        # Confirmar al admin
+        query.edit_message_text("El repartidor '{}' ha sido RECHAZADO.".format(full_name))
+        return
+
+    # -------------------------------------------------------------
+    # ACCIÓN NO RECONOCIDA
+    # -------------------------------------------------------------
     else:
         query.answer("Acción no reconocida.", show_alert=True)
         return
-
-    try:
-        update_courier_status(courier_id, nuevo_estado)
-    except Exception as e:
-        print(f"[ERROR] courier_approval_callback: {e}")
-        query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
-        return
-
-    # Confirmar al admin y editar el mensaje del botón
-    query.answer(f"Repartidor {texto_estado}.")
-    query.edit_message_text(f"Repartidor {courier_id} ha sido {texto_estado}.")
 
 def admin_configuraciones(update, context):
     user_id = update.effective_user.id
