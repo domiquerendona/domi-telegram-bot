@@ -58,6 +58,10 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
+def es_admin(user_id: int) -> bool:
+    """Devuelve True si el user_id es el administrador."""
+    return user_id == ADMIN_USER_ID
+
 # Estados del registro de aliados
 ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
