@@ -749,6 +749,29 @@ def get_courier_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+    
+def get_courier_by_id(courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id,
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status
+        FROM couriers
+        WHERE id = ?;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 def update_courier_status(courier_id: int, new_status: str):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
