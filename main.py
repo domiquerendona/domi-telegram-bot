@@ -1037,12 +1037,14 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for ally in allies:
-            button_text = "ID {} - {} ({})".format(
-                ally["id"],
-                ally["business_name"],
-                ally["status"],
-            )
-            callback_data = "config_borrar_ally_{}".format(ally["id"])
+            # Según el SELECT de get_all_allies:
+            # id, user_id, business_name, owner_name, phone, address, city, barrio, status
+            ally_id = ally[0]
+            business_name = ally[2]
+            status = ally[8]
+
+            button_text = "ID {} - {} ({})".format(ally_id, business_name, status)
+            callback_data = "config_borrar_ally_{}".format(ally_id)
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
@@ -1084,12 +1086,14 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for courier in couriers:
-            button_text = "ID {} - {} ({})".format(
-                courier["id"],
-                courier["full_name"],
-                courier["status"],
-            )
-            callback_data = "config_borrar_courier_{}".format(courier["id"])
+            # Según el SELECT de get_all_couriers:
+            # id, user_id, full_name, id_number, phone, city, barrio, plate, bike_type, code, status
+            courier_id = courier[0]
+            full_name = courier[2]
+            status = courier[10]
+
+            button_text = "ID {} - {} ({})".format(courier_id, full_name, status)
+            callback_data = "config_borrar_courier_{}".format(courier_id)
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
@@ -1100,7 +1104,7 @@ def admin_config_callback(update, context):
         )
         return
 
-    # 5) Confirmar borrado del repartidor
+    # 5) Confirmar borrado de repartidor
     if data.startswith("config_borrar_courier_"):
         courier_id = int(data.split("_")[-1])
 
