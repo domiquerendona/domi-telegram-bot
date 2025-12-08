@@ -718,3 +718,55 @@ def update_courier_status(courier_id: int, new_status: str):
     conn.commit()
     conn.close()
 
+def get_totales_registros():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM allies;")
+    total_allies = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM couriers;")
+    total_couriers = cur.fetchone()[0]
+
+    conn.close()
+    return total_allies, total_couriers
+
+
+def delete_ally(ally_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM allies WHERE id = ?;", (ally_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_courier(courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM couriers WHERE id = ?;", (courier_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio, status):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE allies
+        SET business_name = ?, owner_name = ?, phone = ?, address = ?, city = ?, barrio = ?, status = ?
+        WHERE id = ?
+    """, (business_name, owner_name, phone, address, city, barrio, status, ally_id))
+    conn.commit()
+    conn.close()
+
+
+def update_courier(courier_id, full_name, phone, bike_type, status):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE couriers
+        SET full_name = ?, phone = ?, bike_type = ?, status = ?
+        WHERE id = ?
+    """, (full_name, phone, bike_type, status, courier_id))
+    conn.commit()
+    conn.close()
