@@ -337,7 +337,77 @@ def get_pending_allies():
     rows = cur.fetchall()
     conn.close()
     return rows
+    
+def get_all_allies():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id,
+            user_id,
+            business_name,
+            owner_name,
+            phone,
+            address,
+            city,
+            barrio,
+            status
+        FROM allies
+        ORDER BY id ASC;
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
+def get_pending_couriers():
+    """Devuelve todos los repartidores con estado PENDING."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status
+        FROM couriers
+        WHERE status = 'PENDING'
+        ORDER BY id ASC;
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_all_couriers():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id,
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status
+        FROM couriers
+        ORDER BY id ASC;
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
@@ -679,33 +749,6 @@ def get_courier_by_user_id(user_id: int):
     row = cur.fetchone()
     conn.close()
     return row
-    
-def get_pending_couriers():
-    """Devuelve todos los repartidores con estado PENDING."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            id,
-            user_id,
-            full_name,
-            id_number,
-            phone,
-            city,
-            barrio,
-            plate,
-            bike_type,
-            code,
-            status
-        FROM couriers
-        WHERE status = 'PENDING'
-        ORDER BY id ASC;
-        """
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 def update_courier_status(courier_id: int, new_status: str):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
