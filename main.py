@@ -224,43 +224,42 @@ def ally_city(update, context):
 def ally_barrio(update, context):
     """
     Este estado se usa dos veces:
-    1) Primero para guardar el teléfono del negocio.
+    1) Para guardar el teléfono del negocio.
     2) Luego para guardar el barrio y crear el aliado en la BD.
     """
+    from telegram.ext import ConversationHandler
+
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # 1) Si aún NO hemos guardado el teléfono, este mensaje es el teléfono
+    # 1) PRIMER MENSAJE → teléfono
     if "ally_phone" not in context.user_data:
         phone = text
         context.user_data["ally_phone"] = phone
         print(f"[DEBUG] ally_barrio (teléfono): user_id={user_id}, phone={phone}")
 
         update.message.reply_text("Escribe el barrio o sector del negocio:")
-        # Seguimos en el mismo estado ALLY_BARRIO, pero ahora esperando el barrio
         return ALLY_BARRIO
 
-    # 2) Si ya hay teléfono guardado, ahora este mensaje es el barrio
+    # 2) SEGUNDO MENSAJE → barrio
     barrio = text
     context.user_data["ally_barrio"] = barrio
     print(f"[DEBUG] ally_barrio (barrio): user_id={user_id}, barrio={barrio}")
 
-    # Recuperar todos los datos del aliado
+    # Recuperar datos
     business_name = context.user_data.get("business_name")
     owner_name = context.user_data.get("owner_name")
     address = context.user_data.get("address")
     city = context.user_data.get("city")
-    barrio = context.user_data.get("ally_barrio")
     phone = context.user_data.get("ally_phone")
 
     print(
-        f"[DEBUG] Datos para create_ally: user_id={user_id}, "
-        f"business_name={business_name}, owner_name={owner_name}, "
-        f"address={address}, city={city}, barrio={barrio}, phone={phone}"
+        f"[DEBUG] Datos para create_ally: user_id={user_id}, business_name={business_name}, "
+        f"owner_name={owner_name}, address={address}, city={city}, barrio={barrio}, phone={phone}"
     )
 
     try:
-        # Crear aliado en la tabla allies (incluyendo teléfono)
+        # --- Crear aliado ---
         ally_id = create_ally(
             user_id=user_id,
             business_name=business_name,
@@ -272,66 +271,55 @@ def ally_barrio(update, context):
         )
         print(f"[DEBUG] Aliado creado en la BD con id={ally_id}")
 
-        # Crear dirección principal en ally_locations
+        # --- Crear dirección principal ---
         create_ally_location(
             ally_id=ally_id,
             label="Principal",
             address=address,
             city=city,
             barrio=barrio,
-            phone=None,  # si luego quieres, aquí también puedes usar phone
+            phone=None,
             is_default=True,
         )
         print("[DEBUG] Dirección principal creada")
-        
-# 🔔 Notificar al administrador que hay un nuevo aliado pendiente
-try:
-    context.bot.send_message(
-        chat_id=ADMIN_USER_ID,
-        text=(
-            "🔔 *Nuevo registro de ALIADO pendiente*\n\n"
-            f"• Negocio: {business_name}\n"
-            f"• Dueño: {owner_name}\n"
-            f"• Teléfono: {phone}\n"
-            f"• Ciudad: {city}\n"
-            f"• Barrio: {barrio}\n\n"
-            "Usa /aliados_pendientes o el menú /admin para revisarlo."
-        )
-    )
-    
-except Exception as e:
-    print("Error enviando notificación de nuevo aliado:", e)
 
-# CONFIRMAR AL USUARIO
-update.message.reply_text(
-    "✓ Aliado registrado exitosamente!\n\n"
-    f"• Negocio: {business_name}\n"
-    f"• Dueño: {owner_name}\n"
-    f"• Teléfono: {phone}\n"
-    f"• Dirección: {address}, {barrio}, {city}\n"
-    "Tu estado es *PENDING*."
-)
+        # --- Notificar al administrador ---
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de ALIADO pendiente:\n\n"
+                    f"Negocio: {business_name}\n"
+                    f"Dueño: {owner_name}\n"
+                    f"Teléfono: {phone}\n"
+                    f"Ciudad: {city}\n"
+                    f"Barrio: {barrio}\n\n"
+                    "Usa /aliados_pendientes o el menú /admin para revisarlo."
+                )
+            )
+        except Exception as e:
+            print("Error enviando notificación al administrador:", e)
+
+        # --- Confirmación al usuario ---
+        update.message.reply_text(
+            "Aliado registrado exitosamente!\n\n"
+            f"Negocio: {business_name}\n"
+            f"Dueño: {owner_name}\n"
+            f"Teléfono: {phone}\n"
+            f"Dirección: {address}, {barrio}, {city}\n"
+            "Tu estado es PENDING."
+        )
+
+        # Limpiar datos
+        context.user_data.clear()
+        return ConversationHandler.END
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado o su dirección: {e}")
         update.message.reply_text(
-            f"⚠️ Error técnico al guardar tu registro de aliado:\n{e}"
+            "Error técnico al guardar tu registro. Intenta más tarde."
         )
         return ConversationHandler.END
-
-    # Confirmar al usuario (SIN parse_mode)
-    update.message.reply_text(
-        "✅ Aliado registrado exitosamente!\n\n"
-        f"🏪 Negocio: {business_name}\n"
-        f"👤 Dueño: {owner_name}\n"
-        f"📞 Teléfono: {phone}\n"
-        f"📍 Dirección: {address}, {barrio}, {city}\n"
-        "Tu estado es 'PENDING'."
-    )
-
-    # Limpiar datos temporales
-    context.user_data.clear()
-    return ConversationHandler.END
 
 def soy_repartidor(update, context):
     user = update.effective_user
