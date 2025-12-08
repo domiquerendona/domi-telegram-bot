@@ -22,6 +22,9 @@ from db import (
     get_pending_allies,
     get_ally_by_id,
     update_ally_status,
+    get_all_allies,
+    update_ally,
+    delete_ally,
     # Direcciones de aliados
     create_ally_location,
     get_ally_locations,
@@ -33,7 +36,10 @@ from db import (
     create_courier,
     get_courier_by_user_id,
     get_pending_couriers,      # ← NUEVO
-    update_courier_status,     # ← NUEVO
+    update_courier_status,     # ← NUEVO 
+    get_all_couriers,
+    update_courier,
+    delete_courier,
     # Pedidos
     create_order,
     set_order_status,
@@ -41,6 +47,8 @@ from db import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    # HERRAMIENTAS ADMINISTRATIVAS NUEVAS
+    get_totales_registros,
     # Calificaciones
     add_courier_rating,
 )
@@ -969,6 +977,145 @@ def courier_approval_callback(update, context):
     query.answer(f"Repartidor {texto_estado}.")
     query.edit_message_text(f"Repartidor {courier_id} ha sido {texto_estado}.")
 
+def admin_configuraciones(update, context):
+    user_id = update.effective_user.id
+
+    if not es_admin(user_id):
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
+        [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
+        [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(
+        "Configuraciones de administración. ¿Qué deseas hacer?",
+        reply_markup=reply_markup
+    )
+    
+def admin_config_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    # Verificación de administrador
+    if not es_admin(user_id):
+        query.answer("No tienes permisos para esto.")
+        return
+
+    # 1) Ver totales de registros
+    if data == "config_totales":
+        total_allies, total_couriers = get_totales_registros()
+        texto = (
+            "Resumen de registros:\n\n"
+            "Aliados registrados: {}\n"
+            "Repartidores registrados: {}"
+        ).format(total_allies, total_couriers)
+
+        query.edit_message_text(texto)
+        return
+
+    # 2) Gestionar aliados (listar para poder borrarlos)
+    if data == "config_gestion_aliados":
+        allies = get_all_allies()
+
+        if not allies:
+            query.edit_message_text("No hay aliados registrados en este momento.")
+            return
+
+        keyboard = []
+        for ally in allies:
+            button_text = "ID {} - {} ({})".format(
+                ally["id"],
+                ally["business_name"],
+                ally["status"],
+            )
+            callback_data = "config_borrar_ally_{}".format(ally["id"])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+        keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
+
+        query.edit_message_text(
+            "Aliados registrados. Toca uno para eliminarlo.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # 3) Confirmar borrado de aliado
+    if data.startswith("config_borrar_ally_"):
+        ally_id = int(data.split("_")[-1])
+
+        keyboard = [
+            [InlineKeyboardButton("Sí, eliminar", callback_data="config_confirm_delete_ally_{}".format(ally_id))],
+            [InlineKeyboardButton("Cancelar", callback_data="config_gestion_aliados")],
+        ]
+
+        query.edit_message_text(
+            "¿Seguro que deseas eliminar al aliado {}?".format(ally_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_confirm_delete_ally_"):
+        ally_id = int(data.split("_")[-1])
+        delete_ally(ally_id)
+        query.edit_message_text("El aliado {} ha sido eliminado.".format(ally_id))
+        return
+
+    # 4) Gestionar repartidores (listar para poder borrarlos)
+    if data == "config_gestion_repartidores":
+        couriers = get_all_couriers()
+
+        if not couriers:
+            query.edit_message_text("No hay repartidores registrados en este momento.")
+            return
+
+        keyboard = []
+        for courier in couriers:
+            button_text = "ID {} - {} ({})".format(
+                courier["id"],
+                courier["full_name"],
+                courier["status"],
+            )
+            callback_data = "config_borrar_courier_{}".format(courier["id"])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+        keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
+
+        query.edit_message_text(
+            "Repartidores registrados. Toca uno para eliminarlo.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # 5) Confirmar borrado del repartidor
+    if data.startswith("config_borrar_courier_"):
+        courier_id = int(data.split("_")[-1])
+
+        keyboard = [
+            [InlineKeyboardButton("Sí, eliminar", callback_data="config_confirm_delete_courier_{}".format(courier_id))],
+            [InlineKeyboardButton("Cancelar", callback_data="config_gestion_repartidores")],
+        ]
+
+        query.edit_message_text(
+            "¿Seguro que deseas eliminar al repartidor {}?".format(courier_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_confirm_delete_courier_"):
+        courier_id = int(data.split("_")[-1])
+        delete_courier(courier_id)
+        query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
+        return
+
+    # 6) Cerrar menú de configuraciones
+    if data == "config_cerrar":
+        query.edit_message_text("Menú de configuraciones cerrado.")
+        return
 
 def main():
     # Inicializar base de datos
@@ -985,7 +1132,11 @@ def main():
     dp.add_handler(CommandHandler("id", cmd_id))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel))
+# Menú de administración (botones del teclado de admin)
+    dp.add_handler(MessageHandler(Filters.regex("^⚙ Configuraciones$"), admin_configuraciones))
 
+    # Callbacks del menú de configuraciones de admin
+    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern="^config_"))
 
     # Conversaciones completas
     dp.add_handler(ally_conv)            # /soy_aliado
