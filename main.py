@@ -739,8 +739,17 @@ def admin_menu_callback(update, context):
         return
 
     if data == "admin_config":
-        query.answer("La sección de configuraciones aún no está implementada.")
-        return
+        keyboard = [
+        [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
+        [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
+        [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+    ]
+
+    query.edit_message_text(
+        "Configuraciones de administración. ¿Qué deseas hacer?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return
 
     if data == "admin_tarifas":
         query.answer("La sección de tarifas aún no está implementada.")
@@ -1132,8 +1141,6 @@ def main():
     dp.add_handler(CommandHandler("id", cmd_id))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel))
-# Menú de administración (botones del teclado de admin)
-    dp.add_handler(MessageHandler(Filters.regex("^⚙ Configuraciones$"), admin_configuraciones))
 
     # Callbacks del menú de configuraciones de admin
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern="^config_"))
