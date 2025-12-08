@@ -35,6 +35,7 @@ from db import (
     # Repartidores
     create_courier,
     get_courier_by_user_id,
+    get_courier_by_id,
     get_pending_couriers,      # ← NUEVO
     update_courier_status,     # ← NUEVO 
     get_all_couriers,
@@ -1031,7 +1032,7 @@ def admin_config_callback(update, context):
         query.edit_message_text(texto)
         return
 
-    # 2) Gestionar aliados (listar para poder borrarlos)
+    # 2) Gestionar aliados (listar)
     if data == "config_gestion_aliados":
         allies = get_all_allies()
 
@@ -1041,46 +1042,75 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for ally in allies:
-            # Según el SELECT de get_all_allies:
+            # Según get_all_allies:
             # id, user_id, business_name, owner_name, phone, address, city, barrio, status
             ally_id = ally[0]
             business_name = ally[2]
             status = ally[8]
 
             button_text = "ID {} - {} ({})".format(ally_id, business_name, status)
-            callback_data = "config_borrar_ally_{}".format(ally_id)
+            callback_data = "config_ver_ally_{}".format(ally_id)
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
 
         query.edit_message_text(
-            "Aliados registrados. Toca uno para eliminarlo.",
+            "Aliados registrados. Toca uno para ver detalle.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    # 3) Confirmar borrado de aliado
-    if data.startswith("config_borrar_ally_"):
+    # 2.1) Ver detalle de aliado
+    if data.startswith("config_ver_ally_"):
         ally_id = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id)
+
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        # Mismos índices que arriba:
+        # id, user_id, business_name, owner_name, phone, address, city, barrio, status
+        texto = (
+            "Detalle del aliado:\n\n"
+            "ID: {id}\n"
+            "Negocio: {business_name}\n"
+            "Propietario: {owner_name}\n"
+            "Teléfono: {phone}\n"
+            "Dirección: {address}\n"
+            "Ciudad: {city}\n"
+            "Barrio: {barrio}\n"
+            "Estado: {status}"
+        ).format(
+            id=ally[0],
+            business_name=ally[2],
+            owner_name=ally[3],
+            phone=ally[4],
+            address=ally[5],
+            city=ally[6],
+            barrio=ally[7],
+            status=ally[8],
+        )
 
         keyboard = [
-            [InlineKeyboardButton("Sí, eliminar", callback_data="config_confirm_delete_ally_{}".format(ally_id))],
-            [InlineKeyboardButton("Cancelar", callback_data="config_gestion_aliados")],
+            [InlineKeyboardButton("❌ Eliminar aliado", callback_data="config_confirm_delete_ally_{}".format(ally_id))],
+            [InlineKeyboardButton("⬅ Volver a la lista", callback_data="config_gestion_aliados")],
         ]
 
         query.edit_message_text(
-            "¿Seguro que deseas eliminar al aliado {}?".format(ally_id),
+            texto,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
+    # 2.2) Confirmar borrado de aliado
     if data.startswith("config_confirm_delete_ally_"):
         ally_id = int(data.split("_")[-1])
         delete_ally(ally_id)
         query.edit_message_text("El aliado {} ha sido eliminado.".format(ally_id))
         return
 
-    # 4) Gestionar repartidores (listar para poder borrarlos)
+    # 3) Gestionar repartidores (listar)
     if data == "config_gestion_repartidores":
         couriers = get_all_couriers()
 
@@ -1090,46 +1120,75 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for courier in couriers:
-            # Según el SELECT de get_all_couriers:
+            # Según get_all_couriers:
             # id, user_id, full_name, id_number, phone, city, barrio, plate, bike_type, code, status
             courier_id = courier[0]
             full_name = courier[2]
             status = courier[10]
 
             button_text = "ID {} - {} ({})".format(courier_id, full_name, status)
-            callback_data = "config_borrar_courier_{}".format(courier_id)
+            callback_data = "config_ver_courier_{}".format(courier_id)
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
 
         query.edit_message_text(
-            "Repartidores registrados. Toca uno para eliminarlo.",
+            "Repartidores registrados. Toca uno para ver detalle.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    # 5) Confirmar borrado de repartidor
-    if data.startswith("config_borrar_courier_"):
+    # 3.1) Ver detalle de repartidor
+    if data.startswith("config_ver_courier_"):
         courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+
+        texto = (
+            "Detalle del repartidor:\n\n"
+            "ID: {id}\n"
+            "Nombre: {full_name}\n"
+            "Documento: {id_number}\n"
+            "Teléfono: {phone}\n"
+            "Ciudad: {city}\n"
+            "Barrio: {barrio}\n"
+            "Placa: {plate}\n"
+            "Tipo de moto: {bike_type}\n"
+            "Estado: {status}"
+        ).format(
+            id=courier[0],
+            full_name=courier[2],
+            id_number=courier[3],
+            phone=courier[4],
+            city=courier[5],
+            barrio=courier[6],
+            plate=courier[7],
+            bike_type=courier[8],
+            status=courier[10],
+        )
 
         keyboard = [
-            [InlineKeyboardButton("Sí, eliminar", callback_data="config_confirm_delete_courier_{}".format(courier_id))],
-            [InlineKeyboardButton("Cancelar", callback_data="config_gestion_repartidores")],
+            [InlineKeyboardButton("❌ Eliminar repartidor", callback_data="config_confirm_delete_courier_{}".format(courier_id))],
+            [InlineKeyboardButton("⬅ Volver a la lista", callback_data="config_gestion_repartidores")],
         ]
 
         query.edit_message_text(
-            "¿Seguro que deseas eliminar al repartidor {}?".format(courier_id),
+            texto,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
+    # 3.2) Confirmar borrado de repartidor
     if data.startswith("config_confirm_delete_courier_"):
         courier_id = int(data.split("_")[-1])
         delete_courier(courier_id)
         query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
         return
 
-    # 6) Cerrar menú de configuraciones
+    # 4) Cerrar menú de configuraciones
     if data == "config_cerrar":
         query.edit_message_text("Menú de configuraciones cerrado.")
         return
