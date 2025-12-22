@@ -63,10 +63,69 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
+    
+# --- Ajustes de esquema (migraciones simples) ---
+# Agregar columna para pedidos gratis globales si no existe
+cur.execute("PRAGMA table_info(couriers)")
+couriers_cols = [row[1] for row in cur.fetchall()]
+if "free_orders_remaining" not in couriers_cols:
+    cur.execute("ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15")
+    
+    # (Recomendado) Asegurar que los existentes queden con 15 si estaban NULL
+cur.execute("""
+UPDATE couriers
+SET free_orders_remaining = 15
+WHERE free_orders_remaining IS NULL
+""")
+
+    # --- Vínculo Repartidores por Administrador Local ---
+cur.execute("""
+CREATE TABLE IF NOT EXISTS admin_couriers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    courier_id INTEGER NOT NULL,
+
+    status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / BLOCKED
+    is_active INTEGER DEFAULT 0,            -- 1 = equipo activo para este repartidor (opcional)
+    balance REAL DEFAULT 0,                 -- saldo del repartidor con ESTE admin
+    commission_pct REAL DEFAULT NULL,       -- si quieres comisión por vínculo (opcional)
+
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT,
+
+    UNIQUE(admin_id, courier_id),
+    FOREIGN KEY (admin_id) REFERENCES admins(id),
+    FOREIGN KEY (courier_id) REFERENCES couriers(id)
+);
+""")
+
+# --- Vínculo Aliados por Administrador Local ---
+cur.execute("""
+CREATE TABLE IF NOT EXISTS admin_allies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    ally_id INTEGER NOT NULL,
+
+    status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / ACTIVE / INACTIVE / BLOCKED
+    is_active INTEGER DEFAULT 0,            -- 1 = admin activo para este aliado (opcional)
+    balance REAL DEFAULT 0,                 -- saldo del aliado con ESTE admin
+
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT,
+
+    UNIQUE(admin_id, ally_id),
+    FOREIGN KEY (admin_id) REFERENCES admins(id),
+    FOREIGN KEY (ally_id) REFERENCES allies(id)
+);
+""")
+
+# Índices recomendados
+cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_couriers_admin_id ON admin_couriers(admin_id)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_couriers_courier_id ON admin_couriers(courier_id)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_admin_id ON admin_allies(admin_id)")
+cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_ally_id ON admin_allies(ally_id)")
 
     # --- Migración para bases ya existentes ---
-
-    import sqlite3  # déjalo aquí solo si no estaba antes arriba
 
     # Asegurar columna bike_type
     try:
@@ -198,6 +257,18 @@ CREATE TABLE IF NOT EXISTS admins (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TEXT
 )
+""")
+# --- Migración: agregar team_name a admins si no existe ---
+cur.execute("PRAGMA table_info(admins)")
+admins_cols = [row[1] for row in cur.fetchall()]
+if "team_name" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
+
+# (Recomendado) Completar team_name en admins existentes si está vacío
+cur.execute("""
+UPDATE admins
+SET team_name = COALESCE(team_name, full_name)
+WHERE team_name IS NULL OR team_name = ''
 """)
 
     conn.commit()
@@ -855,20 +926,25 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
 import sqlite3
 from datetime import datetime
 
-def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str):
+def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str, team_name: str = None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now = datetime.utcnow().isoformat()
 
+    # Si no envían team_name, por defecto usamos el nombre del admin
+    if not team_name or not str(team_name).strip():
+        team_name = full_name.strip()
+
     cur.execute("""
-        INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, is_deleted, deleted_at)
-        VALUES (?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
+        INSERT INTO admins (user_id, full_name, phone, city, barrio, team_name, status, created_at, is_deleted, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
         ON CONFLICT(user_id) DO UPDATE SET
             full_name=excluded.full_name,
             phone=excluded.phone,
             city=excluded.city,
-            barrio=excluded.barrio
-    """, (user_id, full_name, phone, city, barrio, now))
+            barrio=excluded.barrio,
+            team_name=excluded.team_name
+    """, (user_id, full_name, phone, city, barrio, team_name, now))
 
     conn.commit()
     conn.close()
@@ -877,11 +953,13 @@ def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: st
 def get_admin_by_user_id(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name
         FROM admins
         WHERE user_id=? AND is_deleted=0
     """, (user_id,))
+
     row = cur.fetchone()
     conn.close()
     return row
@@ -890,12 +968,14 @@ def get_admin_by_user_id(user_id: int):
 def get_pending_admins():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name
         FROM admins
         WHERE status='PENDING' AND is_deleted=0
         ORDER BY id ASC
     """)
+
     rows = cur.fetchall()
     conn.close()
     return rows
