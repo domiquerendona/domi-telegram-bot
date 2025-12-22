@@ -897,26 +897,26 @@ def admin_menu_callback(update, context):
         query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
         return
 
-# Botón: Aliados pendientes (Plataforma)
-if data == "admin_aliados_pendientes":
+    # Botón: Aliados pendientes (Plataforma)
+    if data == "admin_aliados_pendientes":
     query.answer()
     # Reutilizamos la función existente
     aliados_pendientes(update, context)
     return
 
-# Botón: Repartidores pendientes (Plataforma)
-if data == "admin_repartidores_pendientes":
+    # Botón: Repartidores pendientes (Plataforma)
+    if data == "admin_repartidores_pendientes":
     query.answer()
     # Reutilizamos la función existente
     repartidores_pendientes(update, context)
     return
 
-# Botones aún no implementados (placeholders)
-if data == "admin_pedidos":
+    # Botones aún no implementados (placeholders)
+    if data == "admin_pedidos":
     query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
     return
 
-if data == "admin_config":
+    if data == "admin_config":
     keyboard = [
         [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
         [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
