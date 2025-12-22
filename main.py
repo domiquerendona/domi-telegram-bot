@@ -302,7 +302,7 @@ try:
         )
     )
 except Exception as e:
-    print("Error enviando notificación al Administrador de Plataforma:", e)
+    print("Error enviando notificación al administrador:", e)
 
         # --- Confirmación al usuario ---
         update.message.reply_text(
