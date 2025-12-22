@@ -1492,6 +1492,9 @@ def admin_config_callback(update, context):
         return
 
 def main():
+    print("[BOOT] Iniciando polling...")
+    print("[BOOT] Polling iniciado. Bot activo.")
+
     # Inicializar base de datos
     init_db()
 
@@ -1554,9 +1557,6 @@ dp.add_handler(admin_conv)
 
     # Iniciar el bot
     updater.start_polling()
-    print("[BOOT] Iniciando polling...")
-    print("[BOOT] Polling iniciado. Bot activo.")
-
     updater.idle()
 
 
