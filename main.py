@@ -899,35 +899,35 @@ def admin_menu_callback(update, context):
 
     # Botón: Aliados pendientes (Plataforma)
     if data == "admin_aliados_pendientes":
-    query.answer()
-    # Reutilizamos la función existente
-    aliados_pendientes(update, context)
-    return
+        query.answer()
+        # Reutilizamos la función existente
+        aliados_pendientes(update, context)
+        return
 
     # Botón: Repartidores pendientes (Plataforma)
     if data == "admin_repartidores_pendientes":
-    query.answer()
-    # Reutilizamos la función existente
-    repartidores_pendientes(update, context)
-    return
+        query.answer()
+        # Reutilizamos la función existente
+        repartidores_pendientes(update, context)
+        return
 
     # Botones aún no implementados (placeholders)
     if data == "admin_pedidos":
-    query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
-    return
+        query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
+        return
 
     if data == "admin_config":
-    keyboard = [
-        [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
-        [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
-        [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-    ]
+        keyboard = [
+            [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
+            [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
+            [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+        ]
 
-    query.edit_message_text(
-        "Configuraciones de administración. ¿Qué deseas hacer?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return
+        query.edit_message_text(
+            "Configuraciones de administración. ¿Qué deseas hacer?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
 
     if data == "admin_tarifas":
         query.answer("La sección de tarifas aún no está implementada.")
