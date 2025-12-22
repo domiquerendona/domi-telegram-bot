@@ -185,6 +185,21 @@ def init_db():
         );
     """)
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE NOT NULL,
+    full_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    city TEXT NOT NULL,
+    barrio TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at TEXT NOT NULL,
+    is_deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT
+)
+""")
+
     conn.commit()
     conn.close()
 
@@ -836,3 +851,86 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
     """, (full_name, phone, bike_type, status, courier_id))
     conn.commit()
     conn.close()
+
+import sqlite3
+from datetime import datetime
+
+def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    now = datetime.utcnow().isoformat()
+
+    cur.execute("""
+        INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, is_deleted, deleted_at)
+        VALUES (?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
+        ON CONFLICT(user_id) DO UPDATE SET
+            full_name=excluded.full_name,
+            phone=excluded.phone,
+            city=excluded.city,
+            barrio=excluded.barrio
+    """, (user_id, full_name, phone, city, barrio, now))
+
+    conn.commit()
+    conn.close()
+
+
+def get_admin_by_user_id(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at
+        FROM admins
+        WHERE user_id=? AND is_deleted=0
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_pending_admins():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at
+        FROM admins
+        WHERE status='PENDING' AND is_deleted=0
+        ORDER BY id ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def update_admin_status(user_id: int, new_status: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins
+        SET status=?
+        WHERE user_id=? AND is_deleted=0
+    """, (new_status, user_id))
+    conn.commit()
+    conn.close()
+
+
+def soft_delete_admin_by_id(admin_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    now = datetime.utcnow().isoformat()
+    cur.execute("""
+        UPDATE admins
+        SET is_deleted=1, deleted_at=?, status='INACTIVE'
+        WHERE id=?
+    """, (now, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def count_admins():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM admins WHERE is_deleted=0")
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
