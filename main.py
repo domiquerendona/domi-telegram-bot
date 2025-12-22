@@ -289,7 +289,7 @@ def ally_barrio(update, context):
         
     # --- Notificar al Administrador de Plataforma ---
         try:
-        context.bot.send_message(
+            context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
                 "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
