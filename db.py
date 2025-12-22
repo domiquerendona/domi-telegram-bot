@@ -258,24 +258,23 @@ CREATE TABLE IF NOT EXISTS admins (
     deleted_at TEXT
 )
 """)
-# --- Migración: agregar team_name a admins si no existe ---
+
+# --- Migración: agregar columnas a admins si no existen ---
 cur.execute("PRAGMA table_info(admins)")
 admins_cols = [row[1] for row in cur.fetchall()]
+
 if "team_name" not in admins_cols:
     cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
 
-# (Recomendado) Completar team_name en admins existentes si está vacío
+if "document_number" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
+
+# Completar team_name en admins existentes si está vacío
 cur.execute("""
 UPDATE admins
 SET team_name = COALESCE(team_name, full_name)
 WHERE team_name IS NULL OR team_name = ''
 """)
-
-# --- Migración: agregar document_number a admins si no existe ---
-cur.execute("PRAGMA table_info(admins)")
-admins_cols = [row[1] for row in cur.fetchall()]
-if "document_number" not in admins_cols:
-    cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
 
     conn.commit()
     conn.close()
@@ -932,7 +931,7 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
 import sqlite3
 from datetime import datetime
 
-def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str, team_name: str = None):
+def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str, team_name: str = None, document_number: str = None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     now = datetime.utcnow().isoformat()
@@ -942,26 +941,26 @@ def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: st
         team_name = full_name.strip()
 
     cur.execute("""
-        INSERT INTO admins (user_id, full_name, phone, city, barrio, team_name, status, created_at, is_deleted, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
+        INSERT INTO admins (user_id, full_name, phone, city, barrio, team_name, document_number, status, created_at, is_deleted, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
         ON CONFLICT(user_id) DO UPDATE SET
             full_name=excluded.full_name,
             phone=excluded.phone,
             city=excluded.city,
             barrio=excluded.barrio,
-            team_name=excluded.team_name
-    """, (user_id, full_name, phone, city, barrio, team_name, now))
+            team_name=excluded.team_name,
+            document_number=excluded.document_number
+    """, (user_id, full_name, phone, city, barrio, team_name, document_number, now))
 
     conn.commit()
     conn.close()
-
 
 def get_admin_by_user_id(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
         FROM admins
         WHERE user_id=? AND is_deleted=0
     """, (user_id,))
@@ -976,7 +975,7 @@ def get_pending_admins():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
         FROM admins
         WHERE status='PENDING' AND is_deleted=0
         ORDER BY id ASC
