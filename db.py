@@ -271,6 +271,12 @@ SET team_name = COALESCE(team_name, full_name)
 WHERE team_name IS NULL OR team_name = ''
 """)
 
+# --- Migración: agregar document_number a admins si no existe ---
+cur.execute("PRAGMA table_info(admins)")
+admins_cols = [row[1] for row in cur.fetchall()]
+if "document_number" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
+
     conn.commit()
     conn.close()
 
