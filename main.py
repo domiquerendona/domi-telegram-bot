@@ -1554,6 +1554,9 @@ dp.add_handler(admin_conv)
 
     # Iniciar el bot
     updater.start_polling()
+    print("[BOOT] Iniciando polling...")
+    print("[BOOT] Polling iniciado. Bot activo.")
+
     updater.idle()
 
 
