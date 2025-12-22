@@ -10,6 +10,8 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+from db import create_admin, get_admin_by_user_id  #administrador local
+
 from db import (
     init_db,
     ensure_user,
@@ -55,12 +57,12 @@ from db import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))    # Administrador de Plataforma
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
 def es_admin(user_id: int) -> bool:
-    """Devuelve True si el user_id es el administrador."""
+    """Devuelve True si el user_id es el administrador de plataforna."""
     return user_id == ADMIN_USER_ID
 
 # Estados del registro de aliados
@@ -68,6 +70,8 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
 # Estados para registro de repartidores
 COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE, COURIER_BIKETYPE, COURIER_CONFIRM = range(5, 13)
+
+LOCAL_ADMIN_NAME, LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO, LOCAL_ADMIN_ACCEPT = range(300, 305)
 
 # Estados para crear un pedido
 PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(13, 16)
@@ -283,22 +287,22 @@ def ally_barrio(update, context):
         )
         print("[DEBUG] Dirección principal creada")
 
-        # --- Notificar al administrador ---
-        try:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=(
-                    "Nuevo registro de ALIADO pendiente:\n\n"
-                    f"Negocio: {business_name}\n"
-                    f"Dueño: {owner_name}\n"
-                    f"Teléfono: {phone}\n"
-                    f"Ciudad: {city}\n"
-                    f"Barrio: {barrio}\n\n"
-                    "Usa /aliados_pendientes o el menú /admin para revisarlo."
-                )
-            )
-        except Exception as e:
-            print("Error enviando notificación al administrador:", e)
+       # --- Notificar al Administrador de Plataforma ---
+try:
+    context.bot.send_message(
+        chat_id=ADMIN_USER_ID,
+        text=(
+            "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
+            f"Negocio: {business_name}\n"
+            f"Dueño: {owner_name}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n\n"
+            "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
+        )
+    )
+except Exception as e:
+    print("Error enviando notificación al Administrador de Plataforma:", e)
 
         # --- Confirmación al usuario ---
         update.message.reply_text(
@@ -457,28 +461,29 @@ def courier_confirm(update, context):
     context.user_data.clear()
     return ConversationHandler.END
     
-  # Notificar al administrador de nuevo aliado pendiente
-    try:
-        context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de ALIADO pendiente:\n\n"
-                "Negocio: {}\n"
-                "Propietario: {}\n"
-                "Teléfono: {}\n"
-                "Ciudad: {}\n"
-                "Barrio: {}\n\n"
-                "Usa /aliados_pendientes o el menú /admin para revisarlo."
-            ).format(
-                business_name,   # usa las mismas variables que ya usas al crear el aliado
-                owner_name,
-                ally_phone,
-                city,
-                barrio,
-            )
+# Notificar al Administrador de Plataforma sobre nuevo aliado pendiente
+try:
+    context.bot.send_message(
+        chat_id=ADMIN_USER_ID,
+        text=(
+            "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Teléfono: {}\n"
+            "Ciudad: {}\n"
+            "Barrio: {}\n\n"
+            "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
+        ).format(
+            business_name,  # usa las mismas variables que ya usas al crear el aliado
+            owner_name,
+            ally_phone,
+            city,
+            barrio,
         )
-    except Exception as e:
-        print("Error enviando notificación de nuevo aliado:", e)
+    )
+except Exception as e:
+    print("Error enviando notificación al Administrador de Plataforma:", e)
+
   
 def nuevo_pedido(update, context):
     user = update.effective_user
@@ -601,15 +606,15 @@ def pedido_telefono_cliente(update, context):
     )
     
 def aliados_pendientes(update, context):
-    """Lista aliados PENDING solo para el administrador."""
+    """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
     user_id = update.effective_user.id
     print(f"[DEBUG] user_id que envía el comando: {user_id}")
-    print(f"[DEBUG] ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
+    print(f"[DEBUG] ADMIN_USER_ID (Administrador de Plataforma) configurado: {ADMIN_USER_ID}")
 
-    # Solo el admin puede usar este comando
+    # Solo el Administrador de Plataforma puede usar este comando
     if user_id != ADMIN_USER_ID:
-        message.reply_text("Este comando es solo para el administrador.")
+        message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
 
     # Intentar leer aliados pendientes de la BD
@@ -650,24 +655,16 @@ def aliados_pendientes(update, context):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
-def repartidores_pendientes(update, context):
-    """Lista repartidores PENDING solo para el administrador."""
+def aliados_pendientes(update, context):
+    """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
     user_id = update.effective_user.id
-    print(f"[DEBUG] user_id que envía /repartidores_pendientes: {user_id}")
-    print(f"[DEBUG] ADMIN_USER_ID configurado: {ADMIN_USER_ID}")
+    print(f"[DEBUG] user_id que envía el comando: {user_id}")
+    print(f"[DEBUG] ADMIN_USER_ID (Administrador de Plataforma) configurado: {ADMIN_USER_ID}")
 
-    # Solo el admin puede usar este comando
+    # Solo el Administrador de Plataforma puede usar este comando
     if user_id != ADMIN_USER_ID:
-        message.reply_text("Este comando es solo para el administrador.")
-        return
-
-    # Intentar leer repartidores pendientes de la BD
-    try:
-        couriers = get_pending_couriers()
-    except Exception as e:
-        print(f"[ERROR] en get_pending_couriers(): {e}")
-        message.reply_text("⚠️ Error interno al consultar repartidores pendientes.")
+        message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
 
     if not couriers:
@@ -722,6 +719,104 @@ def repartidores_pendientes(update, context):
             texto,
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        
+def soy_admin(update, context):
+    user_id = update.effective_user.id
+
+    # Limpieza del contexto
+    context.user_data.clear()
+
+# Si ya existe como Administrador Local, muéstralo (opcional pero recomendado)
+existing = get_admin_by_user_id(user_id)
+if existing:
+    # existing: (id, user_id, full_name, phone, city, barrio, status, created_at)
+    update.message.reply_text(
+        "Ya tienes un registro como Administrador Local.\n"
+        f"Nombre: {existing[2]}\n"
+        f"Teléfono: {existing[3]}\n"
+        f"Ciudad: {existing[4]}\n"
+        f"Barrio: {existing[5]}\n"
+        f"Estado: {existing[6]}\n\n"
+        "Si deseas actualizar tus datos, escribe SI.\n"
+        "Si no, escribe NO."
+    )
+    context.user_data["admin_update_prompt"] = True
+    return LOCAL_ADMIN_NAME  # reutilizamos LOCAL_ADMIN_NAME para capturar SI/NO
+
+update.message.reply_text("Registro de Administrador Local.\nEscribe tu nombre completo:")
+return LOCAL_ADMIN_NAME
+
+
+def admin_name(update, context):
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
+    # Si veníamos del prompt de actualización
+    if context.user_data.get("admin_update_prompt"):
+        answer = text.upper()
+        context.user_data.pop("admin_update_prompt", None)
+        if answer == "SI":
+            update.message.reply_text("Perfecto. Escribe tu nombre completo:")
+            return LOCAL_ADMIN_NAME
+        update.message.reply_text("Entendido. No se modificó tu registro.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    context.user_data["admin_name"] = text
+    update.message.reply_text("Escribe tu número de teléfono:")
+    return LOCAL_ADMIN_PHONE
+
+
+def admin_phone(update, context):
+    context.user_data["admin_phone"] = update.message.text.strip()
+    update.message.reply_text("¿En qué ciudad vas a operar? (Ej: Pereira, Dosquebradas):")
+    return LOCAL_ADMIN_CITY
+
+
+def admin_city(update, context):
+    context.user_data["admin_city"] = update.message.text.strip()
+    update.message.reply_text("Escribe tu barrio o zona base de operación:")
+    return ADMIN_BARRIO
+
+
+def admin_barrio(update, context):
+    context.user_data["admin_barrio"] = update.message.text.strip()
+
+    msg = (
+        "Condiciones para Administrador Local:\n"
+        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
+        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
+        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
+        "Escribe ACEPTAR para finalizar el registro o /cancel para salir."
+    )
+    update.message.reply_text(msg)
+    return ADMIN_ACCEPT
+
+
+def admin_accept(update, context):
+    answer = update.message.text.strip().upper()
+    user_id = update.effective_user.id
+
+    if answer != "ACEPTAR":
+        update.message.reply_text("Registro cancelado. Si deseas intentarlo de nuevo usa /soy_admin.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    full_name = context.user_data.get("admin_name", "")
+    phone = context.user_data.get("admin_phone", "")
+    city = context.user_data.get("admin_city", "")
+    barrio = context.user_data.get("admin_barrio", "")
+
+    create_admin(user_id, full_name, phone, city, barrio)
+
+    update.message.reply_text(
+        "Registro de Administrador Local recibido.\n"
+        "Estado: PENDING\n\n"
+        "Recuerda: para ser aprobado debes registrar 10 repartidores con recarga mínima de 5000 cada uno."
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
         
 def admin_menu(update, context):
     """Menú principal de administración."""
@@ -1398,6 +1493,21 @@ def main():
     dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel))
     dp.add_handler(CommandHandler("admin", admin_menu))   # ← NUEVO
+
+    # Registro de Administradores Locales
+    admin_conv = ConversationHandler(
+    entry_points=[CommandHandler("soy_admin", soy_admin)],
+    states={
+        ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
+        ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
+        ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
+        ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
+        ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
+
+dp.add_handler(admin_conv)
 
     # Iniciar el bot
     updater.start_polling()
