@@ -749,7 +749,6 @@ return LOCAL_ADMIN_NAME
 
 def admin_name(update, context):
     text = update.message.text.strip()
-    user_id = update.effective_user.id
 
     # Si veníamos del prompt de actualización
     if context.user_data.get("admin_update_prompt"):
@@ -776,7 +775,7 @@ def admin_phone(update, context):
 def admin_city(update, context):
     context.user_data["admin_city"] = update.message.text.strip()
     update.message.reply_text("Escribe tu barrio o zona base de operación:")
-    return ADMIN_BARRIO
+    return LOCAL_ADMIN_BARRIO
 
 
 def admin_barrio(update, context):
@@ -790,7 +789,7 @@ def admin_barrio(update, context):
         "Escribe ACEPTAR para finalizar el registro o /cancel para salir."
     )
     update.message.reply_text(msg)
-    return ADMIN_ACCEPT
+    return LOCAL_ADMIN_ACCEPT
 
 
 def admin_accept(update, context):
@@ -819,17 +818,17 @@ def admin_accept(update, context):
     return ConversationHandler.END
         
 def admin_menu(update, context):
-    """Menú principal de administración."""
+    """Panel de Administración de Plataforma."""
     user = update.effective_user
     user_id = user.id
 
-    # Solo el administrador puede usar este comando
+    # Solo el Administrador de Plataforma puede usar este comando
     if user_id != ADMIN_USER_ID:
-        update.message.reply_text("Este comando es solo para el administrador.")
+        update.message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
 
     texto = (
-        "Menú de administración.\n"
+        "Panel de Administración de Plataforma.\n"
         "¿Qué deseas revisar?"
     )
 
@@ -848,37 +847,37 @@ def admin_menu(update, context):
     )
     
 def admin_menu_callback(update, context):
-    """Maneja los botones del menú de administración."""
+    """Maneja los botones del Panel de Administración de Plataforma."""
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
 
-    # Solo el administrador puede usar estos botones
+    # Solo el Administrador de Plataforma puede usar estos botones
     if user_id != ADMIN_USER_ID:
-        query.answer("Solo el administrador puede usar este menú.", show_alert=True)
+        query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
         return
 
-    # Botón: Aliados pendientes
-    if data == "admin_aliados_pendientes":
-        query.answer()
-        # Reutilizamos la función existente
-        aliados_pendientes(update, context)
-        return
+# Botón: Aliados pendientes (Plataforma)
+if data == "admin_aliados_pendientes":
+    query.answer()
+    # Reutilizamos la función existente
+    aliados_pendientes(update, context)
+    return
 
-    # Botón: Repartidores pendientes
-    if data == "admin_repartidores_pendientes":
-        query.answer()
-        # Reutilizamos la función existente
-        repartidores_pendientes(update, context)
-        return
+# Botón: Repartidores pendientes (Plataforma)
+if data == "admin_repartidores_pendientes":
+    query.answer()
+    # Reutilizamos la función existente
+    repartidores_pendientes(update, context)
+    return
 
-    # Botones aún no implementados (placeholders)
-    if data == "admin_pedidos":
-        query.answer("La sección de pedidos aún no está implementada.")
-        return
+# Botones aún no implementados (placeholders)
+if data == "admin_pedidos":
+    query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
+    return
 
-    if data == "admin_config":
-        keyboard = [
+if data == "admin_config":
+    keyboard = [
         [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
         [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
         [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
@@ -906,7 +905,7 @@ def pendientes(update, context):
     user_id = update.effective_user.id
 
     if user_id != ADMIN_USER_ID:
-        update.message.reply_text("Solo el administrador puede usar este comando.")
+        update.message.reply_text("Solo el administrador de plataforna puede usar este comando.")
         return
 
     keyboard = [
@@ -1016,9 +1015,9 @@ def ally_approval_callback(update, context):
     data = query.data            # Ej: "ally_approve_3" o "ally_reject_5"
     user_id = query.from_user.id
 
-    # Solo el administrador puede usar estos botones
+    # Solo el administrador de plataforma puede usar estos botones
     if user_id != ADMIN_USER_ID:
-        query.answer("Solo el administrador puede usar estos botones.", show_alert=True)
+        query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
         return
 
     if not data.startswith("ally_"):
@@ -1075,7 +1074,7 @@ def ally_approval_callback(update, context):
         except Exception as e:
             print("Error notificando aliado aprobado:", e)
 
-        # Confirmar al admin
+        # Confirmar al administrador de plataforma
         query.edit_message_text("El aliado '{}' ha sido APROBADO.".format(business_name))
         return
 
@@ -1146,9 +1145,9 @@ def courier_approval_callback(update, context):
     data = query.data  # Ej: "courier_approve_3" o "courier_reject_5"
     user_id = query.from_user.id
 
-    # Solo el administrador puede usar estos botones
+    # Solo el administrador de plataforna puede usar estos botones
     if user_id != ADMIN_USER_ID:
-        query.answer("Solo el administrador puede usar estos botones.", show_alert=True)
+        query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
         return
 
     if not data.startswith("courier_"):
@@ -1468,46 +1467,49 @@ def main():
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel))
 
-    # Callbacks del menú de configuraciones de admin
-    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern="^config_"))
+# Callbacks del menú de configuraciones de la Plataforma
+dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern="^config_"))
 
-    # Conversaciones completas
-    dp.add_handler(ally_conv)            # /soy_aliado
-    dp.add_handler(courier_conv)         # /soy_repartidor
-    dp.add_handler(nuevo_pedido_conv)    # /nuevo_pedido
-    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
-    dp.add_handler(CommandHandler("pendientes", pendientes))
-    # Callbacks de aprobación
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
-    dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern="menu_"))
-    # Callbacks de aprobación
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="ally_"))
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="courier_"))
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="admin_"))  # ← NUEVO
+# Conversaciones completas
+dp.add_handler(ally_conv)          # /soy_aliado
+dp.add_handler(courier_conv)       # /soy_repartidor
+dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
+dp.add_handler(CommandHandler("pendientes", pendientes))
 
-    # Comandos administrativos
-    dp.add_handler(CommandHandler("id", cmd_id))
-    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
-    dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CommandHandler("admin", admin_menu))   # ← NUEVO
+# Callbacks de aprobación (Plataforma)
+dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
+dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
+dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
+dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern="menu_"))
 
-    # Registro de Administradores Locales
-    admin_conv = ConversationHandler(
+# Callbacks del Panel de Administración de Plataforma
+dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="ally_"))
+dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="courier_"))
+dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="admin_"))  # Plataforma
+
+# Comandos administrativos de Plataforma
+dp.add_handler(CommandHandler("id", cmd_id))
+dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
+dp.add_handler(CommandHandler("cancel", cancel))
+dp.add_handler(CommandHandler("admin", admin_menu))  # Panel de Plataforma
+
+# Registro de Administradores Locales
+admin_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_admin", soy_admin)],
     states={
-        ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
-        ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
-        ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
-        ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
-        ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
+        LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
+        LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
+        LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
+        LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
+        LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
 )
 
 dp.add_handler(admin_conv)
+
 
     # Iniciar el bot
     updater.start_polling()
