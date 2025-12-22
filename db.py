@@ -78,45 +78,45 @@ SET free_orders_remaining = 15
 WHERE free_orders_remaining IS NULL
 """)
 
-    # --- Vínculo Repartidores por Administrador Local ---
+# --- Vínculo Repartidores por Administrador Local ---
 cur.execute("""
-CREATE TABLE IF NOT EXISTS admin_couriers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL,
-    courier_id INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS admin_couriers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        courier_id INTEGER NOT NULL,
 
-    status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / BLOCKED
-    is_active INTEGER DEFAULT 0,            -- 1 = equipo activo para este repartidor (opcional)
-    balance REAL DEFAULT 0,                 -- saldo del repartidor con ESTE admin
-    commission_pct REAL DEFAULT NULL,       -- si quieres comisión por vínculo (opcional)
+        status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / BLOCKED
+        is_active INTEGER DEFAULT 0,            -- 1 = equipo activo para este repartidor (opcional)
+        balance REAL DEFAULT 0,                 -- saldo del repartidor con ESTE admin
+        commission_pct REAL DEFAULT NULL,       -- si quieres comisión por vínculo (opcional)
 
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT,
 
-    UNIQUE(admin_id, courier_id),
-    FOREIGN KEY (admin_id) REFERENCES admins(id),
-    FOREIGN KEY (courier_id) REFERENCES couriers(id)
-);
+        UNIQUE(admin_id, courier_id),
+        FOREIGN KEY (admin_id) REFERENCES admins(id),
+        FOREIGN KEY (courier_id) REFERENCES couriers(id)
+    );
 """)
 
 # --- Vínculo Aliados por Administrador Local ---
 cur.execute("""
-CREATE TABLE IF NOT EXISTS admin_allies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL,
-    ally_id INTEGER NOT NULL,
+    CREATE TABLE IF NOT EXISTS admin_allies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        ally_id INTEGER NOT NULL,
 
-    status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / ACTIVE / INACTIVE / BLOCKED
-    is_active INTEGER DEFAULT 0,            -- 1 = admin activo para este aliado (opcional)
-    balance REAL DEFAULT 0,                 -- saldo del aliado con ESTE admin
+        status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / ACTIVE / INACTIVE / BLOCKED
+        is_active INTEGER DEFAULT 0,            -- 1 = admin activo para este aliado (opcional)
+        balance REAL DEFAULT 0,                 -- saldo del aliado con ESTE admin
 
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT,
 
-    UNIQUE(admin_id, ally_id),
-    FOREIGN KEY (admin_id) REFERENCES admins(id),
-    FOREIGN KEY (ally_id) REFERENCES allies(id)
-);
+        UNIQUE(admin_id, ally_id),
+        FOREIGN KEY (admin_id) REFERENCES admins(id),
+        FOREIGN KEY (ally_id) REFERENCES allies(id)
+    );
 """)
 
 # Índices recomendados
@@ -125,37 +125,36 @@ cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_couriers_courier_id ON admin_c
 cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_admin_id ON admin_allies(admin_id)")
 cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_ally_id ON admin_allies(ally_id)")
 
-    # --- Migración para bases ya existentes ---
+# --- Migración para bases ya existentes ---
+# Asegurar columna bike_type
+try:
+    cur.execute("ALTER TABLE couriers ADD COLUMN bike_type TEXT")
+    print("[DB] Columna bike_type añadida a couriers.")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e).lower():
+        pass
+    else:
+        raise
 
-    # Asegurar columna bike_type
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN bike_type TEXT")
-        print("[DB] Columna bike_type añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
+# Asegurar columna code
+try:
+    cur.execute("ALTER TABLE couriers ADD COLUMN code TEXT")
+    print("[DB] Columna code añadida a couriers.")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e).lower():
+        pass
+    else:
+        raise
 
-    # Asegurar columna code
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN code TEXT")
-        print("[DB] Columna code añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
-
-    # Asegurar columna balance
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN balance REAL DEFAULT 0")
-        print("[DB] Columna balance añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
+# Asegurar columna balance
+try:
+    cur.execute("ALTER TABLE couriers ADD COLUMN balance REAL DEFAULT 0")
+    print("[DB] Columna balance añadida a couriers.")
+except sqlite3.OperationalError as e:
+    if "duplicate column name" in str(e).lower():
+        pass
+    else:
+        raise
 
     # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
     cur.execute("""
