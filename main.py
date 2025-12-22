@@ -71,7 +71,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 # Estados para registro de repartidores
 COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE, COURIER_BIKETYPE, COURIER_CONFIRM = range(5, 13)
 
-LOCAL_ADMIN_NAME, LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO, LOCAL_ADMIN_ACCEPT = range(300, 305)
+LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME, LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO, LOCAL_ADMIN_ACCEPT = range(300, 307)
 
 # Estados para crear un pedido
 PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(13, 16)
@@ -726,25 +726,29 @@ def soy_admin(update, context):
     # Limpieza del contexto
     context.user_data.clear()
 
-# Si ya existe como Administrador Local, muéstralo (opcional pero recomendado)
-existing = get_admin_by_user_id(user_id)
-if existing:
-    # existing: (id, user_id, full_name, phone, city, barrio, status, created_at)
-    update.message.reply_text(
-        "Ya tienes un registro como Administrador Local.\n"
-        f"Nombre: {existing[2]}\n"
-        f"Teléfono: {existing[3]}\n"
-        f"Ciudad: {existing[4]}\n"
-        f"Barrio: {existing[5]}\n"
-        f"Estado: {existing[6]}\n\n"
-        "Si deseas actualizar tus datos, escribe SI.\n"
-        "Si no, escribe NO."
-    )
-    context.user_data["admin_update_prompt"] = True
-    return LOCAL_ADMIN_NAME  # reutilizamos LOCAL_ADMIN_NAME para capturar SI/NO
+    existing = get_admin_by_user_id(user_id)
+    if existing:
+        # existing: (id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number)
+        team_name = existing[8] if len(existing) > 8 and existing[8] else existing[2]
+        doc = existing[9] if len(existing) > 9 and existing[9] else "No registrado"
 
-update.message.reply_text("Registro de Administrador Local.\nEscribe tu nombre completo:")
-return LOCAL_ADMIN_NAME
+        update.message.reply_text(
+            "Ya tienes un registro como Administrador Local.\n"
+            f"Nombre: {existing[2]}\n"
+            f"Documento: {doc}\n"
+            f"Administración: {team_name}\n"
+            f"Teléfono: {existing[3]}\n"
+            f"Ciudad: {existing[4]}\n"
+            f"Barrio: {existing[5]}\n"
+            f"Estado: {existing[6]}\n\n"
+            "Si deseas actualizar tus datos, escribe SI.\n"
+            "Si no, escribe NO."
+        )
+        context.user_data["admin_update_prompt"] = True
+        return LOCAL_ADMIN_NAME
+
+    update.message.reply_text("Registro de Administrador Local.\nEscribe tu nombre completo:")
+    return LOCAL_ADMIN_NAME
 
 
 def admin_name(update, context):
@@ -762,6 +766,38 @@ def admin_name(update, context):
         return ConversationHandler.END
 
     context.user_data["admin_name"] = text
+
+    update.message.reply_text(
+        "Escribe tu número de documento (CC o equivalente).\n"
+        "Este dato se usa solo para control interno de la plataforma."
+    )
+    return LOCAL_ADMIN_DOCUMENT
+
+
+def admin_document(update, context):
+    doc = update.message.text.strip()
+
+    if len(doc) < 5:
+        update.message.reply_text("El número de documento parece muy corto. Escríbelo de nuevo:")
+        return LOCAL_ADMIN_DOCUMENT
+
+    context.user_data["admin_document"] = doc
+
+    update.message.reply_text(
+        "Ahora escribe el nombre de tu administración (nombre del equipo).\n"
+        "Ejemplo: Mensajeros Pereira Centro"
+    )
+    return LOCAL_ADMIN_TEAMNAME
+
+    
+    def admin_teamname(update, context):
+    team_name = update.message.text.strip()
+
+    if len(team_name) < 3:
+        update.message.reply_text("El nombre de la administración debe tener al menos 3 caracteres. Escríbelo de nuevo:")
+        return LOCAL_ADMIN_TEAMNAME
+
+    context.user_data["admin_team_name"] = team_name
     update.message.reply_text("Escribe tu número de teléfono:")
     return LOCAL_ADMIN_PHONE
 
@@ -800,13 +836,16 @@ def admin_accept(update, context):
         update.message.reply_text("Registro cancelado. Si deseas intentarlo de nuevo usa /soy_admin.")
         context.user_data.clear()
         return ConversationHandler.END
+        
+full_name = (context.user_data.get("admin_name") or "").strip()
+document_number = (context.user_data.get("admin_document") or "").strip()
+team_name = (context.user_data.get("admin_team_name") or "").strip()
+phone = (context.user_data.get("admin_phone") or "").strip()
+city = (context.user_data.get("admin_city") or "").strip()
+barrio = (context.user_data.get("admin_barrio") or "").strip()
 
-    full_name = context.user_data.get("admin_name", "")
-    phone = context.user_data.get("admin_phone", "")
-    city = context.user_data.get("admin_city", "")
-    barrio = context.user_data.get("admin_barrio", "")
+create_admin(user_id, full_name, phone, city, barrio, team_name, document_number)
 
-    create_admin(user_id, full_name, phone, city, barrio)
 
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
@@ -1500,6 +1539,7 @@ admin_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_admin", soy_admin)],
     states={
         LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
+        LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
         LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
         LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
         LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
