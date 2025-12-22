@@ -288,7 +288,7 @@ def ally_barrio(update, context):
         print("[DEBUG] Dirección principal creada")
         
     # --- Notificar al Administrador de Plataforma ---
-    try:
+        try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=(
@@ -301,7 +301,7 @@ def ally_barrio(update, context):
                 "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
             )
         )
-    except Exception as e:
+        except Exception as e:
         print("Error enviando notificación al administrador:", e)
 
         
