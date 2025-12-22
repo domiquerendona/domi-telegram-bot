@@ -791,7 +791,7 @@ def admin_document(update, context):
     return LOCAL_ADMIN_TEAMNAME
 
     
-    def admin_teamname(update, context):
+def admin_teamname(update, context):
     team_name = update.message.text.strip()
 
     if len(team_name) < 3:
