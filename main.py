@@ -286,25 +286,24 @@ def ally_barrio(update, context):
             is_default=True,
         )
         print("[DEBUG] Dirección principal creada")
-        
-    # --- Notificar al Administrador de Plataforma ---
+
+        # --- Notificar al Administrador de Plataforma ---
         try:
             context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
-                f"Negocio: {business_name}\n"
-                f"Dueño: {owner_name}\n"
-                f"Teléfono: {phone}\n"
-                f"Ciudad: {city}\n"
-                f"Barrio: {barrio}\n\n"
-                "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
+                    f"Negocio: {business_name}\n"
+                    f"Dueño: {owner_name}\n"
+                    f"Teléfono: {phone}\n"
+                    f"Ciudad: {city}\n"
+                    f"Barrio: {barrio}\n\n"
+                    "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
+                )
             )
-        )
         except Exception as e:
             print("Error enviando notificación al administrador:", e)
 
-        
         # --- Confirmación al usuario ---
         update.message.reply_text(
             "Aliado registrado exitosamente!\n\n"
@@ -325,6 +324,7 @@ def ally_barrio(update, context):
             "Error técnico al guardar tu registro. Intenta más tarde."
         )
         return ConversationHandler.END
+
 
 def soy_repartidor(update, context):
     user = update.effective_user
@@ -461,29 +461,6 @@ def courier_confirm(update, context):
     update.message.reply_text(mensaje_final)
     context.user_data.clear()
     return ConversationHandler.END
-    
-# Notificar al Administrador de Plataforma sobre nuevo aliado pendiente
-try:
-    updater.bot.send_message(
-        chat_id=ADMIN_USER_ID,
-        text=(
-            "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
-            "Negocio: {}\n"
-            "Propietario: {}\n"
-            "Teléfono: {}\n"
-            "Ciudad: {}\n"
-            "Barrio: {}\n\n"
-            "Usa /aliados_pendientes o el Panel de Plataforma (/admin) para revisarlo."
-        ).format(
-            business_name,  # usa las mismas variables que ya usas al crear el aliado
-            owner_name,
-            ally_phone,
-            city,
-            barrio,                                                        
-        )
-    )
-except Exception as e:
-    print("Error enviando notificación al Administrador de Plataforma:", e)
 
   
 def nuevo_pedido(update, context):
