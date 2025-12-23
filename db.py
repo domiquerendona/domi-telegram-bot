@@ -69,15 +69,15 @@ def init_db():
     cur.execute("PRAGMA table_info(couriers)")
     couriers_cols = [row[1] for row in cur.fetchall()]
     if "free_orders_remaining" not in couriers_cols:
-    cur.execute(
-        "ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15"
-    )
+        cur.execute(
+            "ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15"
+        )
     
     # (Recomendado) Asegurar que los existentes queden con 15 si estaban NULL
     cur.execute("""
-    UPDATE couriers
-    SET free_orders_remaining = 15
-    WHERE free_orders_remaining IS NULL
+        UPDATE couriers
+        SET free_orders_remaining = 15
+        WHERE free_orders_remaining IS NULL
     """)
 
     # --- Vínculo Repartidores por Administrador Local ---
