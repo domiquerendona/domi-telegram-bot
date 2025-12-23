@@ -939,14 +939,23 @@ def admin_menu_callback(update, context):
 
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
+    
 
 def pendientes(update, context):
     """Menú rápido para ver registros pendientes."""
     user_id = update.effective_user.id
 
-    if user_id != ADMIN_USER_ID:
-        update.message.reply_text("Solo el administrador de plataforna puede usar este comando.")
-        return
+    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+
+    if not es_admin_plataforma:
+        try:
+            admin = get_admin_by_user_id(user_id)
+        except Exception:
+            admin = None
+
+        if not admin:
+            update.message.reply_text("No tienes permisos para usar este comando.")
+            return
 
     keyboard = [
         [
@@ -959,6 +968,7 @@ def pendientes(update, context):
         "Seleccione qué desea revisar:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
