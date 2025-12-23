@@ -871,7 +871,7 @@ def admin_menu(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-    
+
 def admin_menu_callback(update, context):
     """Maneja los botones del Panel de Administración de Plataforma."""
     query = update.callback_query
@@ -895,7 +895,7 @@ def admin_menu_callback(update, context):
         repartidores_pendientes(update, context)
         return
 
-    # Botón: Gestionar administradores (nuevo)
+    # Botón: Gestionar administradores (submenú)
     if data == "admin_administradores":
         query.answer()
         keyboard = [
@@ -908,8 +908,8 @@ def admin_menu_callback(update, context):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
-        
-    # Submenú admins (pendientes)
+
+    # Submenú admins: pendientes
     if data == "admin_admins_pendientes":
         query.answer()
         try:
@@ -919,33 +919,21 @@ def admin_menu_callback(update, context):
             query.edit_message_text(
                 "Error mostrando administradores pendientes. Revisa logs.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+                    [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
                 ])
             )
         return
-   
-    if data == "admin_gestion_admins":
-        query.answer()
-        admins_gestion(update, context)
-        return
 
-    if data == "admin_administradores_pendientes":
-       query.answer()
-       admins_pendientes(update, context)
-       return
-
-    # Submenú (placeholders por ahora)
+    # Submenú admins: registrados (placeholder por ahora)
     if data == "admin_admins_registrados":
         query.answer()
         query.edit_message_text(
             "Administradores registrados: (pendiente de implementar)\n\n"
-            "⬅️ Usa el botón 'Volver al Panel' para regresar."
+            "⬅️ Usa el botón 'Volver al Panel' para regresar.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+            ])
         )
-        return
-
-    if data == "admin_admins_pendientes":
-        query.answer()
-        admins_pendientes(update, context)
         return
 
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
@@ -1000,7 +988,9 @@ def admin_menu_callback(update, context):
         query.answer("La sección de finanzas aún no está implementada.")
         return
 
+    # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
+
 
 def admins_gestion(update, context):
     """Lista administradores registrados y pendientes (Plataforma)."""
