@@ -1173,9 +1173,23 @@ def ally_approval_callback(update, context):
         query.answer("Acción no reconocida.", show_alert=True)
         return
         
+        
 def pendientes_callback(update, context):
     query = update.callback_query
     data = query.data
+    user_id = query.from_user.id
+
+    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+
+    if not es_admin_plataforma:
+        try:
+            admin = get_admin_by_user_id(user_id)
+        except Exception:
+            admin = None
+
+        if not admin:
+            query.answer("No tienes permisos.", show_alert=True)
+            return
 
     if data == "menu_aliados_pendientes":
         query.answer()
