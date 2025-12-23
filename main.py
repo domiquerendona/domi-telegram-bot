@@ -1664,75 +1664,81 @@ def repartidores_pendientes(update, context):
         
 
 def main():
-    print("[BOOT] Iniciando polling...")
-    print("[BOOT] Polling iniciado. Bot activo.")
-
     # Inicializar base de datos
     init_db()
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    print("[BOOT] Iniciando polling...")
+
+    # -------------------------
     # Comandos básicos
+    # -------------------------
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
-
-    # Comandos administrativos
-    dp.add_handler(CommandHandler("id", cmd_id))
-    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("cancel", cancel))
 
-    # Callbacks del menú de configuraciones de la Plataforma
-    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern="^config_"))
+    # -------------------------
+    # Comandos administrativos (Plataforma y/o Admin Local según tu validación interna)
+    # -------------------------
+    dp.add_handler(CommandHandler("id", cmd_id))
+    dp.add_handler(CommandHandler("pendientes", pendientes))
+    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
+    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
 
+    # Panel de Plataforma
+    dp.add_handler(CommandHandler("admin", admin_menu))
+
+    # -------------------------
+    # Callbacks (ordenados por especificidad)
+    # -------------------------
+
+    # Menú de pendientes (botones menu_*)
+    dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern=r"^menu_"))
+
+    # Configuraciones (botones config_*)
+    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_"))
+
+    # Aprobación / rechazo Aliados (botones ally_approve_ID / ally_reject_ID o similar)
+    # Ajusta el patrón si tu callback_data exacto difiere
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern=r"^ally_(approve|reject)_\d+$"))
+
+    # Aprobación / rechazo Repartidores (botones courier_approve_ID / courier_reject_ID)
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_(approve|reject)_\d+$"))
+
+    # Panel admin plataforma (botones admin_*)
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
+
+    # -------------------------
     # Conversaciones completas
+    # -------------------------
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
-    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
-    dp.add_handler(CommandHandler("pendientes", pendientes))
 
-    # Callbacks de aprobación (Plataforma)
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="^ally_"))
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="^courier_"))
-    dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern="menu_"))
-
-    # Callbacks del Panel de Administración de Plataforma
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="ally_"))
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_(approve|reject)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="admin_"))  # Plataforma
-
-    # Comandos administrativos de Plataforma
-    dp.add_handler(CommandHandler("id", cmd_id))
-    dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
-    dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
-    dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CommandHandler("admin", admin_menu))  # Panel de Plataforma
-
+    # -------------------------
     # Registro de Administradores Locales
+    # -------------------------
     admin_conv = ConversationHandler(
-    entry_points=[CommandHandler("soy_admin", soy_admin)],
-    states={
-        LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
-        LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
-        LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
-        LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
-        LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
-        LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+        entry_points=[CommandHandler("soy_admin", soy_admin)],
+        states={
+            LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
+            LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
+            LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
+            LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
+            LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
+            LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversacion)],
     )
-
     dp.add_handler(admin_conv)
 
     # Iniciar el bot
     updater.start_polling()
+    print("[BOOT] Polling iniciado. Bot activo.")
     updater.idle()
 
 
 if __name__ == "__main__":
     main()
-
-# trigger deploy
-
