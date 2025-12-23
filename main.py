@@ -908,6 +908,21 @@ def admin_menu_callback(update, context):
         )
         return
         
+    # Submenú admins (pendientes)
+    if data == "admin_admins_pendientes":
+        query.answer()
+        try:
+            admins_pendientes(update, context)
+        except Exception as e:
+            print("[ERROR] admins_pendientes:", e)
+            query.edit_message_text(
+                "Error mostrando administradores pendientes. Revisa logs.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+                ])
+            )
+        return
+   
     if data == "admin_gestion_admins":
         query.answer()
         admins_gestion(update, context)
