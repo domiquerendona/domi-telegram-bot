@@ -246,19 +246,19 @@ def init_db():
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE NOT NULL,
-        full_name TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        city TEXT NOT NULL,
-        barrio TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'PENDING',
-        created_at TEXT NOT NULL,
-        is_deleted INTEGER NOT NULL DEFAULT 0,
-        deleted_at TEXT
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT
     )
-    """)
+        """)
 
     # --- Migración: agregar columnas a admins si no existen ---
     cur.execute("PRAGMA table_info(admins)")
@@ -272,13 +272,13 @@ def init_db():
 
     # Completar team_name en admins existentes si está vacío
     cur.execute("""
-    UPDATE admins
-    SET team_name = COALESCE(team_name, full_name)
-    WHERE team_name IS NULL OR team_name = ''
+        UPDATE admins
+        SET team_name = COALESCE(team_name, full_name)
+        WHERE team_name IS NULL OR team_name = ''
     """)
 
-conn.commit()
-conn.close()
+    conn.commit()
+    conn.close()
 
 
 # ---------- USUARIOS ----------
