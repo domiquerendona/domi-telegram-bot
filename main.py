@@ -27,6 +27,11 @@ from db import (
     get_all_allies,
     update_ally,
     delete_ally,
+    get_all_admins,
+    get_admin_by_id,
+    update_admin_status_by_id,
+    count_admin_couriers,
+    count_admin_couriers_with_min_balance,
     # Direcciones de aliados
     create_ally_location,
     get_ally_locations,
@@ -1615,6 +1620,145 @@ def admin_config_callback(update, context):
         return
 
     # 4) Cerrar menú de configuraciones
+    # 4) Gestionar administradores (listar)
+    if data == "config_gestion_administradores":
+        query.answer()
+        admins = get_all_admins()
+
+        if not admins:
+            query.edit_message_text("No hay administradores registrados en este momento.")
+            return
+
+        keyboard = []
+        for a in admins:
+            # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+            admin_id = a[0]
+            full_name = a[2]
+            team_name = a[8] or "-"
+            status = a[6]
+
+            button_text = "ID {} - {} | {} ({})".format(admin_id, full_name, team_name, status)
+            keyboard.append([InlineKeyboardButton(button_text, callback_data="config_ver_admin_{}".format(admin_id))])
+
+        keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
+
+        query.edit_message_text(
+            "Administradores registrados. Toca uno para ver detalle.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # 4.1) Ver detalle de administrador + acciones
+    if data.startswith("config_ver_admin_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        admin = get_admin_by_id(admin_id)
+
+        if not admin:
+            query.edit_message_text("No se encontró el administrador.")
+            return
+
+        # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        status = admin[6]
+
+        # Validación regla (10 repartidores y saldo>=5000 por vínculo)
+        total_couriers = count_admin_couriers(admin_id)
+        couriers_ok_balance = count_admin_couriers_with_min_balance(admin_id, 5000)
+
+        texto = (
+            "Detalle del administrador:\n\n"
+            "ID: {id}\n"
+            "Nombre: {full_name}\n"
+            "Teléfono: {phone}\n"
+            "Ciudad: {city}\n"
+            "Barrio: {barrio}\n"
+            "Equipo: {team}\n"
+            "Documento: {doc}\n"
+            "Estado: {status}\n\n"
+            "Regla de aprobación:\n"
+            "- Repartidores vinculados: {total}\n"
+            "- Con saldo >= 5000: {ok}\n"
+            "Requisito: 10 y 10"
+        ).format(
+            id=admin[0],
+            full_name=admin[2],
+            phone=admin[3],
+            city=admin[4],
+            barrio=admin[5],
+            team=admin[8] or "-",
+            doc=admin[9] or "-",
+            status=status,
+            total=total_couriers,
+            ok=couriers_ok_balance,
+        )
+
+        keyboard = []
+
+        # Aprobar/Rechazar si está PENDING
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_admin_approve_{}".format(admin_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_admin_reject_{}".format(admin_id)),
+            ])
+
+        # Activar/Desactivar alineado a tu BD
+        if status == "APPROVED":
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_admin_disable_{}".format(admin_id))])
+        if status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_admin_enable_{}".format(admin_id))])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver a la lista", callback_data="config_gestion_administradores")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # 4.2) Aprobar administrador (valida regla)
+    if data.startswith("config_admin_approve_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        total = count_admin_couriers(admin_id)
+        ok = count_admin_couriers_with_min_balance(admin_id, 5000)
+
+        if total < 10 or ok < 10:
+            query.edit_message_text(
+                "No se puede aprobar aún.\n\n"
+                "Regla: mínimo 10 repartidores vinculados y cada uno con saldo >= 5000.\n"
+                "Vinculados: {}\n"
+                "Con saldo >= 5000: {}\n\n"
+                "Acción: completa los 10 vínculos y recarga el saldo por vínculo."
+                .format(total, ok)
+            )
+            return
+
+        update_admin_status_by_id(admin_id, "APPROVED")
+        query.edit_message_text("Administrador aprobado y activado (APPROVED).")
+        return
+
+    # 4.3) Rechazar administrador
+    if data.startswith("config_admin_reject_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        update_admin_status_by_id(admin_id, "REJECTED")
+        query.edit_message_text("Administrador rechazado (REJECTED).")
+        return
+
+    # 4.4) Desactivar administrador (INACTIVE)
+    if data.startswith("config_admin_disable_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        update_admin_status_by_id(admin_id, "INACTIVE")
+        query.edit_message_text("Administrador desactivado (INACTIVE).")
+        return
+
+    # 4.5) Activar administrador (APPROVED)
+    if data.startswith("config_admin_enable_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        update_admin_status_by_id(admin_id, "APPROVED")
+        query.edit_message_text("Administrador activado (APPROVED).")
+        return
+
     if data == "config_cerrar":
         query.answer()
         query.edit_message_text("Menú de configuraciones cerrado.")
