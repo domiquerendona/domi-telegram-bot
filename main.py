@@ -1546,6 +1546,99 @@ def admin_config_callback(update, context):
         query.edit_message_text("Menú de configuraciones cerrado.")
         return
 
+
+def repartidores_pendientes(update, context):
+    user_id = update.effective_user.id
+
+    # Permisos: admin de plataforma o admin local
+    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+    admin_id = None
+
+    if not es_admin_plataforma:
+        try:
+            admin = get_admin_by_user_id(user_id)
+        except Exception:
+            admin = None
+
+        if not admin:
+            update.message.reply_text("No tienes permisos para ver repartidores pendientes.")
+            return
+
+        # Soportar dict/tupla
+        if isinstance(admin, dict):
+            admin_id = admin.get("id")
+        else:
+            admin_id = admin[0] if len(admin) > 0 else None
+
+        if not admin_id:
+            update.message.reply_text("No se pudo validar tu rol de administrador.")
+            return
+
+    # Obtener pendientes según rol
+    pendientes = []
+    try:
+        if es_admin_plataforma:
+            # Pendientes globales (tabla couriers en status PENDING)
+            # Debe existir en db.py: get_pending_couriers()
+            pendientes = get_pending_couriers()
+        else:
+            # Pendientes por equipo (admin_couriers.status = PENDING)
+            # Debe existir en db.py: get_pending_couriers_by_admin(admin_id)
+            pendientes = get_pending_couriers_by_admin(admin_id)
+    except Exception as e:
+        # Fallback para no romper flujo
+        print(f"[ERROR] repartidores_pendientes: {e}")
+        update.message.reply_text("Error consultando repartidores pendientes. Revisa logs del servidor.")
+        return
+
+    if not pendientes:
+        update.message.reply_text("No hay repartidores pendientes por aprobar.")
+        return
+
+    # Mostrar cada pendiente con botones que coinciden con courier_approval_callback
+    for c in pendientes:
+        # Soportar dict o tupla
+        # Queremos: courier_id, full_name, phone, city, barrio
+        if isinstance(c, dict):
+            courier_id = c.get("courier_id") or c.get("id")
+            full_name = c.get("full_name", "")
+            phone = c.get("phone", "")
+            city = c.get("city", "")
+            barrio = c.get("barrio", "")
+        else:
+            # Si viene de get_pending_couriers() (couriers): (id, user_id, full_name, id_number, phone, city, barrio, ...)
+            # Si viene de get_pending_couriers_by_admin(): puede venir como (courier_id, full_name, phone, city, barrio, ...)
+            courier_id = c[0] if len(c) > 0 else None
+            full_name = c[2] if (len(c) > 2 and es_admin_plataforma) else (c[1] if len(c) > 1 else "")
+            phone = c[4] if (len(c) > 4 and es_admin_plataforma) else (c[2] if len(c) > 2 else "")
+            city = c[5] if (len(c) > 5 and es_admin_plataforma) else (c[3] if len(c) > 3 else "")
+            barrio = c[6] if (len(c) > 6 and es_admin_plataforma) else (c[4] if len(c) > 4 else "")
+
+        if not courier_id:
+            continue
+
+        texto = (
+            "REPARTIDOR PENDIENTE\n"
+            f"ID: {courier_id}\n"
+            f"Nombre: {full_name}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"courier_approve_{courier_id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"courier_reject_{courier_id}")
+            ]
+        ]
+
+        update.message.reply_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+
 def main():
     print("[BOOT] Iniciando polling...")
     print("[BOOT] Polling iniciado. Bot activo.")
