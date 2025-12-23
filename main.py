@@ -1676,7 +1676,7 @@ def main():
 
     # Callbacks del Panel de Administración de Plataforma
     dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern="ally_"))
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern="courier_"))
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="admin_"))  # Plataforma
 
     # Comandos administrativos de Plataforma
