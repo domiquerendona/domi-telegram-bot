@@ -1730,7 +1730,7 @@ def main():
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
             LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
     dp.add_handler(admin_conv)
 
