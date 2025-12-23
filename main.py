@@ -950,6 +950,7 @@ def admin_menu_callback(update, context):
         return
 
     if data == "admin_config":
+        query.answer()
         keyboard = [
             [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
             [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
