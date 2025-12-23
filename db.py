@@ -1019,4 +1019,78 @@ def count_admins():
     n = cur.fetchone()[0]
     conn.close()
     return n
+    
+# =========================
+# ADMINISTRADORES (POR admin_id) - Panel/Config
+# =========================
+
+def get_all_admins():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        FROM admins
+        WHERE is_deleted=0
+        ORDER BY id DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admin_by_id(admin_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        FROM admins
+        WHERE id=? AND is_deleted=0
+        LIMIT 1
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def update_admin_status_by_id(admin_id: int, new_status: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins
+        SET status=?
+        WHERE id=? AND is_deleted=0
+    """, (new_status, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def count_admin_couriers(admin_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_couriers
+        WHERE admin_id=?
+    """, (admin_id,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000):
+    """
+    Regla: contar repartidores del admin con saldo >= min_balance
+    usando admin_couriers.balance (saldo por vínculo).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_couriers
+        WHERE admin_id=?
+          AND balance >= ?
+    """, (admin_id, min_balance))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
 
