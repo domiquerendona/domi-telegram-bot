@@ -1178,18 +1178,46 @@ def pendientes_callback(update, context):
         return
 
     query.answer("Opción no reconocida.", show_alert=True)
-    
+
+
 def courier_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar repartidores."""
     query = update.callback_query
     data = query.data  # Ej: "courier_approve_3" o "courier_reject_5"
     user_id = query.from_user.id
 
-    # Solo el administrador de plataforna puede usar estos botones
-    if user_id != ADMIN_USER_ID:
-        query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
-        return
+    # -----------------------------
+    # PERMISOS (nuevo enfoque)
+    # -----------------------------
+    # - Admin de plataforma: permitido (como antes)
+    # - Admin local: permitido (nuevo enfoque)
+    # - Otros: denegado
+    admin_id = None
+    es_admin_plataforma = (user_id == ADMIN_USER_ID)
 
+    if not es_admin_plataforma:
+        # Intentar validar como Administrador Local
+        try:
+            admin = get_admin_by_user_id(user_id)
+        except Exception:
+            admin = None
+
+        if not admin:
+            query.answer("No tienes permisos para usar estos botones.", show_alert=True)
+            return
+
+        # Soportar si get_admin_by_user_id devuelve tupla o dict
+        if isinstance(admin, dict):
+            admin_id = admin.get("id")
+        else:
+            # Tupla típica: (id, user_id, full_name, phone, city, barrio, team_name, document_number, ...)
+            admin_id = admin[0] if len(admin) > 0 else None
+
+        if not admin_id:
+            query.answer("No se pudo validar tu rol de administrador.", show_alert=True)
+            return
+
+    # Validación de prefijo del callback_data
     if not data.startswith("courier_"):
         query.answer("Comando no reconocido.", show_alert=True)
         return
@@ -1207,19 +1235,32 @@ def courier_approval_callback(update, context):
         query.answer("ID de repartidor no válido.", show_alert=True)
         return
 
-    # -------------------------------------------------------------
+    # -----------------------------
     # APROBAR REPARTIDOR
-    # -------------------------------------------------------------
+    # -----------------------------
     if accion == "approve":
         nuevo_estado = "APPROVED"
 
-        # Actualizar en la BD
+        # 1) Actualizar en BD: nuevo enfoque (vínculo admin_couriers)
+        #    Si es admin de plataforma y no hay admin_id, se permite actuar "global"
+        #    (puedes decidir si quieres bloquearlo; aquí lo dejamos flexible).
+        try:
+            # Si existe el vínculo por admin, actualízalo
+            if admin_id is not None:
+                # Debe existir en db.py una función similar a:
+                # update_admin_courier_status(admin_id, courier_id, status, is_active=1)
+                update_admin_courier_status(admin_id, courier_id, nuevo_estado, is_active=1)
+        except Exception as e:
+            print(f"[ERROR] courier_approval_callback (approve) admin_couriers: {e}")
+            query.answer(f"Error al actualizar el vínculo del repartidor:\n{e}", show_alert=True)
+            return
+
+        # 2) Compatibilidad: si tu sistema aún usa couriers.status global, actualízalo también
         try:
             update_courier_status(courier_id, nuevo_estado)
         except Exception as e:
-            print(f"[ERROR] courier_approval_callback (approve): {e}")
-            query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
-            return
+            # No lo hacemos fatal si estás migrando; pero lo reportamos
+            print(f"[WARN] No se pudo actualizar couriers.status (approve): {e}")
 
         # Obtener datos del repartidor
         courier = get_courier_by_id(courier_id)
@@ -1240,23 +1281,33 @@ def courier_approval_callback(update, context):
         except Exception as e:
             print("Error notificando repartidor aprobado:", e)
 
-        # Confirmar al admin
-        query.edit_message_text("El repartidor '{}' ha sido APROBADO.".format(full_name))
+        # Confirmar al admin (plataforma o local)
+        if es_admin_plataforma:
+            query.edit_message_text("El repartidor '{}' ha sido APROBADO.".format(full_name))
+        else:
+            query.edit_message_text("El repartidor '{}' ha sido APROBADO para tu equipo.".format(full_name))
         return
 
-    # -------------------------------------------------------------
+    # -----------------------------
     # RECHAZAR REPARTIDOR
-    # -------------------------------------------------------------
+    # -----------------------------
     elif accion == "reject":
         nuevo_estado = "REJECTED"
 
-        # Actualizar en la BD
+        # 1) Actualizar en BD: nuevo enfoque (vínculo admin_couriers)
+        try:
+            if admin_id is not None:
+                update_admin_courier_status(admin_id, courier_id, nuevo_estado, is_active=0)
+        except Exception as e:
+            print(f"[ERROR] courier_approval_callback (reject) admin_couriers: {e}")
+            query.answer(f"Error al actualizar el vínculo del repartidor:\n{e}", show_alert=True)
+            return
+
+        # 2) Compatibilidad: si aún usas couriers.status global, actualízalo también
         try:
             update_courier_status(courier_id, nuevo_estado)
         except Exception as e:
-            print(f"[ERROR] courier_approval_callback (reject): {e}")
-            query.answer(f"Error al actualizar el estado del repartidor:\n{e}", show_alert=True)
-            return
+            print(f"[WARN] No se pudo actualizar couriers.status (reject): {e}")
 
         courier = get_courier_by_id(courier_id)
         if not courier:
@@ -1279,15 +1330,19 @@ def courier_approval_callback(update, context):
             print("Error notificando repartidor rechazado:", e)
 
         # Confirmar al admin
-        query.edit_message_text("El repartidor '{}' ha sido RECHAZADO.".format(full_name))
+        if es_admin_plataforma:
+            query.edit_message_text("El repartidor '{}' ha sido RECHAZADO.".format(full_name))
+        else:
+            query.edit_message_text("El repartidor '{}' ha sido RECHAZADO para tu equipo.".format(full_name))
         return
 
-    # -------------------------------------------------------------
+    # -----------------------------
     # ACCIÓN NO RECONOCIDA
-    # -------------------------------------------------------------
+    # -----------------------------
     else:
         query.answer("Acción no reconocida.", show_alert=True)
         return
+
 
 def admin_configuraciones(update, context):
     user_id = update.effective_user.id
