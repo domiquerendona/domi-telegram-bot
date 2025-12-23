@@ -2089,7 +2089,11 @@ def main():
     # Registro de Administradores Locales
     # -------------------------
     admin_conv = ConversationHandler(
-        entry_points=[CommandHandler("soy_admin", soy_admin)],
+        entry_points=[
+            CommandHandler("soy_admin", soy_admin),
+            CommandHandler("soy_administrador", soy_admin),
+        ],
+
         states={
             LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
             LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
