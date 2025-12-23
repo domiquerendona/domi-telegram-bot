@@ -913,6 +913,10 @@ def admin_menu_callback(update, context):
         admins_gestion(update, context)
         return
 
+    if data == "admin_administradores_pendientes":
+       query.answer()
+       admins_pendientes(update, context)
+       return
 
     # Submenú (placeholders por ahora)
     if data == "admin_admins_registrados":
@@ -1023,6 +1027,50 @@ def admins_gestion(update, context):
         "Administradores registrados:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+def admins_pendientes(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    # Seguridad: solo Admin de Plataforma
+    if user_id != ADMIN_USER_ID:
+        query.answer("No tienes permisos para esto.", show_alert=True)
+        return
+
+    admins = get_pending_admins()
+
+    if not admins:
+        query.edit_message_text(
+            "No hay administradores pendientes en este momento.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+            ])
+        )
+        return
+
+    keyboard = []
+
+    for admin in admins:
+        # Estructura:
+        # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        admin_id = admin[0]
+        full_name = admin[2]
+        city = admin[4]
+
+        keyboard.append([
+            InlineKeyboardButton(
+                f"ID {admin_id} - {full_name} ({city})",
+                callback_data=f"admin_ver_pendiente_{admin_id}"
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")])
+
+    query.edit_message_text(
+        "Administradores pendientes de aprobación:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
     
 
 def pendientes(update, context):
