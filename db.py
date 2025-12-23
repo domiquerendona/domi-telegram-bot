@@ -277,8 +277,8 @@ SET team_name = COALESCE(team_name, full_name)
 WHERE team_name IS NULL OR team_name = ''
 """)
 
-    conn.commit()
-    conn.close()
+conn.commit()
+conn.close()
 
 
 # ---------- USUARIOS ----------
