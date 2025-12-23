@@ -28,7 +28,7 @@ from db import (
     update_ally,
     delete_ally,
     get_all_admins,
-    get_pending_admins
+    get_pending_admins,
     get_admin_by_id,
     update_admin_status_by_id,
     count_admin_couriers,
