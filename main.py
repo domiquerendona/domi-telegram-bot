@@ -833,6 +833,7 @@ def admin_accept(update, context):
 
     context.user_data.clear()
     return ConversationHandler.END
+    
         
 def admin_menu(update, context):
     """Panel de Administración de Plataforma."""
@@ -852,6 +853,7 @@ def admin_menu(update, context):
     keyboard = [
         [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
         [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
+        [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
@@ -862,6 +864,7 @@ def admin_menu(update, context):
         texto,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
     
 def admin_menu_callback(update, context):
     """Maneja los botones del Panel de Administración de Plataforma."""
@@ -877,15 +880,68 @@ def admin_menu_callback(update, context):
     # Botón: Aliados pendientes (Plataforma)
     if data == "admin_aliados_pendientes":
         query.answer()
-        # Reutilizamos la función existente
         aliados_pendientes(update, context)
         return
 
     # Botón: Repartidores pendientes (Plataforma)
     if data == "admin_repartidores_pendientes":
         query.answer()
-        # Reutilizamos la función existente
         repartidores_pendientes(update, context)
+        return
+
+    # Botón: Gestionar administradores (nuevo)
+    if data == "admin_administradores":
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("📋 Administradores registrados", callback_data="admin_admins_registrados")],
+            [InlineKeyboardButton("⏳ Administradores pendientes", callback_data="admin_admins_pendientes")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Gestión de administradores.\n¿Qué deseas hacer?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Submenú (placeholders por ahora)
+    if data == "admin_admins_registrados":
+        query.answer()
+        query.edit_message_text(
+            "Administradores registrados: (pendiente de implementar)\n\n"
+            "⬅️ Usa el botón 'Volver al Panel' para regresar."
+        )
+        return
+
+    if data == "admin_admins_pendientes":
+        query.answer()
+        query.edit_message_text(
+            "Administradores pendientes: (pendiente de implementar)\n\n"
+            "⬅️ Usa el botón 'Volver al Panel' para regresar."
+        )
+        return
+
+    # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
+    if data == "admin_volver_panel":
+        query.answer()
+
+        texto = (
+            "Panel de Administración de Plataforma.\n"
+            "¿Qué deseas revisar?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
+            [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
+            [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
+            [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
+            [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
+            [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
+            [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        ]
+
+        query.edit_message_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     # Botones aún no implementados (placeholders)
@@ -898,6 +954,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
             [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
             [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+            [InlineKeyboardButton("Gestionar administradores", callback_data="config_gestion_administradores")],
         ]
 
         query.edit_message_text(
@@ -914,7 +971,6 @@ def admin_menu_callback(update, context):
         query.answer("La sección de finanzas aún no está implementada.")
         return
 
-    # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
     
 
@@ -1540,6 +1596,15 @@ def admin_config_callback(update, context):
         courier_id = int(data.split("_")[-1])
         delete_courier(courier_id)
         query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
+        return
+
+        # 3.3) Gestionar administradores (placeholder por ahora)
+    if data == "config_gestion_administradores":
+        query.answer()
+        query.edit_message_text(
+            "Gestión de administradores (Configuraciones): pendiente de implementar.\n\n"
+            "Siguiente paso: listar administradores registrados y pendientes."
+        )
         return
 
     # 4) Cerrar menú de configuraciones
