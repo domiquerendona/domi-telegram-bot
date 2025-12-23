@@ -1433,6 +1433,7 @@ def admin_config_callback(update, context):
 
     # 1) Ver totales de registros
     if data == "config_totales":
+        query.answer()
         total_allies, total_couriers = get_totales_registros()
         texto = (
             "Resumen de registros:\n\n"
@@ -1445,6 +1446,7 @@ def admin_config_callback(update, context):
 
     # 2) Gestionar aliados (listar)
     if data == "config_gestion_aliados":
+        query.answer()
         allies = get_all_allies()
 
         if not allies:
@@ -1473,6 +1475,7 @@ def admin_config_callback(update, context):
 
     # 2.1) Ver detalle de aliado
     if data.startswith("config_ver_ally_"):
+        query.answer()
         ally_id = int(data.split("_")[-1])
         ally = get_ally_by_id(ally_id)
 
@@ -1516,6 +1519,7 @@ def admin_config_callback(update, context):
 
     # 2.2) Confirmar borrado de aliado
     if data.startswith("config_confirm_delete_ally_"):
+        query.answer()
         ally_id = int(data.split("_")[-1])
         delete_ally(ally_id)
         query.edit_message_text("El aliado {} ha sido eliminado.".format(ally_id))
@@ -1523,6 +1527,7 @@ def admin_config_callback(update, context):
 
     # 3) Gestionar repartidores (listar)
     if data == "config_gestion_repartidores":
+        query.answer()
         couriers = get_all_couriers()
 
         if not couriers:
@@ -1594,6 +1599,7 @@ def admin_config_callback(update, context):
 
     # 3.2) Confirmar borrado de repartidor
     if data.startswith("config_confirm_delete_courier_"):
+        query.answer()
         courier_id = int(data.split("_")[-1])
         delete_courier(courier_id)
         query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
@@ -1610,8 +1616,11 @@ def admin_config_callback(update, context):
 
     # 4) Cerrar menú de configuraciones
     if data == "config_cerrar":
+        query.answer()
         query.edit_message_text("Menú de configuraciones cerrado.")
         return
+
+    query.answer("Opción no reconocida.", show_alert=True)
 
 
 def repartidores_pendientes(update, context):
