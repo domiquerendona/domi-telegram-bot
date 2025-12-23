@@ -1040,6 +1040,7 @@ def admins_gestion(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
 def admins_pendientes(update, context):
     query = update.callback_query
     user_id = query.from_user.id
@@ -1049,7 +1050,20 @@ def admins_pendientes(update, context):
         query.answer("No tienes permisos para esto.", show_alert=True)
         return
 
-    admins = get_pending_admins()
+    # Responder el callback para evitar “cargando…”
+    query.answer()
+
+    try:
+        admins = get_pending_admins()
+    except Exception as e:
+        print("[ERROR] get_pending_admins:", e)
+        query.edit_message_text(
+            "Error consultando administradores pendientes. Revisa logs.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+            ])
+        )
+        return
 
     if not admins:
         query.edit_message_text(
@@ -1061,18 +1075,15 @@ def admins_pendientes(update, context):
         return
 
     keyboard = []
-
     for admin in admins:
-        # Estructura:
-        # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
         admin_id = admin[0]
         full_name = admin[2]
         city = admin[4]
 
         keyboard.append([
             InlineKeyboardButton(
-                f"ID {admin_id} - {full_name} ({city})",
-                callback_data=f"admin_ver_pendiente_{admin_id}"
+                "ID {} - {} ({})".format(admin_id, full_name, city),
+                callback_data="admin_ver_pendiente_{}".format(admin_id)
             )
         ])
 
@@ -1083,7 +1094,6 @@ def admins_pendientes(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    
 
 def pendientes(update, context):
     """Menú rápido para ver registros pendientes."""
