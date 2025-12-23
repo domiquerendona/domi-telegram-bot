@@ -1700,16 +1700,6 @@ def admin_config_callback(update, context):
         query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
         return
 
-        # 3.3) Gestionar administradores (placeholder por ahora)
-    if data == "config_gestion_administradores":
-        query.answer()
-        query.edit_message_text(
-            "Gestión de administradores (Configuraciones): pendiente de implementar.\n\n"
-            "Siguiente paso: listar administradores registrados y pendientes."
-        )
-        return
-
-    # 4) Cerrar menú de configuraciones
     # 4) Gestionar administradores (listar)
     if data == "config_gestion_administradores":
         query.answer()
