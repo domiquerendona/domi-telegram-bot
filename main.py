@@ -929,10 +929,7 @@ def admin_menu_callback(update, context):
 
     if data == "admin_admins_pendientes":
         query.answer()
-        query.edit_message_text(
-            "Administradores pendientes: (pendiente de implementar)\n\n"
-            "⬅️ Usa el botón 'Volver al Panel' para regresar."
-        )
+        admins_pendientes(update, context)
         return
 
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
