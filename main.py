@@ -464,7 +464,7 @@ def courier_confirm(update, context):
     
 # Notificar al Administrador de Plataforma sobre nuevo aliado pendiente
 try:
-    context.bot.send_message(
+    updater.bot.send_message(
         chat_id=ADMIN_USER_ID,
         text=(
             "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
@@ -479,7 +479,7 @@ try:
             owner_name,
             ally_phone,
             city,
-            barrio,
+            barrio,                                                        
         )
     )
 except Exception as e:
@@ -1733,6 +1733,17 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     dp.add_handler(admin_conv)
+    
+    # -------------------------
+    # Notificación de arranque al Administrador de Plataforma
+    # -------------------------
+    try:
+        updater.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text="Bot iniciado correctamente."
+        )
+    except Exception as e:
+        print("Error enviando notificación al Administrador de Plataforma:", e)
 
     # Iniciar el bot
     updater.start_polling()
