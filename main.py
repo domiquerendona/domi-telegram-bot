@@ -907,6 +907,12 @@ def admin_menu_callback(update, context):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
+        
+    if data == "admin_gestion_admins":
+        query.answer()
+        admins_gestion(update, context)
+        return
+
 
     # Submenú (placeholders por ahora)
     if data == "admin_admins_registrados":
@@ -978,6 +984,45 @@ def admin_menu_callback(update, context):
         return
 
     query.answer("Opción no reconocida.", show_alert=True)
+
+def admins_gestion(update, context):
+    """Lista administradores registrados y pendientes (Plataforma)."""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if user_id != ADMIN_USER_ID:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    admins = get_all_admins()
+
+    if not admins:
+        query.edit_message_text("No hay administradores registrados.")
+        return
+
+    keyboard = []
+
+    for admin in admins:
+        admin_id = admin["id"]
+        full_name = admin["full_name"]
+        status = admin["status"]
+
+        texto = f"ID {admin_id} - {full_name} ({status})"
+        keyboard.append([
+            InlineKeyboardButton(
+                texto,
+                callback_data=f"admin_ver_{admin_id}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("⬅ Volver", callback_data="admin_volver")
+    ])
+
+    query.edit_message_text(
+        "Administradores registrados:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     
 
 def pendientes(update, context):
