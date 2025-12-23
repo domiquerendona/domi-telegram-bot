@@ -118,6 +118,7 @@ def start(update, context):
         "Comandos principales:\n"
         "• /soy_aliado  - Registrar tu negocio aliado\n"
         "• /soy_repartidor  - Registrarte como repartidor\n"
+        "• /soy_administrador  - Registrarte como administrador\n"
         "• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)\n"
         "• /menu  - Volver a ver este menú\n"
     )
@@ -1007,6 +1008,42 @@ def admins_gestion(update, context):
         query.edit_message_text("No hay administradores registrados.")
         return
 
+    if data.startswith("admin_aprobar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        update_admin_status_by_id(admin_id, "APPROVED")
+
+        query.edit_message_text(
+            "✅ Administrador aprobado correctamente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+        
+
+    if data.startswith("admin_rechazar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        update_admin_status_by_id(admin_id, "REJECTED")
+
+        query.edit_message_text(
+            "❌ Administrador rechazado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
+        
+    if data.startswith("admin_ver_pendiente_"):
+        query.answer()
+        admin_ver_pendiente(update, context)
+        return
+
+            
     keyboard = []
 
     for admin in admins:
@@ -1084,6 +1121,45 @@ def admins_pendientes(update, context):
         "Administradores pendientes de aprobación:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    
+
+def admin_ver_pendiente(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if user_id != ADMIN_USER_ID:
+        query.answer("No tienes permisos.", show_alert=True)
+        return
+
+    admin_id = int(query.data.split("_")[-1])
+    admin = get_admin_by_id(admin_id)
+
+    if not admin:
+        query.edit_message_text("Administrador no encontrado.")
+        return
+
+    # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+    texto = (
+        "Administrador pendiente:\n\n"
+        f"ID: {admin[0]}\n"
+        f"Nombre: {admin[2]}\n"
+        f"Teléfono: {admin[3]}\n"
+        f"Ciudad: {admin[4]}\n"
+        f"Barrio: {admin[5]}\n"
+        f"Equipo: {admin[8] or '-'}\n"
+        f"Documento: {admin[9] or '-'}\n"
+        f"Estado: {admin[6]}"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"admin_aprobar_{admin_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_rechazar_{admin_id}")
+        ],
+        [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+    ]
+
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 def pendientes(update, context):
