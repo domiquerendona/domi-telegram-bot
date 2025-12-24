@@ -786,30 +786,16 @@ def admin_teamname(update, context):
     context.user_data["admin_team_name"] = team_name
     update.message.reply_text("Escribe tu número de teléfono:")
     return LOCAL_ADMIN_PHONE
-
+    
 
 def admin_phone(update, context):
-    """
-    Este estado se usa dos veces:
-    1) Primero para guardar team_name (nombre del equipo).
-    2) Luego para guardar phone (teléfono) y avanzar.
-    """
-    text = update.message.text.strip()
+    phone = update.message.text.strip()
 
-    # 1) Si aún NO hemos guardado team_name, este mensaje es el team_name
-    if "team_name" not in context.user_data:
-        team_name = text
-        context.user_data["team_name"] = team_name
-        print(f"[DEBUG] admin_phone (team_name): team_name={team_name}")
+    if len(phone) < 7:
+        update.message.reply_text("El teléfono parece inválido. Escríbelo de nuevo:")
+        return LOCAL_ADMIN_PHONE
 
-        update.message.reply_text("Ahora escribe tu número de teléfono:")
-        return LOCAL_ADMIN_PHONE  # seguimos en el mismo estado, ahora esperando el teléfono
-
-    # 2) Si ya hay team_name guardado, ahora este mensaje es el teléfono
-    phone = text
     context.user_data["phone"] = phone
-    print(f"[DEBUG] admin_phone (phone): phone={phone}")
-
     update.message.reply_text("¿En qué ciudad vas a operar como Administrador Local?")
     return LOCAL_ADMIN_CITY
 
