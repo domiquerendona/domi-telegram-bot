@@ -91,40 +91,121 @@ def start(update, context):
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    # Revisamos si ya es aliado y/o repartidor
+    # Revisamos perfiles
     ally = get_ally_by_user_id(user_db_id)
     courier = get_courier_by_user_id(user_db_id)
 
+    # Admin local por telegram_id (admins.user_id = telegram_id)
+    admin_local = None
+    try:
+        admin_local = get_admin_by_user_id(user_tg.id)
+    except Exception:
+        admin_local = None
+
+    es_admin_plataforma = (user_tg.id == ADMIN_USER_ID)
+
     estado_lineas = []
+    siguientes_pasos = []
+
+    # 1) Admin Plataforma
+    if es_admin_plataforma:
+        estado_lineas.append("• Administrador de Plataforma: ACTIVO.")
+        siguientes_pasos.append("• Usa /admin para abrir el Panel de Plataforma.")
+
+    # 2) Admin Local
+    if admin_local:
+        # Soportar dict/tupla
+        if isinstance(admin_local, dict):
+            admin_status = admin_local.get("status", "PENDING")
+            team_name = admin_local.get("team_name") or "-"
+        else:
+            # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+            admin_status = admin_local[6]
+            team_name = admin_local[8] or "-"
+
+        estado_lineas.append(f"• Administrador Local: equipo {team_name} (estado: {admin_status}).")
+
+        if admin_status == "PENDING":
+            siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
+        elif admin_status == "APPROVED":
+            siguientes_pasos.append(
+                "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (10 repartidores con saldo mínimo)."
+            )
+            siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
+        elif admin_status == "INACTIVE":
+            siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
+        elif admin_status == "REJECTED":
+            siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+
+    # 3) Aliado
     if ally:
         estado_lineas.append(
             f"• Aliado: {ally['business_name']} (estado: {ally['status']})."
         )
+        if ally["status"] == "APPROVED":
+            siguientes_pasos.append("• Puedes crear pedidos con /nuevo_pedido.")
+        else:
+            siguientes_pasos.append("• Tu negocio aún no está aprobado. Cuando esté APPROVED podrás usar /nuevo_pedido.")
+
+    # 4) Repartidor
     if courier:
         codigo = courier["code"] if courier["code"] else "sin código"
         estado_lineas.append(
             f"• Repartidor código interno: {codigo} (estado: {courier['status']})."
         )
+        if courier["status"] == "APPROVED":
+            siguientes_pasos.append("• Pronto podrás activarte y recibir ofertas (ONLINE) desde tu panel de repartidor.")
+        else:
+            siguientes_pasos.append("• Tu registro de repartidor aún está pendiente de aprobación.")
 
+    # Si no tiene ningún perfil
     if not estado_lineas:
-        estado_text = "Aún no estás registrado como aliado ni como repartidor."
+        estado_text = "Aún no estás registrado como aliado, repartidor ni administrador."
+        siguientes_pasos = [
+            "• Si tienes un negocio: usa /soy_aliado",
+            "• Si eres repartidor: usa /soy_repartidor",
+            "• Si vas a liderar un equipo: usa /soy_administrador",
+        ]
     else:
         estado_text = "\n".join(estado_lineas)
+
+    if not siguientes_pasos:
+        siguientes_text = "• Usa los comandos principales para continuar."
+    else:
+        siguientes_text = "\n".join(siguientes_pasos)
+
+    # Comandos sugeridos (solo los que aplican)
+    comandos = []
+    comandos.append("• /soy_aliado  - Registrar tu negocio aliado")
+    comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+    comandos.append("• /soy_administrador  - Registrarte como administrador")
+
+    # Solo mostrar /nuevo_pedido si es aliado APPROVED
+    if ally and ally.get("status") == "APPROVED":
+        comandos.append("• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)")
+
+    # Paneles si aplica
+    if admin_local:
+        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
+    if es_admin_plataforma:
+        comandos.append("• /admin  - Panel de administración de plataforma")
+
+    comandos.append("• /menu  - Volver a ver este menú")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
         "Sistema para conectar negocios aliados con repartidores de confianza.\n\n"
         "Tu estado actual:\n"
         f"{estado_text}\n\n"
+        "Siguiente paso recomendado:\n"
+        f"{siguientes_text}\n\n"
         "Comandos principales:\n"
-        "• /soy_aliado  - Registrar tu negocio aliado\n"
-        "• /soy_repartidor  - Registrarte como repartidor\n"
-        "• /soy_administrador  - Registrarte como administrador\n"
-        "• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)\n"
-        "• /menu  - Volver a ver este menú\n"
+        + "\n".join(comandos)
+        + "\n"
     )
 
     update.message.reply_text(mensaje)
+
 
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
