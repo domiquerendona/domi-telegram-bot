@@ -1014,18 +1014,27 @@ def admin_menu_callback(update, context):
         )
         return
 
-    if data.startswith("admin_rechazar_"):
-        query.answer()
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "REJECTED")
+    try:
+        admin = get_admin_by_id(admin_id)
+        admin_user_id = admin[1]  # user_id del admin (Telegram)
+        admin_name = admin[2] or "Administrador"
 
-        query.edit_message_text(
-            "❌ Administrador rechazado.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
-            ])
+        # Reglas operativas (ajusta texto si quieres)
+        msg = (
+            "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
+            "IMPORTANTE: Aún no puedes operar hasta cumplir los requisitos.\n\n"
+            "Requisitos para operar:\n"
+            "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
+            "2) Cada repartidor debe estar aprobado y con saldo por vínculo >= 5000.\n"
+            "3) Tu cuenta debe estar activa y con las recargas necesarias según la regla de la plataforma.\n\n"
+            "Cuando cumplas, podrás usar las funciones operativas del sistema.\n"
+            "Si necesitas soporte para completar el proceso, responde a este chat."
         )
-        return
+
+        context.bot.send_message(chat_id=admin_user_id, text=msg)
+
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin aprobado:", e)
 
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
