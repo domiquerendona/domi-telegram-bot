@@ -1370,7 +1370,8 @@ def admin_puede_operar(admin_id):
         )
         return (False, msg)
 
-    return (True, None)
+    return (True, None
+           
 
 def mi_admin(update, context):
     user_id = update.effective_user.id
@@ -1378,7 +1379,7 @@ def mi_admin(update, context):
     # Validar que sea admin local registrado
     admin = None
     try:
-        admin = get_admin_by_user_id(user_id)
+        admin = get_admin_by_user_id(user_id)  # puede devolver dict o tupla
     except Exception:
         admin = None
 
@@ -1389,26 +1390,38 @@ def mi_admin(update, context):
     # Soportar dict/tupla
     admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
 
+    # Traer detalle completo (incluye team_code)
     admin_full = get_admin_by_id(admin_id)
+    if not admin_full:
+        update.message.reply_text("No se pudo cargar tu perfil de administrador. Revisa BD.")
+        return
+
     status = admin_full[6]
+    team_name = admin_full[8] or "-"
+    team_code = admin_full[10] or "-"
 
     # Validación operativa en tiempo real
     ok, msg = admin_puede_operar(admin_id)
+
+    header = (
+        "Panel Administrador Local\n\n"
+        f"Estado: {status}\n"
+        f"Equipo: {team_name}\n"
+        f"Código de equipo: {team_code}\n"
+        "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
+    )
 
     if not ok:
         keyboard = [
             [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
         ]
         update.message.reply_text(
-            "Panel Administrador Local\n\n"
-            f"Estado: {status}\n\n"
-            + msg,
+            header + msg,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-        # Si ya puede operar (por ahora mostramos menú mínimo)
-        # Aquí luego agregamos funciones operativas reales   
+    # Si ya puede operar (menú mínimo por ahora)
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -1416,11 +1429,12 @@ def mi_admin(update, context):
     ]
 
     update.message.reply_text(
-        "Panel Administrador Local\n\n"
+        header +
         "Ya cumples requisitos para operar.\n"
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 def admin_local_callback(update, context):
     query = update.callback_query
