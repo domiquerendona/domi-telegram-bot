@@ -1210,7 +1210,7 @@ def get_admin_by_id(admin_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
         FROM admins
         WHERE id=? AND is_deleted=0
         LIMIT 1
