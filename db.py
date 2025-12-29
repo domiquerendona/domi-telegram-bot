@@ -543,6 +543,61 @@ def get_all_couriers():
     conn.close()
     return rows
 
+def get_pending_couriers_by_admin(admin_id):
+    """
+    Retorna repartidores pendientes para un admin local según el vínculo admin_couriers.
+    Devuelve lista de tuplas: (courier_id, full_name, phone, city, barrio)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.phone,
+            c.city,
+            c.barrio
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        WHERE ac.admin_id = ?
+          AND ac.status = 'PENDING'
+        ORDER BY ac.created_at ASC
+    """, (admin_id,))
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_couriers_by_admin_and_status(admin_id, status):
+    """
+    Lista repartidores de un admin por estado del vínculo (APPROVED, BLOCKED, REJECTED, etc.)
+    Devuelve: (courier_id, full_name, phone, city, barrio, balance, link_status)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.phone,
+            c.city,
+            c.barrio,
+            ac.balance,
+            ac.status
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        WHERE ac.admin_id = ?
+          AND ac.status = ?
+        ORDER BY c.full_name ASC
+    """, (admin_id, status))
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
     conn = get_connection()
@@ -1182,6 +1237,18 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
     """, (telegram_id, role, version))
     conn.commit()
     conn.close()
+
+def update_admin_courier_status(admin_id, courier_id, status):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_couriers
+        SET status = ?, updated_at = datetime('now')
+        WHERE admin_id = ? AND courier_id = ?
+    """, (status, admin_id, courier_id))
+    conn.commit()
+    conn.close()
+
 
 
 
