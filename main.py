@@ -1326,11 +1326,12 @@ def mi_admin(update, context):
         )
         return
 
-    # Si ya puede operar (por ahora mostramos menú mínimo)
+        # Si ya puede operar (por ahora mostramos menú mínimo)
+        # Aquí luego agregamos funciones operativas reales   
     keyboard = [
+        [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
-        # Aquí luego agregamos funciones operativas reales
     ]
 
     update.message.reply_text(
@@ -1418,8 +1419,137 @@ def admin_local_callback(update, context):
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    query.edit_message_text("Opción no reconocida.")
+    if data.startswith("local_couriers_pending_"):
+        # Gate: el admin puede estar aprobado pero aún no operativo;
+        # esta gestión del equipo la puedes permitir incluso si no cumple 10/10.
+        # Si quieres bloquearlo también, activa el gate.
+        # ok, msg = admin_puede_operar(admin_id)
+        # if not ok:
+        #     query.edit_message_text(msg)
+        #     return
 
+        try:
+            pendientes = get_pending_couriers_by_admin(admin_id)  # db.py
+        except Exception as e:
+            print("[ERROR] get_pending_couriers_by_admin:", e)
+            query.edit_message_text("Error consultando pendientes de tu equipo.")
+            return
+
+        if not pendientes:
+            query.edit_message_text(
+                "No tienes repartidores pendientes por aprobar en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for c in pendientes:
+            # Esperado: (courier_id, full_name, phone, city, barrio) o similar
+            courier_id = c[0]
+            full_name = c[1] if len(c) > 1 else ""
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"ID {courier_id} - {full_name}",
+                    callback_data=f"local_courier_view_{courier_id}"
+                )
+            ])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")])
+
+        query.edit_message_text(
+            "Repartidores pendientes (tu equipo). Toca uno para ver detalle:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_courier_view_"):
+        courier_id = int(data.split("_")[-1])
+
+        # Debe existir get_courier_by_id (ya lo usas en Config)
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+
+        # courier esperado: id, user_id, full_name, id_number, phone, city, barrio, plate, bike_type, code, created_at, status, balance...
+        texto = (
+            "REPARTIDOR (pendiente de tu equipo)\n\n"
+            f"ID: {courier[0]}\n"
+            f"Nombre: {courier[2]}\n"
+            f"Documento: {courier[3]}\n"
+            f"Teléfono: {courier[4]}\n"
+            f"Ciudad: {courier[5]}\n"
+            f"Barrio: {courier[6]}\n"
+            f"Placa: {courier[7] or '-'}\n"
+            f"Moto: {courier[8] or '-'}\n"
+        )
+
+         keyboard = [
+            [
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"local_courier_approve_{courier_id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"local_courier_reject_{courier_id}")
+            ],
+            [InlineKeyboardButton("⛔ Bloquear", callback_data=f"local_courier_block_{courier_id}")],
+            [InlineKeyboardButton("⬅ Volver", callback_data=f"local_couriers_pending_{admin_id}")]
+        ]
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+ 
+    if data.startswith("local_courier_approve_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "APPROVED")  # db.py (nueva)
+        except Exception as e:
+            print("[ERROR] update_admin_courier_status APPROVED:", e)
+            query.edit_message_text("Error aprobando repartidor. Revisa logs.")
+            return
+
+        query.edit_message_text(
+            "✅ Repartidor aprobado en tu equipo.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+            ])
+        )
+        return
+
+
+    if data.startswith("local_courier_reject_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "REJECTED")
+        except Exception as e:
+            print("[ERROR] update_admin_courier_status REJECTED:", e)
+            query.edit_message_text("Error rechazando repartidor. Revisa logs.")
+            return
+
+        query.edit_message_text(
+            "❌ Repartidor rechazado para tu equipo.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+            ])    
+        )
+        return
+
+
+    if data.startswith("local_courier_block_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "BLOCKED")
+        except Exception as e:
+            print("[ERROR] update_admin_courier_status BLOCKED:", e)
+            query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
+            return
+
+        query.edit_message_text(
+            "⛔ Repartidor bloqueado en tu equipo.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+            ])
+        )
+        return
 
 
 def botones_aliados(update, context):
@@ -2287,7 +2417,10 @@ def main():
     dp.add_handler(CommandHandler("admin", admin_menu))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
-    dp.add_handler(CallbackQueryHandler(admin_local_callback, pattern=r"^local_(check|status)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(
+        admin_local_callback,
+        pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
+    ))
 
     # -------------------------
     # Callbacks (ordenados por especificidad)
