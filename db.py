@@ -277,6 +277,48 @@ def init_db():
         WHERE team_name IS NULL OR team_name = ''
     """)
 
+    # --- Términos y Condiciones / Contratos (versionado por rol) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,                 -- USER / ALLY / COURIER / ADMIN_LOCAL / ADMIN_PLATFORM
+            version TEXT NOT NULL,              -- ej: 2025-12-29-v1
+            url TEXT NOT NULL,                  -- URL oficial en domiquerendona.com
+            sha256 TEXT NOT NULL,               -- hash del texto exacto
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(role, version)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_acceptances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,       -- Telegram user id
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            accepted_at TEXT DEFAULT (datetime('now')),
+            message_id INTEGER,
+            UNIQUE(telegram_id, role, version, sha256)
+        );
+    """)
+
+    # Opcional: auditoría "cada vez que se conecta"
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_session_acks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            acked_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_versions_role_active ON terms_versions(role, is_active)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_acceptances_tid_role ON terms_acceptances(telegram_id, role)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_session_acks_tid_role ON terms_session_acks(telegram_id, role)")
+
     conn.commit()
     conn.close()
 
@@ -1093,4 +1135,56 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     n = cur.fetchone()[0]
     conn.close()
     return n
+
+def get_active_terms_version(role: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT version, url, sha256
+        FROM terms_versions
+        WHERE role = ? AND is_active = 1
+        ORDER BY id DESC
+        LIMIT 1
+    """, (role,))
+    row = cur.fetchone()
+    conn.close()
+    return row  # (version, url, sha256) o None
+
+def has_accepted_terms(telegram_id: int, role: str, version: str, sha256: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1
+        FROM terms_acceptances
+        WHERE telegram_id = ? AND role = ? AND version = ? AND sha256 = ?
+        LIMIT 1
+    """, (telegram_id, role, version, sha256))
+    ok = cur.fetchone() is not None
+    conn.close()
+    return ok
+
+def save_terms_acceptance(telegram_id: int, role: str, version: str, sha256: str, message_id: int = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
+        VALUES (?, ?, ?, ?, ?)
+    """, (telegram_id, role, version, sha256, message_id))
+    conn.commit()
+    conn.close()
+
+def save_terms_session_ack(telegram_id: int, role: str, version: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO terms_session_acks (telegram_id, role, version)
+        VALUES (?, ?, ?)
+    """, (telegram_id, role, version))
+    conn.commit()
+    conn.close()
+
+
+
+
+
 
