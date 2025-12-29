@@ -270,6 +270,22 @@ def init_db():
     if "document_number" not in admins_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
 
+    # --- Migración: agregar team_code a admins si no existe ---
+    if "team_code" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
+
+    # Completar team_code en admins existentes si está vacío
+    # Formato temporal: TEAM{id}  (ej: TEAM1, TEAM12)
+    cur.execute("""
+        UPDATE admins
+        SET team_code = 'TEAM' || id
+        WHERE team_code IS NULL OR team_code = ''
+    """)
+
+    # Índice único para que no se repita
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code ON admins(team_code)")
+ 
+
     # Completar team_name en admins existentes si está vacío
     cur.execute("""
         UPDATE admins
