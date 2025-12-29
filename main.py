@@ -1370,7 +1370,7 @@ def admin_puede_operar(admin_id):
         )
         return (False, msg)
 
-    return (True, None
+    return (True, None)
            
 
 def mi_admin(update, context):
