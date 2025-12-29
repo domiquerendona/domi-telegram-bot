@@ -501,6 +501,10 @@ def nuevo_pedido(update, context):
         )
         return ConversationHandler.END
 
+    # Exigir aceptación de Términos al iniciar creación de pedido (estilo plataforma)
+    if not ensure_terms(update, context, user.id, role="ALLY"):
+        return ConversationHandler.END
+
     # Si todo está bien, empezar conversación del pedido
     update.message.reply_text(
         "Crear nuevo pedido.\n\n"
@@ -1004,7 +1008,27 @@ def admin_menu_callback(update, context):
     if data.startswith("admin_aprobar_"):
         query.answer()
         admin_id = int(data.split("_")[-1])
+
         update_admin_status_by_id(admin_id, "APPROVED")
+
+        # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
+        try:
+             admin = get_admin_by_id(admin_id)
+            admin_user_id = admin[1]  # telegram_id del admin (user_id en tu tabla admins)
+
+            msg = (
+                "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
+                "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
+                "Para operar debes cumplir los requisitos.\n\n"
+                "Requisitos para operar:\n"
+                "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
+                "2) Cada uno debe estar APROBADO y con saldo por vínculo >= 5000.\n"
+                "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
+                "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
+            )
+            context.bot.send_message(chat_id=admin_user_id, text=msg)
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin aprobado:", e)
 
         query.edit_message_text(
             "✅ Administrador aprobado correctamente.",
@@ -1014,34 +1038,11 @@ def admin_menu_callback(update, context):
         )
         return
 
-    try:
-        admin = get_admin_by_id(admin_id)
-        admin_user_id = admin[1]  # user_id del admin (Telegram)
-        admin_name = admin[2] or "Administrador"
-
-        # Reglas operativas (ajusta texto si quieres)
-        msg = (
-            "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
-            "IMPORTANTE: Aún no puedes operar hasta cumplir los requisitos.\n\n"
-            "Requisitos para operar:\n"
-            "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
-            "2) Cada repartidor debe estar aprobado y con saldo por vínculo >= 5000.\n"
-            "3) Tu cuenta debe estar activa y con las recargas necesarias según la regla de la plataforma.\n\n"
-            "Cuando cumplas, podrás usar las funciones operativas del sistema.\n"
-            "Si necesitas soporte para completar el proceso, responde a este chat."
-        )
-
-        context.bot.send_message(chat_id=admin_user_id, text=msg)
-
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin aprobado:", e)
-
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
 
 
 def admins_gestion(update, context):
-    """Lista administradores registrados y pendientes (Plataforma)."""
     query = update.callback_query
     user_id = query.from_user.id
 
@@ -1055,44 +1056,7 @@ def admins_gestion(update, context):
         query.edit_message_text("No hay administradores registrados.")
         return
 
-    if data.startswith("admin_aprobar_"):
-        query.answer()
-        admin_id = int(data.split("_")[-1])
-
-        update_admin_status_by_id(admin_id, "APPROVED")
-
-        query.edit_message_text(
-            "✅ Administrador aprobado correctamente.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
-            ])
-        )
-        return
-        
-
-    if data.startswith("admin_rechazar_"):
-        query.answer()
-        admin_id = int(data.split("_")[-1])
-
-        update_admin_status_by_id(admin_id, "REJECTED")
-
-        query.edit_message_text(
-            "❌ Administrador rechazado.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
-            ])
-        )
-        return
-
-        
-    if data.startswith("admin_ver_pendiente_"):
-        query.answer()
-        admin_ver_pendiente(update, context)
-        return
-
-            
     keyboard = []
-
     for admin in admins:
         admin_id = admin["id"]
         full_name = admin["full_name"]
@@ -1100,15 +1064,10 @@ def admins_gestion(update, context):
 
         texto = f"ID {admin_id} - {full_name} ({status})"
         keyboard.append([
-            InlineKeyboardButton(
-                texto,
-                callback_data=f"admin_ver_{admin_id}"
-            )
+            InlineKeyboardButton(texto, callback_data=f"admin_ver_{admin_id}")
         ])
 
-    keyboard.append([
-        InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")
-    ])
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")])
 
     query.edit_message_text(
         "Administradores registrados:",
@@ -1297,6 +1256,171 @@ nuevo_pedido_conv = ConversationHandler(
     },
     fallbacks=[],
 )
+
+def admin_puede_operar(admin_id):
+    """
+    Aprobación != operación.
+    Operación solo si cumple requisitos en tiempo real.
+    Retorna (True, None) o (False, mensaje).
+    """
+    admin = get_admin_by_id(admin_id)
+    if not admin:
+        return (False, "No se pudo validar tu cuenta de administrador.")
+
+    status = admin[6]  # status en admins
+
+    if status != "APPROVED":
+        return (False, f"Tu cuenta no está habilitada. Estado actual: {status}")
+
+    total = count_admin_couriers(admin_id)
+    ok = count_admin_couriers_with_min_balance(admin_id, 5000)
+
+    if total < 10 or ok < 10:
+        msg = (
+            "Aún no puedes operar como Administrador Local.\n\n"
+            "Requisitos para operar:\n"
+            "1) 10 repartidores vinculados a tu equipo\n"
+            "2) Los 10 deben estar APROBADOS\n"
+            "3) Cada uno con saldo por vínculo >= 5000\n\n"
+            f"Tu estado actual:\n"
+            f"- Vinculados: {total}\n"
+            f"- Con saldo >= 5000: {ok}\n\n"
+            "Acción: completa vínculos y recargas. Cuando cumplas, el sistema te habilita automáticamente."
+        )
+        return (False, msg)
+
+    return (True, None)
+
+def mi_admin(update, context):
+    user_id = update.effective_user.id
+
+    # Validar que sea admin local registrado
+    admin = None
+    try:
+        admin = get_admin_by_user_id(user_id)
+    except Exception:
+        admin = None
+
+    if not admin:
+        update.message.reply_text("No tienes perfil de Administrador Local registrado.")
+        return
+
+    # Soportar dict/tupla
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+
+    admin_full = get_admin_by_id(admin_id)
+    status = admin_full[6]
+
+    # Validación operativa en tiempo real
+    ok, msg = admin_puede_operar(admin_id)
+
+    if not ok:
+        keyboard = [
+            [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
+        ]
+        update.message.reply_text(
+            "Panel Administrador Local\n\n"
+            f"Estado: {status}\n\n"
+            + msg,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Si ya puede operar (por ahora mostramos menú mínimo)
+    keyboard = [
+        [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+        [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        # Aquí luego agregamos funciones operativas reales
+    ]
+
+    update.message.reply_text(
+        "Panel Administrador Local\n\n"
+        "Ya cumples requisitos para operar.\n"
+        "Selecciona una opción:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+def admin_local_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    query.answer()
+
+    # Validar que sea admin local
+    admin = None
+    try:
+        admin = get_admin_by_user_id(user_id)
+    except Exception:
+        admin = None
+
+    if not admin:
+        query.edit_message_text("No autorizado.")
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+
+    # Seguridad extra: que el callback pertenezca a su admin_id
+    if "_" in data:
+        try:
+            target_id = int(data.split("_")[-1])
+            if target_id != admin_id:
+                query.edit_message_text("No autorizado.")
+                return
+        except Exception:
+            pass
+
+    if data.startswith("local_check_"):
+        ok, msg = admin_puede_operar(admin_id)
+        admin_full = get_admin_by_id(admin_id)
+        status = admin_full[6]
+
+        if not ok:
+            keyboard = [
+                [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
+            ]
+            query.edit_message_text(
+                "Panel Administrador Local\n\n"
+                f"Estado: {status}\n\n"
+                + msg,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        keyboard = [
+            [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        ]
+        query.edit_message_text(
+            "Panel Administrador Local\n\n"
+            "Ya cumples requisitos para operar.\n"
+            "Selecciona una opción:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_status_"):
+        admin_full = get_admin_by_id(admin_id)
+        status = admin_full[6]
+        total = count_admin_couriers(admin_id)
+        okb = count_admin_couriers_with_min_balance(admin_id, 5000)
+
+        texto = (
+            "Estado de tu cuenta (Admin Local):\n\n"
+            f"Estado: {status}\n"
+            f"Repartidores vinculados: {total}\n"
+            f"Con saldo >= 5000: {okb}\n\n"
+            "Recuerda: Aprobado no siempre significa operativo; el sistema valida requisitos en tiempo real."
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    query.edit_message_text("Opción no reconocida.")
+
+
 
 def botones_aliados(update, context):
     """Maneja los botones de aprobar o rechazar aliados."""
@@ -1931,27 +2055,12 @@ def admin_config_callback(update, context):
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    # 4.2) Aprobar administrador (valida regla)
-    if data.startswith("config_admin_approve_"):
-        query.answer()
-        admin_id = int(data.split("_")[-1])
-
-        total = count_admin_couriers(admin_id)
-        ok = count_admin_couriers_with_min_balance(admin_id, 5000)
-
-        if total < 10 or ok < 10:
-            query.edit_message_text(
-                "No se puede aprobar aún.\n\n"
-                "Regla: mínimo 10 repartidores vinculados y cada uno con saldo >= 5000.\n"
-                "Vinculados: {}\n"
-                "Con saldo >= 5000: {}\n\n"
-                "Acción: completa los 10 vínculos y recarga el saldo por vínculo."
-                .format(total, ok)
-            )
-            return
-
+    # 4.2) 
         update_admin_status_by_id(admin_id, "APPROVED")
-        query.edit_message_text("Administrador aprobado y activado (APPROVED).")
+        query.edit_message_text(
+            "Administrador aprobado (APPROVED).\n\n"
+            "Nota: la operación se habilita automáticamente cuando cumpla requisitos (10 repartidores y saldo >= 5000)."
+        )
         return
 
     # 4.3) Rechazar administrador
@@ -2076,7 +2185,79 @@ def repartidores_pendientes(update, context):
             texto,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        
+
+def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
+    tv = get_active_terms_version(role)
+    if not tv:
+        # Por seguridad, bloquea si no hay términos configurados
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
+        )
+        return False
+
+    version, url, sha256 = tv
+
+    if has_accepted_terms(telegram_id, role, version, sha256):
+        # Estilo Rappi: registrar “cada vez que se conecta”
+        try:
+            save_terms_session_ack(telegram_id, role, version)
+        except Exception as e:
+            print("[WARN] save_terms_session_ack:", e)
+        return True
+
+    text = (
+        "Antes de continuar debes aceptar los Términos y Condiciones de Domiquerendona.\n\n"
+        "Rol: {}\n"
+        "Versión: {}\n\n"
+        "Lee el documento y confirma tu aceptación para continuar."
+    ).format(role, version)
+
+    keyboard = [
+        [InlineKeyboardButton("Leer términos", url=url)],
+        [
+            InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
+            InlineKeyboardButton("No acepto", callback_data="terms_decline_{}".format(role)),
+        ],
+    ]
+
+    if update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return False
+
+
+ def terms_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    telegram_id = query.from_user.id
+    query.answer()
+
+    if data.startswith("terms_accept_"):
+        role = data.split("_", 2)[-1]  # terms_accept_ROLE
+
+        tv = get_active_terms_version(role)
+        if not tv:
+            query.edit_message_text("Términos no configurados. Contacta soporte.")
+            return
+
+        version, url, sha256 = tv
+        save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)
+
+        query.edit_message_text("Aceptación registrada. Ya puedes continuar.")
+        return
+
+    if data.startswith("terms_decline_"):
+        query.edit_message_text(
+            "No puedes usar la plataforma sin aceptar los Términos y Condiciones.\n"
+            "Si cambias de decisión, vuelve a intentar y acepta los términos."
+        )
+        return
+
+    query.answer("Opción no reconocida.", show_alert=True)
+   
 
 def main():
     # Inicializar base de datos
@@ -2104,6 +2285,9 @@ def main():
 
     # Panel de Plataforma
     dp.add_handler(CommandHandler("admin", admin_menu))
+    # comandos de los administradores
+    dp.add_handler(CommandHandler("mi_admin", mi_admin))
+    dp.add_handler(CallbackQueryHandler(admin_local_callback, pattern=r"^local_(check|status)_\d+$"))
 
     # -------------------------
     # Callbacks (ordenados por especificidad)
@@ -2131,6 +2315,8 @@ def main():
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
+
 
     # -------------------------
     # Registro de Administradores Locales
