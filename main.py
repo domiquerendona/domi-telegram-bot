@@ -1013,7 +1013,7 @@ def admin_menu_callback(update, context):
 
         # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
         try:
-             admin = get_admin_by_id(admin_id)
+            admin = get_admin_by_id(admin_id)
             admin_user_id = admin[1]  # telegram_id del admin (user_id en tu tabla admins)
 
             msg = (
