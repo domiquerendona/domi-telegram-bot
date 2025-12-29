@@ -996,6 +996,37 @@ def admin_menu_callback(update, context):
         query.answer("La sección de finanzas aún no está implementada.")
         return
 
+    if data.startswith("admin_ver_pendiente_"):
+        query.answer()
+        admin_ver_pendiente(update, context)
+        return
+
+    if data.startswith("admin_aprobar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        update_admin_status_by_id(admin_id, "APPROVED")
+
+        query.edit_message_text(
+            "✅ Administrador aprobado correctamente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
+    if data.startswith("admin_rechazar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+        update_admin_status_by_id(admin_id, "REJECTED")
+
+        query.edit_message_text(
+            "❌ Administrador rechazado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
 
@@ -1067,7 +1098,7 @@ def admins_gestion(update, context):
         ])
 
     keyboard.append([
-        InlineKeyboardButton("⬅ Volver", callback_data="admin_volver")
+        InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")
     ])
 
     query.edit_message_text(
@@ -1095,7 +1126,7 @@ def admins_pendientes(update, context):
         query.edit_message_text(
             "Error consultando administradores pendientes. Revisa logs.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")]
             ])
         )
         return
@@ -1104,7 +1135,7 @@ def admins_pendientes(update, context):
         query.edit_message_text(
             "No hay administradores pendientes en este momento.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")]
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")]
             ])
         )
         return
@@ -1122,7 +1153,7 @@ def admins_pendientes(update, context):
             )
         ])
 
-    keyboard.append([InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver")])
+    keyboard.append([InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")])
 
     query.edit_message_text(
         "Administradores pendientes de aprobación:",
