@@ -1488,8 +1488,8 @@ def admin_local_callback(update, context):
 
          keyboard = [
             [
-                InlineKeyboardButton("✅ Aprobar", callback_data=f"local_courier_approve_{courier_id}"),
-                InlineKeyboardButton("❌ Rechazar", callback_data=f"local_courier_reject_{courier_id}")
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"local_courier_approve_{courier_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"local_courier_reject_{courier_id}")
             ],
             [InlineKeyboardButton("⛔ Bloquear", callback_data=f"local_courier_block_{courier_id}")],
             [InlineKeyboardButton("⬅ Volver", callback_data=f"local_couriers_pending_{admin_id}")]
