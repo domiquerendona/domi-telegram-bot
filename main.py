@@ -2359,7 +2359,7 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     return False
 
 
- def terms_callback(update, context):
+def terms_callback(update, context):
     query = update.callback_query
     data = query.data
     telegram_id = query.from_user.id
