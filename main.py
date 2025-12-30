@@ -825,7 +825,6 @@ def repartidores_pendientes(update, context):
 
         message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
-
         
 def soy_admin(update, context):
     user_id = update.effective_user.id
@@ -953,7 +952,7 @@ def admin_accept(update, context):
     full_name = (context.user_data.get("admin_name") or "").strip()
     document_number = (context.user_data.get("admin_document") or "").strip()
     team_name = (context.user_data.get("admin_team_name") or "").strip()
-    phone = (context.user_data.get("admin_phone") or "").strip()
+    phone = (context.user_data.get("phone") or "").strip()
     city = (context.user_data.get("admin_city") or "").strip()
     barrio = (context.user_data.get("admin_barrio") or "").strip()
 
@@ -1181,39 +1180,6 @@ def admin_menu_callback(update, context):
 
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
-
-
-def admins_gestion(update, context):
-    query = update.callback_query
-    user_id = query.from_user.id
-
-    if user_id != ADMIN_USER_ID:
-        query.answer("No autorizado.", show_alert=True)
-        return
-
-    admins = get_all_admins()
-
-    if not admins:
-        query.edit_message_text("No hay administradores registrados.")
-        return
-
-    keyboard = []
-    for admin in admins:
-        admin_id = admin["id"]
-        full_name = admin["full_name"]
-        status = admin["status"]
-
-        texto = f"ID {admin_id} - {full_name} ({status})"
-        keyboard.append([
-            InlineKeyboardButton(texto, callback_data=f"admin_ver_{admin_id}")
-        ])
-
-    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")])
-
-    query.edit_message_text(
-        "Administradores registrados:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
 
 
 def cancel_conversacion(update, context):
@@ -1612,7 +1578,11 @@ def mi_admin(update, context):
 
     status = admin_full[6]
     team_name = admin_full[8] or "-"
-    team_code = admin_full[10] or "-"
+    team_code = "-"
+    if isinstance(admin_full, dict):
+        team_code = admin_full.get("team_code") or "-"
+    else:
+        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
 
     # Validación operativa en tiempo real
     ok, msg = admin_puede_operar(admin_id)
