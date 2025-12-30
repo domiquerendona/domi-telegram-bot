@@ -1379,6 +1379,34 @@ def set_admin_team_code(admin_id: int, team_code: str):
     conn.commit()
     conn.close()
 
+def get_available_admins(limit=10, offset=0):
+    """
+    Lista admins locales disponibles para que un repartidor elija.
+    Retorna: [(admin_id, team_name, team_code, city), ...]
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            COALESCE(team_name, full_name) AS team_name,
+            team_code,
+            city
+        FROM admins
+        WHERE status = 'APPROVED'
+          AND is_deleted = 0
+          AND team_code IS NOT NULL
+          AND TRIM(team_code) != ''
+        ORDER BY id ASC
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 
 
 
