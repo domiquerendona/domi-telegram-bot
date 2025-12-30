@@ -588,9 +588,37 @@ def courier_confirm(update, context):
         f"Código interno: {code}\n\n"
         "Tu estado es: PENDING. El administrador deberá aprobarte "
         "antes de que puedas tomar pedidos.\n\n"
-        "Ahora, si deseas unirte a un Administrador Local, escribe el CÓDIGO DE EQUIPO.\n"
-        "Si no tienes código, escribe: NO"
+    # Guardar courier_id para usarlo en el callback
+    context.user_data["new_courier_id"] = courier_id
+
+    admins = get_available_admins(limit=8, offset=0)
+
+    if not admins:
+        update.message.reply_text(
+            "Repartidor registrado exitosamente.\n\n"
+            "En este momento no hay Administradores Locales disponibles para elegir.\n"
+            "Más adelante podrás unirte cuando alguno esté disponible."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    keyboard = []
+    for a in admins:
+        admin_id, team_name, team_code, city = a
+        keyboard.append([InlineKeyboardButton(
+            f"{team_name} ({city}) - {team_code}",
+            callback_data=f"courier_pick_admin_{admin_id}"
+        )])
+
+    keyboard.append([InlineKeyboardButton("Ahora no", callback_data="courier_pick_admin_none")])
+
+    update.message.reply_text(
+        "Repartidor registrado.\n\n"
+        "¿Con qué Administrador Local te gustaría trabajar?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    return ConversationHandler.END  # (si lo manejas por CallbackQueryHandler)
+
 
     update.message.reply_text(mensaje_final)
     return COURIER_TEAMCODE
@@ -1288,6 +1316,60 @@ def cancel_conversacion(update, context):
         update.message.reply_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
 
     return ConversationHandler.END
+
+def courier_pick_admin_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    query.answer()
+
+    # Recuperar courier_id que acabamos de crear
+    courier_id = context.user_data.get("new_courier_id")
+
+    if data == "courier_pick_admin_none":
+        query.edit_message_text("Perfecto. Quedaste registrado sin equipo por ahora.")
+        context.user_data.clear()
+        return
+
+    if not data.startswith("courier_pick_admin_"):
+        query.edit_message_text("Opción no reconocida.")
+        return
+
+    if not courier_id:
+        query.edit_message_text("No encontré tu registro reciente. Intenta /soy_repartidor de nuevo.")
+        context.user_data.clear()
+        return
+
+    admin_id = int(data.split("_")[-1])
+
+    # Crear vínculo PENDING
+    try:
+        create_admin_courier_link(admin_id, courier_id)
+    except Exception as e:
+        print("[ERROR] create_admin_courier_link:", e)
+        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        context.user_data.clear()
+        return
+
+    # Notificar al admin local (IMPORTANTE: tu get_admin_by_id devuelve user_id interno)
+    admin = get_admin_by_id(admin_id)
+    admin_user_db_id = admin[1]  # users.id
+    u = get_user_by_id(admin_user_db_id)  # esta función debe existir o equivalente
+    admin_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
+
+    try:
+        context.bot.send_message(
+            chat_id=admin_telegram_id,
+            text=(
+                "📥 Nueva solicitud de repartidor para tu equipo.\n\n"
+                f"Courier ID: {courier_id}\n\n"
+                "Entra a tu panel /mi_admin para revisar pendientes."
+            )
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local:", e)
+
+    query.edit_message_text("Listo. Tu solicitud fue enviada. Quedas PENDIENTE de aprobación.")
+    context.user_data.clear()
 
 
 def admins_pendientes(update, context):
@@ -2642,6 +2724,7 @@ def main():
     dp.add_handler(CommandHandler("pendientes", pendientes))
     dp.add_handler(CommandHandler("aliados_pendientes", aliados_pendientes))
     dp.add_handler(CommandHandler("repartidores_pendientes", repartidores_pendientes))
+    dp.add_handler(CallbackQueryHandler(courier_pick_admin_callback, pattern=r"^courier_pick_admin_"))
 
     # Panel de Plataforma
     dp.add_handler(CommandHandler("admin", admin_menu))
