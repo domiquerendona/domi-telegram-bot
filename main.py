@@ -68,20 +68,50 @@ COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
 def es_admin(user_id: int) -> bool:
-    """Devuelve True si el user_id es el administrador de plataforna."""
+    """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
 
+
+# =========================
 # Estados del registro de aliados
+# =========================
 ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 
+
+# =========================
 # Estados para registro de repartidores
-COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO, COURIER_PLATE, COURIER_BIKETYPE, COURIER_CONFIRM = range(5, 13)
+# =========================
+(
+    COURIER_FULLNAME,
+    COURIER_IDNUMBER,
+    COURIER_PHONE,
+    COURIER_CITY,
+    COURIER_BARRIO,
+    COURIER_PLATE,
+    COURIER_BIKETYPE,
+    COURIER_CONFIRM,
+    COURIER_TEAMCODE,   # 👈 NUEVO estado (unirse a equipo)
+) = range(5, 14)
 
-# Estados para registro de admin
-LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME, LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO, LOCAL_ADMIN_ACCEPT = range(300, 307)
 
+# =========================
+# Estados para registro de administrador local
+# =========================
+(
+    LOCAL_ADMIN_NAME,
+    LOCAL_ADMIN_DOCUMENT,
+    LOCAL_ADMIN_TEAMNAME,
+    LOCAL_ADMIN_PHONE,
+    LOCAL_ADMIN_CITY,
+    LOCAL_ADMIN_BARRIO,
+    LOCAL_ADMIN_ACCEPT,
+) = range(300, 307)
+
+
+# =========================
 # Estados para crear un pedido
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(13, 16)
+# =========================
+PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 17)
 
 def start(update, context):
     """Comando /start y /menu: mensaje de bienvenida simple con estado del usuario."""
@@ -533,6 +563,19 @@ def courier_confirm(update, context):
         code=code,
     )
 
+    # Obtener courier recién creado (para poder vincularlo a un equipo)
+    courier = get_courier_by_user_id(db_user["id"])
+    if not courier:
+        update.message.reply_text(
+            "Se registró tu usuario, pero ocurrió un error obteniendo tu perfil de repartidor.\n"
+            "Intenta de nuevo o contacta soporte."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
+    context.user_data["new_courier_id"] = courier_id
+
     mensaje_final = (
         "Repartidor registrado exitosamente.\n\n"
         f"Nombre: {full_name}\n"
@@ -544,10 +587,74 @@ def courier_confirm(update, context):
         f"Tipo de moto: {bike_type}\n"
         f"Código interno: {code}\n\n"
         "Tu estado es: PENDING. El administrador deberá aprobarte "
-        "antes de que puedas tomar pedidos."
+        "antes de que puedas tomar pedidos.\n\n"
+        "Ahora, si deseas unirte a un Administrador Local, escribe el CÓDIGO DE EQUIPO.\n"
+        "Si no tienes código, escribe: NO"
     )
 
     update.message.reply_text(mensaje_final)
+    return COURIER_TEAMCODE
+    
+def courier_teamcode(update, context):
+    text = update.message.text.strip().upper()
+
+    courier_id = context.user_data.get("new_courier_id")
+    if not courier_id:
+        update.message.reply_text("Error: no se encontró tu registro reciente. Intenta /soy_repartidor de nuevo.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if text in ("NO", "N", "NO.", "N."):
+        update.message.reply_text(
+            "Perfecto. Quedas registrado.\n\n"
+            "Cuando tengas un código de equipo, podrás solicitar unirte más adelante."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    team_code = text  # Ej: TEAM1
+
+    # 1) Buscar admin por código de equipo
+    admin = get_admin_by_team_code(team_code)
+    if not admin:
+        update.message.reply_text(
+            "No encontré un Administrador Local con ese código.\n\n"
+            "Verifica el código e inténtalo de nuevo.\n"
+            "O escribe NO para finalizar."
+        )
+        return COURIER_TEAMCODE
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_user_id = admin["user_id"] if isinstance(admin, dict) else admin[1]  # telegram_id del admin (según tu tabla admins)
+
+    # 2) Crear vínculo PENDING en admin_couriers
+    try:
+        create_admin_courier_link(admin_id, courier_id)  # debe dejar status PENDING por defecto
+    except Exception as e:
+        print("[ERROR] create_admin_courier_link:", e)
+        update.message.reply_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # 3) Notificar al admin local
+    try:
+        context.bot.send_message(
+            chat_id=admin_user_id,
+            text=(
+                "📥 Nueva solicitud de repartidor para tu equipo.\n\n"
+                f"Courier ID: {courier_id}\n"
+                f"Código de equipo usado: {team_code}\n\n"
+                "Entra a tu panel /mi_admin para revisar pendientes."
+            )
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local:", e)
+
+    update.message.reply_text(
+        "Listo. Tu solicitud para unirte al equipo fue enviada.\n\n"
+        "Quedas PENDIENTE de aprobación por el Administrador Local."
+    )
+
     context.user_data.clear()
     return ConversationHandler.END
 
