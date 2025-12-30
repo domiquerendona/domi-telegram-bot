@@ -560,10 +560,6 @@ def get_all_couriers():
     return rows
 
 def get_pending_couriers_by_admin(admin_id):
-    """
-    Retorna repartidores pendientes para un admin local según el vínculo admin_couriers.
-    Devuelve lista de tuplas: (courier_id, full_name, phone, city, barrio)
-    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -578,6 +574,7 @@ def get_pending_couriers_by_admin(admin_id):
         JOIN couriers c ON c.id = ac.courier_id
         WHERE ac.admin_id = ?
           AND ac.status = 'PENDING'
+          AND c.status != 'REJECTED'
         ORDER BY ac.created_at ASC
     """, (admin_id,))
 
@@ -668,6 +665,29 @@ def admin_puede_operar(admin_id):
 
     return True, "OK"
 
+def get_admin_by_team_code(team_code: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, team_name, team_code
+        FROM admins
+        WHERE team_code = ? AND is_deleted = 0
+        LIMIT 1
+    """, (team_code.strip().upper(),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def create_admin_courier_link(admin_id: int, courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
+        VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
+    """, (admin_id, courier_id))
+    conn.commit()
+    conn.close()
+    
 
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
