@@ -1,6 +1,7 @@
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ConversationHandler
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -350,7 +351,6 @@ def ally_barrio(update, context):
     1) Para guardar el teléfono del negocio.
     2) Luego para guardar el barrio y crear el aliado en la BD.
     """
-    from telegram.ext import ConversationHandler
 
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -1272,6 +1272,24 @@ def admins_gestion(update, context):
     )
 
 
+def cancel_conversacion(update, context):
+    # Cierra cualquier conversación activa y limpia datos temporales
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
+
+    # Responder según sea mensaje o callback (si lo usas en botones)
+    if getattr(update, "callback_query", None):
+        q = update.callback_query
+        q.answer()
+        q.edit_message_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+    else:
+        update.message.reply_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+
+    return ConversationHandler.END
+
+
 def admins_pendientes(update, context):
     query = update.callback_query
     user_id = query.from_user.id
@@ -1790,7 +1808,6 @@ def show_id(update, context):
     user_id = update.effective_user.id
     update.message.reply_text(f"Tu ID de usuario es: {user_id}")
     
-from telegram.ext import ConversationHandler 
 
 def ally_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar aliados."""
