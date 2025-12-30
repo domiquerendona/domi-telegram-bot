@@ -409,7 +409,7 @@ def ally_barrio(update, context):
         # --- Notificar al Administrador de Plataforma ---
         try:
             context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
+                chat_id=ADMIN_telegram_ID,
                 text=(
                     "Nuevo registro de ALIADO pendiente en la Plataforma:\n\n"
                     f"Negocio: {business_name}\n"
@@ -624,8 +624,13 @@ def courier_teamcode(update, context):
         )
         return COURIER_TEAMCODE
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_user_id = admin["user_id"] if isinstance(admin, dict) else admin[1]  # telegram_id del admin (según tu tabla admins)
+    admin_id = admin[0]
+    admin_user_db_id = admin[1]    # users.id (interno)
+    admin_name = admin[2]
+    admin_status = admin[3]
+    admin_team = admin[4]
+    admin_telegram_id = admin[5]   # ESTE es el chat_id real
+
 
     # 2) Crear vínculo PENDING en admin_couriers
     try:
@@ -639,7 +644,7 @@ def courier_teamcode(update, context):
     # 3) Notificar al admin local
     try:
         context.bot.send_message(
-            chat_id=admin_user_id,
+            chat_id=admin_telegram_id,
             text=(
                 "📥 Nueva solicitud de repartidor para tu equipo.\n\n"
                 f"Courier ID: {courier_id}\n"
@@ -1214,7 +1219,7 @@ def admin_menu_callback(update, context):
                 "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
                 "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
             )
-            context.bot.send_message(chat_id=admin_user_id, text=msg)
+            context.bot.send_message(chat_id=admin_telegram_id, text=msg)
         except Exception as e:
             print("[WARN] No se pudo notificar al admin aprobado:", e)
 
@@ -1839,7 +1844,7 @@ def ally_approval_callback(update, context):
         # Notificar al aliado
         try:
             context.bot.send_message(
-                chat_id=ally_user_id,
+                chat_id=ally_telegram_id,
                 text=(
                     "Tu registro como aliado '{}' ha sido APROBADO.\n"
                     "Ya puedes usar el bot para crear pedidos."
@@ -1877,7 +1882,7 @@ def ally_approval_callback(update, context):
         # Notificar al aliado
         try:
             context.bot.send_message(
-                chat_id=ally_user_id,
+                chat_id=ally_telegram_id,
                 text=(
                     "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
                     "Si crees que es un error, comunícate con el administrador."
@@ -2023,7 +2028,7 @@ def courier_approval_callback(update, context):
         # Notificar al repartidor
         try:
             context.bot.send_message(
-                chat_id=courier_user_id,
+                chat_id=courier_telegram_id,
                 text="Tu registro como repartidor ha sido APROBADO. Bienvenido, {}.".format(full_name)
             )
         except Exception as e:
@@ -2068,7 +2073,7 @@ def courier_approval_callback(update, context):
         # Notificar al repartidor
         try:
             context.bot.send_message(
-                chat_id=courier_user_id,
+                chat_id=courier_telegram_id,
                 text=(
                     "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
                     "Si crees que es un error, comunícate con el administrador."
