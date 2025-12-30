@@ -260,6 +260,19 @@ def init_db():
     )
         """)
 
+    # --- Migración: agregar team_code a admins si no existe ---
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [row[1] for row in cur.fetchall()]
+
+    if "team_code" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
+
+    # Índice único (recomendado)
+    try:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique ON admins(team_code)")
+    except Exception:
+        pass
+
     # --- Migración: agregar columnas a admins si no existen ---
     cur.execute("PRAGMA table_info(admins)")
     admins_cols = [row[1] for row in cur.fetchall()]
@@ -686,6 +699,32 @@ def get_admin_by_team_code(team_code: str):
         JOIN users u ON u.id = a.user_id
         WHERE UPPER(TRIM(a.team_name)) = UPPER(TRIM(?))
           AND a.is_deleted = 0
+        LIMIT 1
+    """, (team_code,))
+
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def get_admin_by_team_code(team_code: str):
+    """
+    Devuelve una tupla:
+    (admin_id, admin_telegram_id, full_name, status, team_name, team_code)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            id,
+            user_id,
+            full_name,
+            status,
+            COALESCE(team_name, full_name) AS team_name,
+            team_code
+        FROM admins
+        WHERE UPPER(TRIM(team_code)) = UPPER(TRIM(?))
+          AND is_deleted = 0
         LIMIT 1
     """, (team_code,))
 
@@ -1160,6 +1199,27 @@ def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: st
     conn.commit()
     conn.close()
 
+def create_admin(user_id, full_name, phone, city, barrio, team_name, document_number):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number)
+        VALUES (?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?)
+    """, (user_id, full_name, phone, city, barrio, team_name, document_number))
+
+    admin_id = cur.lastrowid
+
+    # TEAM_CODE automático y único
+    team_code = f"TEAM{admin_id}"
+    cur.execute("UPDATE admins SET team_code = ? WHERE id = ?", (team_code, admin_id))
+
+    conn.commit()
+    conn.close()
+
+    return admin_id, team_code
+
+
 def get_admin_by_user_id(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -1356,6 +1416,17 @@ def update_admin_courier_status(admin_id, courier_id, status):
     conn.commit()
     conn.close()
 
+
+def set_admin_team_code(admin_id: int, team_code: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins
+        SET team_code = ?
+        WHERE id = ?
+    """, (team_code, admin_id))
+    conn.commit()
+    conn.close()
 
 
 
