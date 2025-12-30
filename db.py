@@ -260,51 +260,45 @@ def init_db():
     )
         """)
 
-    # --- Migración: agregar team_code a admins si no existe ---
-    cur.execute("PRAGMA table_info(admins)")
-    admins_cols = [row[1] for row in cur.fetchall()]
+    # --- Migraciones para admins (team_name, document_number, team_code) ---
+cur.execute("PRAGMA table_info(admins)")
+admins_cols = [row[1] for row in cur.fetchall()]
 
-    if "team_code" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
+# team_name
+if "team_name" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
 
-    # Índice único (recomendado)
-    try:
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique ON admins(team_code)")
-    except Exception:
-        pass
+# document_number
+if "document_number" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
 
-    # --- Migración: agregar columnas a admins si no existen ---
-    cur.execute("PRAGMA table_info(admins)")
-    admins_cols = [row[1] for row in cur.fetchall()]
+# team_code (código público del equipo)
+if "team_code" not in admins_cols:
+    cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
 
-    if "team_name" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
+# Completar team_name si está vacío
+cur.execute("""
+    UPDATE admins
+    SET team_name = COALESCE(team_name, full_name)
+    WHERE team_name IS NULL OR team_name = ''
+""")
 
-    if "document_number" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
+# Completar team_code si está vacío (formato estable)
+cur.execute("""
+    UPDATE admins
+    SET team_code = 'TEAM' || id
+    WHERE team_code IS NULL OR team_code = ''
+""")
 
-    # --- Migración: agregar team_code a admins si no existe ---
-    if "team_code" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
-
-    # Completar team_code en admins existentes si está vacío
-    # Formato temporal: TEAM{id}  (ej: TEAM1, TEAM12)
+# Índice único para team_code (una sola vez)
+try:
     cur.execute("""
-        UPDATE admins
-        SET team_code = 'TEAM' || id
-        WHERE team_code IS NULL OR team_code = ''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique
+        ON admins(team_code)
     """)
+except Exception:
+    pass
 
-    # Índice único para que no se repita
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code ON admins(team_code)")
- 
-
-    # Completar team_name en admins existentes si está vacío
-    cur.execute("""
-        UPDATE admins
-        SET team_name = COALESCE(team_name, full_name)
-        WHERE team_name IS NULL OR team_name = ''
-    """)
 
     # --- Términos y Condiciones / Contratos (versionado por rol) ---
     cur.execute("""
@@ -677,12 +671,18 @@ def admin_puede_operar(admin_id):
         )
 
     return True, "OK"
+    
 
 def get_admin_by_team_code(team_code: str):
     """
-    Busca un admin local por su team_name/código (TEAM1, etc) y devuelve también su telegram_id real.
-    Retorna una tupla:
-      (admin_id, admin_user_db_id, full_name, status, team_name, telegram_id)
+    Busca un Admin Local por su team_code (ej: TEAM1) y devuelve datos + telegram_id real.
+
+    Retorna tupla:
+      (admin_id, admin_user_db_id, full_name, status, team_name, team_code, telegram_id)
+
+    Notas:
+    - admin_user_db_id = admins.user_id (FK a users.id)
+    - telegram_id = users.telegram_id (chat_id real para enviar mensajes)
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -690,41 +690,16 @@ def get_admin_by_team_code(team_code: str):
     cur.execute("""
         SELECT
             a.id,
-            a.user_id,          -- users.id (id interno)
+            a.user_id,
             a.full_name,
             a.status,
-            a.team_name,
-            u.telegram_id       -- ESTE es el chat_id real para Telegram
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            u.telegram_id
         FROM admins a
         JOIN users u ON u.id = a.user_id
-        WHERE UPPER(TRIM(a.team_name)) = UPPER(TRIM(?))
+        WHERE UPPER(TRIM(a.team_code)) = UPPER(TRIM(?))
           AND a.is_deleted = 0
-        LIMIT 1
-    """, (team_code,))
-
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-def get_admin_by_team_code(team_code: str):
-    """
-    Devuelve una tupla:
-    (admin_id, admin_telegram_id, full_name, status, team_name, team_code)
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT
-            id,
-            user_id,
-            full_name,
-            status,
-            COALESCE(team_name, full_name) AS team_name,
-            team_code
-        FROM admins
-        WHERE UPPER(TRIM(team_code)) = UPPER(TRIM(?))
-          AND is_deleted = 0
         LIMIT 1
     """, (team_code,))
 
@@ -1174,30 +1149,6 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
 
 import sqlite3
 from datetime import datetime
-
-def create_admin(user_id: int, full_name: str, phone: str, city: str, barrio: str, team_name: str = None, document_number: str = None):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    now = datetime.utcnow().isoformat()
-
-    # Si no envían team_name, por defecto usamos el nombre del admin
-    if not team_name or not str(team_name).strip():
-        team_name = full_name.strip()
-
-    cur.execute("""
-        INSERT INTO admins (user_id, full_name, phone, city, barrio, team_name, document_number, status, created_at, is_deleted, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, 0, NULL)
-        ON CONFLICT(user_id) DO UPDATE SET
-            full_name=excluded.full_name,
-            phone=excluded.phone,
-            city=excluded.city,
-            barrio=excluded.barrio,
-            team_name=excluded.team_name,
-            document_number=excluded.document_number
-    """, (user_id, full_name, phone, city, barrio, team_name, document_number, now))
-
-    conn.commit()
-    conn.close()
 
 def create_admin(user_id, full_name, phone, city, barrio, team_name, document_number):
     conn = get_connection()
