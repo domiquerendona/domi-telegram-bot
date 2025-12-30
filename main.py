@@ -1421,7 +1421,8 @@ ally_conv = ConversationHandler(
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
     },
-   fallbacks=[],
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    allow_reentry=True,
 )
 
 courier_conv = ConversationHandler(
@@ -1452,7 +1453,8 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
     },
-    fallbacks=[],
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    allow_reentry=True,
 )
 
 # Conversación para /nuevo_pedido
@@ -1469,9 +1471,9 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
     },
-    fallbacks=[],
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    allow_reentry=True,
 )
-
 def admin_puede_operar(admin_id):
     """
     Aprobación != operación.
@@ -2631,7 +2633,7 @@ def main():
     # -------------------------
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("menu", menu))
-    dp.add_handler(CommandHandler("cancel", cancel))
+    dp.add_handler(CommandHandler("cancel", cancel_conversacion))
 
     # -------------------------
     # Comandos administrativos (Plataforma y/o Admin Local según tu validación interna)
