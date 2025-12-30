@@ -357,6 +357,35 @@ def get_user_by_telegram_id(telegram_id: int):
     conn.close()
     return row
 
+def get_user_by_id(user_id: int):
+    """
+    Busca un usuario por su id interno (users.id).
+    Retorna dict: {id, telegram_id, username, role, created_at} o None.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, telegram_id, username, role, created_at
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+    """, (user_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "telegram_id": row[1],
+        "username": row[2],
+        "role": row[3],
+        "created_at": row[4],
+    }
+
 
 def ensure_user(telegram_id: int, username: str = None):
     """
