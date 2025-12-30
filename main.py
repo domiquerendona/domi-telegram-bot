@@ -1225,11 +1225,13 @@ def admin_menu_callback(update, context):
         query.answer("La sección de finanzas aún no está implementada.")
         return
 
+    # Ver admin pendiente (detalle)
     if data.startswith("admin_ver_pendiente_"):
         query.answer()
         admin_ver_pendiente(update, context)
         return
 
+    # Aprobar admin local
     if data.startswith("admin_aprobar_"):
         query.answer()
         admin_id = int(data.split("_")[-1])
@@ -1239,24 +1241,44 @@ def admin_menu_callback(update, context):
         # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
         try:
             admin = get_admin_by_id(admin_id)
-            admin_user_id = admin[1]  # telegram_id del admin (user_id en tu tabla admins)
+            admin_user_db_id = admin[1]  # users.id interno
 
-            msg = (
-                "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
-                "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
-                "Para operar debes cumplir los requisitos.\n\n"
-                "Requisitos para operar:\n"
-                "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
-                "2) Cada uno debe estar APROBADO y con saldo por vínculo >= 5000.\n"
-                "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
-                "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
-            )
-            context.bot.send_message(chat_id=admin_telegram_id, text=msg)
+            u = get_user_by_id(admin_user_db_id)  # debe existir en db.py
+            if u:
+                admin_telegram_id = u["telegram_id"]
+
+                msg = (
+                    "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
+                    "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
+                    "Para operar debes cumplir los requisitos.\n\n"
+                    "Requisitos para operar:\n"
+                    "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
+                    "2) Cada uno debe estar APROBADO y con saldo por vínculo >= 5000.\n"
+                    "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
+                    "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
+                )
+                context.bot.send_message(chat_id=admin_telegram_id, text=msg)
+
         except Exception as e:
             print("[WARN] No se pudo notificar al admin aprobado:", e)
 
         query.edit_message_text(
             "✅ Administrador aprobado correctamente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
+    # Rechazar admin local
+    if data.startswith("admin_rechazar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        update_admin_status_by_id(admin_id, "REJECTED")
+
+        query.edit_message_text(
+            "❌ Administrador rechazado.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
             ])
