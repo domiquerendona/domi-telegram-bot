@@ -623,13 +623,13 @@ def courier_teamcode(update, context):
             "O escribe NO para finalizar."
         )
         return COURIER_TEAMCODE
-
+        
     admin_id = admin[0]
-    admin_user_db_id = admin[1]    # users.id (interno)
+    admin_telegram_id = admin[1]   # porque admins.user_id = Telegram ID
     admin_name = admin[2]
     admin_status = admin[3]
     admin_team = admin[4]
-    admin_telegram_id = admin[5]   # ESTE es el chat_id real
+    admin_team_code = admin[5]
 
 
     # 2) Crear vínculo PENDING en admin_couriers
@@ -647,11 +647,13 @@ def courier_teamcode(update, context):
             chat_id=admin_telegram_id,
             text=(
                 "📥 Nueva solicitud de repartidor para tu equipo.\n\n"
-                f"Courier ID: {courier_id}\n"
-                f"Código de equipo usado: {team_code}\n\n"
-                "Entra a tu panel /mi_admin para revisar pendientes."
+                f"Repartidor ID: {courier_id}\n"
+                f"Equipo: {admin_team}\n"
+                f"Código: {admin_team_code}\n\n"
+                "Entra a /mi_admin para aprobar o rechazar."
             )
         )
+
     except Exception as e:
         print("[WARN] No se pudo notificar al admin local:", e)
 
@@ -1033,12 +1035,14 @@ def admin_accept(update, context):
     city = (context.user_data.get("admin_city") or "").strip()
     barrio = (context.user_data.get("admin_barrio") or "").strip()
 
-    create_admin(user_id, full_name, phone, city, barrio, team_name, document_number)
+    admin_id, team_code = create_admin(user_id, full_name, phone, city, barrio, team_name, document_number)
 
-
+   
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
         "Estado: PENDING\n\n"
+        f"Tu CÓDIGO DE EQUIPO es: {team_code}\n"
+        "Compártelo con los repartidores que quieras vincular a tu equipo.\n\n"
         "Recuerda: para ser aprobado debes registrar 10 repartidores con recarga mínima de 5000 cada uno."
     )
 
