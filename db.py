@@ -666,17 +666,33 @@ def admin_puede_operar(admin_id):
     return True, "OK"
 
 def get_admin_by_team_code(team_code: str):
+    """
+    Busca un admin local por su team_name/código (TEAM1, etc) y devuelve también su telegram_id real.
+    Retorna una tupla:
+      (admin_id, admin_user_db_id, full_name, status, team_name, telegram_id)
+    """
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, team_name, team_code
-        FROM admins
-        WHERE team_code = ? AND is_deleted = 0
+        SELECT
+            a.id,
+            a.user_id,          -- users.id (id interno)
+            a.full_name,
+            a.status,
+            a.team_name,
+            u.telegram_id       -- ESTE es el chat_id real para Telegram
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE UPPER(TRIM(a.team_name)) = UPPER(TRIM(?))
+          AND a.is_deleted = 0
         LIMIT 1
-    """, (team_code.strip().upper(),))
+    """, (team_code,))
+
     row = cur.fetchone()
     conn.close()
     return row
+
 
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
