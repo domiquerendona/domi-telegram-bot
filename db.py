@@ -261,43 +261,43 @@ def init_db():
         """)
 
     # --- Migraciones para admins (team_name, document_number, team_code) ---
-cur.execute("PRAGMA table_info(admins)")
-admins_cols = [row[1] for row in cur.fetchall()]
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [row[1] for row in cur.fetchall()]
 
-# team_name
-if "team_name" not in admins_cols:
-    cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
+    # team_name
+    if "team_name" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
 
-# document_number
-if "document_number" not in admins_cols:
-    cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
+    # document_number
+    if "document_number" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
 
-# team_code (código público del equipo)
-if "team_code" not in admins_cols:
-    cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
+    # team_code (código público del equipo)
+    if "team_code" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
 
-# Completar team_name si está vacío
-cur.execute("""
-    UPDATE admins
-    SET team_name = COALESCE(team_name, full_name)
-    WHERE team_name IS NULL OR team_name = ''
-""")
-
-# Completar team_code si está vacío (formato estable)
-cur.execute("""
-    UPDATE admins
-    SET team_code = 'TEAM' || id
-    WHERE team_code IS NULL OR team_code = ''
-""")
-
-# Índice único para team_code (una sola vez)
-try:
+    # Completar team_name si está vacío
     cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique
-        ON admins(team_code)
+        UPDATE admins
+        SET team_name = COALESCE(team_name, full_name)
+        WHERE team_name IS NULL OR team_name = ''
     """)
-except Exception:
-    pass
+
+    # Completar team_code si está vacío (formato estable)
+    cur.execute("""
+        UPDATE admins
+        SET team_code = 'TEAM' || id
+        WHERE team_code IS NULL OR team_code = ''
+    """)
+
+    # Índice único para team_code (una sola vez)
+    try:
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique
+            ON admins(team_code)
+        """)
+    except Exception:
+        pass
 
 
     # --- Términos y Condiciones / Contratos (versionado por rol) ---
