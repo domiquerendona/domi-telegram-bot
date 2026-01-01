@@ -505,6 +505,7 @@ def get_pending_allies():
     conn.close()
     return rows
     
+    
 def get_all_allies():
     conn = get_connection()
     cur = conn.cursor()
@@ -525,6 +526,62 @@ def get_all_allies():
     rows = cur.fetchall()
     conn.close()
     return rows
+    
+
+def get_all_couriers():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id,
+            user_id,
+            full_name,
+            id_number,
+            phone,
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            status
+        FROM couriers
+        ORDER BY id ASC;
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+    
+
+def get_all_admins():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        FROM admins
+        WHERE is_deleted=0
+        ORDER BY id DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+    
+
+def get_local_admins_count():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admins
+        WHERE is_deleted = 0
+          AND team_code IS NOT NULL
+          AND TRIM(team_code) <> ''
+    """)
+
+    count = cur.fetchone()[0]
+    conn.close()
+    return count
+    
 
 def get_pending_couriers():
     """Devuelve todos los repartidores con estado PENDING."""
@@ -553,28 +610,6 @@ def get_pending_couriers():
     conn.close()
     return rows
 
-def get_all_couriers():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT
-            id,
-            user_id,
-            full_name,
-            id_number,
-            phone,
-            city,
-            barrio,
-            plate,
-            bike_type,
-            code,
-            status
-        FROM couriers
-        ORDER BY id ASC;
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 def get_pending_couriers_by_admin(admin_id):
     conn = get_connection()
@@ -1248,19 +1283,6 @@ def count_admins():
 # =========================
 # ADMINISTRADORES (POR admin_id) - Panel/Config
 # =========================
-
-def get_all_admins():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
-        FROM admins
-        WHERE is_deleted=0
-        ORDER BY id DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 def get_admin_by_id(admin_id: int):
