@@ -2022,7 +2022,7 @@ def admin_config_callback(update, context):
         query.answer("No tienes permisos para esto.", show_alert=True)
         return
 
-  if data == "config_totales":
+    if data == "config_totales":
     total_allies, total_couriers = get_totales_registros()
     total_admins = get_local_admins_count()
 
