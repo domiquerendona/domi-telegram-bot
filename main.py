@@ -2023,18 +2023,18 @@ def admin_config_callback(update, context):
         return
 
     if data == "config_totales":
-    total_allies, total_couriers = get_totales_registros()
-    total_admins = get_local_admins_count()
+        total_allies, total_couriers = get_totales_registros()
+        total_admins = get_local_admins_count()
 
-    texto = (
-        "Resumen de registros:\n\n"
-        "Aliados registrados: {}\n"
-        "Repartidores registrados: {}\n"
-        "Administradores locales registrados: {}"
-    ).format(total_allies, total_couriers, total_admins)
+        texto = (
+            "Resumen de registros:\n\n"
+            "Aliados registrados: {}\n"
+            "Repartidores registrados: {}\n"
+            "Administradores locales registrados: {}"
+        ).format(total_allies, total_couriers, total_admins)
 
-    query.edit_message_text(texto)
-    return
+        query.edit_message_text(texto)
+        return
 
 
     if data == "config_gestion_aliados":
