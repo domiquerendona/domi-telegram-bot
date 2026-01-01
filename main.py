@@ -10,6 +10,8 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+from db import get_local_admins_count
+
 from db import (
     init_db,
     ensure_user,
@@ -2020,15 +2022,20 @@ def admin_config_callback(update, context):
         query.answer("No tienes permisos para esto.", show_alert=True)
         return
 
-    if data == "config_totales":
-        total_allies, total_couriers = get_totales_registros()
-        texto = (
-            "Resumen de registros:\n\n"
-            "Aliados registrados: {}\n"
-            "Repartidores registrados: {}"
-        ).format(total_allies, total_couriers)
-        query.edit_message_text(texto)
-        return
+  if data == "config_totales":
+    total_allies, total_couriers = get_totales_registros()
+    total_admins = get_local_admins_count()
+
+    texto = (
+        "Resumen de registros:\n\n"
+        "Aliados registrados: {}\n"
+        "Repartidores registrados: {}\n"
+        "Administradores locales registrados: {}"
+    ).format(total_allies, total_couriers, total_admins)
+
+    query.edit_message_text(texto)
+    return
+
 
     if data == "config_gestion_aliados":
         allies = get_all_allies()
