@@ -163,7 +163,27 @@ def init_db():
         );
     """)
 
-    # Tabla de aliados (negocios)
+     # Tabla de repartidores
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS couriers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            full_name TEXT NOT NULL,
+            id_number TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            plate TEXT,
+            bike_type TEXT,
+            code TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            status TEXT DEFAULT 'PENDING',
+            balance REAL DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    """)
+
+     # Tabla de aliados (negocios)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS allies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,13 +201,44 @@ def init_db():
     """)
 
     # ============================================================
-    # MIGRACIÓN: allies debe tener document_number (cedula)
+    # IDENTIDAD ÚNICA GLOBAL (teléfono y cédula)
     # ============================================================
-    cur.execute("PRAGMA table_info(allies)")
-    allies_cols = [row[1] for row in cur.fetchall()]
-    if "document_number" not in allies_cols:
-        cur.execute("ALTER TABLE allies ADD COLUMN document_number TEXT")
-        
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            document_number TEXT NOT NULL,
+            full_name TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_phone ON identities(phone)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_document ON identities(document_number)")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT
+        );
+    """)
+
+    # users.person_id
+    cur.execute("PRAGMA table_info(users)")
+    users_cols = [row[1] for row in cur.fetchall()]
+    if "person_id" not in users_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN person_id INTEGER")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
+
+
     # ============================================================
     # MIGRACIÓN: Agregar person_id a admins/couriers/allies
     # ============================================================
@@ -202,6 +253,16 @@ def init_db():
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_couriers_person_id ON couriers(person_id)")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_allies_person_id ON allies(person_id)")
 
+   
+    # ============================================================
+    # MIGRACIÓN: allies debe tener document_number (cedula)
+    # ============================================================
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [row[1] for row in cur.fetchall()]
+    if "document_number" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN document_number TEXT")
+        
+   
     # ============================================================
     # MIGRACIÓN DE DATOS EXISTENTES -> identities
     # ============================================================
@@ -321,49 +382,6 @@ def init_db():
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id)")
-
-    # Tabla de repartidores
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS couriers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            full_name TEXT NOT NULL,
-            id_number TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            city TEXT NOT NULL,
-            barrio TEXT NOT NULL,
-            plate TEXT,
-            bike_type TEXT,
-            code TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            status TEXT DEFAULT 'PENDING',
-            balance REAL DEFAULT 0,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    """)
-
-        # ============================================================
-    # IDENTIDAD ÚNICA GLOBAL (teléfono y cédula únicos en plataforma)
-    # ============================================================
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS identities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT NOT NULL,
-            document_number TEXT NOT NULL,
-            full_name TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
-
-    # Unicidad por ambos (cada uno único globalmente)
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_phone ON identities(phone)")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_document ON identities(document_number)")
-
-    # users.person_id para amarrar una cuenta Telegram a 1 identidad
-    cur.execute("PRAGMA table_info(users)")
-    users_cols = [row[1] for row in cur.fetchall()]
-    if "person_id" not in users_cols:
-        cur.execute("ALTER TABLE users ADD COLUMN person_id INTEGER")
 
     # Índice: un telegram_id apunta a una sola identidad (y viceversa si quieres)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
@@ -565,20 +583,6 @@ def init_db():
         );
     """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE NOT NULL,
-            full_name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            city TEXT NOT NULL,
-            barrio TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'PENDING',
-            created_at TEXT NOT NULL,
-            is_deleted INTEGER NOT NULL DEFAULT 0,
-            deleted_at TEXT
-    )
-        """)
 
     # --- Migraciones para admins (team_name, document_number, team_code) ---
     cur.execute("PRAGMA table_info(admins)")
@@ -673,10 +677,100 @@ def get_user_id_from_telegram_id(telegram_id: int) -> int:
     # user puede ser tupla o dict según row_factory; soportamos ambos:
     return user["id"] if isinstance(user, dict) else user[0]
 
+def get_user_id_from_telegram_id(telegram_id: int):
+    """Devuelve users.id (interno) a partir de users.telegram_id. None si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE telegram_id = ? LIMIT 1;", (telegram_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    # row puede ser sqlite3.Row o tupla según tu conexión; ambos soportan [0]
+    return row[0]
+
 
 def get_admin_by_telegram_id(telegram_id: int):
+    """
+    Devuelve el admin (último) asociado a esta cuenta de Telegram.
+    Internamente convierte telegram_id -> users.id.
+    """
     user_id = get_user_id_from_telegram_id(telegram_id)
+    if not user_id:
+        return None
     return get_admin_by_user_id(user_id)
+
+
+def get_admin_by_user_id(user_id: int):
+    """
+    user_id = users.id (interno).
+    Devuelve el admin más reciente asociado a esa cuenta.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, user_id, person_id, full_name, phone, city, barrio,
+            status, created_at, team_name, document_number, team_code
+        FROM admins
+        WHERE user_id = ? AND is_deleted = 0
+        ORDER BY id DESC
+        LIMIT 1;
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_admin_by_id(admin_id: int):
+    """
+    admin_id = admins.id.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, user_id, person_id, full_name, phone, city, barrio,
+            status, created_at, team_name, document_number, team_code
+        FROM admins
+        WHERE id = ? AND is_deleted = 0
+        LIMIT 1;
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_admin_by_team_code(team_code: str):
+    """
+    Busca un Admin Local por su team_code (ej: TEAM1) y devuelve datos + telegram_id real.
+
+    Retorna:
+      (admin_id, admin_user_db_id, full_name, status, team_name, team_code, telegram_id)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            a.id,
+            a.user_id,
+            a.full_name,
+            a.status,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            u.telegram_id
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE UPPER(TRIM(a.team_code)) = UPPER(TRIM(?))
+          AND a.is_deleted = 0
+        ORDER BY a.id DESC
+        LIMIT 1;
+    """, (team_code,))
+
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 def get_courier_by_telegram_id(telegram_id: int):
@@ -1104,41 +1198,6 @@ def admin_puede_operar(admin_id):
 
     return True, "OK"
     
-
-def get_admin_by_team_code(team_code: str):
-    """
-    Busca un Admin Local por su team_code (ej: TEAM1) y devuelve datos + telegram_id real.
-
-    Retorna tupla:
-      (admin_id, admin_user_db_id, full_name, status, team_name, team_code, telegram_id)
-
-    Notas:
-    - admin_user_db_id = admins.user_id (FK a users.id)
-    - telegram_id = users.telegram_id (chat_id real para enviar mensajes)
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT
-            a.id,
-            a.user_id,
-            a.full_name,
-            a.status,
-            COALESCE(a.team_name, a.full_name) AS team_name,
-            a.team_code,
-            u.telegram_id
-        FROM admins a
-        JOIN users u ON u.id = a.user_id
-        WHERE UPPER(TRIM(a.team_code)) = UPPER(TRIM(?))
-          AND a.is_deleted = 0
-        LIMIT 1
-    """, (team_code,))
-
-    row = cur.fetchone()
-    conn.close()
-    return row
-
 
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
@@ -1663,23 +1722,6 @@ def create_admin(user_id, full_name, phone, city, barrio, team_name, document_nu
     return admin_id, team_code
 
 
-def get_admin_by_user_id(user_id: int):
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, user_id, person_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
-        FROM admins
-        WHERE user_id=? AND is_deleted=0
-        ORDER BY id DESC
-        LIMIT 1
-    """, (user_id,))
-
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
 def get_pending_admins():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -1732,20 +1774,6 @@ def count_admins():
 # =========================
 # ADMINISTRADORES (POR admin_id) - Panel/Config
 # =========================
-
-
-def get_admin_by_id(admin_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
-        FROM admins
-        WHERE id=? AND is_deleted=0
-        LIMIT 1
-    """, (admin_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
 
 
 def update_admin_status_by_id(admin_id: int, new_status: str):
