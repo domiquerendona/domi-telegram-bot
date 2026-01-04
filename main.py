@@ -123,8 +123,12 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
 # =========================
 # Estados para crear un pedido
 # =========================
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 17)
+PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 17
 
+def get_user_db_id_from_update(update):
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    return user_row["id"]                                                         
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -346,7 +350,7 @@ def ally_barrio(update, context):
     1) Primer mensaje: teléfono
     2) Segundo mensaje: barrio -> crea aliado
     """
-    user_tg_id = update.effective_user.id
+    user_tg_id = user.id
     text = update.message.text.strip()
 
     # 1) teléfono
@@ -709,8 +713,7 @@ def pedido_direccion_cliente(update, context):
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
-    user_id = update.effective_user.id
-
+    user_db_id = get_user_db_id_from_update(update)
     if user_id != ADMIN_USER_ID:
         message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
@@ -749,7 +752,7 @@ def aliados_pendientes(update, context):
 
 def repartidores_pendientes(update, context):
     message = update.effective_message
-    user_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
 
     # Permisos: admin de plataforma o admin local
     es_admin_plataforma = (user_id == ADMIN_USER_ID)
@@ -757,7 +760,9 @@ def repartidores_pendientes(update, context):
 
     if not es_admin_plataforma:
         try:
-            admin = get_admin_by_user_id(user_id)
+            user_db_id = get_user_db_id_from_update(update)
+            admin = get_admin_by_user_id(user_db_id)
+
         except Exception:
             admin = None
 
@@ -829,14 +834,13 @@ def repartidores_pendientes(update, context):
 
         
 def soy_admin(update, context):
-    user_id = update.effective_user.id
+    # ID interno users.id (NO telegram_id)
+    user_db_id = get_user_db_id_from_update(update)
 
-    # Limpieza del contexto
     context.user_data.clear()
 
-    existing = get_admin_by_user_id(user_id)
+    existing = get_admin_by_user_id(user_db_id)
     if existing:
-        # existing: (id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number)
         team_name = existing[8] if len(existing) > 8 and existing[8] else existing[2]
         doc = existing[9] if len(existing) > 9 and existing[9] else "No registrado"
 
@@ -944,7 +948,7 @@ def admin_barrio(update, context):
 
 def admin_accept(update, context):
     answer = update.message.text.strip().upper()
-    user_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
 
     if answer != "ACEPTAR":
         update.message.reply_text("Registro cancelado. Si deseas intentarlo de nuevo usa /soy_admin.")
@@ -976,7 +980,7 @@ def admin_accept(update, context):
 def admin_menu(update, context):
     """Panel de Administración de Plataforma."""
     user = update.effective_user
-    user_id = user.id
+    user_db_id = get_user_db_id_from_update(update)
 
     # Solo el Administrador de Plataforma puede usar este comando
     if user_id != ADMIN_USER_ID:
@@ -1431,13 +1435,15 @@ def admin_aprobar_rechazar_callback(update, context):
 
 def pendientes(update, context):
     """Menú rápido para ver registros pendientes."""
-    user_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
 
     es_admin_plataforma = (user_id == ADMIN_USER_ID)
 
     if not es_admin_plataforma:
         try:
-            admin = get_admin_by_user_id(user_id)
+            user_db_id = get_user_db_id_from_update(update)
+            admin = get_admin_by_user_id(user_db_id)
+
         except Exception:
             admin = None
 
@@ -1556,12 +1562,14 @@ def admin_puede_operar(admin_id):
            
 
 def mi_admin(update, context):
-    user_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
 
     # Validar que sea admin local registrado
     admin = None
     try:
-        admin = get_admin_by_user_id(user_id)  # puede devolver dict o tupla
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_user_id(user_db_id)
+  # puede devolver dict o tupla
     except Exception:
         admin = None
 
@@ -1631,7 +1639,9 @@ def admin_local_callback(update, context):
     # Validar que sea admin local
     admin = None
     try:
-        admin = get_admin_by_user_id(user_id)
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_user_id(user_db_id)
+
     except Exception:
         admin = None
 
@@ -1904,7 +1914,9 @@ def pendientes_callback(update, context):
 
     if not es_admin_plataforma:
         try:
-            admin = get_admin_by_user_id(user_id)
+            user_db_id = get_user_db_id_from_update(update)
+            admin = get_admin_by_user_id(user_db_id)
+
         except Exception:
             admin = None
         if not admin:
@@ -1995,7 +2007,7 @@ def courier_approval_callback(update, context):
 
 
 def admin_configuraciones(update, context):
-    user_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
     if not es_admin(user_id):
         return
 
