@@ -369,6 +369,22 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
     
     # --- Ajustes de esquema (migraciones simples) ---
+    # --- Soft delete para couriers ---
+    cur.execute("PRAGMA table_info(couriers)")
+    couriers_cols = [row[1] for row in cur.fetchall()]
+    if "is_deleted" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN deleted_at TEXT")
+
+    # --- Soft delete para allies ---
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [row[1] for row in cur.fetchall()]
+    if "is_deleted" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN deleted_at TEXT")
+
     # Agregar columna para pedidos gratis globales si no existe
     cur.execute("PRAGMA table_info(couriers)")
     couriers_cols = [row[1] for row in cur.fetchall()]
@@ -651,6 +667,27 @@ def init_db():
 
 
 # ---------- USUARIOS ----------
+def get_user_id_from_telegram_id(telegram_id: int) -> int:
+    """Devuelve users.id (interno) a partir de telegram_id. Crea user si no existe."""
+    user = ensure_user(telegram_id)
+    # user puede ser tupla o dict según row_factory; soportamos ambos:
+    return user["id"] if isinstance(user, dict) else user[0]
+
+
+def get_admin_by_telegram_id(telegram_id: int):
+    user_id = get_user_id_from_telegram_id(telegram_id)
+    return get_admin_by_user_id(user_id)
+
+
+def get_courier_by_telegram_id(telegram_id: int):
+    user_id = get_user_id_from_telegram_id(telegram_id)
+    return get_courier_by_user_id(user_id)
+
+
+def get_ally_by_telegram_id(telegram_id: int):
+    user_id = get_user_id_from_telegram_id(telegram_id)
+    return get_ally_by_user_id(user_id)
+
 
 def get_user_by_telegram_id(telegram_id: int):
     """Devuelve el usuario según su telegram_id o None si no existe."""
@@ -789,17 +826,37 @@ def create_ally(
     return ally_id
 
 
-def get_ally_by_user_id(user_id: int):
-    """Devuelve el aliado más reciente asociado a un user_id."""
+def get_courier_by_user_id(user_id: int):
+    """Devuelve el repartidor más reciente asociado a un user_id (no eliminado)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM allies WHERE user_id = ? ORDER BY id DESC LIMIT 1;",
-        (user_id,),
-    )
+    cur.execute("""
+        SELECT *
+        FROM couriers
+        WHERE user_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+        ORDER BY id DESC
+        LIMIT 1;
+    """, (user_id,))
     row = cur.fetchone()
     conn.close()
     return row
+
+
+def get_ally_by_user_id(user_id: int):
+    """Devuelve el aliado más reciente asociado a un user_id (no eliminado)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM allies
+        WHERE user_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+        ORDER BY id DESC
+        LIMIT 1;
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
     
 def get_ally_by_id(ally_id: int):
     """Devuelve un aliado por su ID (o None si no existe)."""
@@ -1440,18 +1497,6 @@ def create_courier(
     return courier_id
 
 
-def get_courier_by_user_id(user_id: int):
-    """Devuelve el repartidor más reciente asociado a un user_id."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM couriers WHERE user_id = ? ORDER BY id DESC LIMIT 1;",
-        (user_id,),
-    )
-    row = cur.fetchone()
-    conn.close()
-    return row
-    
 def get_courier_by_id(courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
@@ -1500,20 +1545,59 @@ def get_totales_registros():
     return total_allies, total_couriers
 
 
-def delete_ally(ally_id: int):
+def delete_courier(courier_id: int) -> None:
+    """Desactiva (soft delete) un repartidor sin borrar datos."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM allies WHERE id = ?;", (ally_id,))
+
+    # Desactivar perfil
+    cur.execute("""
+        UPDATE couriers
+        SET status = 'INACTIVE',
+            is_deleted = 1,
+            deleted_at = datetime('now')
+        WHERE id = ?
+    """, (courier_id,))
+
+    # Desactivar vínculos con admins (no borrar, solo inactivar)
+    cur.execute("""
+        UPDATE admin_couriers
+        SET status = 'INACTIVE',
+            is_active = 0,
+            updated_at = datetime('now')
+        WHERE courier_id = ?
+    """, (courier_id,))
+
     conn.commit()
     conn.close()
 
 
-def delete_courier(courier_id: int):
+def delete_ally(ally_id: int) -> None:
+    """Desactiva (soft delete) un aliado sin borrar datos."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM couriers WHERE id = ?;", (courier_id,))
+
+    cur.execute("""
+        UPDATE allies
+        SET status = 'INACTIVE',
+            is_deleted = 1,
+            created_at = created_at, -- no cambia, solo explícito
+            deleted_at = datetime('now')
+        WHERE id = ?
+    """, (ally_id,))
+
+    # Desactivar vínculos con admins
+    cur.execute("""
+        UPDATE admin_allies
+        SET status = 'INACTIVE',
+            is_active = 0,
+            updated_at = datetime('now')
+        WHERE ally_id = ?
+    """, (ally_id,))
+
     conn.commit()
     conn.close()
+)
 
 
 def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio, status):
@@ -1581,13 +1665,15 @@ def create_admin(user_id, full_name, phone, city, barrio, team_name, document_nu
 
 
 def get_admin_by_user_id(user_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        SELECT id, user_id, person_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
         FROM admins
         WHERE user_id=? AND is_deleted=0
+        ORDER BY id DESC
+        LIMIT 1
     """, (user_id,))
 
     row = cur.fetchone()
