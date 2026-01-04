@@ -87,7 +87,7 @@ def es_admin(user_id: int) -> bool:
 # =========================
 # Estados del registro de aliados
 # =========================
-ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_BARRIO = range(5)
+ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO = range(6)
 
 
 # =========================
@@ -341,6 +341,23 @@ def ally_city(update, context):
 
     context.user_data["city"] = texto
     update.message.reply_text("Escribe el teléfono de contacto del negocio:")
+    return ALLY_PHONE
+
+
+def ally_phone(update, context):
+    phone = (update.message.text or "").strip()
+
+    # Validación mínima: que tenga al menos 7 dígitos
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text("Ese teléfono no parece válido. Escríbelo de nuevo, por favor.")
+        return ALLY_PHONE
+
+    # Guardamos en el contexto con el mismo término que acordamos: ally_phone
+    context.user_data["ally_phone"] = phone
+
+    # Siguiente paso
+    update.message.reply_text("Escribe el barrio del negocio:")
     return ALLY_BARRIO
 
 
@@ -1471,6 +1488,7 @@ ally_conv = ConversationHandler(
         ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command, ally_owner)],
         ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
+        ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
