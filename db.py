@@ -1597,7 +1597,6 @@ def delete_ally(ally_id: int) -> None:
 
     conn.commit()
     conn.close()
-)
 
 
 def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio, status):
