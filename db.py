@@ -148,11 +148,13 @@ def get_connection():
     return conn
 
 def init_db():
-    """Crea las tablas básicas si no existen."""
     conn = get_connection()
     cur = conn.cursor()
 
-    # Tabla de usuarios de Telegram
+    # ============================================================
+    # A) TABLAS BASE (crear primero)
+    # ============================================================
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,7 +165,21 @@ def init_db():
         );
     """)
 
-     # Tabla de repartidores
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT
+        );
+    """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS couriers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,7 +199,6 @@ def init_db():
         );
     """)
 
-     # Tabla de aliados (negocios)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS allies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,8 +216,9 @@ def init_db():
     """)
 
     # ============================================================
-    # IDENTIDAD ÚNICA GLOBAL (teléfono y cédula)
+    # B) TABLAS AUXILIARES (crear antes de usarlas)
     # ============================================================
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS identities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,61 +229,105 @@ def init_db():
         );
     """)
 
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_phone ON identities(phone)")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_document ON identities(document_number)")
-
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_roles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE NOT NULL,
-            full_name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            city TEXT NOT NULL,
-            barrio TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'PENDING',
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
             created_at TEXT DEFAULT (datetime('now')),
-            is_deleted INTEGER NOT NULL DEFAULT 0,
-            deleted_at TEXT
+            UNIQUE(user_id, role),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
 
+    # ============================================================
+    # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
+    # ============================================================
+
     # users.person_id
     cur.execute("PRAGMA table_info(users)")
-    users_cols = [row[1] for row in cur.fetchall()]
+    users_cols = [r[1] for r in cur.fetchall()]
     if "person_id" not in users_cols:
         cur.execute("ALTER TABLE users ADD COLUMN person_id INTEGER")
+
+    # allies.document_number
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [r[1] for r in cur.fetchall()]
+    if "document_number" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN document_number TEXT")
+
+    # admins: team_name, document_number, team_code, person_id
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [r[1] for r in cur.fetchall()]
+    if "team_name" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
+    if "document_number" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
+    if "team_code" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
+    if "person_id" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN person_id INTEGER")
+
+    # couriers.person_id + soft delete + free_orders_remaining
+    cur.execute("PRAGMA table_info(couriers)")
+    couriers_cols = [r[1] for r in cur.fetchall()]
+    if "person_id" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN person_id INTEGER")
+    if "is_deleted" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN deleted_at TEXT")
+    if "free_orders_remaining" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15")
+
+    # allies.soft delete + person_id
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [r[1] for r in cur.fetchall()]
+    if "person_id" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN person_id INTEGER")
+    if "is_deleted" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN deleted_at TEXT")
+
+    # ============================================================
+    # D) ÍNDICES (después de asegurar columnas)
+    # ============================================================
+
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_phone ON identities(phone)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_document ON identities(document_number)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
 
-
-    # ============================================================
-    # MIGRACIÓN: Agregar person_id a admins/couriers/allies
-    # ============================================================
-    for table in ["admins", "couriers", "allies"]:
-        cur.execute(f"PRAGMA table_info({table})")
-        cols = [row[1] for row in cur.fetchall()]
-        if "person_id" not in cols:
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN person_id INTEGER")
-
-    # Índices recomendados: 1 rol por identidad por tabla (evita duplicados del mismo rol)
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_admins_person_id ON admins(person_id)")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_couriers_person_id ON couriers(person_id)")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_allies_person_id ON allies(person_id)")
 
-   
+    # team_code único
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique ON admins(team_code)")
+
+    # Completar team_name y team_code si están vacíos
+    cur.execute("""
+        UPDATE admins
+        SET team_name = COALESCE(team_name, full_name)
+        WHERE team_name IS NULL OR team_name = ''
+    """)
+    cur.execute("""
+        UPDATE admins
+        SET team_code = 'TEAM' || id
+        WHERE team_code IS NULL OR team_code = ''
+    """)
+
+    # Asegurar free_orders_remaining no NULL
+    cur.execute("""
+        UPDATE couriers
+        SET free_orders_remaining = 15
+        WHERE free_orders_remaining IS NULL
+    """)
+
     # ============================================================
-    # MIGRACIÓN: allies debe tener document_number (cedula)
-    # ============================================================
-    cur.execute("PRAGMA table_info(allies)")
-    allies_cols = [row[1] for row in cur.fetchall()]
-    if "document_number" not in allies_cols:
-        cur.execute("ALTER TABLE allies ADD COLUMN document_number TEXT")
-        
-   
-    # ============================================================
-    # MIGRACIÓN DE DATOS EXISTENTES -> identities
+    # E) MIGRACIÓN DE DATOS -> identities y person_id (al final)
     # ============================================================
 
-    # Desde admins (usa admins.document_number)
     cur.execute("""
         INSERT OR IGNORE INTO identities(phone, document_number, full_name)
         SELECT a.phone, a.document_number, a.full_name
@@ -276,7 +336,6 @@ def init_db():
           AND a.document_number IS NOT NULL AND a.document_number <> '';
     """)
 
-    # Desde couriers (usa couriers.id_number)
     cur.execute("""
         INSERT OR IGNORE INTO identities(phone, document_number, full_name)
         SELECT c.phone, c.id_number, c.full_name
@@ -285,7 +344,6 @@ def init_db():
           AND c.id_number IS NOT NULL AND c.id_number <> '';
     """)
 
-    # Desde allies (usa allies.document_number) — si aún está vacío, no migrará
     cur.execute("""
         INSERT OR IGNORE INTO identities(phone, document_number, full_name)
         SELECT al.phone, al.document_number, al.owner_name
@@ -293,10 +351,6 @@ def init_db():
         WHERE al.phone IS NOT NULL AND al.phone <> ''
           AND al.document_number IS NOT NULL AND al.document_number <> '';
     """)
-
-    # ============================================================
-    # ASIGNAR person_id A CADA ROL
-    # ============================================================
 
     # admins.person_id
     cur.execute("""
@@ -337,337 +391,29 @@ def init_db():
           AND document_number IS NOT NULL AND document_number <> '';
     """)
 
-    # ============================================================
-    # AMARRAR users.person_id DESDE CUALQUIER ROL EXISTENTE
-    # ============================================================
-    # Prioridad: admins -> couriers -> allies (puedes ajustar)
+    # users.person_id (prioridad admins -> couriers -> allies)
     cur.execute("""
         UPDATE users
-        SET person_id = (
-            SELECT a.person_id FROM admins a WHERE a.user_id = users.id
-        )
+        SET person_id = (SELECT a.person_id FROM admins a WHERE a.user_id = users.id)
         WHERE person_id IS NULL
           AND EXISTS (SELECT 1 FROM admins a WHERE a.user_id = users.id AND a.person_id IS NOT NULL);
     """)
-
     cur.execute("""
         UPDATE users
-        SET person_id = (
-            SELECT c.person_id FROM couriers c WHERE c.user_id = users.id
-        )
+        SET person_id = (SELECT c.person_id FROM couriers c WHERE c.user_id = users.id)
         WHERE person_id IS NULL
           AND EXISTS (SELECT 1 FROM couriers c WHERE c.user_id = users.id AND c.person_id IS NOT NULL);
     """)
-
     cur.execute("""
         UPDATE users
-        SET person_id = (
-            SELECT al.person_id FROM allies al WHERE al.user_id = users.id
-        )
+        SET person_id = (SELECT al.person_id FROM allies al WHERE al.user_id = users.id)
         WHERE person_id IS NULL
           AND EXISTS (SELECT 1 FROM allies al WHERE al.user_id = users.id AND al.person_id IS NOT NULL);
     """)
 
-    # ============================================================
-    # ROLES MÚLTIPLES POR CUENTA
-    # ============================================================
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS user_roles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            role TEXT NOT NULL, -- 'ADMIN_LOCAL', 'COURIER', 'ALLY'
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, role),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id)")
-
-    # Índice: un telegram_id apunta a una sola identidad (y viceversa si quieres)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
-    
-    # --- Ajustes de esquema (migraciones simples) ---
-    # --- Soft delete para couriers ---
-    cur.execute("PRAGMA table_info(couriers)")
-    couriers_cols = [row[1] for row in cur.fetchall()]
-    if "is_deleted" not in couriers_cols:
-        cur.execute("ALTER TABLE couriers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
-    if "deleted_at" not in couriers_cols:
-        cur.execute("ALTER TABLE couriers ADD COLUMN deleted_at TEXT")
-
-    # --- Soft delete para allies ---
-    cur.execute("PRAGMA table_info(allies)")
-    allies_cols = [row[1] for row in cur.fetchall()]
-    if "is_deleted" not in allies_cols:
-        cur.execute("ALTER TABLE allies ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
-    if "deleted_at" not in allies_cols:
-        cur.execute("ALTER TABLE allies ADD COLUMN deleted_at TEXT")
-
-    # Agregar columna para pedidos gratis globales si no existe
-    cur.execute("PRAGMA table_info(couriers)")
-    couriers_cols = [row[1] for row in cur.fetchall()]
-    if "free_orders_remaining" not in couriers_cols:
-        cur.execute(
-            "ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15"
-        )
-    
-    # (Recomendado) Asegurar que los existentes queden con 15 si estaban NULL
-    cur.execute("""
-        UPDATE couriers
-        SET free_orders_remaining = 15
-        WHERE free_orders_remaining IS NULL
-    """)
-
-    # --- Vínculo Repartidores por Administrador Local ---
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_couriers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER NOT NULL,
-            courier_id INTEGER NOT NULL,
-
-            status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / BLOCKED
-            is_active INTEGER DEFAULT 0,            -- 1 = equipo activo para este repartidor (opcional)
-            balance REAL DEFAULT 0,                 -- saldo del repartidor con ESTE admin
-            commission_pct REAL DEFAULT NULL,       -- si quieres comisión por vínculo (opcional)
-
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT,
-
-            UNIQUE(admin_id, courier_id),
-            FOREIGN KEY (admin_id) REFERENCES admins(id),
-            FOREIGN KEY (courier_id) REFERENCES couriers(id)
-        );
-    """)
-
-    # --- Vínculo Aliados por Administrador Local ---
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_allies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER NOT NULL,
-            ally_id INTEGER NOT NULL,
-
-            status TEXT DEFAULT 'PENDING',          -- PENDING / APPROVED / REJECTED / ACTIVE / INACTIVE / BLOCKED
-            is_active INTEGER DEFAULT 0,            -- 1 = admin activo para este aliado (opcional)
-            balance REAL DEFAULT 0,                 -- saldo del aliado con ESTE admin
-
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT,
-
-            UNIQUE(admin_id, ally_id),
-            FOREIGN KEY (admin_id) REFERENCES admins(id),
-            FOREIGN KEY (ally_id) REFERENCES allies(id)
-        );
-    """)
-
-    # Índices recomendados
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_couriers_admin_id ON admin_couriers(admin_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_couriers_courier_id ON admin_couriers(courier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_admin_id ON admin_allies(admin_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_allies_ally_id ON admin_allies(ally_id)")
-
-    # --- Migración para bases ya existentes ---
-    # Asegurar columna bike_type
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN bike_type TEXT")
-        print("[DB] Columna bike_type añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
-
-    # Asegurar columna code
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN code TEXT")
-        print("[DB] Columna code añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
-
-    # Asegurar columna balance
-    try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN balance REAL DEFAULT 0")
-        print("[DB] Columna balance añadida a couriers.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e).lower():
-            pass
-        else:
-            raise
-
-    # Tabla de direcciones de recogida de cada aliado (hasta 5 por aliado)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS ally_locations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ally_id INTEGER NOT NULL,
-            label TEXT NOT NULL,          -- Nombre de la sede: Principal, Bodega, Sede Cuba, etc.
-            address TEXT NOT NULL,
-            city TEXT NOT NULL,
-            barrio TEXT NOT NULL,
-            phone TEXT,                   -- Teléfono de esa sede (opcional)
-            is_default INTEGER DEFAULT 0, -- 1 = dirección principal
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (ally_id) REFERENCES allies(id)
-        );
-    """)
-
-    # Tabla de configuración general (clave-valor)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-    """)
-
-    # Tabla de pedidos (orders)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ally_id INTEGER NOT NULL,
-            courier_id INTEGER,
-            status TEXT NOT NULL,   -- CREATED, PUBLISHED, ACCEPTED, PICKUP_CONFIRMED, DELIVERED, CANCELED
-
-            -- Datos del cliente
-            customer_name TEXT,
-            customer_phone TEXT,
-            customer_address TEXT,
-            customer_city TEXT,
-            customer_barrio TEXT,
-    
-            -- Dirección de recogida
-            pickup_location_id INTEGER,   -- referencia a ally_locations
-
-            -- Pago en el negocio
-            pay_at_store_required INTEGER DEFAULT 0,  -- 0 = no, 1 = sí
-            pay_at_store_amount INTEGER DEFAULT 0,
-
-            -- Cálculos de tarifa
-            base_fee INTEGER NOT NULL,           -- tarifa base del pedido (sin incentivos)
-            distance_km REAL,                    -- distancia aproximada
-            rain_extra INTEGER DEFAULT 0,
-            high_demand_extra INTEGER DEFAULT 0,
-            night_extra INTEGER DEFAULT 0,
-            additional_incentive INTEGER DEFAULT 0,  -- "incentivo adicional" (antes propina)
-            total_fee INTEGER NOT NULL,              -- valor total que ve el aliado / paga el cliente
-
-            -- Instrucciones del aliado
-            instructions TEXT,
-
-            -- Tiempos del pedido
-            created_at TEXT DEFAULT (datetime('now')),
-            published_at TEXT,
-            accepted_at TEXT,
-            pickup_confirmed_at TEXT,
-            delivered_at TEXT,
-            canceled_at TEXT,
-            cancel_reason TEXT,
-
-            FOREIGN KEY (ally_id) REFERENCES allies(id),
-            FOREIGN KEY (courier_id) REFERENCES couriers(id),
-            FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
-        );
-    """)
-
-    # Tabla de calificaciones del repartidor
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS courier_ratings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id INTEGER NOT NULL,
-            courier_id INTEGER NOT NULL,
-            rating INTEGER NOT NULL,  -- 1 a 5
-            comment TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (order_id) REFERENCES orders(id),
-            FOREIGN KEY (courier_id) REFERENCES couriers(id)
-        );
-    """)
-
-
-    # --- Migraciones para admins (team_name, document_number, team_code) ---
-    cur.execute("PRAGMA table_info(admins)")
-    admins_cols = [row[1] for row in cur.fetchall()]
-
-    # team_name
-    if "team_name" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN team_name TEXT")
-
-    # document_number
-    if "document_number" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN document_number TEXT")
-
-    # team_code (código público del equipo)
-    if "team_code" not in admins_cols:
-        cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
-
-    # Completar team_name si está vacío
-    cur.execute("""
-        UPDATE admins
-        SET team_name = COALESCE(team_name, full_name)
-        WHERE team_name IS NULL OR team_name = ''
-    """)
-
-    # Completar team_code si está vacío (formato estable)
-    cur.execute("""
-        UPDATE admins
-        SET team_code = 'TEAM' || id
-        WHERE team_code IS NULL OR team_code = ''
-    """)
-
-    # Índice único para team_code (una sola vez)
-    try:
-        cur.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_team_code_unique
-            ON admins(team_code)
-        """)
-    except Exception:
-        pass
-
-
-    # --- Términos y Condiciones / Contratos (versionado por rol) ---
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS terms_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT NOT NULL,                 -- USER / ALLY / COURIER / ADMIN_LOCAL / ADMIN_PLATFORM
-            version TEXT NOT NULL,              -- ej: 2025-12-29-v1
-            url TEXT NOT NULL,                  -- URL oficial en domiquerendona.com
-            sha256 TEXT NOT NULL,               -- hash del texto exacto
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(role, version)
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS terms_acceptances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER NOT NULL,       -- Telegram user id
-            role TEXT NOT NULL,
-            version TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
-            accepted_at TEXT DEFAULT (datetime('now')),
-            message_id INTEGER,
-            UNIQUE(telegram_id, role, version, sha256)
-        );
-    """)
-
-    # Opcional: auditoría "cada vez que se conecta"
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS terms_session_acks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            version TEXT NOT NULL,
-            acked_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
-
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_versions_role_active ON terms_versions(role, is_active)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_acceptances_tid_role ON terms_acceptances(telegram_id, role)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_terms_session_acks_tid_role ON terms_session_acks(telegram_id, role)")
-
     conn.commit()
     conn.close()
+
 
 
 # ---------- USUARIOS ----------
