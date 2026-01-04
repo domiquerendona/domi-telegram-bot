@@ -2595,7 +2595,8 @@ def main():
     updater.start_polling()
     print("[BOOT] Polling iniciado. Bot activo.")
     updater.idle()
-
+    
+    force_platform_admin()
 
 if __name__ == "__main__":
     main()
