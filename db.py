@@ -570,16 +570,98 @@ def ensure_user(telegram_id: int, username: str = None):
 
 
 # ---------- CONFIGURACIÓN GLOBAL (settings) ----------
-
-def get_setting(key: str, default: str = None):
+def get_setting(key: str, default=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key = ?;", (key,))
+    cur.execute("SELECT value FROM settings WHERE key = ? LIMIT 1", (key,))
     row = cur.fetchone()
     conn.close()
-    if row is None:
-        return default
-    return row[0]
+    return row["value"] if row else default
+
+
+def get_platform_admin_id() -> int:
+    """
+    Retorna admins.id del Administrador de Plataforma.
+    REQUISITO: guardar en settings la clave 'platform_admin_id' con el admins.id.
+    """
+    val = get_setting("platform_admin_id")
+    if val:
+        try:
+            return int(val)
+        except Exception:
+            pass
+
+    # Fallback seguro (para que no reviente): usa el admin id más pequeño APPROVED
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id
+        FROM admins
+        WHERE is_deleted = 0
+          AND status = 'APPROVED'
+        ORDER BY id ASC
+        LIMIT 1
+    """)
+    row = cur.fetchone()
+    conn.close()
+    return int(row["id"]) if row else 1
+
+
+def get_available_admin_teams():
+    """
+    Lista admins disponibles para selección de equipo.
+    Devuelve filas con: id, team_name, team_code, city
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id,
+            COALESCE(team_name, full_name) AS team_name,
+            team_code,
+            city
+        FROM admins
+        WHERE is_deleted = 0
+          AND status = 'APPROVED'
+          AND team_code IS NOT NULL
+          AND TRIM(team_code) <> ''
+        ORDER BY id ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING", is_active: int = 1):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO admin_allies (admin_id, ally_id, status, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(admin_id, ally_id)
+        DO UPDATE SET
+            status=excluded.status,
+            is_active=excluded.is_active,
+            updated_at=datetime('now')
+    """, (admin_id, ally_id, status, is_active))
+    conn.commit()
+    conn.close()
+
+
+def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PENDING", is_active: int = 1):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(admin_id, courier_id)
+        DO UPDATE SET
+            status=excluded.status,
+            is_active=excluded.is_active,
+            updated_at=datetime('now')
+    """, (admin_id, courier_id, status, is_active))
+    conn.commit()
+    conn.close()
 
 
 def set_setting(key: str, value: str):
