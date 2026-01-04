@@ -44,6 +44,148 @@ def init_db():
         );
     """)
 
+    # ============================================================
+    # MIGRACIÓN: allies debe tener document_number (cedula)
+    # ============================================================
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [row[1] for row in cur.fetchall()]
+    if "document_number" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN document_number TEXT")
+        
+    # ============================================================
+    # MIGRACIÓN: Agregar person_id a admins/couriers/allies
+    # ============================================================
+    for table in ["admins", "couriers", "allies"]:
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall()]
+        if "person_id" not in cols:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN person_id INTEGER")
+
+    # Índices recomendados: 1 rol por identidad por tabla (evita duplicados del mismo rol)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_admins_person_id ON admins(person_id)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_couriers_person_id ON couriers(person_id)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_allies_person_id ON allies(person_id)")
+
+    # ============================================================
+    # MIGRACIÓN DE DATOS EXISTENTES -> identities
+    # ============================================================
+
+    # Desde admins (usa admins.document_number)
+    cur.execute("""
+        INSERT OR IGNORE INTO identities(phone, document_number, full_name)
+        SELECT a.phone, a.document_number, a.full_name
+        FROM admins a
+        WHERE a.phone IS NOT NULL AND a.phone <> ''
+          AND a.document_number IS NOT NULL AND a.document_number <> '';
+    """)
+
+    # Desde couriers (usa couriers.id_number)
+    cur.execute("""
+        INSERT OR IGNORE INTO identities(phone, document_number, full_name)
+        SELECT c.phone, c.id_number, c.full_name
+        FROM couriers c
+        WHERE c.phone IS NOT NULL AND c.phone <> ''
+          AND c.id_number IS NOT NULL AND c.id_number <> '';
+    """)
+
+    # Desde allies (usa allies.document_number) — si aún está vacío, no migrará
+    cur.execute("""
+        INSERT OR IGNORE INTO identities(phone, document_number, full_name)
+        SELECT al.phone, al.document_number, al.owner_name
+        FROM allies al
+        WHERE al.phone IS NOT NULL AND al.phone <> ''
+          AND al.document_number IS NOT NULL AND al.document_number <> '';
+    """)
+
+    # ============================================================
+    # ASIGNAR person_id A CADA ROL
+    # ============================================================
+
+    # admins.person_id
+    cur.execute("""
+        UPDATE admins
+        SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = admins.phone
+              AND i.document_number = admins.document_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND document_number IS NOT NULL AND document_number <> '';
+    """)
+
+    # couriers.person_id
+    cur.execute("""
+        UPDATE couriers
+        SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = couriers.phone
+              AND i.document_number = couriers.id_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND id_number IS NOT NULL AND id_number <> '';
+    """)
+
+    # allies.person_id
+    cur.execute("""
+        UPDATE allies
+        SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = allies.phone
+              AND i.document_number = allies.document_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND document_number IS NOT NULL AND document_number <> '';
+    """)
+
+    # ============================================================
+    # AMARRAR users.person_id DESDE CUALQUIER ROL EXISTENTE
+    # ============================================================
+    # Prioridad: admins -> couriers -> allies (puedes ajustar)
+    cur.execute("""
+        UPDATE users
+        SET person_id = (
+            SELECT a.person_id FROM admins a WHERE a.user_id = users.id
+        )
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM admins a WHERE a.user_id = users.id AND a.person_id IS NOT NULL);
+    """)
+
+    cur.execute("""
+        UPDATE users
+        SET person_id = (
+            SELECT c.person_id FROM couriers c WHERE c.user_id = users.id
+        )
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM couriers c WHERE c.user_id = users.id AND c.person_id IS NOT NULL);
+    """)
+
+    cur.execute("""
+        UPDATE users
+        SET person_id = (
+            SELECT al.person_id FROM allies al WHERE al.user_id = users.id
+        )
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM allies al WHERE al.user_id = users.id AND al.person_id IS NOT NULL);
+    """)
+
+    # ============================================================
+    # ROLES MÚLTIPLES POR CUENTA
+    # ============================================================
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL, -- 'ADMIN_LOCAL', 'COURIER', 'ALLY'
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, role),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id)")
+
     # Tabla de repartidores
     cur.execute("""
         CREATE TABLE IF NOT EXISTS couriers (
@@ -63,6 +205,32 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
+
+        # ============================================================
+    # IDENTIDAD ÚNICA GLOBAL (teléfono y cédula únicos en plataforma)
+    # ============================================================
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            document_number TEXT NOT NULL,
+            full_name TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    # Unicidad por ambos (cada uno único globalmente)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_phone ON identities(phone)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_identities_document ON identities(document_number)")
+
+    # users.person_id para amarrar una cuenta Telegram a 1 identidad
+    cur.execute("PRAGMA table_info(users)")
+    users_cols = [row[1] for row in cur.fetchall()]
+    if "person_id" not in users_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN person_id INTEGER")
+
+    # Índice: un telegram_id apunta a una sola identidad (y viceversa si quieres)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_users_person_id ON users(person_id)")
     
     # --- Ajustes de esquema (migraciones simples) ---
     # Agregar columna para pedidos gratis globales si no existe
