@@ -9,7 +9,7 @@ from telegram.ext import (
     Filters,
     CallbackQueryHandler,
 )
-
+from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, upsert_admin_courier_link
 from db import get_local_admins_count
 
 from db import (
@@ -87,7 +87,7 @@ def es_admin(user_id: int) -> bool:
 # =========================
 # Estados del registro de aliados
 # =========================
-ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO = range(6)
+ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TEAM = range(7)
 
 
 # =========================
@@ -365,9 +365,9 @@ def ally_barrio(update, context):
     """
     ALLY_BARRIO se usa 2 veces:
     1) Primer mensaje: teléfono
-    2) Segundo mensaje: barrio -> crea aliado
+    2) Segundo mensaje: barrio -> crea aliado -> pasa a selección de equipo
     """
-    user_tg_id = user.id
+    user_tg_id = update.effective_user.id
     text = update.message.text.strip()
 
     # 1) teléfono
@@ -375,6 +375,7 @@ def ally_barrio(update, context):
         if not text:
             update.message.reply_text("El teléfono no puede estar vacío. Escríbelo de nuevo:")
             return ALLY_BARRIO
+
         context.user_data["ally_phone"] = text
         update.message.reply_text("Escribe el barrio o sector del negocio:")
         return ALLY_BARRIO
@@ -402,6 +403,10 @@ def ally_barrio(update, context):
             phone=phone,
         )
 
+        # Guardar ally_id para el siguiente paso (selección de equipo)
+        context.user_data["ally_id"] = ally_id
+        context.user_data["barrio"] = barrio
+
         create_ally_location(
             ally_id=ally_id,
             label="Principal",
@@ -412,7 +417,7 @@ def ally_barrio(update, context):
             is_default=True,
         )
 
-        # Notificar al Admin de Plataforma
+        # Notificar al Admin de Plataforma (opcional, lo dejo como lo tenías)
         try:
             context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
@@ -429,21 +434,14 @@ def ally_barrio(update, context):
         except Exception as e:
             print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-        update.message.reply_text(
-            "Aliado registrado exitosamente.\n\n"
-            f"Negocio: {business_name}\n"
-            f"Dueño: {owner_name}\n"
-            f"Teléfono: {phone}\n"
-            f"Dirección: {address}, {barrio}, {city}\n"
-            "Tu estado es PENDING."
-        )
+        # En vez de finalizar, pasar a selección de equipo
+        return show_ally_team_selection(update, context)
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
         update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
-
-    context.user_data.clear()
-    return ConversationHandler.END
+        context.user_data.clear()
+        return ConversationHandler.END
 
 
 # ----- REGISTRO DE REPARTIDOR -----
