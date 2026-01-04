@@ -1752,7 +1752,23 @@ def get_available_admins(limit=10, offset=0):
 
     rows = cur.fetchall()
     conn.close()
-    return rows
+    return rows 
+
+def force_platform_admin():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins
+        SET team_code = 'PLATFORM', status = 'APPROVED'
+        WHERE id = (
+            SELECT id FROM admins
+            ORDER BY id ASC
+            LIMIT 1
+        )
+    """)
+    conn.commit()
+    conn.close()
+
 
 
 
