@@ -605,45 +605,56 @@ def get_platform_admin_id() -> int:
     row = cur.fetchone()
     conn.close()
     return int(row["id"]) if row else 1
-
+    
 
 def get_available_admin_teams():
     """
-    Lista admins disponibles para selección de equipo.
-    Devuelve filas con: id, team_name, team_code, city
+    Devuelve lista de equipos disponibles para que un aliado elija.
+    Solo admins aprobados y no borrados.
+    Retorna filas con: (admin_id, team_name, team_code)
     """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            id,
-            COALESCE(team_name, full_name) AS team_name,
-            team_code,
-            city
-        FROM admins
-        WHERE is_deleted = 0
-          AND status = 'APPROVED'
-          AND team_code IS NOT NULL
-          AND TRIM(team_code) <> ''
-        ORDER BY id ASC
+            a.id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code
+        FROM admins a
+        WHERE a.status = 'APPROVED'
+          AND a.is_deleted = 0
+          AND a.team_code IS NOT NULL
+          AND TRIM(a.team_code) <> ''
+        ORDER BY a.id ASC
     """)
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING", is_active: int = 1):
+def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING", is_active: int = 0):
+    """
+    Crea o actualiza el vínculo admin_allies para este aliado con este admin.
+    Por defecto queda PENDING hasta aprobación, y is_active=0.
+    """
     conn = get_connection()
     cur = conn.cursor()
+
+    # Inserta si no existe
     cur.execute("""
-        INSERT INTO admin_allies (admin_id, ally_id, status, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(admin_id, ally_id)
-        DO UPDATE SET
-            status=excluded.status,
-            is_active=excluded.is_active,
-            updated_at=datetime('now')
+        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, is_active, balance, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
     """, (admin_id, ally_id, status, is_active))
+
+    # Si ya existía, actualiza status/is_active y updated_at
+    cur.execute("""
+        UPDATE admin_allies
+        SET status = ?,
+            is_active = ?,
+            updated_at = datetime('now')
+        WHERE admin_id = ? AND ally_id = ?
+    """, (status, is_active, admin_id, ally_id))
+
     conn.commit()
     conn.close()
 
