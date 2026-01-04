@@ -1,9 +1,145 @@
 import sqlite3
 import os
+import re
 
 # Ruta del archivo de base de datos
 DB_PATH = os.getenv("DB_PATH", "domiquerendona.db")
 
+# ----------------- Normalización -----------------
+
+def normalize_phone(phone: str) -> str:
+    """
+    Normaliza teléfono a un formato consistente.
+    Recomendación: guardar en E.164 (+57XXXXXXXXXX) si tu flujo ya lo pide así.
+    Si no, al menos limpia espacios y símbolos.
+    """
+    if phone is None:
+        return ""
+    phone = phone.strip()
+    # Elimina espacios, guiones, paréntesis
+    phone = re.sub(r"[^\d+]", "", phone)
+
+    # Si viene sin + y es Colombia (10 dígitos), lo convertimos a +57...
+    # Ajusta esta regla si tu flujo ya captura +57 siempre.
+    if phone and not phone.startswith("+"):
+        digits = re.sub(r"\D", "", phone)
+        if len(digits) == 10:
+            phone = "+57" + digits
+        else:
+            phone = digits  # fallback
+
+    return phone
+
+
+def normalize_document(doc: str) -> str:
+    """Normaliza documento: quita espacios/puntos, deja alfanumérico en mayúsculas."""
+    if doc is None:
+        return ""
+    doc = doc.strip().upper()
+    doc = re.sub(r"[^A-Z0-9]", "", doc)
+    return doc
+
+
+# ----------------- Identidad global -----------------
+
+def get_or_create_identity(phone: str, document_number: str, full_name: str = None) -> int:
+    """
+    Devuelve identity_id (tabla identities) aplicando unicidad global:
+    - phone único
+    - document_number único
+    Si existe conflicto (mismo teléfono con otra cédula, o viceversa) levanta ValueError.
+    """
+    phone_n = normalize_phone(phone)
+    doc_n = normalize_document(document_number)
+
+    if not phone_n or not doc_n:
+        raise ValueError("Teléfono y cédula son obligatorios.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Buscar por teléfono o por documento
+    cur.execute("""
+        SELECT id, phone, document_number
+        FROM identities
+        WHERE phone = ? OR document_number = ?
+        LIMIT 1
+    """, (phone_n, doc_n))
+    row = cur.fetchone()
+
+    if row:
+        identity_id, existing_phone, existing_doc = row
+
+        # Conflicto: teléfono ya existe con otra cédula
+        if existing_phone == phone_n and existing_doc != doc_n:
+            conn.close()
+            raise ValueError("Este teléfono ya está registrado con otra cédula.")
+
+        # Conflicto: cédula ya existe con otro teléfono
+        if existing_doc == doc_n and existing_phone != phone_n:
+            conn.close()
+            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+
+        # Todo coincide: retornamos la identidad existente
+        conn.close()
+        return identity_id
+
+    # No existe: crear
+    try:
+        cur.execute("""
+            INSERT INTO identities (phone, document_number, full_name)
+            VALUES (?, ?, ?)
+        """, (phone_n, doc_n, (full_name or "").strip() if full_name else None))
+        identity_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return identity_id
+
+    except sqlite3.IntegrityError:
+        # Si entra aquí, alguien insertó entre la consulta y el insert.
+        # Re-consultar y validar.
+        cur.execute("""
+            SELECT id, phone, document_number
+            FROM identities
+            WHERE phone = ? OR document_number = ?
+            LIMIT 1
+        """, (phone_n, doc_n))
+        row2 = cur.fetchone()
+        conn.close()
+        if not row2:
+            raise ValueError("No se pudo crear identidad. Intenta de nuevo.")
+        identity_id, existing_phone, existing_doc = row2
+        if existing_phone == phone_n and existing_doc != doc_n:
+            raise ValueError("Este teléfono ya está registrado con otra cédula.")
+        if existing_doc == doc_n and existing_phone != phone_n:
+            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+        return identity_id
+
+
+def ensure_user_person_id(user_id: int, person_id: int) -> None:
+    """Amarra users.person_id si está vacío. No sobreescribe si ya existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT person_id FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    if row and (row[0] is None or row[0] == ""):
+        cur.execute("UPDATE users SET person_id = ? WHERE id = ?", (person_id, user_id))
+        conn.commit()
+    conn.close()
+
+
+def add_user_role(user_id: int, role: str) -> None:
+    """Inserta rol múltiple (user_roles). No falla si ya existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT OR IGNORE INTO user_roles (user_id, role)
+            VALUES (?, ?)
+        """, (user_id, role))
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_connection():
     """Devuelve una conexión a la base de datos SQLite."""
@@ -591,12 +727,18 @@ def create_ally(
     city: str,
     barrio: str,
     phone: str,
+    document_number: str,
 ) -> int:
     """Crea un aliado en la tabla allies y devuelve su id."""
+
+    # 1) Identidad global (usamos teléfono + cédula del propietario/representante)
+    person_id = get_or_create_identity(phone, document_number, full_name=owner_name)
+    ensure_user_person_id(user_id, person_id)
+
     conn = get_connection()
     cur = conn.cursor()
 
-    # DEBUG: ver qué datos se están guardando
+    # DEBUG opcional (puedes dejarlo)
     print("[DEBUG] create_ally() datos recibidos:")
     print(f"  user_id={user_id}")
     print(f"  business_name={business_name!r}")
@@ -605,27 +747,47 @@ def create_ally(
     print(f"  city={city!r}")
     print(f"  barrio={barrio!r}")
     print(f"  phone={phone!r}")
+    print(f"  document_number={document_number!r}")
 
-    cur.execute(
-        """
-        INSERT INTO allies (
+    try:
+        cur.execute("""
+            INSERT INTO allies (
+                user_id,
+                person_id,
+                business_name,
+                owner_name,
+                address,
+                city,
+                barrio,
+                phone,
+                document_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
             user_id,
+            person_id,
             business_name,
             owner_name,
             address,
             city,
             barrio,
-            phone
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?);
-        """,
-        (user_id, business_name, owner_name, address, city, barrio, phone),
-    )
+            normalize_phone(phone),
+            normalize_document(document_number),
+        ))
 
-    ally_id = cur.lastrowid
-    conn.commit()
-    conn.close()
+        ally_id = cur.lastrowid
+        conn.commit()
+
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        raise ValueError("Ya existe un registro de Aliado para esta cuenta o identidad.") from e
+    finally:
+        conn.close()
+
+    add_user_role(user_id, "ALLY")
+
     return ally_id
+
 
 def get_ally_by_user_id(user_id: int):
     """Devuelve el aliado más reciente asociado a un user_id."""
@@ -1229,37 +1391,54 @@ def create_courier(
     code: str,
 ):
     """Crea un repartidor en estado PENDING y devuelve su id."""
+
+    # 1) Identidad global (usa cédula del courier)
+    person_id = get_or_create_identity(phone, id_number, full_name=full_name)
+    ensure_user_person_id(user_id, person_id)
+
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO couriers (
+    try:
+        cur.execute("""
+            INSERT INTO couriers (
+                user_id,
+                person_id,
+                full_name,
+                id_number,
+                phone,
+                city,
+                barrio,
+                plate,
+                bike_type,
+                code,
+                status,
+                balance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
+        """, (
             user_id,
+            person_id,
             full_name,
-            id_number,
-            phone,
+            normalize_document(id_number),
+            normalize_phone(phone),
             city,
             barrio,
             plate,
             bike_type,
             code,
-            status,
-            balance
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
-    """, (
-        user_id,
-        full_name,
-        id_number,
-        phone,
-        city,
-        barrio,
-        plate,
-        bike_type,
-        code,
-    ))
-    conn.commit()
-    courier_id = cur.lastrowid
-    conn.close()
+        ))
+        conn.commit()
+        courier_id = cur.lastrowid
+
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        raise ValueError("Ya existe un registro de Repartidor para esta cuenta o identidad.") from e
+    finally:
+        conn.close()
+
+    add_user_role(user_id, "COURIER")
+
     return courier_id
+
 
 def get_courier_by_user_id(user_id: int):
     """Devuelve el repartidor más reciente asociado a un user_id."""
@@ -1364,22 +1543,39 @@ import sqlite3
 from datetime import datetime
 
 def create_admin(user_id, full_name, phone, city, barrio, team_name, document_number):
+    # 1) Identidad global
+    person_id = get_or_create_identity(phone, document_number, full_name=full_name)
+    ensure_user_person_id(user_id, person_id)
+
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
-        INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number)
-        VALUES (?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?)
-    """, (user_id, full_name, phone, city, barrio, team_name, document_number))
+    try:
+        cur.execute("""
+            INSERT INTO admins (
+                user_id, person_id, full_name, phone, city, barrio,
+                status, created_at, team_name, document_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?)
+        """, (user_id, person_id, full_name, normalize_phone(phone), city, barrio, team_name, normalize_document(document_number)))
 
-    admin_id = cur.lastrowid
+        admin_id = cur.lastrowid
 
-    # TEAM_CODE automático y único
-    team_code = f"TEAM{admin_id}"
-    cur.execute("UPDATE admins SET team_code = ? WHERE id = ?", (team_code, admin_id))
+        # TEAM_CODE automático y único
+        team_code = f"TEAM{admin_id}"
+        cur.execute("UPDATE admins SET team_code = ? WHERE id = ?", (team_code, admin_id))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+
+    except sqlite3.IntegrityError as e:
+        # Si ya existe admin para esa identidad o ese user_id, informamos de forma controlada
+        conn.rollback()
+        raise ValueError("Ya existe un registro de Administrador Local para esta cuenta o identidad.") from e
+    finally:
+        conn.close()
+
+    # Rol múltiple
+    add_user_role(user_id, "ADMIN_LOCAL")
 
     return admin_id, team_code
 
