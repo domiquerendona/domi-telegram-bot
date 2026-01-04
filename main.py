@@ -441,7 +441,118 @@ def ally_barrio(update, context):
         print(f"[ERROR] Error al crear aliado: {e}")
         update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
         context.user_data.clear()
+        return show_ally_team_selection(update, context)
+
+# NUEVO ESTADO: selección de equipo para aliado
+# IMPORTANTE: ajusta el número para que no choque con tus estados actuales.
+# Recomendación: si tu último estado aliado es ALLY_BARRIO, pon ALLY_TEAM = ALLY_BARRIO + 1
+ALLY_TEAM = 999  # cámbialo por un número libre en tu rango real
+
+
+def show_ally_team_selection(update, context):
+    """
+    Muestra lista de equipos (admins disponibles) y opción Ninguno.
+    Si elige Ninguno, se asigna al Admin de Plataforma (TEAM_CODE de plataforma).
+    """
+    ally_id = context.user_data.get("ally_id")
+    if not ally_id:
+        update.message.reply_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
+        context.user_data.clear()
         return ConversationHandler.END
+
+    teams = get_available_admin_teams()  # db.py
+    keyboard = []
+
+    # Botones por equipo disponible
+    if teams:
+        for row in teams:
+            # row puede venir como sqlite3.Row o tupla
+            admin_id = row[0]
+            team_name = row[1]
+            team_code = row[2]
+
+            label = f"{team_name} ({team_code})"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team:{team_code}")])
+
+    # Opción Ninguno (default plataforma)
+    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="ally_team:NONE")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(
+        "¿A qué equipo (Administrador) quieres pertenecer?\n"
+        "Si eliges Ninguno, quedas por defecto con el Admin de Plataforma y recargas con él.",
+        reply_markup=reply_markup
+    )
+    return ALLY_TEAM
+
+
+def ally_team_callback(update, context):
+    query = update.callback_query
+    data = (query.data or "").strip()
+    query.answer()
+
+    # Validación básica
+    if not data.startswith("ally_team:"):
+        return ALLY_TEAM
+
+    ally_id = context.user_data.get("ally_id")
+    if not ally_id:
+        query.edit_message_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    selected = data.split("ally_team:", 1)[1].strip()
+
+    # 1) Si selecciona NONE → asignar a Admin de Plataforma
+    if selected.upper() == "NONE":
+        # Aquí definimos el TEAM_CODE del Admin de Plataforma.
+        # Ajusta esto a tu realidad. Recomendación: crea un admin plataforma con team_code = 'PLATFORM'
+        PLATFORM_TEAM_CODE = "PLATFORM"
+
+        platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
+        if not platform_admin:
+            query.edit_message_text(
+                "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
+                "Crea/asegura ese admin en la tabla admins con team_code='PLATFORM' y status='APPROVED', luego intenta de nuevo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        platform_admin_id = platform_admin[0]
+        upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING", is_active=0)
+
+        query.edit_message_text(
+            "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
+            "Tu vínculo quedó en estado PENDING hasta aprobación."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # 2) Si selecciona un TEAM_CODE real
+    admin_row = get_admin_by_team_code(selected)
+    if not admin_row:
+        query.edit_message_text(
+            "Ese TEAM_CODE no existe o no está disponible.\n"
+            "Vuelve a intentar /soy_aliado."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    admin_id = admin_row[0]
+    team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
+    team_code = admin_row[5]
+
+    upsert_admin_ally_link(admin_id, ally_id, status="PENDING", is_active=0)
+
+    query.edit_message_text(
+        "Listo. Elegiste el equipo:\n"
+        f"{team_name} ({team_code})\n\n"
+        "Tu vínculo quedó en estado PENDING hasta aprobación."
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
 
 
 # ----- REGISTRO DE REPARTIDOR -----
@@ -1488,6 +1599,7 @@ ally_conv = ConversationHandler(
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
+        ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
     allow_reentry=True,
