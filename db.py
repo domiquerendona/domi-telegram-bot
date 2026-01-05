@@ -426,7 +426,7 @@ def force_platform_admin(platform_telegram_id: int):
         user_id = row[0] if not isinstance(row, sqlite3.Row) else row["id"]
     else:
         cur.execute(
-            "INSERT INTO users (telegram_id, username, role) VALUES (?, ?, ?)",
+            "INSERT INTO users (telegram_id, username, role, created_at) VALUES (?, ?, ?, datetime('now'))",
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
         user_id = cur.lastrowid
@@ -434,10 +434,9 @@ def force_platform_admin(platform_telegram_id: int):
     # 2) asegurar admins
     cur.execute("""
         SELECT id FROM admins
-        WHERE user_id = ? AND is_deleted = 0
-        ORDER BY id DESC
+        WHERE team_code = 'PLATFORM' AND is_deleted = 0
         LIMIT 1
-    """, (user_id,))
+    """)
     admin_row = cur.fetchone()
 
     if admin_row:
@@ -449,7 +448,7 @@ def force_platform_admin(platform_telegram_id: int):
         """, (admin_id,))
     else:
         cur.execute("""
-            INSERT INTO admins (user_id, full_name, phone, city, barrio, status, team_name, document_number, team_code)
+            INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code)
             VALUES (?, ?, ?, ?, ?, 'APPROVED', ?, ?, 'PLATFORM')
         """, (
             user_id,
