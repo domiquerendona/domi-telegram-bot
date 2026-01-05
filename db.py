@@ -448,16 +448,22 @@ def force_platform_admin(platform_telegram_id: int):
         """, (admin_id,))
     else:
         cur.execute("""
-            INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code)
-            VALUES (?, ?, ?, ?, ?, 'APPROVED', ?, ?, 'PLATFORM')
+            INSERT INTO admins (
+                user_id, full_name, phone, city, barrio,
+                status, created_at, team_name, document_number, team_code
+            )
+            VALUES (
+                ?, ?, ?, ?, ?,
+                'APPROVED', datetime('now'), ?, ?, 'PLATFORM'
+            )
         """, (
             user_id,
             "Administrador de Plataforma",
             "+570000000000",
             "PLATAFORMA",
             "PLATAFORMA",
-            "PLATAFORMA",
-            "PLATFORM",
+            "PLATAFORMA",  # team_name
+            "PLATFORM",    # document_number (si no tienes cédula real, usa algo fijo)
         ))
 
     conn.commit()
