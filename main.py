@@ -247,13 +247,7 @@ def start(update, context):
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
-
-
-def cancel(update, context):
-    """Permite cancelar cualquier proceso y limpiar datos temporales."""
-    context.user_data.clear()
-    update.message.reply_text("Operación cancelada.\n\nPuedes usar /menu o /start para volver al inicio.")
-
+    
 
 def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
@@ -881,7 +875,9 @@ def repartidores_pendientes(update, context):
     user_db_id = get_user_db_id_from_update(update)
 
     # Permisos: admin de plataforma o admin local
-    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+    telegram_id = update.effective_user.id
+    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
+
     admin_id = None
 
     if not es_admin_plataforma:
@@ -1087,10 +1083,9 @@ def admin_accept(update, context):
     phone = (context.user_data.get("phone") or "").strip()
     city = (context.user_data.get("admin_city") or "").strip()
     barrio = (context.user_data.get("admin_barrio") or "").strip()
+    admin_id, team_code = create_admin(user_db_id, full_name, phone, city, barrio, team_name, document_number)
 
-    admin_id, team_code = create_admin(user_id, full_name, phone, city, barrio, team_name, document_number)
 
-   
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
         "Estado: PENDING\n\n"
@@ -1563,7 +1558,8 @@ def pendientes(update, context):
     """Menú rápido para ver registros pendientes."""
     user_db_id = get_user_db_id_from_update(update)
 
-    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+    telegram_id = update.effective_user.id
+    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
 
     if not es_admin_plataforma:
         try:
@@ -2038,7 +2034,8 @@ def pendientes_callback(update, context):
     user_id = query.from_user.id
     query.answer()
 
-    es_admin_plataforma = (user_id == ADMIN_USER_ID)
+    telegram_id = update.effective_user.id
+    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
 
     if not es_admin_plataforma:
         try:
@@ -2490,6 +2487,7 @@ def terms_callback(update, context):
 def main():
     # Inicializar base de datos
     init_db()
+    force_platform_admin()
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -2591,12 +2589,12 @@ def main():
     except Exception as e:
         print("Error enviando notificación al Administrador de Plataforma:", e)
 
+    
     # Iniciar el bot
     updater.start_polling()
     print("[BOOT] Polling iniciado. Bot activo.")
     updater.idle()
     
-    force_platform_admin()
-
+    
 if __name__ == "__main__":
     main()
