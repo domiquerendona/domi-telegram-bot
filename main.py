@@ -1117,7 +1117,7 @@ def admin_menu(update, context):
     user_db_id = get_user_db_id_from_update(update)
 
     # Solo el Administrador de Plataforma puede usar este comando
-    if user_id != ADMIN_USER_ID:
+    if user.id != ADMIN_USER_ID:
         update.message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
 
