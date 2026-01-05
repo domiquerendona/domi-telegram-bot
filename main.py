@@ -2488,7 +2488,7 @@ def terms_callback(update, context):
 def main():
     # Inicializar base de datos
     init_db()
-    force_platform_admin()
+    force_platform_admin(ADMIN_USER_ID)
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -2594,7 +2594,6 @@ def main():
     # Iniciar el bot
     updater.start_polling()
     print("[BOOT] Polling iniciado. Bot activo.")
-    updater.idle()
     
     
 if __name__ == "__main__":
