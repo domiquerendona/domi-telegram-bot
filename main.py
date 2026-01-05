@@ -1084,8 +1084,20 @@ def admin_accept(update, context):
     phone = (context.user_data.get("phone") or "").strip()
     city = (context.user_data.get("admin_city") or "").strip()
     barrio = (context.user_data.get("admin_barrio") or "").strip()
-    admin_id, team_code = create_admin(user_db_id, full_name, phone, city, barrio, team_name, document_number)
-
+    
+    try:
+        admin_id, team_code = create_admin(
+            user_db_id, full_name, phone, city, barrio, team_name, document_number
+        )
+    except ValueError as e:
+        update.message.reply_text(str(e))
+        context.user_data.clear()
+        return ConversationHandler.END
+    except Exception as e:
+        print("[ERROR] admin_accept:", e)
+        update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
