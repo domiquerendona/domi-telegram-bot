@@ -414,6 +414,72 @@ def init_db():
     conn.commit()
     conn.close()
 
+def force_platform_admin():
+    """
+    Asegura que exista un Admin de Plataforma con:
+    - team_code = 'PLATFORM'
+    - status = 'APPROVED'
+    - is_deleted = 0
+
+    Nota: Este admin es "la plataforma", no un admin local.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # 1) ¿Existe ya?
+    cur.execute("""
+        SELECT id FROM admins
+        WHERE UPPER(TRIM(team_code)) = 'PLATFORM'
+          AND is_deleted = 0
+        LIMIT 1
+    """)
+    row = cur.fetchone()
+
+    if row:
+        # Asegurar status APPROVED
+        cur.execute("""
+            UPDATE admins
+            SET status='APPROVED'
+            WHERE id=?
+        """, (row[0],))
+        conn.commit()
+        conn.close()
+        return row[0]
+
+    # 2) Si no existe, lo creamos
+    # Importante: Debe existir un user en users que represente la plataforma.
+    # Usaremos telegram_id = ADMIN_USER_ID (tu chat_id de plataforma).
+    cur.execute("SELECT id FROM users WHERE telegram_id = ? LIMIT 1", (ADMIN_USER_ID,))
+    u = cur.fetchone()
+
+    if u:
+        user_db_id = u[0] if not isinstance(u, dict) else u["id"]
+    else:
+        # Creamos el user plataforma
+        cur.execute("""
+            INSERT INTO users (telegram_id, username, role)
+            VALUES (?, ?, ?)
+        """, (ADMIN_USER_ID, "platform_admin", "ADMIN_PLATFORM"))
+        user_db_id = cur.lastrowid
+
+    # Creamos el admin plataforma
+    cur.execute("""
+        INSERT INTO admins (user_id, full_name, phone, city, barrio, status, created_at, is_deleted, team_name, document_number, team_code)
+        VALUES (?, ?, ?, ?, ?, 'APPROVED', datetime('now'), 0, ?, ?, 'PLATFORM')
+    """, (
+        user_db_id,
+        "Administrador de Plataforma",
+        "N/A",
+        "N/A",
+        "N/A",
+        "Domiquerendona Plataforma",
+        "PLATFORM"
+    ))
+
+    admin_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return admin_id
 
 
 # ---------- USUARIOS ----------
@@ -1754,20 +1820,6 @@ def get_available_admins(limit=10, offset=0):
     conn.close()
     return rows 
 
-def force_platform_admin():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE admins
-        SET team_code = 'PLATFORM', status = 'APPROVED'
-        WHERE id = (
-            SELECT id FROM admins
-            ORDER BY id ASC
-            LIMIT 1
-        )
-    """)
-    conn.commit()
-    conn.close()
 
 
 
