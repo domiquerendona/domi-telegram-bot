@@ -523,18 +523,25 @@ def get_admin_by_user_id(user_id: int):
 
 
 def get_admin_by_id(admin_id: int):
-    """
-    admin_id = admins.id.
-    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            id, user_id, person_id, full_name, phone, city, barrio,
-            status, created_at, team_name, document_number, team_code
+            id,                 -- 0
+            user_id,            -- 1
+            full_name,          -- 2
+            phone,              -- 3
+            city,               -- 4
+            barrio,             -- 5
+            team_name,          -- 6
+            document_number,    -- 7
+            team_code,          -- 8
+            status,             -- 9
+            created_at          -- 10
         FROM admins
-        WHERE id = ? AND is_deleted = 0
-        LIMIT 1;
+        WHERE id = ?
+        ORDER BY id DESC
+        LIMIT 1
     """, (admin_id,))
     row = cur.fetchone()
     conn.close()
