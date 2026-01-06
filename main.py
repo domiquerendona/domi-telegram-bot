@@ -2214,7 +2214,7 @@ def admin_config_callback(update, context):
         return
 
     if data.startswith("config_ver_ally_"):
-         ally_id = int(data.split("_")[-1])
+        ally_id = int(data.split("_")[-1])
         ally = get_ally_by_id(ally_id)
         if not ally:
             query.edit_message_text("No se encontró el aliado.")
