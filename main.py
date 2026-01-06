@@ -2214,7 +2214,7 @@ def admin_config_callback(update, context):
         return
 
     if data.startswith("config_ver_ally_"):
-        ally_id = int(data.split("_")[-1])
+         ally_id = int(data.split("_")[-1])
         ally = get_ally_by_id(ally_id)
         if not ally:
             query.edit_message_text("No se encontró el aliado.")
@@ -2243,21 +2243,26 @@ def admin_config_callback(update, context):
 
         status = ally[8]
         keyboard = []
-            if status == "APPROVED":
-                keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data=f"config_ally_disable_{ally_id}")])
-            if status == "INACTIVE":
-                keyboard.append([InlineKeyboardButton("✅ Activar", callback_data=f"config_ally_enable_{ally_id}")])
 
-            keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
+        if status == "APPROVED":
+            keyboard.append([
+                InlineKeyboardButton(
+                    "⛔ Desactivar",
+                    callback_data="config_ally_disable_{}".format(ally_id)
+                )
+            ])
+        elif status == "INACTIVE":
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Activar",
+                    callback_data="config_ally_enable_{}".format(ally_id)
+                )
+            ])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
-
-    if data == "config_gestion_repartidores":
-        couriers = get_all_couriers()
-        if not couriers:
-            query.edit_message_text("No hay repartidores registrados en este momento.")
-            return
 
         keyboard = []
         for courier in couriers:
