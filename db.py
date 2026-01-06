@@ -601,7 +601,20 @@ def get_user_by_id(user_id: int):
     )
     row = cur.fetchone()
     conn.close()
-    return row
+
+    if row is None:
+        return None
+
+    if isinstance(row, dict):
+        return row
+
+    return {
+        "id": row[0],
+        "telegram_id": row[1],
+        "username": row[2],
+        "created_at": row[3],
+    }
+
 
 def ensure_user(telegram_id: int, username: str = None):
     """
@@ -927,17 +940,52 @@ def get_all_couriers():
     
 
 def get_all_admins():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+        SELECT
+            id, user_id, full_name, phone, city, barrio,
+            status, created_at, team_name, document_number
         FROM admins
-        WHERE is_deleted=0
-        ORDER BY id DESC
+        WHERE is_deleted = 0
+        ORDER BY id DESC;
     """)
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def update_admin_status_by_id(admin_id: int, new_status: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins
+        SET status = ?
+        WHERE id = ? AND is_deleted = 0;
+    """, (new_status, admin_id))
+    conn.commit()
+    conn.close()
+
+def update_courier_status_by_id(courier_id: int, new_status: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE couriers
+        SET status = ?
+        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+    """, (new_status, courier_id))
+    conn.commit()
+    conn.close()
+
+def update_ally_status_by_id(ally_id: int, new_status: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE allies
+        SET status = ?
+        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+    """, (new_status, ally_id))
+    conn.commit()
+    conn.close()
     
 
 def get_local_admins_count():
@@ -1667,18 +1715,6 @@ def count_admins():
 # =========================
 # ADMINISTRADORES (POR admin_id) - Panel/Config
 # =========================
-
-
-def update_admin_status_by_id(admin_id: int, new_status: str):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE admins
-        SET status=?
-        WHERE id=? AND is_deleted=0
-    """, (new_status, admin_id))
-    conn.commit()
-    conn.close()
 
 
 def count_admin_couriers(admin_id: int):
