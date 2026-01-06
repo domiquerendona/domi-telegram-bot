@@ -143,7 +143,7 @@ def add_user_role(user_id: int, role: str) -> None:
 
 def get_connection():
     """Devuelve una conexión a la base de datos SQLite."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -471,23 +471,11 @@ def force_platform_admin(platform_telegram_id: int):
 
 
 # ---------- USUARIOS ----------
+
 def get_user_id_from_telegram_id(telegram_id: int) -> int:
     """Devuelve users.id (interno) a partir de telegram_id. Crea user si no existe."""
     user = ensure_user(telegram_id)
-    # user puede ser tupla o dict según row_factory; soportamos ambos:
     return user["id"] if isinstance(user, dict) else user[0]
-
-def get_user_id_from_telegram_id(telegram_id: int):
-    """Devuelve users.id (interno) a partir de users.telegram_id. None si no existe."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE telegram_id = ? LIMIT 1;", (telegram_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return None
-    # row puede ser sqlite3.Row o tupla según tu conexión; ambos soportan [0]
-    return row[0]
 
 
 def get_admin_by_telegram_id(telegram_id: int):
@@ -518,8 +506,10 @@ def get_admin_by_user_id(user_id: int):
         LIMIT 1;
     """, (user_id,))
     row = cur.fetchone()
-    conn.close()
-    return row
+    if not row:
+        return None
+    return dict(row)
+
 
 
 def get_admin_by_id(admin_id: int):
@@ -1671,7 +1661,7 @@ def create_admin(user_id, full_name, phone, city, barrio, team_name, document_nu
 
 
 def get_pending_admins():
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
@@ -1687,7 +1677,7 @@ def get_pending_admins():
 
 
 def update_admin_status(user_id: int, new_status: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         UPDATE admins
@@ -1699,7 +1689,7 @@ def update_admin_status(user_id: int, new_status: str):
 
 
 def soft_delete_admin_by_id(admin_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat()
     cur.execute("""
@@ -1712,7 +1702,7 @@ def soft_delete_admin_by_id(admin_id: int):
 
 
 def count_admins():
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM admins WHERE is_deleted=0")
     n = cur.fetchone()[0]
@@ -1725,7 +1715,7 @@ def count_admins():
 
 
 def count_admin_couriers(admin_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT COUNT(*)
@@ -1742,7 +1732,7 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     Regla: contar repartidores del admin con saldo >= min_balance
     usando admin_couriers.balance (saldo por vínculo).
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT COUNT(*)
