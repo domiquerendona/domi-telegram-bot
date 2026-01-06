@@ -362,9 +362,10 @@ def ally_barrio(update, context):
     1) Primer mensaje: teléfono
     2) Segundo mensaje: barrio -> crea aliado -> pasa a selección de equipo
     """
-    user_tg_id = update.effective_user.id
-    text = update.message.text.strip()
-
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+    
     # 1) teléfono
     if "ally_phone" not in context.user_data:
         if not text:
@@ -389,7 +390,7 @@ def ally_barrio(update, context):
 
     try:
         ally_id = create_ally(
-            user_id=user_tg_id,
+            user_id=user_db_id,
             business_name=business_name,
             owner_name=owner_name,
             address=address,
@@ -2145,8 +2146,10 @@ def courier_approval_callback(update, context):
 
 
 def admin_configuraciones(update, context):
-    user_db_id = get_user_db_id_from_update(update)
-    if not es_admin(user_id):
+    user_tg_id = update.effective_user.id
+
+    # es_admin debe validar por telegram_id (consistente con callbacks)
+    if not es_admin(user_tg_id):
         return
 
     keyboard = [
@@ -2238,17 +2241,16 @@ def admin_config_callback(update, context):
             status=ally[8],
         )
 
-        keyboard = [
-            [InlineKeyboardButton("❌ Eliminar aliado", callback_data="config_confirm_delete_ally_{}".format(ally_id))],
-            [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")],
-        ]
-        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
+        status = ally[8]
+        keyboard = []
+            if status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data=f"config_ally_disable_{ally_id}")])
+            if status == "INACTIVE":
+                keyboard.append([InlineKeyboardButton("✅ Activar", callback_data=f"config_ally_enable_{ally_id}")])
 
-    if data.startswith("config_confirm_delete_ally_"):
-        ally_id = int(data.split("_")[-1])
-        delete_ally(ally_id)
-        query.edit_message_text("El aliado {} ha sido eliminado.".format(ally_id))
+            keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if data == "config_gestion_repartidores":
@@ -2274,12 +2276,6 @@ def admin_config_callback(update, context):
         )
         return
 
-    if data.startswith("config_ver_courier_"):
-        courier_id = int(data.split("_")[-1])
-        courier = get_courier_by_id(courier_id)
-        if not courier:
-            query.edit_message_text("No se encontró el repartidor.")
-            return
 
         texto = (
             "Detalle del repartidor:\n\n"
@@ -2304,18 +2300,35 @@ def admin_config_callback(update, context):
             status=courier[10],
         )
 
-        keyboard = [
-            [InlineKeyboardButton("❌ Eliminar repartidor", callback_data="config_confirm_delete_courier_{}".format(courier_id))],
-            [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")],
-        ]
+        # Estado actual del repartidor
+        status = courier[10]
+
+        keyboard = []
+
+        # Solo mostramos la acción coherente según estado
+        if status == "APPROVED":
+            keyboard.append([
+                InlineKeyboardButton(
+                    "⛔ Desactivar repartidor",
+                    callback_data="config_courier_disable_{}".format(courier_id)
+                )
+            ])
+        elif status == "INACTIVE":
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Activar repartidor",
+                    callback_data="config_courier_enable_{}".format(courier_id)
+                )
+            ])
+
+        # Siempre permitir volver
+        keyboard.append([
+            InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")
+        ])
+
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    if data.startswith("config_confirm_delete_courier_"):
-        courier_id = int(data.split("_")[-1])
-        delete_courier(courier_id)
-        query.edit_message_text("El repartidor {} ha sido eliminado.".format(courier_id))
-        return
 
     if data == "config_gestion_administradores":
         admins = get_all_admins()
@@ -2392,6 +2405,18 @@ def admin_config_callback(update, context):
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_administradores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("config_courier_disable_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "INACTIVE")
+        query.edit_message_text("Repartidor desactivado (INACTIVE).")
+        return
+
+    if data.startswith("config_courier_enable_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "APPROVED")
+        query.edit_message_text("Repartidor activado (APPROVED).")
         return
 
     if data.startswith("config_admin_approve_"):
