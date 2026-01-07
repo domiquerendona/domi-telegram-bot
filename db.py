@@ -506,10 +506,12 @@ def get_admin_by_user_id(user_id: int):
         LIMIT 1;
     """, (user_id,))
     row = cur.fetchone()
+    conn.close()
+    
     if not row:
         return None
+        
     return dict(row)
-
 
 
 def get_admin_by_id(admin_id: int):
