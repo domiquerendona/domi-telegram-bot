@@ -147,7 +147,8 @@ def start(update, context):
     admin_local = None
     try:
         admin_local = get_admin_by_user_id(user_db_id)
-    except Exception:
+    except Exception as e:
+        print("ERROR get_admin_by_user_id en /start:", e)
         admin_local = None
 
     es_admin_plataforma = (user_tg.id == ADMIN_USER_ID)
