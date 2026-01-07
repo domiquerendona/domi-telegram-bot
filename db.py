@@ -143,9 +143,14 @@ def add_user_role(user_id: int, role: str) -> None:
 
 def get_connection():
     """Devuelve una conexión a la base de datos SQLite."""
-    conn = conn = get_connection()
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = get_connection()
