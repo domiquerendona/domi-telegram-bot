@@ -13,6 +13,7 @@ from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_al
 from db import get_local_admins_count
 from db import force_platform_admin
 from services import admin_puede_operar
+from services.admin_rules import admin_puede_operar
 from db import (
     init_db,
     ensure_user,
@@ -1665,39 +1666,6 @@ nuevo_pedido_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
     allow_reentry=True,
 )
-def admin_puede_operar(admin_id):
-    """
-    Aprobación != operación.
-    Operación solo si cumple requisitos en tiempo real.
-    Retorna (True, None) o (False, mensaje).
-    """
-    admin = get_admin_by_id(admin_id)
-    if not admin:
-        return (False, "No se pudo validar tu cuenta de administrador.")
-
-    status = admin[6]  # status en admins
-
-    if status != "APPROVED":
-        return (False, f"Tu cuenta no está habilitada. Estado actual: {status}")
-
-    total = count_admin_couriers(admin_id)
-    ok = count_admin_couriers_with_min_balance(admin_id, 5000)
-
-    if total < 10 or ok < 10:
-        msg = (
-            "Aún no puedes operar como Administrador Local.\n\n"
-            "Requisitos para operar:\n"
-            "1) 10 repartidores vinculados a tu equipo\n"
-            "2) Los 10 deben estar APROBADOS\n"
-            "3) Cada uno con saldo por vínculo >= 5000\n\n"
-            f"Tu estado actual:\n"
-            f"- Vinculados: {total}\n"
-            f"- Con saldo >= 5000: {ok}\n\n"
-            "Acción: completa vínculos y recargas. Cuando cumplas, el sistema te habilita automáticamente."
-        )
-        return (False, msg)
-
-    return (True, None)
            
 
 def mi_admin(update, context):
@@ -1705,13 +1673,8 @@ def mi_admin(update, context):
 
     # Validar que sea admin local registrado
     admin = None
-    try:
-        user_db_id = get_user_db_id_from_update(update)
-        admin = get_admin_by_user_id(user_db_id)
-  # puede devolver dict o tupla
-    except Exception:
-        admin = None
-
+    admin = get_admin_by_user_id(user_db_id)
+ 
     if not admin:
         update.message.reply_text("No tienes perfil de Administrador Local registrado.")
         return
@@ -1777,12 +1740,7 @@ def admin_local_callback(update, context):
 
     # Validar que sea admin local
     admin = None
-    try:
-        user_db_id = get_user_db_id_from_update(update)
-        admin = get_admin_by_user_id(user_db_id)
-
-    except Exception:
-        admin = None
+    admin = get_admin_by_user_id(user_db_id)
 
     if not admin:
         query.edit_message_text("No autorizado.")
@@ -1955,7 +1913,7 @@ def admin_local_callback(update, context):
     if data.startswith("local_courier_block_"):
         courier_id = int(data.split("_")[-1])
         try:
-            update_admin_courier_status(admin_id, courier_id, "BLOCKED")
+            update_admin_courier_status(admin_id, courier_id, "INACTIVE")
         except Exception as e:
             print("[ERROR] update_admin_courier_status BLOCKED:", e)
             query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
