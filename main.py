@@ -12,7 +12,7 @@ from telegram.ext import (
 from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, upsert_admin_courier_link
 from db import get_local_admins_count
 from db import force_platform_admin
-
+from services import admin_puede_operar
 from db import (
     init_db,
     ensure_user,
