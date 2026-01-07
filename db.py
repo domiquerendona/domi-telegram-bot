@@ -1082,61 +1082,6 @@ def get_couriers_by_admin_and_status(admin_id, status):
     rows = cur.fetchall()
     conn.close()
     return rows
-
-def admin_puede_operar(admin_id):
-    """
-    Verifica si un administrador local puede operar.
-    Reglas:
-    - Status = APPROVED
-    - Mínimo 10 repartidores vinculados
-    - Cada repartidor con balance >= 5000
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # 1. Estado del admin
-    cur.execute("""
-        SELECT status
-        FROM admins
-        WHERE id = ? AND is_deleted = 0
-    """, (admin_id,))
-    row = cur.fetchone()
-
-    if not row or row[0] != "APPROVED":
-        conn.close()
-        return False, "Tu cuenta aún no está aprobada por la plataforma."
-
-    # 2. Total repartidores aprobados
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM admin_couriers
-        WHERE admin_id = ?
-          AND status = 'APPROVED'
-    """, (admin_id,))
-    total = cur.fetchone()[0]
-
-    # 3. Repartidores con saldo suficiente
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM admin_couriers
-        WHERE admin_id = ?
-          AND status = 'APPROVED'
-          AND balance >= 5000
-    """, (admin_id,))
-    con_saldo = cur.fetchone()[0]
-
-    conn.close()
-
-    if total < 10 or con_saldo < 10:
-        return False, (
-            "⚠️ Aún no puedes operar.\n\n"
-            f"Requisitos:\n"
-            f"- Repartidores aprobados: {total}/10\n"
-            f"- Con saldo ≥ 5000: {con_saldo}/10\n\n"
-            "Completa los requisitos para habilitar la operación."
-        )
-
-    return True, "OK"
     
 
 def create_admin_courier_link(admin_id: int, courier_id: int):
