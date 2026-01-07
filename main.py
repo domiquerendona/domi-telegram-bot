@@ -2484,11 +2484,13 @@ def terms_callback(update, context):
 
     query.answer("Opción no reconocida.", show_alert=True)
 
-
 def main():
     # Inicializar base de datos
     init_db()
     force_platform_admin(ADMIN_USER_ID)
+
+    if not TOKEN:
+        raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
