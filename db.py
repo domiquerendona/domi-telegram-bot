@@ -1715,6 +1715,17 @@ def count_admins():
 # ADMINISTRADORES (POR admin_id) - Panel/Config
 # =========================
 
+def get_admin_status_by_id(admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM admins WHERE id=? AND is_deleted=0", (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    # row puede ser sqlite3.Row; si ya usas dict(row), ajusta:
+    return row["status"] if hasattr(row, "keys") else row[0]
+
 
 def count_admin_couriers(admin_id: int):
     conn = conn = get_connection()
