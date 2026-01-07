@@ -13,7 +13,6 @@ from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_al
 from db import get_local_admins_count
 from db import force_platform_admin
 from services import admin_puede_operar
-from services.admin_rules import admin_puede_operar
 from db import (
     init_db,
     ensure_user,
