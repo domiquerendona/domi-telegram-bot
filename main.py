@@ -9,7 +9,7 @@ from telegram.ext import (
     Filters,
     CallbackQueryHandler,
 )
-from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, upsert_admin_courier_link
+from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
 from db import get_local_admins_count
 from db import force_platform_admin
 from services import admin_puede_operar
@@ -358,30 +358,16 @@ def ally_phone(update, context):
 
 
 def ally_barrio(update, context):
-    """
-    ALLY_BARRIO se usa 2 veces:
-    1) Primer mensaje: teléfono
-    2) Segundo mensaje: barrio -> crea aliado -> pasa a selección de equipo
-    """
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
-    
-    # 1) teléfono
-    if "ally_phone" not in context.user_data:
-        if not text:
-            update.message.reply_text("El teléfono no puede estar vacío. Escríbelo de nuevo:")
-            return ALLY_BARRIO
 
-        context.user_data["ally_phone"] = text
-        update.message.reply_text("Escribe el barrio o sector del negocio:")
-        return ALLY_BARRIO
-
-    # 2) barrio
-    barrio = text
-    if not barrio:
+    text = (update.message.text or "").strip()
+    if not text:
         update.message.reply_text("El barrio no puede estar vacío. Escríbelo de nuevo:")
         return ALLY_BARRIO
+
+    barrio = text
 
     business_name = context.user_data.get("business_name", "").strip()
     owner_name = context.user_data.get("owner_name", "").strip()
@@ -400,7 +386,6 @@ def ally_barrio(update, context):
             phone=phone,
         )
 
-        # Guardar ally_id para el siguiente paso (selección de equipo)
         context.user_data["ally_id"] = ally_id
         context.user_data["barrio"] = barrio
 
@@ -414,7 +399,7 @@ def ally_barrio(update, context):
             is_default=True,
         )
 
-        # Notificar al Admin de Plataforma (opcional, lo dejo como lo tenías)
+        # Notificación al Admin de Plataforma (opcional)
         try:
             context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
@@ -431,19 +416,13 @@ def ally_barrio(update, context):
         except Exception as e:
             print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-        # En vez de finalizar, pasar a selección de equipo
         return show_ally_team_selection(update, context)
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
         update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
         context.user_data.clear()
-        return show_ally_team_selection(update, context)
-
-# NUEVO ESTADO: selección de equipo para aliado
-# IMPORTANTE: ajusta el número para que no choque con tus estados actuales.
-# Recomendación: si tu último estado aliado es ALLY_BARRIO, pon ALLY_TEAM = ALLY_BARRIO + 1
-ALLY_TEAM = 999  # cámbialo por un número libre en tu rango real
+        return ConversationHandler.END
 
 
 def show_ally_team_selection(update, context):
@@ -836,8 +815,9 @@ def pedido_direccion_cliente(update, context):
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
-    user_db_id = get_user_db_id_from_update(update)
-    if user_id != ADMIN_USER_ID:
+    telegram_id = update.effective_user.id
+
+    if telegram_id != ADMIN_USER_ID:
         message.reply_text("Este comando es solo para el Administrador de Plataforma.")
         return
 
@@ -872,6 +852,7 @@ def aliados_pendientes(update, context):
         ]]
 
         message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 def repartidores_pendientes(update, context):
     message = update.effective_message
@@ -1730,22 +1711,22 @@ def mi_admin(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-
 def admin_local_callback(update, context):
     query = update.callback_query
+    if not query:
+        return
     data = query.data
-    user_id = query.from_user.id
     query.answer()
 
-    # Validar que sea admin local
-    admin = None
-    admin = get_admin_by_user_id(user_db_id)
+    user_db_id = get_user_db_id_from_update(update)
 
+    admin = get_admin_by_user_id(user_db_id)
     if not admin:
         query.edit_message_text("No autorizado.")
         return
 
     admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+
 
     # Seguridad extra SOLO para callbacks que terminan en admin_id
     if data.startswith(("local_check_", "local_status_", "local_couriers_pending_")):
