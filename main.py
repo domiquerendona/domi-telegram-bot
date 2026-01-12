@@ -1,4 +1,14 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+
+ENV = os.getenv("ENV", "PROD").upper()   # "LOCAL" o "PROD"
+IS_LOCAL = (ENV == "LOCAL")
+
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -9,6 +19,7 @@ from telegram.ext import (
     Filters,
     CallbackQueryHandler,
 )
+
 from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
 from db import get_local_admins_count
 from db import force_platform_admin
@@ -73,7 +84,7 @@ from db import (
     add_courier_rating,
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Plataforma
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
@@ -2466,17 +2477,16 @@ def terms_callback(update, context):
     query.answer("Opción no reconocida.", show_alert=True)
 
 def main():
-    # Inicializar base de datos
     init_db()
     force_platform_admin(ADMIN_USER_ID)
 
-    if not TOKEN:
+    if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    print(f"[BOOT] ENV={ENV} | ADMIN_USER_ID={ADMIN_USER_ID}")
 
-    print("[BOOT] Iniciando polling...")
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     # -------------------------
     # Comandos básicos
@@ -2563,20 +2573,24 @@ def main():
     dp.add_handler(admin_conv)
     
     # -------------------------
-    # Notificación de arranque al Administrador de Plataforma
+    # Notificación de arranque al Administrador de Plataforma (opcional)
     # -------------------------
-    try:
-        updater.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text="Bot iniciado correctamente."
-        )
-    except Exception as e:
-        print("Error enviando notificación al Administrador de Plataforma:", e)
+    if ADMIN_USER_ID:
+        try:
+            updater.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text="Bot iniciado correctamente."
+            )
+        except Exception as e:
+         print(f"[WARN] No se pudo notificar al admin: {e}")
+    else:
+        print("[INFO] ADMIN_USER_ID=0, se omite notificación.")
 
-    
+
     # Iniciar el bot
     updater.start_polling()
     print("[BOOT] Polling iniciado. Bot activo.")
+
     
     
 if __name__ == "__main__":
