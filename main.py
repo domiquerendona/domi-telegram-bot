@@ -93,7 +93,7 @@ if ENV == "LOCAL":
 else:
     print(f"[ENV] Ambiente: {ENV} - usando variables de entorno del sistema (Railway/PROD)")
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Plataforma
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
@@ -2562,12 +2562,12 @@ def main():
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
     # Log seguro: fingerprint del token para verificar separación DEV/PROD
-    token_hash = hashlib.sha256(TOKEN.encode()).hexdigest()[:8]
-    token_suffix = TOKEN[-6:] if len(TOKEN) >= 6 else "***"
+    token_hash = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:8]
+    token_suffix = BOT_TOKEN[-6:] if len(BOT_TOKEN) >= 6 else "***"
     print(f"[BOT] TOKEN fingerprint: hash={token_hash} suffix=...{token_suffix}")
     print(f"[BOT] Ambiente: {ENV}")
 
-    updater = Updater(TOKEN, use_context=True)
+    updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
     updater = Updater(BOT_TOKEN, use_context=True)
