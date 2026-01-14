@@ -416,6 +416,155 @@ def init_db():
           AND EXISTS (SELECT 1 FROM allies al WHERE al.user_id = users.id AND al.person_id IS NOT NULL);
     """)
 
+    # ============================================================
+    # F) TABLAS FALTANTES (orders, settings, locations, ratings, terms)
+    # ============================================================
+
+    # Tabla: settings (configuración global)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    # Tabla: ally_locations (direcciones de recogida)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            phone TEXT,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+
+    # Tabla: admin_allies (relación admin-aliado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_allies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            ally_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            balance INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(admin_id, ally_id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+
+    # Tabla: admin_couriers (relación admin-repartidor)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_couriers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            balance INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(admin_id, courier_id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
+        );
+    """)
+
+    # Tabla: orders (pedidos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            courier_id INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            customer_name TEXT NOT NULL,
+            customer_phone TEXT NOT NULL,
+            customer_address TEXT NOT NULL,
+            customer_city TEXT NOT NULL,
+            customer_barrio TEXT NOT NULL,
+            pickup_location_id INTEGER,
+            pay_at_store_required INTEGER DEFAULT 0,
+            pay_at_store_amount INTEGER DEFAULT 0,
+            base_fee INTEGER DEFAULT 0,
+            distance_km REAL DEFAULT 0,
+            rain_extra INTEGER DEFAULT 0,
+            high_demand_extra INTEGER DEFAULT 0,
+            night_extra INTEGER DEFAULT 0,
+            additional_incentive INTEGER DEFAULT 0,
+            total_fee INTEGER DEFAULT 0,
+            instructions TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            published_at TEXT,
+            accepted_at TEXT,
+            pickup_confirmed_at TEXT,
+            delivered_at TEXT,
+            canceled_at TEXT,
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
+        );
+    """)
+
+    # Tabla: courier_ratings (calificaciones)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS courier_ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+            comment TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
+        );
+    """)
+
+    # Tabla: terms_versions (versiones de términos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            url TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            status TEXT DEFAULT 'APPROVED',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(role, version)
+        );
+    """)
+
+    # Tabla: terms_acceptances (aceptaciones de términos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_acceptances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            message_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(telegram_id, role, version, sha256)
+        );
+    """)
+
+    # Tabla: terms_session_acks (confirmaciones de sesión)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_session_acks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
     conn.commit()
     conn.close()
 
