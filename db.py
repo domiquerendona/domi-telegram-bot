@@ -48,72 +48,98 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     - phone único
     - document_number único
     Si existe conflicto (mismo teléfono con otra cédula, o viceversa) levanta ValueError.
+
+    Soporta upgrade: si existe identity con placeholder SIN_DOC_{phone} y luego llega
+    documento real, actualiza el placeholder en lugar de crear nueva identity.
     """
     phone_n = normalize_phone(phone)
-    doc_n = normalize_document(document_number)
 
-    if not phone_n or not doc_n:
-        raise ValueError("Teléfono y cédula son obligatorios.")
+    if not phone_n:
+        raise ValueError("Teléfono es obligatorio.")
+
+    doc_n = normalize_document(document_number) if document_number else ""
+    placeholder = f"SIN_DOC_{phone_n}"
 
     conn = get_connection()
     cur = conn.cursor()
 
-    # Buscar por teléfono o por documento
+    # 1) Buscar si ya existe identidad con este teléfono
     cur.execute("""
         SELECT id, phone, document_number
         FROM identities
-        WHERE phone = ? OR document_number = ?
+        WHERE phone = ?
         LIMIT 1
-    """, (phone_n, doc_n))
+    """, (phone_n,))
     row = cur.fetchone()
 
     if row:
         identity_id, existing_phone, existing_doc = row
 
-        # Conflicto: teléfono ya existe con otra cédula
-        if existing_phone == phone_n and existing_doc != doc_n:
+        # CASO A: Viene documento real y el actual es placeholder → UPGRADE
+        if doc_n and existing_doc.startswith("SIN_DOC_"):
+            # Verificar que el documento real no esté usado por otra identidad
+            cur.execute("""
+                SELECT id FROM identities
+                WHERE document_number = ? AND id != ?
+                LIMIT 1
+            """, (doc_n, identity_id))
+            conflict = cur.fetchone()
+            if conflict:
+                conn.close()
+                raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+
+            # Actualizar placeholder a documento real
+            try:
+                cur.execute("""
+                    UPDATE identities
+                    SET document_number = ?
+                    WHERE id = ?
+                """, (doc_n, identity_id))
+                conn.commit()
+                conn.close()
+                return identity_id
+            except sqlite3.IntegrityError as e:
+                conn.rollback()
+                conn.close()
+                raise ValueError("Error al actualizar documento.") from e
+
+        # CASO B: Viene documento real pero ya tiene otro documento (no placeholder) → ERROR
+        elif doc_n and existing_doc != doc_n and not existing_doc.startswith("SIN_DOC_"):
             conn.close()
             raise ValueError("Este teléfono ya está registrado con otra cédula.")
 
-        # Conflicto: cédula ya existe con otro teléfono
-        if existing_doc == doc_n and existing_phone != phone_n:
-            conn.close()
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
-
-        # Todo coincide: retornamos la identidad existente
+        # CASO C: No viene documento o el documento coincide → retornar identidad existente
         conn.close()
         return identity_id
 
-    # No existe: crear
+    # 2) No existe identidad con este teléfono
+    # Si viene documento real, verificar que no esté usado por otro teléfono
+    if doc_n:
+        cur.execute("""
+            SELECT id FROM identities
+            WHERE document_number = ?
+            LIMIT 1
+        """, (doc_n,))
+        conflict = cur.fetchone()
+        if conflict:
+            conn.close()
+            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+
+    # 3) Crear nueva identidad con documento real o placeholder
+    final_doc = doc_n if doc_n else placeholder
     try:
         cur.execute("""
             INSERT INTO identities (phone, document_number, full_name)
             VALUES (?, ?, ?)
-        """, (phone_n, doc_n, (full_name or "").strip() if full_name else None))
+        """, (phone_n, final_doc, (full_name or "").strip() if full_name else None))
         identity_id = cur.lastrowid
         conn.commit()
         conn.close()
         return identity_id
-
-    except sqlite3.IntegrityError:
-        # Si entra aquí, alguien insertó entre la consulta y el insert.
-        # Re-consultar y validar.
-        cur.execute("""
-            SELECT id, phone, document_number
-            FROM identities
-            WHERE phone = ? OR document_number = ?
-            LIMIT 1
-        """, (phone_n, doc_n))
-        row2 = cur.fetchone()
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
         conn.close()
-        if not row2:
-            raise ValueError("No se pudo crear identidad. Intenta de nuevo.")
-        identity_id, existing_phone, existing_doc = row2
-        if existing_phone == phone_n and existing_doc != doc_n:
-            raise ValueError("Este teléfono ya está registrado con otra cédula.")
-        if existing_doc == doc_n and existing_phone != phone_n:
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
-        return identity_id
+        raise ValueError("Error al crear identidad.") from e
 
 
 def ensure_user_person_id(user_id: int, person_id: int) -> None:
@@ -414,6 +440,155 @@ def init_db():
         SET person_id = (SELECT al.person_id FROM allies al WHERE al.user_id = users.id)
         WHERE person_id IS NULL
           AND EXISTS (SELECT 1 FROM allies al WHERE al.user_id = users.id AND al.person_id IS NOT NULL);
+    """)
+
+    # ============================================================
+    # F) TABLAS FALTANTES (orders, settings, locations, ratings, terms)
+    # ============================================================
+
+    # Tabla: settings (configuración global)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    # Tabla: ally_locations (direcciones de recogida)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            phone TEXT,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+
+    # Tabla: admin_allies (relación admin-aliado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_allies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            ally_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            balance INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(admin_id, ally_id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+
+    # Tabla: admin_couriers (relación admin-repartidor)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_couriers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            balance INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(admin_id, courier_id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
+        );
+    """)
+
+    # Tabla: orders (pedidos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            courier_id INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            customer_name TEXT NOT NULL,
+            customer_phone TEXT NOT NULL,
+            customer_address TEXT NOT NULL,
+            customer_city TEXT NOT NULL,
+            customer_barrio TEXT NOT NULL,
+            pickup_location_id INTEGER,
+            pay_at_store_required INTEGER DEFAULT 0,
+            pay_at_store_amount INTEGER DEFAULT 0,
+            base_fee INTEGER DEFAULT 0,
+            distance_km REAL DEFAULT 0,
+            rain_extra INTEGER DEFAULT 0,
+            high_demand_extra INTEGER DEFAULT 0,
+            night_extra INTEGER DEFAULT 0,
+            additional_incentive INTEGER DEFAULT 0,
+            total_fee INTEGER DEFAULT 0,
+            instructions TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            published_at TEXT,
+            accepted_at TEXT,
+            pickup_confirmed_at TEXT,
+            delivered_at TEXT,
+            canceled_at TEXT,
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
+        );
+    """)
+
+    # Tabla: courier_ratings (calificaciones)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS courier_ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+            comment TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
+        );
+    """)
+
+    # Tabla: terms_versions (versiones de términos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            url TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            status TEXT DEFAULT 'APPROVED',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(role, version)
+        );
+    """)
+
+    # Tabla: terms_acceptances (aceptaciones de términos)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_acceptances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            message_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(telegram_id, role, version, sha256)
+        );
+    """)
+
+    # Tabla: terms_session_acks (confirmaciones de sesión)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS terms_session_acks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            version TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     conn.commit()
@@ -768,7 +943,7 @@ def create_ally(
     city: str,
     barrio: str,
     phone: str,
-    document_number: str,
+    document_number: str = "",
 ) -> int:
     """Crea un aliado en la tabla allies y devuelve su id."""
 
@@ -1062,7 +1237,7 @@ def get_pending_couriers_by_admin(admin_id):
 
 def get_couriers_by_admin_and_status(admin_id, status):
     """
-    Lista repartidores de un admin por estado del vínculo (APPROVED, BLOCKED, REJECTED, etc.)
+    Lista repartidores de un admin por estado del vínculo (APPROVED, INACTIVE, REJECTED, etc.)
     Devuelve: (courier_id, full_name, phone, city, barrio, balance, link_status)
     """
     conn = get_connection()
@@ -1242,7 +1417,7 @@ def create_order(
     total_fee: int,
     instructions: str,
 ):
-    """Crea un pedido en estado CREATED y devuelve su id."""
+    """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1266,7 +1441,7 @@ def create_order(
             additional_incentive,
             total_fee,
             instructions
-        ) VALUES (?, NULL, 'CREATED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -1317,7 +1492,7 @@ def assign_order_to_courier(order_id: int, courier_id: int):
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'APPROVED', accepted_at = datetime('now')
         WHERE id = ?;
     """, (courier_id, order_id))
     conn.commit()
