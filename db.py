@@ -48,76 +48,98 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     - phone único
     - document_number único
     Si existe conflicto (mismo teléfono con otra cédula, o viceversa) levanta ValueError.
+
+    Soporta upgrade: si existe identity con placeholder SIN_DOC_{phone} y luego llega
+    documento real, actualiza el placeholder en lugar de crear nueva identity.
     """
     phone_n = normalize_phone(phone)
-    doc_n = normalize_document(document_number) if document_number else ""
 
     if not phone_n:
         raise ValueError("Teléfono es obligatorio.")
 
-    # Si no hay document_number, usar placeholder único basado en teléfono
-    if not doc_n:
-        doc_n = f"SIN_DOC_{phone_n}"
+    doc_n = normalize_document(document_number) if document_number else ""
+    placeholder = f"SIN_DOC_{phone_n}"
 
     conn = get_connection()
     cur = conn.cursor()
 
-    # Buscar por teléfono o por documento
+    # 1) Buscar si ya existe identidad con este teléfono
     cur.execute("""
         SELECT id, phone, document_number
         FROM identities
-        WHERE phone = ? OR document_number = ?
+        WHERE phone = ?
         LIMIT 1
-    """, (phone_n, doc_n))
+    """, (phone_n,))
     row = cur.fetchone()
 
     if row:
         identity_id, existing_phone, existing_doc = row
 
-        # Conflicto: teléfono ya existe con otra cédula
-        if existing_phone == phone_n and existing_doc != doc_n:
+        # CASO A: Viene documento real y el actual es placeholder → UPGRADE
+        if doc_n and existing_doc.startswith("SIN_DOC_"):
+            # Verificar que el documento real no esté usado por otra identidad
+            cur.execute("""
+                SELECT id FROM identities
+                WHERE document_number = ? AND id != ?
+                LIMIT 1
+            """, (doc_n, identity_id))
+            conflict = cur.fetchone()
+            if conflict:
+                conn.close()
+                raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+
+            # Actualizar placeholder a documento real
+            try:
+                cur.execute("""
+                    UPDATE identities
+                    SET document_number = ?
+                    WHERE id = ?
+                """, (doc_n, identity_id))
+                conn.commit()
+                conn.close()
+                return identity_id
+            except sqlite3.IntegrityError as e:
+                conn.rollback()
+                conn.close()
+                raise ValueError("Error al actualizar documento.") from e
+
+        # CASO B: Viene documento real pero ya tiene otro documento (no placeholder) → ERROR
+        elif doc_n and existing_doc != doc_n and not existing_doc.startswith("SIN_DOC_"):
             conn.close()
             raise ValueError("Este teléfono ya está registrado con otra cédula.")
 
-        # Conflicto: cédula ya existe con otro teléfono
-        if existing_doc == doc_n and existing_phone != phone_n:
-            conn.close()
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
-
-        # Todo coincide: retornamos la identidad existente
+        # CASO C: No viene documento o el documento coincide → retornar identidad existente
         conn.close()
         return identity_id
 
-    # No existe: crear
+    # 2) No existe identidad con este teléfono
+    # Si viene documento real, verificar que no esté usado por otro teléfono
+    if doc_n:
+        cur.execute("""
+            SELECT id FROM identities
+            WHERE document_number = ?
+            LIMIT 1
+        """, (doc_n,))
+        conflict = cur.fetchone()
+        if conflict:
+            conn.close()
+            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+
+    # 3) Crear nueva identidad con documento real o placeholder
+    final_doc = doc_n if doc_n else placeholder
     try:
         cur.execute("""
             INSERT INTO identities (phone, document_number, full_name)
             VALUES (?, ?, ?)
-        """, (phone_n, doc_n, (full_name or "").strip() if full_name else None))
+        """, (phone_n, final_doc, (full_name or "").strip() if full_name else None))
         identity_id = cur.lastrowid
         conn.commit()
         conn.close()
         return identity_id
-
-    except sqlite3.IntegrityError:
-        # Si entra aquí, alguien insertó entre la consulta y el insert.
-        # Re-consultar y validar.
-        cur.execute("""
-            SELECT id, phone, document_number
-            FROM identities
-            WHERE phone = ? OR document_number = ?
-            LIMIT 1
-        """, (phone_n, doc_n))
-        row2 = cur.fetchone()
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
         conn.close()
-        if not row2:
-            raise ValueError("No se pudo crear identidad. Intenta de nuevo.")
-        identity_id, existing_phone, existing_doc = row2
-        if existing_phone == phone_n and existing_doc != doc_n:
-            raise ValueError("Este teléfono ya está registrado con otra cédula.")
-        if existing_doc == doc_n and existing_phone != phone_n:
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
-        return identity_id
+        raise ValueError("Error al crear identidad.") from e
 
 
 def ensure_user_person_id(user_id: int, person_id: int) -> None:
