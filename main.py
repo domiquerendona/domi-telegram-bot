@@ -168,24 +168,39 @@ def start(update, context):
         if isinstance(admin_local, dict):
             admin_status = admin_local.get("status", "PENDING")
             team_name = admin_local.get("team_name") or "-"
+            team_code = admin_local.get("team_code") or "-"
         else:
             # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
             admin_status = admin_local[6]
             team_name = admin_local[8] or "-"
+            team_code = admin_local[10] if len(admin_local) > 10 and admin_local[10] else "-"
 
         estado_lineas.append(f"• Administrador Local: equipo {team_name} (estado: {admin_status}).")
 
-        if admin_status == "PENDING":
-            siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
-        elif admin_status == "APPROVED":
-            siguientes_pasos.append(
-                "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (10 repartidores con saldo mínimo)."
-            )
-            siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
-        elif admin_status == "INACTIVE":
-            siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
-        elif admin_status == "REJECTED":
-            siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        # Administrador de Plataforma: no mostrar requisitos
+        if team_code == "PLATFORM":
+            if admin_status == "APPROVED":
+                siguientes_pasos.append("• Como Administrador de Plataforma, tu operación está habilitada.")
+                siguientes_pasos.append("• Usa /mi_admin para acceder a tu panel.")
+            elif admin_status == "PENDING":
+                siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
+            elif admin_status == "INACTIVE":
+                siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
+            elif admin_status == "REJECTED":
+                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        else:
+            # Administrador Local normal: mostrar requisitos
+            if admin_status == "PENDING":
+                siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
+            elif admin_status == "APPROVED":
+                siguientes_pasos.append(
+                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (10 repartidores con saldo mínimo)."
+                )
+                siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
+            elif admin_status == "INACTIVE":
+                siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
+            elif admin_status == "REJECTED":
+                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
 
     # Aliado
     if ally:
@@ -1678,9 +1693,6 @@ def mi_admin(update, context):
     else:
         team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
 
-    # Validación operativa en tiempo real
-    ok, msg = admin_puede_operar(admin_id)
-
     header = (
         "Panel Administrador Local\n\n"
         f"Estado: {status}\n"
@@ -1688,6 +1700,23 @@ def mi_admin(update, context):
         f"Código de equipo: {team_code}\n"
         "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
     )
+
+    # Administrador de Plataforma: siempre operativo
+    if team_code == "PLATFORM":
+        keyboard = [
+            [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+        ]
+        update.message.reply_text(
+            header +
+            "Como Administrador de Plataforma, tu operación está habilitada.\n"
+            "Selecciona una opción:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Administrador Local normal: validación operativa en tiempo real
+    ok, msg = admin_puede_operar(admin_id)
 
     if not ok:
         keyboard = [
@@ -1742,9 +1771,29 @@ def admin_local_callback(update, context):
             return
 
     if data.startswith("local_check_"):
-        ok, msg = admin_puede_operar(admin_id)
         admin_full = get_admin_by_id(admin_id)
         status = admin_full[6]
+        team_code = "-"
+        if isinstance(admin_full, dict):
+            team_code = admin_full.get("team_code") or "-"
+        else:
+            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+
+        # Administrador de Plataforma: siempre operativo
+        if team_code == "PLATFORM":
+            keyboard = [
+                [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            ]
+            query.edit_message_text(
+                "Panel Administrador Local\n\n"
+                "Como Administrador de Plataforma, tu operación está habilitada.\n"
+                "Selecciona una opción:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        # Administrador Local normal: validar requisitos
+        ok, msg = admin_puede_operar(admin_id)
 
         if not ok:
             keyboard = [
@@ -1773,6 +1822,26 @@ def admin_local_callback(update, context):
     if data.startswith("local_status_"):
         admin_full = get_admin_by_id(admin_id)
         status = admin_full[6]
+        team_code = "-"
+        if isinstance(admin_full, dict):
+            team_code = admin_full.get("team_code") or "-"
+        else:
+            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+
+        # Administrador de Plataforma: mensaje especial
+        if team_code == "PLATFORM":
+            total = count_admin_couriers(admin_id)
+            texto = (
+                "Estado de tu cuenta (Admin Plataforma):\n\n"
+                f"Estado: {status}\n"
+                f"Repartidores vinculados: {total}\n\n"
+                "Como Administrador de Plataforma, tu operación está habilitada."
+            )
+            keyboard = []
+            query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+            return
+
+        # Administrador Local normal: mostrar requisitos
         total = count_admin_couriers(admin_id)
         okb = count_admin_couriers_with_min_balance(admin_id, 5000)
 
