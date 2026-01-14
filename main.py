@@ -1,14 +1,5 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
-
-ENV = os.getenv("ENV", "PROD").upper()   # "LOCAL" o "PROD"
-IS_LOCAL = (ENV == "LOCAL")
-
+import hashlib
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -86,7 +77,23 @@ from db import (
     add_courier_rating,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ============================================================
+# SEPARACIÓN DEV/PROD - Evitar conflicto getUpdates
+# ============================================================
+ENV = os.getenv("ENV", "PROD").upper()
+
+# Solo cargar .env en LOCAL (DEV), NUNCA en PROD
+if ENV == "LOCAL":
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        print(f"[ENV] Ambiente: {ENV} - .env cargado")
+    except ImportError:
+        print(f"[ENV] Ambiente: {ENV} - python-dotenv no instalado, usando variables de sistema")
+else:
+    print(f"[ENV] Ambiente: {ENV} - usando variables de entorno del sistema (Railway/PROD)")
+
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Plataforma
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
@@ -2554,7 +2561,14 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
-    print(f"[BOOT] ENV={ENV} | ADMIN_USER_ID={ADMIN_USER_ID}")
+    # Log seguro: fingerprint del token para verificar separación DEV/PROD
+    token_hash = hashlib.sha256(TOKEN.encode()).hexdigest()[:8]
+    token_suffix = TOKEN[-6:] if len(TOKEN) >= 6 else "***"
+    print(f"[BOT] TOKEN fingerprint: hash={token_hash} suffix=...{token_suffix}")
+    print(f"[BOT] Ambiente: {ENV}")
+
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
