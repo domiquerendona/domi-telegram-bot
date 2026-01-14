@@ -10,6 +10,7 @@ from telegram.ext import (
     Filters,
     CallbackQueryHandler,
 )
+
 from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
 from db import get_local_admins_count
 from db import force_platform_admin
@@ -2554,11 +2555,10 @@ def terms_callback(update, context):
     query.answer("Opción no reconocida.", show_alert=True)
 
 def main():
-    # Inicializar base de datos
     init_db()
     force_platform_admin(ADMIN_USER_ID)
 
-    if not TOKEN:
+    if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
 
     # Log seguro: fingerprint del token para verificar separación DEV/PROD
@@ -2570,7 +2570,8 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    print("[BOOT] Iniciando polling...")
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     # -------------------------
     # Comandos básicos
@@ -2657,20 +2658,24 @@ def main():
     dp.add_handler(admin_conv)
     
     # -------------------------
-    # Notificación de arranque al Administrador de Plataforma
+    # Notificación de arranque al Administrador de Plataforma (opcional)
     # -------------------------
-    try:
-        updater.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text="Bot iniciado correctamente."
-        )
-    except Exception as e:
-        print("Error enviando notificación al Administrador de Plataforma:", e)
+    if ADMIN_USER_ID:
+        try:
+            updater.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text="Bot iniciado correctamente."
+            )
+        except Exception as e:
+         print(f"[WARN] No se pudo notificar al admin: {e}")
+    else:
+        print("[INFO] ADMIN_USER_ID=0, se omite notificación.")
 
-    
+
     # Iniciar el bot
     updater.start_polling()
     print("[BOOT] Polling iniciado. Bot activo.")
+
     
     
 if __name__ == "__main__":
