@@ -50,6 +50,8 @@ from db import (
     update_admin_status_by_id,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
+    get_admin_by_team_code,
+    update_admin_courier_status,
 
     # Direcciones aliados
     create_ally_location,
@@ -1906,7 +1908,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "INACTIVE")
         except Exception as e:
-            print("[ERROR] update_admin_courier_status BLOCKED:", e)
+            print("[ERROR] update_admin_courier_status INACTIVE:", e)
             query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
             return
 
