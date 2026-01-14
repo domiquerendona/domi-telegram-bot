@@ -1237,7 +1237,7 @@ def get_pending_couriers_by_admin(admin_id):
 
 def get_couriers_by_admin_and_status(admin_id, status):
     """
-    Lista repartidores de un admin por estado del vínculo (APPROVED, BLOCKED, REJECTED, etc.)
+    Lista repartidores de un admin por estado del vínculo (APPROVED, INACTIVE, REJECTED, etc.)
     Devuelve: (courier_id, full_name, phone, city, barrio, balance, link_status)
     """
     conn = get_connection()
@@ -1417,7 +1417,7 @@ def create_order(
     total_fee: int,
     instructions: str,
 ):
-    """Crea un pedido en estado CREATED y devuelve su id."""
+    """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1441,7 +1441,7 @@ def create_order(
             additional_incentive,
             total_fee,
             instructions
-        ) VALUES (?, NULL, 'CREATED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -1492,7 +1492,7 @@ def assign_order_to_courier(order_id: int, courier_id: int):
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'APPROVED', accepted_at = datetime('now')
         WHERE id = ?;
     """, (courier_id, order_id))
     conn.commit()
