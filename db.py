@@ -50,10 +50,14 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     Si existe conflicto (mismo teléfono con otra cédula, o viceversa) levanta ValueError.
     """
     phone_n = normalize_phone(phone)
-    doc_n = normalize_document(document_number)
+    doc_n = normalize_document(document_number) if document_number else ""
 
-    if not phone_n or not doc_n:
-        raise ValueError("Teléfono y cédula son obligatorios.")
+    if not phone_n:
+        raise ValueError("Teléfono es obligatorio.")
+
+    # Si no hay document_number, usar placeholder único basado en teléfono
+    if not doc_n:
+        doc_n = f"SIN_DOC_{phone_n}"
 
     conn = get_connection()
     cur = conn.cursor()
@@ -917,7 +921,7 @@ def create_ally(
     city: str,
     barrio: str,
     phone: str,
-    document_number: str,
+    document_number: str = "",
 ) -> int:
     """Crea un aliado en la tabla allies y devuelve su id."""
 
