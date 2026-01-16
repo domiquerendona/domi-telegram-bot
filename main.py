@@ -334,6 +334,7 @@ def soy_aliado(update, context):
     update.message.reply_text(
         "👨‍🍳 Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     return ALLY_NAME
 
@@ -341,41 +342,62 @@ def soy_aliado(update, context):
 def ally_name(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("El nombre del negocio no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El nombre del negocio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_NAME
 
     context.user_data.clear()
     context.user_data["business_name"] = texto
-    update.message.reply_text("Escribe el nombre del dueño o administrador:")
+    update.message.reply_text(
+        "Escribe el nombre del dueño o administrador:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_OWNER
 
 
 def ally_owner(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("El nombre del dueño no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El nombre del dueño no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_OWNER
 
     context.user_data["owner_name"] = texto
-    update.message.reply_text("Escribe la dirección del negocio:")
+    update.message.reply_text(
+        "Escribe la dirección del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_ADDRESS
 
 
 def ally_address(update, context):
     texto = update.message.text.strip()
     context.user_data["address"] = texto
-    update.message.reply_text("Escribe la ciudad del negocio:")
+    update.message.reply_text(
+        "Escribe la ciudad del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_CITY
 
 
 def ally_city(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("La ciudad del negocio no puede estar vacía. Escríbela de nuevo:")
+        update.message.reply_text(
+            "La ciudad del negocio no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_CITY
 
     context.user_data["city"] = texto
-    update.message.reply_text("Escribe el teléfono de contacto del negocio:")
+    update.message.reply_text(
+        "Escribe el teléfono de contacto del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_PHONE
 
 
@@ -385,14 +407,20 @@ def ally_phone(update, context):
     # Validación mínima: que tenga al menos 7 dígitos
     digits = "".join([c for c in phone if c.isdigit()])
     if len(digits) < 7:
-        update.message.reply_text("Ese teléfono no parece válido. Escríbelo de nuevo, por favor.")
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_PHONE
 
     # Guardamos en el contexto con el mismo término que acordamos: ally_phone
     context.user_data["ally_phone"] = phone
 
     # Siguiente paso
-    update.message.reply_text("Escribe el barrio del negocio:")
+    update.message.reply_text(
+        "Escribe el barrio del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_BARRIO
 
 
@@ -403,7 +431,10 @@ def ally_barrio(update, context):
 
     text = (update.message.text or "").strip()
     if not text:
-        update.message.reply_text("El barrio no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El barrio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_BARRIO
 
     barrio = text
@@ -599,43 +630,62 @@ def soy_repartidor(update, context):
     update.message.reply_text(
         "🛵 Registro de repartidor\n\n"
         "Escribe tu nombre completo:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     return COURIER_FULLNAME
 
 
 def courier_fullname(update, context):
     context.user_data["full_name"] = update.message.text.strip()
-    update.message.reply_text("Escribe tu número de identificación:")
+    update.message.reply_text(
+        "Escribe tu número de identificación:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_IDNUMBER
 
 
 def courier_idnumber(update, context):
     context.user_data["id_number"] = update.message.text.strip()
-    update.message.reply_text("Escribe tu número de celular:")
+    update.message.reply_text(
+        "Escribe tu número de celular:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_PHONE
 
 
 def courier_phone(update, context):
     context.user_data["phone"] = update.message.text.strip()
-    update.message.reply_text("Escribe la ciudad donde trabajas:")
+    update.message.reply_text(
+        "Escribe la ciudad donde trabajas:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_CITY
 
 
 def courier_city(update, context):
     context.user_data["city"] = update.message.text.strip()
-    update.message.reply_text("Escribe el barrio o sector principal donde trabajas:")
+    update.message.reply_text(
+        "Escribe el barrio o sector principal donde trabajas:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_BARRIO
 
 
 def courier_barrio(update, context):
     context.user_data["barrio"] = update.message.text.strip()
-    update.message.reply_text("Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):")
+    update.message.reply_text(
+        "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_PLATE
 
 
 def courier_plate(update, context):
     context.user_data["plate"] = update.message.text.strip()
-    update.message.reply_text("Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):")
+    update.message.reply_text(
+        "Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_BIKETYPE
 
 
@@ -661,6 +711,7 @@ def courier_biketype(update, context):
         f"Tipo de moto: {bike_type}\n\n"
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, usa /cancel y vuelve a /soy_repartidor"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
 
     update.message.reply_text(resumen)
@@ -1652,7 +1703,10 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        CommandHandler("menu", menu)
+    ],
     allow_reentry=True,
 )
 
@@ -1684,7 +1738,10 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        CommandHandler("menu", menu)
+    ],
     allow_reentry=True,
 )
 
