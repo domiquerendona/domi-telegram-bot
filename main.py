@@ -23,6 +23,7 @@ from db import (
     init_db,
     ensure_user,
     get_user_by_telegram_id,
+    get_user_by_id,
     get_setting,
     set_setting,
 
