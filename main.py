@@ -2695,8 +2695,8 @@ def main():
     # Iniciar el bot
     updater.start_polling(drop_pending_updates=True)
     print("[BOOT] Polling iniciado. Bot activo.")
+    updater.idle()
 
-    
-    
+
 if __name__ == "__main__":
     main()
