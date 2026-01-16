@@ -1,6 +1,10 @@
 import os
 import hashlib
 
+from dotenv import load_dotenv
+load_dotenv()
+
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
