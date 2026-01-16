@@ -2693,7 +2693,7 @@ def main():
 
 
     # Iniciar el bot
-    updater.start_polling()
+    updater.start_polling(drop_pending_updates=True)
     print("[BOOT] Polling iniciado. Bot activo.")
 
     
