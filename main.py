@@ -501,6 +501,7 @@ def show_ally_team_selection(update, context):
 def ally_team_callback(update, context):
     query = update.callback_query
     data = (query.data or "").strip()
+    print(f"[DEBUG] ally_team_callback recibió data={data}")
     query.answer()
 
     # Validación básica
@@ -531,7 +532,17 @@ def ally_team_callback(update, context):
             return ConversationHandler.END
 
         platform_admin_id = platform_admin[0]
-        upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING", is_active=0)
+
+        try:
+            upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
+            print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
+        except Exception as e:
+            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
+            query.edit_message_text(
+                "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
 
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
@@ -554,7 +565,16 @@ def ally_team_callback(update, context):
     team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
     team_code = admin_row[5]
 
-    upsert_admin_ally_link(admin_id, ally_id, status="PENDING", is_active=0)
+    try:
+        upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
+        print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
+    except Exception as e:
+        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
+        query.edit_message_text(
+            "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"

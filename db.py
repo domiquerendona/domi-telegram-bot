@@ -878,28 +878,28 @@ def get_available_admin_teams():
     return rows
 
 
-def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING", is_active: int = 0):
+def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING"):
     """
     Crea o actualiza el vínculo admin_allies para este aliado con este admin.
-    Por defecto queda PENDING hasta aprobación, y is_active=0.
+    Por defecto queda PENDING hasta aprobación.
+    Solo usa estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     # Inserta si no existe
     cur.execute("""
-        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, is_active, balance, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-    """, (admin_id, ally_id, status, is_active))
+        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, balance, created_at, updated_at)
+        VALUES (?, ?, ?, 0, datetime('now'), datetime('now'))
+    """, (admin_id, ally_id, status))
 
-    # Si ya existía, actualiza status/is_active y updated_at
+    # Si ya existía, actualiza status y updated_at
     cur.execute("""
         UPDATE admin_allies
         SET status = ?,
-            is_active = ?,
             updated_at = datetime('now')
         WHERE admin_id = ? AND ally_id = ?
-    """, (status, is_active, admin_id, ally_id))
+    """, (status, admin_id, ally_id))
 
     conn.commit()
     conn.close()
