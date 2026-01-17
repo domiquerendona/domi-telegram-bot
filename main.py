@@ -264,7 +264,7 @@ def start(update, context):
         "• /soy_administrador  - Registrarte como administrador",
     ]
 
-    if ally and ally.get("status") == "APPROVED":
+    if ally and ally["status"] == "APPROVED":
         comandos.append("• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)")
 
     if admin_local:
