@@ -321,6 +321,36 @@ def init_db():
     if "deleted_at" not in allies_cols:
         cur.execute("ALTER TABLE allies ADD COLUMN deleted_at TEXT")
 
+    # admins: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejected_at TEXT")
+
+    # allies: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejected_at TEXT")
+
+    # couriers: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(couriers)")
+    couriers_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejected_at TEXT")
+
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
     # ============================================================
@@ -1133,36 +1163,78 @@ def get_all_admins():
     conn.close()
     return rows
 
-def update_admin_status_by_id(admin_id: int, new_status: str):
+def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admins
-        SET status = ?
-        WHERE id = ? AND is_deleted = 0;
-    """, (new_status, admin_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE admins
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND is_deleted = 0;
+        """, (new_status, rejection_type, rejection_reason, admin_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE admins
+            SET status = ?
+            WHERE id = ? AND is_deleted = 0;
+        """, (new_status, admin_id))
+
     conn.commit()
     conn.close()
 
-def update_courier_status_by_id(courier_id: int, new_status: str):
+def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE couriers
-        SET status = ?
-        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
-    """, (new_status, courier_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE couriers
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, rejection_type, rejection_reason, courier_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE couriers
+            SET status = ?
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, courier_id))
+
     conn.commit()
     conn.close()
 
-def update_ally_status_by_id(ally_id: int, new_status: str):
+def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE allies
-        SET status = ?
-        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
-    """, (new_status, ally_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE allies
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, rejection_type, rejection_reason, ally_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE allies
+            SET status = ?
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, ally_id))
+
     conn.commit()
     conn.close()
     
