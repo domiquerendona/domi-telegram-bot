@@ -709,7 +709,8 @@ def get_admin_by_user_id(user_id: int):
     cur.execute("""
         SELECT
             id, user_id, person_id, full_name, phone, city, barrio,
-            status, created_at, team_name, document_number, team_code
+            status, created_at, team_name, document_number, team_code,
+            rejection_type, rejection_reason, rejected_at
         FROM admins
         WHERE user_id = ? AND is_deleted = 0
         ORDER BY id DESC
@@ -717,10 +718,10 @@ def get_admin_by_user_id(user_id: int):
     """, (user_id,))
     row = cur.fetchone()
     conn.close()
-    
+
     if not row:
         return None
-        
+
     return dict(row)
 
 

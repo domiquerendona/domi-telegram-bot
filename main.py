@@ -330,10 +330,36 @@ def pedido_direccion_cliente(update, context):
 # ----- REGISTRO DE ALIADO -----
 
 def soy_aliado(update, context):
-    user = update.effective_user
-    ensure_user(user.id, user.username)
+    user_db_id = get_user_db_id_from_update(update)
+    context.user_data.clear()
+
+    # Validación anti-duplicados
+    existing = get_ally_by_user_id(user_db_id)
+    if existing:
+        status = existing["status"] if isinstance(existing, dict) else existing[8]
+        rejection_type = existing.get("rejection_type") if isinstance(existing, dict) else (existing[9] if len(existing) > 9 else None)
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de aliado en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de aliado aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
+            )
+            update.message.reply_text(msg)
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador."
+            )
+            return ConversationHandler.END
+
+        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
+
     update.message.reply_text(
-        "👨‍🍳 Registro de aliado\n\n"
+        "Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
@@ -625,11 +651,36 @@ def ally_team_callback(update, context):
 # ----- REGISTRO DE REPARTIDOR -----
 
 def soy_repartidor(update, context):
-    user = update.effective_user
-    ensure_user(user.id, user.username)
+    user_db_id = get_user_db_id_from_update(update)
     context.user_data.clear()
+
+    # Validación anti-duplicados
+    existing = get_courier_by_user_id(user_db_id)
+    if existing:
+        status = existing["status"] if isinstance(existing, dict) else existing[11]
+        rejection_type = existing.get("rejection_type") if isinstance(existing, dict) else (existing[12] if len(existing) > 12 else None)
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de repartidor en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de repartidor aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
+            )
+            update.message.reply_text(msg)
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador."
+            )
+            return ConversationHandler.END
+
+        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
+
     update.message.reply_text(
-        "🛵 Registro de repartidor\n\n"
+        "Registro de repartidor\n\n"
         "Escribe tu nombre completo:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
@@ -1058,18 +1109,43 @@ def soy_admin(update, context):
 
     existing = get_admin_by_user_id(user_db_id)
     if existing:
-        team_name = existing[8] if len(existing) > 8 and existing[8] else existing[2]
-        doc = existing[9] if len(existing) > 9 and existing[9] else "No registrado"
+        status = existing.get("status") if isinstance(existing, dict) else existing[7]
+        rejection_type = existing.get("rejection_type") if isinstance(existing, dict) else None
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de administrador en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de administrador aprobado (APPROVED). Si necesitas cambios, contacta al administrador de plataforma."
+            )
+            update.message.reply_text(msg)
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma."
+            )
+            return ConversationHandler.END
+
+        # Permitir actualizar si INACTIVE o REJECTED CORRECTABLE/NULL
+        team_name = existing.get("team_name") if isinstance(existing, dict) else (existing[9] if len(existing) > 9 and existing[9] else existing[3])
+        doc = existing.get("document_number") if isinstance(existing, dict) else (existing[10] if len(existing) > 10 and existing[10] else "No registrado")
+        full_name = existing.get("full_name") if isinstance(existing, dict) else existing[3]
+        phone = existing.get("phone") if isinstance(existing, dict) else existing[4]
+        city = existing.get("city") if isinstance(existing, dict) else existing[5]
+        barrio = existing.get("barrio") if isinstance(existing, dict) else existing[6]
 
         update.message.reply_text(
             "Ya tienes un registro como Administrador Local.\n"
-            f"Nombre: {existing[2]}\n"
+            f"Nombre: {full_name}\n"
             f"Documento: {doc}\n"
             f"Administración: {team_name}\n"
-            f"Teléfono: {existing[3]}\n"
-            f"Ciudad: {existing[4]}\n"
-            f"Barrio: {existing[5]}\n"
-            f"Estado: {existing[6]}\n\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n"
+            f"Estado: {status}\n\n"
             "Si deseas actualizar tus datos, escribe SI.\n"
             "Si no, escribe NO."
         )
