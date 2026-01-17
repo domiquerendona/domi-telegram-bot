@@ -1826,6 +1826,9 @@ courier_conv = ConversationHandler(
         COURIER_CONFIRM: [
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
+        COURIER_TEAMCODE: [
+            MessageHandler(Filters.text & ~Filters.command, courier_teamcode)
+        ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
