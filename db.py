@@ -1237,7 +1237,37 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
 
     conn.commit()
     conn.close()
-    
+
+
+def get_admin_rejection_type_by_id(admin_id: int):
+    """Devuelve el rejection_type del admin especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM admins WHERE id = ?", (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_ally_rejection_type_by_id(ally_id: int):
+    """Devuelve el rejection_type del aliado especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM allies WHERE id = ?", (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_courier_rejection_type_by_id(courier_id: int):
+    """Devuelve el rejection_type del repartidor especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM couriers WHERE id = ?", (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 
 def get_local_admins_count():
     conn = get_connection()

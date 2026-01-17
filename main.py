@@ -24,7 +24,9 @@ from db import (
     ensure_user,
     get_user_by_telegram_id,
     get_user_by_id,
-    get_connection,
+    get_admin_rejection_type_by_id,
+    get_ally_rejection_type_by_id,
+    get_courier_rejection_type_by_id,
     get_setting,
     set_setting,
 
@@ -340,18 +342,8 @@ def soy_aliado(update, context):
         status = existing["status"] if isinstance(existing, dict) else existing[8]
         ally_id = existing["id"] if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type con consulta directa
-        rejection_type = None
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT rejection_type FROM allies WHERE id = ?", (ally_id,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                rejection_type = row[0] if isinstance(row, tuple) else row.get("rejection_type")
-        except Exception:
-            pass
+        # Obtener rejection_type usando función específica
+        rejection_type = get_ally_rejection_type_by_id(ally_id)
 
         # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
@@ -674,18 +666,8 @@ def soy_repartidor(update, context):
         status = existing["status"] if isinstance(existing, dict) else existing[11]
         courier_id = existing["id"] if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type con consulta directa
-        rejection_type = None
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT rejection_type FROM couriers WHERE id = ?", (courier_id,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                rejection_type = row[0] if isinstance(row, tuple) else row.get("rejection_type")
-        except Exception:
-            pass
+        # Obtener rejection_type usando función específica
+        rejection_type = get_courier_rejection_type_by_id(courier_id)
 
         # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
@@ -1139,18 +1121,8 @@ def soy_admin(update, context):
         status = existing.get("status") if isinstance(existing, dict) else existing[7]
         admin_id = existing.get("id") if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type con consulta directa (get_admin_by_user_id no lo incluye)
-        rejection_type = None
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT rejection_type FROM admins WHERE id = ?", (admin_id,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                rejection_type = row[0] if isinstance(row, tuple) else row.get("rejection_type")
-        except Exception:
-            pass
+        # Obtener rejection_type usando función específica
+        rejection_type = get_admin_rejection_type_by_id(admin_id)
 
         # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
