@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -286,7 +286,17 @@ def start(update, context):
         + "\n"
     )
 
-    update.message.reply_text(mensaje)
+    # Mostrar ReplyKeyboard SOLO para usuarios nuevos (sin roles)
+    if not estado_lineas and not context.user_data.get('keyboard_shown'):
+        keyboard = [
+            ['/soy_aliado', '/soy_repartidor'],
+            ['/soy_administrador', '/menu']
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        context.user_data['keyboard_shown'] = True
+        update.message.reply_text(mensaje, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(mensaje)
 
 
 def menu(update, context):
@@ -352,13 +362,14 @@ def soy_aliado(update, context):
                 if status == "PENDING" else
                 "Ya tienes un registro de aliado aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
             )
-            update.message.reply_text(msg)
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
         # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
-                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador."
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
+                reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
@@ -367,7 +378,8 @@ def soy_aliado(update, context):
     update.message.reply_text(
         "Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
+        reply_markup=ReplyKeyboardRemove()
     )
     return ALLY_NAME
 
@@ -676,13 +688,14 @@ def soy_repartidor(update, context):
                 if status == "PENDING" else
                 "Ya tienes un registro de repartidor aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
             )
-            update.message.reply_text(msg)
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
         # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
-                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador."
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
+                reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
@@ -691,7 +704,8 @@ def soy_repartidor(update, context):
     update.message.reply_text(
         "Registro de repartidor\n\n"
         "Escribe tu nombre completo:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
+        reply_markup=ReplyKeyboardRemove()
     )
     return COURIER_FULLNAME
 
@@ -1131,13 +1145,14 @@ def soy_admin(update, context):
                 if status == "PENDING" else
                 "Ya tienes un registro de administrador aprobado (APPROVED). Si necesitas cambios, contacta al administrador de plataforma."
             )
-            update.message.reply_text(msg)
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
         # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
-                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma."
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma.",
+                reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
@@ -1159,12 +1174,16 @@ def soy_admin(update, context):
             f"Barrio: {barrio}\n"
             f"Estado: {status}\n\n"
             "Si deseas actualizar tus datos, escribe SI.\n"
-            "Si no, escribe NO."
+            "Si no, escribe NO.",
+            reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["admin_update_prompt"] = True
         return LOCAL_ADMIN_NAME
 
-    update.message.reply_text("Registro de Administrador Local.\nEscribe tu nombre completo:")
+    update.message.reply_text(
+        "Registro de Administrador Local.\nEscribe tu nombre completo:",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return LOCAL_ADMIN_NAME
 
 
