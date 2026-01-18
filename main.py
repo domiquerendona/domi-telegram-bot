@@ -290,7 +290,7 @@ def start(update, context):
     if not estado_lineas and not context.user_data.get('keyboard_shown'):
         keyboard = [
             ['/soy_aliado', '/soy_repartidor'],
-            ['/soy_administrador', '/menu']
+            ['/soy_admin', '/menu']
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         context.user_data['keyboard_shown'] = True
