@@ -4,21 +4,107 @@
 **Versión**: FASE 1 - Post-Migración WhatsApp
 **Branch**: `claude/fix-project-errors-PpBQS`
 **Commit**: `9064bd4`
-**Fecha**: 2025-01-19
+**Fecha**: 2026-01-19
 
 ---
 
 ## 📑 ÍNDICE
 
-1. [Prerequisitos](#prerequisitos)
-2. [Configuración de Entorno de Testing](#configuración-de-entorno-de-testing)
-3. [Prueba 1: Admin PENDING Visible](#prueba-1-admin-pending-visible)
-4. [Prueba 2: Vinculación Repartidor + Notificación](#prueba-2-vinculación-repartidor--notificación)
-5. [Prueba 3: Panel /mi_admin Sin Bloqueo](#prueba-3-panel-mi_admin-sin-bloqueo)
-6. [Prueba 4: Aprobación de Repartidor](#prueba-4-aprobación-de-repartidor)
-7. [Evidencias Requeridas](#evidencias-requeridas)
-8. [Checklist de Troubleshooting](#checklist-de-troubleshooting)
-9. [Queries SQL de Verificación](#queries-sql-de-verificación)
+1. [⚡ Checklist Express (10 minutos)](#-checklist-express-10-minutos)
+2. [Prerequisitos](#prerequisitos)
+3. [Configuración de Entorno de Testing](#configuración-de-entorno-de-testing)
+4. [Prueba 1: Admin PENDING Visible](#prueba-1-admin-pending-visible)
+5. [Prueba 2: Vinculación Repartidor + Notificación](#prueba-2-vinculación-repartidor--notificación)
+6. [Prueba 3: Panel /mi_admin Sin Bloqueo](#prueba-3-panel-mi_admin-sin-bloqueo)
+7. [Prueba 4: Aprobación de Repartidor](#prueba-4-aprobación-de-repartidor)
+8. [Evidencias Requeridas](#evidencias-requeridas)
+9. [Checklist de Troubleshooting](#checklist-de-troubleshooting)
+10. [Queries SQL de Verificación](#queries-sql-de-verificación)
+
+---
+
+## ⚡ CHECKLIST EXPRESS (10 MINUTOS)
+
+**Para validación rápida de FASE 1 sin leer todo el documento.**
+
+### 1️⃣ Crear Admin PENDING (2 min)
+
+```
+Telegram: /soy_admin
+Completar registro → Admin queda status=PENDING con TEAM_CODE (ej: TEAM5)
+```
+
+**Verificar**:
+```bash
+sqlite3 domi.db "SELECT team_code, status FROM admins ORDER BY id DESC LIMIT 1;"
+# Output: TEAM5|PENDING
+```
+
+### 2️⃣ Admin PENDING Aparece en Lista (1 min)
+
+```
+Telegram (otro usuario): /soy_aliado
+Completar registro → Ver lista de equipos
+```
+
+**✅ DEBE MOSTRAR**: `[Equipo X (TEAM5) [Pendiente]]`
+
+### 3️⃣ Repartidor se Vincula + Notificación (3 min)
+
+```
+Telegram (nuevo usuario): /soy_repartidor
+Completar registro → Ingresar: TEAM5
+```
+
+**✅ CRÍTICO - Verificar que ADMIN recibe notificación**:
+```
+📥 Nueva solicitud de repartidor para tu equipo.
+Repartidor ID: X
+Equipo: [nombre]
+Código: TEAM5
+
+Entra a /mi_admin para aprobar o rechazar.
+```
+
+**⚠️ Si NO llega notificación**: Admin debe hacer `/start` con el bot primero (Telegram no permite enviar a usuarios que no iniciaron conversación).
+
+### 4️⃣ Panel /mi_admin Sin Bloqueo (2 min)
+
+```
+Telegram (admin): /mi_admin
+```
+
+**✅ DEBE MOSTRAR**:
+```
+📊 Estado del equipo:
+• Repartidores vinculados: 1
+• Con saldo >= 5000: 0
+
+Panel de administración habilitado.  ← NO debe decir "No cumple mínimo"
+
+[⏳ Repartidores pendientes (mi equipo)]  ← 3 botones, no 1
+[📋 Ver mi estado]
+[🔄 Verificar requisitos]
+```
+
+### 5️⃣ Aprobar Repartidor (2 min)
+
+```
+/mi_admin → [⏳ Repartidores pendientes]
+Ver repartidor → [✅ Aprobar]
+```
+
+**Verificar**:
+```bash
+sqlite3 domi.db "SELECT status FROM admin_couriers WHERE admin_id = 5 LIMIT 1;"
+# Output: APPROVED
+```
+
+---
+
+### ✅ Si los 5 pasos funcionan: FASE 1 OK
+
+**Siguiente**: Leer documento completo para testing exhaustivo y evidencias formales.
 
 ---
 
