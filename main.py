@@ -107,6 +107,9 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Platafo
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
+# Constante para equipo de plataforma
+PLATFORM_TEAM_CODE = "PLATFORM"
+
 
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
@@ -602,10 +605,6 @@ def ally_team_callback(update, context):
 
     # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
-        # Aquí definimos el TEAM_CODE del Admin de Plataforma.
-        # Ajusta esto a tu realidad. Recomendación: crea un admin plataforma con team_code = 'PLATFORM'
-        PLATFORM_TEAM_CODE = "PLATFORM"
-
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
             query.edit_message_text(
@@ -872,8 +871,6 @@ def courier_teamcode(update, context):
 
     if text in ("NO", "N", "NO.", "N.", "NINGUNO", ""):
         # FASE 1: Asignar a Admin de Plataforma por defecto
-        PLATFORM_TEAM_CODE = "PLATFORM"
-
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
             update.message.reply_text(
