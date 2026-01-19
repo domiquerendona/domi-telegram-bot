@@ -870,10 +870,33 @@ def courier_teamcode(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    if text in ("NO", "N", "NO.", "N."):
+    if text in ("NO", "N", "NO.", "N.", "NINGUNO", ""):
+        # FASE 1: Asignar a Admin de Plataforma por defecto
+        PLATFORM_TEAM_CODE = "PLATFORM"
+
+        platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
+        if not platform_admin:
+            update.message.reply_text(
+                "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
+                "Crea/asegura ese admin en la tabla admins con team_code='PLATFORM', luego intenta de nuevo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        platform_admin_id = platform_admin[0]
+
+        try:
+            create_admin_courier_link(platform_admin_id, courier_id)
+            print(f"[DEBUG] courier_teamcode: vínculo creado courier_id={courier_id}, admin_id={platform_admin_id}, team=PLATFORM")
+        except Exception as e:
+            print(f"[ERROR] courier_teamcode: create_admin_courier_link falló: {e}")
+            update.message.reply_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
+            context.user_data.clear()
+            return ConversationHandler.END
+
         update.message.reply_text(
-            "Perfecto. Quedas registrado.\n\n"
-            "Cuando tengas un código de equipo, podrás solicitar unirte más adelante."
+            "Perfecto. Quedas registrado en el equipo de PLATAFORMA.\n\n"
+            "Cuando tengas un código TEAM, podrás pedir cambio más adelante."
         )
         context.user_data.clear()
         return ConversationHandler.END
