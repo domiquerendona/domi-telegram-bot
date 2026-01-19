@@ -886,8 +886,8 @@ def get_platform_admin_id() -> int:
 def get_available_admin_teams():
     """
     Devuelve lista de equipos disponibles para que un aliado elija.
-    Solo admins aprobados y no borrados.
-    Retorna filas con: (admin_id, team_name, team_code)
+    FASE 1: Incluye admins PENDING y APPROVED para permitir migración desde WhatsApp.
+    Retorna filas con: (admin_id, team_name, team_code, status)
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -895,9 +895,10 @@ def get_available_admin_teams():
         SELECT
             a.id,
             COALESCE(a.team_name, a.full_name) AS team_name,
-            a.team_code
+            a.team_code,
+            a.status
         FROM admins a
-        WHERE a.status = 'APPROVED'
+        WHERE a.status IN ('PENDING', 'APPROVED')
           AND a.is_deleted = 0
           AND a.team_code IS NOT NULL
           AND TRIM(a.team_code) <> ''
@@ -2057,7 +2058,8 @@ def set_admin_team_code(admin_id: int, team_code: str):
 def get_available_admins(limit=10, offset=0):
     """
     Lista admins locales disponibles para que un repartidor elija.
-    Retorna: [(admin_id, team_name, team_code, city), ...]
+    FASE 1: Incluye admins PENDING y APPROVED para permitir migración desde WhatsApp.
+    Retorna: [(admin_id, team_name, team_code, city, status), ...]
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -2067,9 +2069,10 @@ def get_available_admins(limit=10, offset=0):
             id,
             COALESCE(team_name, full_name) AS team_name,
             team_code,
-            city
+            city,
+            status
         FROM admins
-        WHERE status = 'APPROVED'
+        WHERE status IN ('PENDING', 'APPROVED')
           AND is_deleted = 0
           AND team_code IS NOT NULL
           AND TRIM(team_code) != ''

@@ -561,8 +561,12 @@ def show_ally_team_selection(update, context):
             admin_id = row[0]
             team_name = row[1]
             team_code = row[2]
+            admin_status = row[3] if len(row) > 3 else 'APPROVED'
 
+            # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
+            if admin_status == 'PENDING':
+                label += " [Pendiente]"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team:{team_code}")])
 
     # Opción Ninguno (default plataforma)
@@ -885,16 +889,15 @@ def courier_teamcode(update, context):
         )
         return COURIER_TEAMCODE
 
+    # get_admin_by_team_code retorna:
+    # (admin_id, user_id, full_name, status, team_name, team_code, telegram_id)
     admin_id = admin[0]
-
-    # IMPORTANTE: aquí admin[1] debe ser el TELEGRAM_ID real del admin.
-    # Si tu get_admin_by_team_code devuelve user_id interno, esto fallará.
-    admin_telegram_id = admin[1]
-
+    admin_user_db_id = admin[1]  # users.id (NO telegram_id)
     admin_name = admin[2]
     admin_status = admin[3]
     admin_team = admin[4]
     admin_team_code = admin[5]
+    admin_telegram_id = admin[6]  # telegram_id REAL para notificaciones
 
     try:
         create_admin_courier_link(admin_id, courier_id)
@@ -1925,20 +1928,17 @@ def mi_admin(update, context):
         )
         return
 
-    # Administrador Local normal: validación operativa en tiempo real
-    ok, msg = admin_puede_operar(admin_id)
+    # FASE 1: Mostrar estado del equipo como información, NO como bloqueo
+    ok, msg, total, okb = admin_puede_operar(admin_id)
 
-    if not ok:
-        keyboard = [
-            [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
-        ]
-        update.message.reply_text(
-            header + msg,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+    # Construir mensaje de estado (sin bloquear)
+    estado_msg = (
+        f"📊 Estado del equipo:\n"
+        f"• Repartidores vinculados: {total}\n"
+        f"• Con saldo >= 5000: {okb}\n\n"
+    )
 
-    # Si ya puede operar (menú mínimo por ahora)
+    # En FASE 1: panel siempre habilitado
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -1946,8 +1946,8 @@ def mi_admin(update, context):
     ]
 
     update.message.reply_text(
-        header +
-        "Ya cumples requisitos para operar.\n"
+        header + estado_msg +
+        "Panel de administración habilitado.\n"
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -2002,29 +2002,25 @@ def admin_local_callback(update, context):
             )
             return
 
-        # Administrador Local normal: validar requisitos
-        ok, msg = admin_puede_operar(admin_id)
+        # FASE 1: Mostrar requisitos como información, NO como bloqueo
+        ok, msg, total, okb = admin_puede_operar(admin_id)
 
-        if not ok:
-            keyboard = [
-                [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
-            ]
-            query.edit_message_text(
-                "Panel Administrador Local\n\n"
-                f"Estado: {status}\n\n"
-                + msg,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
+        estado_msg = (
+            f"📊 Estado del equipo:\n"
+            f"• Repartidores vinculados: {total}\n"
+            f"• Con saldo >= 5000: {okb}\n\n"
+        )
 
         keyboard = [
+            [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-            [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+            [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
         ]
         query.edit_message_text(
             "Panel Administrador Local\n\n"
-            "Ya cumples requisitos para operar.\n"
-            "Selecciona una opción:",
+            f"Estado: {status}\n\n"
+            + estado_msg +
+            "Panel habilitado. Selecciona una opción:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
