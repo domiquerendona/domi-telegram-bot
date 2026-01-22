@@ -163,7 +163,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 # =========================
 # Estados para crear un pedido
 # =========================
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 17)
+PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 18)
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -991,8 +991,36 @@ def nuevo_pedido(update, context):
     context.user_data.clear()
     update.message.reply_text(
         "Crear nuevo pedido.\n\n"
-        "Perfecto, empecemos.\n"
-        "Primero escribe el nombre del cliente."
+        "¿Qué tipo de servicio necesitas?\n\n"
+        "Opciones:\n"
+        "1. Entrega rápida (30-45 min)\n"
+        "2. Entrega programada\n"
+        "3. Recogida en tienda\n\n"
+        "Escribe el número de tu opción (1, 2 o 3)."
+    )
+    return PEDIDO_TIPO_SERVICIO
+
+
+def pedido_tipo_servicio(update, context):
+    tipo = update.message.text.strip()
+
+    # Mapeo de opciones
+    tipos_validos = {
+        "1": "Entrega rápida",
+        "2": "Entrega programada",
+        "3": "Recogida en tienda"
+    }
+
+    if tipo not in tipos_validos:
+        update.message.reply_text(
+            "Opción no válida. Por favor escribe 1, 2 o 3."
+        )
+        return PEDIDO_TIPO_SERVICIO
+
+    context.user_data["service_type"] = tipos_validos[tipo]
+    update.message.reply_text(
+        f"Perfecto, servicio seleccionado: {tipos_validos[tipo]}\n\n"
+        "Ahora escribe el nombre del cliente."
     )
     return PEDIDO_NOMBRE
 
@@ -1892,6 +1920,9 @@ courier_conv = ConversationHandler(
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
     states={
+        PEDIDO_TIPO_SERVICIO: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
+        ],
         PEDIDO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
         ],
