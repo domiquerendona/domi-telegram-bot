@@ -85,6 +85,12 @@ from db import (
 
     # Calificaciones
     add_courier_rating,
+
+    # Términos y condiciones
+    get_active_terms_version,
+    has_accepted_terms,
+    save_terms_acceptance,
+    save_terms_session_ack,
 )
 
 # ============================================================
