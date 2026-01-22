@@ -163,7 +163,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 # =========================
 # Estados para crear un pedido
 # =========================
-PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 18)
+PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION, PEDIDO_CONFIRMACION = range(14, 19)
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -1010,23 +1010,48 @@ def pedido_telefono_cliente(update, context):
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
 
-    nombre = context.user_data.get("customer_name", "")
-    telefono = context.user_data.get("customer_phone", "")
-    direccion = context.user_data.get("customer_address", "")
+    # Obtener datos guardados
+    tipo_servicio = context.user_data.get("service_type", "-")
+    nombre = context.user_data.get("customer_name", "-")
+    telefono = context.user_data.get("customer_phone", "-")
+    direccion = context.user_data.get("customer_address", "-")
 
-    texto = (
-        "Por ahora /nuevo_pedido está en construcción.\n"
-        "Hemos guardado estos datos del cliente:\n"
-        f"- Nombre: {nombre}\n"
-        f"- Teléfono: {telefono}\n"
-        f"- Dirección: {direccion}"
+    # Mostrar resumen
+    resumen = (
+        "📋 RESUMEN DEL PEDIDO\n\n"
+        f"Tipo de servicio: {tipo_servicio}\n"
+        f"Cliente: {nombre}\n"
+        f"Teléfono: {telefono}\n"
+        f"Dirección: {direccion}\n\n"
+        "¿Confirmas este pedido?\n\n"
+        "Escribe 'confirmar' o 'cancelar'."
     )
 
-    update.message.reply_text(texto)
-    context.user_data.clear()
-    return ConversationHandler.END
+    update.message.reply_text(resumen)
+    return PEDIDO_CONFIRMACION
 
-    
+
+def pedido_confirmacion(update, context):
+    respuesta = update.message.text.strip().lower()
+
+    if respuesta == "confirmar":
+        update.message.reply_text(
+            "✅ Pedido creado exitosamente.\n\n"
+            "Pronto un repartidor será asignado."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    elif respuesta == "cancelar":
+        update.message.reply_text("Pedido cancelado.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    else:
+        update.message.reply_text(
+            "Respuesta no válida. Escribe 'confirmar' o 'cancelar'."
+        )
+        return PEDIDO_CONFIRMACION
+
+
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
@@ -1901,6 +1926,9 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
+        ],
+        PEDIDO_CONFIRMACION: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
         ],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
