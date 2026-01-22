@@ -622,15 +622,11 @@ def init_db():
         );
     """)
 
-    # Commit para asegurar que las tablas existen antes del bootstrap
-    conn.commit()
-
     # Migración: agregar columna is_active si no existe
     cur.execute("PRAGMA table_info(terms_versions)")
     columns = [col[1] for col in cur.fetchall()]
     if 'is_active' not in columns:
         cur.execute("ALTER TABLE terms_versions ADD COLUMN is_active INTEGER DEFAULT 1")
-        conn.commit()
 
     # Bootstrap: insertar términos por defecto para ALLY si no existen
     cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
@@ -638,12 +634,12 @@ def init_db():
         import hashlib
         terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
         sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
-        cur.execute("""
-            INSERT INTO terms_versions (role, version, url, sha256, is_active)
-            VALUES ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', ?, 1)
-        """, (sha256_hash,))
-        conn.commit()
+        cur.execute(
+            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
+            ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
+        )
 
+    conn.commit()
     conn.close()
 
 def force_platform_admin(platform_telegram_id: int):
