@@ -1989,9 +1989,9 @@ def mi_perfil(update, context):
         update.message.reply_text("No se encontró tu usuario en la base de datos.")
         return
 
-    # user es dict o tupla, manejar ambos
-    username = user.get("username", "-") if isinstance(user, dict) else (user[2] if len(user) > 2 else "-")
-    fecha_registro = user.get("created_at", "(no disponible)") if isinstance(user, dict) else (user[3] if len(user) > 3 else "(no disponible)")
+    # Acceso por nombre (sqlite3.Row)
+    username = user["username"] if user["username"] else "-"
+    fecha_registro = user["created_at"] if user["created_at"] else "(no disponible)"
 
     # Encabezado
     mensaje = "👤 MI PERFIL\n\n"
@@ -2005,14 +2005,15 @@ def mi_perfil(update, context):
     # Admin
     admin = get_admin_by_user_id(user_db_id)
     if admin:
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_id = admin["id"]
         admin_full = get_admin_by_id(admin_id)
 
-        full_name = admin_full[2] if len(admin_full) > 2 else "-"
-        phone = admin_full[3] if len(admin_full) > 3 else "-"
-        status = admin_full[6] if len(admin_full) > 6 else "PENDING"
-        team_name = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
-        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        full_name = admin_full["full_name"] if admin_full["full_name"] else "-"
+        phone = admin_full["phone"] if admin_full["phone"] else "-"
+        status = admin_full["status"] if admin_full["status"] else "PENDING"
+        team_name = admin_full["team_name"] if admin_full["team_name"] else "-"
+        team_code = admin_full["team_code"] if admin_full["team_code"] else "-"
 
         mensaje += f"🔧 Administrador Local\n"
         mensaje += f"   Nombre: {full_name}\n"
@@ -2024,18 +2025,21 @@ def mi_perfil(update, context):
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
     if ally:
-        ally_id = ally["id"] if isinstance(ally, dict) else ally[0]
-        business_name = ally["business_name"] if isinstance(ally, dict) else (ally[2] if len(ally) > 2 else "-")
-        phone = ally["phone"] if isinstance(ally, dict) else (ally[6] if len(ally) > 6 else "-")
-        status = ally["status"] if isinstance(ally, dict) else (ally[7] if len(ally) > 7 else "PENDING")
+        ally_id = ally["id"]
+
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        business_name = ally["business_name"] if ally["business_name"] else "-"
+        phone = ally["phone"] if ally["phone"] else "-"
+        status = ally["status"] if ally["status"] else "PENDING"
 
         # Buscar equipo vinculado
         admin_link = get_admin_link_for_ally(ally_id)
         equipo_info = "(sin equipo)"
         if admin_link:
-            team_name = admin_link[1] if len(admin_link) > 1 else "-"
-            team_code = admin_link[2] if len(admin_link) > 2 else "-"
-            link_status = admin_link[3] if len(admin_link) > 3 else "-"
+            # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+            team_name = admin_link["team_name"] if admin_link["team_name"] else "-"
+            team_code = admin_link["team_code"] if admin_link["team_code"] else "-"
+            link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
             equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
 
         mensaje += f"🍕 Aliado\n"
@@ -2047,18 +2051,21 @@ def mi_perfil(update, context):
     # Repartidor
     courier = get_courier_by_user_id(user_db_id)
     if courier:
-        courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
-        full_name = courier["full_name"] if isinstance(courier, dict) else (courier[2] if len(courier) > 2 else "-")
-        code = courier["code"] if isinstance(courier, dict) else (courier[9] if len(courier) > 9 else "-")
-        status = courier["status"] if isinstance(courier, dict) else (courier[11] if len(courier) > 11 else "PENDING")
+        courier_id = courier["id"]
+
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        full_name = courier["full_name"] if courier["full_name"] else "-"
+        code = courier["code"] if courier["code"] else "-"
+        status = courier["status"] if courier["status"] else "PENDING"
 
         # Buscar equipo vinculado
         admin_link = get_admin_link_for_courier(courier_id)
         equipo_info = "(sin equipo)"
         if admin_link:
-            team_name = admin_link[1] if len(admin_link) > 1 else "-"
-            team_code = admin_link[2] if len(admin_link) > 2 else "-"
-            link_status = admin_link[3] if len(admin_link) > 3 else "-"
+            # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+            team_name = admin_link["team_name"] if admin_link["team_name"] else "-"
+            team_code = admin_link["team_code"] if admin_link["team_code"] else "-"
+            link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
             equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
 
         mensaje += f"🚴 Repartidor\n"
@@ -2085,12 +2092,13 @@ def mi_perfil(update, context):
 
     # Admin
     if admin:
-        if status == "PENDING":
+        admin_status = admin_full["status"] if admin_full["status"] else "PENDING"
+        if admin_status == "PENDING":
             mensaje += "⏳ Admin: Pendiente de aprobación\n"
-        elif status == "APPROVED":
+        elif admin_status == "APPROVED":
             mensaje += "✅ Admin: Aprobado\n"
         else:
-            mensaje += f"ℹ️ Admin: {status}\n"
+            mensaje += f"ℹ️ Admin: {admin_status}\n"
 
     # Equipo (para repartidores)
     if courier:

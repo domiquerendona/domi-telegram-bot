@@ -2088,16 +2088,16 @@ def get_available_admins(limit=10, offset=0):
 def get_admin_link_for_courier(courier_id: int):
     """
     Obtiene el admin vinculado más reciente a un courier_id.
-    Retorna: (admin_id, team_name, team_code, link_status) o None
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, link_status
     """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            a.id,
+            a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
-            a.team_code,
-            ac.status
+            a.team_code AS team_code,
+            ac.status AS link_status
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
         WHERE ac.courier_id = ?
@@ -2113,16 +2113,16 @@ def get_admin_link_for_courier(courier_id: int):
 def get_admin_link_for_ally(ally_id: int):
     """
     Obtiene el admin vinculado más reciente a un ally_id.
-    Retorna: (admin_id, team_name, team_code, link_status) o None
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, link_status
     """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            a.id,
+            a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
-            a.team_code,
-            aa.status
+            a.team_code AS team_code,
+            aa.status AS link_status
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
         WHERE aa.ally_id = ?
