@@ -3226,9 +3226,6 @@ def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-
     # -------------------------
     # Comandos básicos
     # -------------------------
