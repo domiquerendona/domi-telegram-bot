@@ -1,4 +1,5 @@
 from typing import Tuple, Optional
+from dataclasses import dataclass
 from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance
 
 
@@ -74,4 +75,29 @@ def calcular_precio_por_distancia(
         # km adicionales sobre 3 km, redondeados hacia abajo
         km_adicionales = int(distancia_km - 3.0)
         return precio_base_mas_3km + (km_adicionales * precio_por_km_adicional)
+
+
+@dataclass
+class Tarifa:
+    """
+    Estructura que define las tarifas de envío por distancia.
+    """
+    base_0_2km: int
+    base_2_3km: int
+    extra_km_price: int
+
+
+def get_tarifa_actual() -> Tarifa:
+    """
+    Devuelve la tarifa actual configurada.
+    Por ahora valores hardcodeados, en el futuro se obtendrán de BD.
+
+    Returns:
+        Tarifa: Estructura con las tarifas actuales
+    """
+    return Tarifa(
+        base_0_2km=5000,
+        base_2_3km=6000,
+        extra_km_price=1200
+    )
 
