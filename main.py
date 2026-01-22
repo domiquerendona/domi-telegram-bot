@@ -17,8 +17,8 @@ from telegram.ext import (
 
 from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
 from db import get_local_admins_count
-from db import force_platform_admin
-from services import admin_puede_operar, calcular_precio_distancia
+from db import force_platform_admin, ensure_pricing_defaults
+from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
 from db import (
     init_db,
     ensure_user,
@@ -170,6 +170,12 @@ PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION, PEDIDO_C
 # Estados para cotizador interno
 # =========================
 COTIZAR_DISTANCIA = 901
+
+
+# =========================
+# Estados para configuración de tarifas (Admin Plataforma)
+# =========================
+TARIFAS_VALOR = 902
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -2032,6 +2038,143 @@ cotizar_conv = ConversationHandler(
 )
 
 
+# ----- CONFIGURACION DE TARIFAS (ADMIN PLATAFORMA) -----
+
+def tarifas_start(update, context):
+    """Comando /tarifas - Solo Admin Plataforma."""
+    user = update.effective_user
+
+    # Validar que es Admin de Plataforma
+    if not es_admin(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
+    # Cargar configuracion actual
+    config = get_pricing_config()
+
+    # Mostrar valores actuales
+    mensaje = (
+        "CONFIGURACION DE TARIFAS\n\n"
+        "Valores actuales:\n"
+        f"1. Precio 0-2 km: ${config['precio_0_2km']:,}\n"
+        f"2. Precio 2-3 km: ${config['precio_2_3km']:,}\n"
+        f"3. Base distancia (km): {config['base_distance_km']}\n"
+        f"4. Precio km extra normal (<=10km): ${config['precio_km_extra_normal']:,}\n"
+        f"5. Umbral km largo: {config['umbral_km_largo']} km\n"
+        f"6. Precio km extra largo (>10km): ${config['precio_km_extra_largo']:,}\n"
+    )
+
+    # Botones para editar
+    keyboard = [
+        [InlineKeyboardButton("Cambiar 0-2 km", callback_data="pricing_edit_precio_0_2km")],
+        [InlineKeyboardButton("Cambiar 2-3 km", callback_data="pricing_edit_precio_2_3km")],
+        [InlineKeyboardButton("Cambiar base distancia", callback_data="pricing_edit_base_distance_km")],
+        [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
+        [InlineKeyboardButton("Cambiar umbral largo", callback_data="pricing_edit_umbral_km_largo")],
+        [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
+        [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
+    ]
+
+    update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
+
+
+def tarifas_edit_callback(update, context):
+    """Callback para editar un valor de tarifa."""
+    query = update.callback_query
+    query.answer()
+
+    data = query.data
+
+    if data == "pricing_exit":
+        query.edit_message_text("Configuracion de tarifas cerrada.")
+        return ConversationHandler.END
+
+    # Extraer el campo a editar
+    if not data.startswith("pricing_edit_"):
+        query.edit_message_text("Opcion no valida.")
+        return ConversationHandler.END
+
+    field = data.replace("pricing_edit_", "")
+    context.user_data["pricing_field"] = field
+
+    # Mapeo de campos a nombres legibles
+    field_names = {
+        "precio_0_2km": "Precio 0-2 km",
+        "precio_2_3km": "Precio 2-3 km",
+        "base_distance_km": "Base distancia (km)",
+        "precio_km_extra_normal": "Precio km extra normal",
+        "umbral_km_largo": "Umbral km largo",
+        "precio_km_extra_largo": "Precio km extra largo",
+    }
+
+    field_name = field_names.get(field, field)
+
+    query.edit_message_text(
+        f"Editar: {field_name}\n\n"
+        f"Envia el nuevo valor (numero).\n"
+        f"O escribe /cancel para cancelar."
+    )
+
+    return TARIFAS_VALOR
+
+
+def tarifas_set_valor(update, context):
+    """Captura y guarda el nuevo valor."""
+    texto = (update.message.text or "").strip().replace(",", ".")
+    field = context.user_data.get("pricing_field")
+
+    if not field:
+        update.message.reply_text("Error: no se pudo identificar el campo a editar.")
+        return ConversationHandler.END
+
+    # Validar valor numerico
+    try:
+        valor_float = float(texto)
+    except ValueError:
+        update.message.reply_text("Valor invalido. Debe ser un numero. Intenta de nuevo o usa /cancel.")
+        return TARIFAS_VALOR
+
+    # Guardar en BD
+    setting_key = f"pricing_{field}"
+    set_setting(setting_key, texto)
+
+    # Recargar config y mostrar
+    config = get_pricing_config()
+
+    # Pruebas rapidas
+    test_31 = calcular_precio_distancia(3.1)
+    test_111 = calcular_precio_distancia(11.1)
+
+    mensaje = (
+        "Guardado.\n\n"
+        "Valores actuales:\n"
+        f"- Precio 0-2 km: ${config['precio_0_2km']:,}\n"
+        f"- Precio 2-3 km: ${config['precio_2_3km']:,}\n"
+        f"- Base distancia: {config['base_distance_km']} km\n"
+        f"- Precio km extra normal: ${config['precio_km_extra_normal']:,}\n"
+        f"- Umbral largo: {config['umbral_km_largo']} km\n"
+        f"- Precio km extra largo: ${config['precio_km_extra_largo']:,}\n\n"
+        f"Prueba rapida:\n"
+        f"3.1 km -> ${test_31:,}\n"
+        f"11.1 km -> ${test_111:,}"
+    )
+
+    update.message.reply_text(mensaje)
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# Conversacion para /tarifas
+tarifas_conv = ConversationHandler(
+    entry_points=[CommandHandler("tarifas", tarifas_start)],
+    states={
+        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
+
+
 def mi_admin(update, context):
     user_db_id = get_user_db_id_from_update(update)
 
@@ -3069,6 +3212,7 @@ def terms_callback(update, context):
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
+    ensure_pricing_defaults()
 
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
@@ -3138,6 +3282,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
+    # Configuracion de tarifas (botones pricing_*)
+    dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
+
 
     # -------------------------
     # Conversaciones completas
@@ -3146,6 +3293,7 @@ def main():
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(cotizar_conv)       # /cotizar
+    dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
 

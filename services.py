@@ -1,6 +1,7 @@
 from typing import Tuple, Optional
 from dataclasses import dataclass
-from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance
+from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting
+import math
 
 
 def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_balance: int = 5000) -> Tuple[bool, str, int, int]:
@@ -102,15 +103,34 @@ def get_tarifa_actual() -> Tarifa:
     )
 
 
-def calcular_precio_distancia(
-    distancia_km: float,
-    precio_0_2km: int = 5000,
-    precio_2_3km: int = 6000,
-    base_distance_km: float = 3.0,
-    precio_km_extra_normal: int = 1200,   # aplica cuando distancia <= 10.0
-    precio_km_extra_largo: int = 1000,    # aplica cuando distancia > 10.0
-    umbral_km_largo: float = 10.0
-) -> int:
+def get_pricing_config():
+    """
+    Carga la configuración de precios desde BD (tabla settings).
+    Retorna un dict con todos los parámetros necesarios para calcular_precio_distancia.
+    """
+    def to_int(val, default):
+        try:
+            return int(float(val))
+        except:
+            return default
+
+    def to_float(val, default):
+        try:
+            return float(val)
+        except:
+            return default
+
+    return {
+        "precio_0_2km": to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
+        "precio_2_3km": to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
+        "base_distance_km": to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
+        "precio_km_extra_normal": to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
+        "umbral_km_largo": to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
+        "precio_km_extra_largo": to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
+    }
+
+
+def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:
     """
     Calcula el precio de envío basado en la distancia con tarifa diferenciada para largas distancias.
 
@@ -124,12 +144,7 @@ def calcular_precio_distancia(
 
     Args:
         distancia_km: Distancia en kilómetros
-        precio_0_2km: Precio para 0-2 km
-        precio_2_3km: Precio para 2-3 km
-        base_distance_km: Distancia base (3.0 km)
-        precio_km_extra_normal: Precio por km adicional cuando distancia <= 10 km
-        precio_km_extra_largo: Precio por km adicional cuando distancia > 10 km
-        umbral_km_largo: Umbral para cambiar a tarifa larga (10.0 km)
+        config: Dict con configuración de precios. Si None, carga desde BD.
 
     Returns:
         Precio calculado en pesos
@@ -146,7 +161,15 @@ def calcular_precio_distancia(
         >>> calcular_precio_distancia(11.1)
         15000  # 6000 + (9 * 1000)
     """
-    import math
+    if config is None:
+        config = get_pricing_config()
+
+    precio_0_2km = config["precio_0_2km"]
+    precio_2_3km = config["precio_2_3km"]
+    base_distance_km = config["base_distance_km"]
+    precio_km_extra_normal = config["precio_km_extra_normal"]
+    umbral_km_largo = config["umbral_km_largo"]
+    precio_km_extra_largo = config["precio_km_extra_largo"]
 
     if distancia_km <= 0:
         return 0

@@ -982,6 +982,25 @@ def set_setting(key: str, value: str):
     conn.close()
 
 
+def ensure_pricing_defaults():
+    """
+    Inicializa valores por defecto de tarifas de precio en settings.
+    Solo inserta si no existen (idempotente).
+    """
+    defaults = {
+        "pricing_precio_0_2km": "5000",
+        "pricing_precio_2_3km": "6000",
+        "pricing_base_distance_km": "3.0",
+        "pricing_km_extra_normal": "1200",
+        "pricing_umbral_km_largo": "10.0",
+        "pricing_km_extra_largo": "1000",
+    }
+    for k, v in defaults.items():
+        existing = get_setting(k)
+        if existing is None:
+            set_setting(k, v)
+
+
 # ---------- ALIADOS ----------
 
 def create_ally(
