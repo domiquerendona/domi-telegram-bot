@@ -307,22 +307,32 @@ def start(update, context):
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
 
-    comandos = [
-        "• /soy_aliado  - Registrar tu negocio aliado",
-        "• /soy_repartidor  - Registrarte como repartidor",
-        "• /soy_administrador  - Registrarte como administrador",
-    ]
+    # Construir menú según roles del usuario
+    comandos = []
 
+    # Comandos principales (para todos)
+    comandos.append("• /menu  - Ver este menú")
+    comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
+    comandos.append("• /cotizar  - Cotizar por distancia")
+
+    # Nuevo pedido (solo aliados aprobados)
     if ally and ally["status"] == "APPROVED":
-        comandos.append("• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)")
+        comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
 
-    if admin_local:
-        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
+    # Admin (según tipo, evitar duplicados)
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
+        comandos.append("• /tarifas  - Configurar tarifas")
+    elif admin_local:
+        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
 
-    comandos.append("• /menu  - Volver a ver este menú")
-    comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
+    # Registro (solo si NO tiene ningún rol)
+    if not (ally or courier or admin_local or es_admin_plataforma):
+        comandos.append("")
+        comandos.append("Registro:")
+        comandos.append("• /soy_aliado  - Registrar tu negocio")
+        comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+        comandos.append("• /soy_administrador  - Registrarte como administrador")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
