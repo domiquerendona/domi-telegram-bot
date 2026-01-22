@@ -1996,7 +1996,7 @@ def mi_perfil(update, context):
     # Encabezado
     mensaje = "👤 MI PERFIL\n\n"
     mensaje += f"📱 Telegram ID: {telegram_id}\n"
-    mensaje += f"👤 Usuario: @{username if username else 'sin username'}\n"
+    mensaje += f"👤 Usuario: {'@' + username if username != '-' else '(sin username)'}\n"
     mensaje += f"📅 Fecha de registro: {fecha_registro}\n\n"
 
     # ===== ROLES Y ESTADOS =====
@@ -2015,12 +2015,30 @@ def mi_perfil(update, context):
         team_name = admin_full["team_name"] if admin_full["team_name"] else "-"
         team_code = admin_full["team_code"] if admin_full["team_code"] else "-"
 
+        # Construir línea de equipo (agrupar nombre y código)
+        if team_name != "-" and team_code != "-":
+            equipo_admin = f"{team_name} ({team_code})"
+        elif team_name != "-":
+            equipo_admin = team_name
+        elif team_code != "-":
+            equipo_admin = team_code
+        else:
+            equipo_admin = "-"
+
+        # Agregar ícono de estado
+        status_icon = ""
+        if status == "APPROVED":
+            status_icon = "🟢 "
+        elif status == "PENDING":
+            status_icon = "🟡 "
+        elif status in ("REJECTED", "INACTIVE"):
+            status_icon = "🔴 "
+
         mensaje += f"🔧 Administrador Local\n"
         mensaje += f"   Nombre: {full_name}\n"
         mensaje += f"   Teléfono: {phone}\n"
-        mensaje += f"   Estado: {status}\n"
-        mensaje += f"   Equipo: {team_name}\n"
-        mensaje += f"   Código: {team_code}\n\n"
+        mensaje += f"   Estado: {status_icon}{status}\n"
+        mensaje += f"   Equipo: {equipo_admin}\n\n"
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
@@ -2042,10 +2060,19 @@ def mi_perfil(update, context):
             link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
             equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
 
+        # Agregar ícono de estado
+        status_icon = ""
+        if status == "APPROVED":
+            status_icon = "🟢 "
+        elif status == "PENDING":
+            status_icon = "🟡 "
+        elif status in ("REJECTED", "INACTIVE"):
+            status_icon = "🔴 "
+
         mensaje += f"🍕 Aliado\n"
         mensaje += f"   Negocio: {business_name}\n"
         mensaje += f"   Teléfono: {phone}\n"
-        mensaje += f"   Estado: {status}\n"
+        mensaje += f"   Estado: {status_icon}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
 
     # Repartidor
@@ -2068,10 +2095,19 @@ def mi_perfil(update, context):
             link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
             equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
 
+        # Agregar ícono de estado
+        status_icon = ""
+        if status == "APPROVED":
+            status_icon = "🟢 "
+        elif status == "PENDING":
+            status_icon = "🟡 "
+        elif status in ("REJECTED", "INACTIVE"):
+            status_icon = "🔴 "
+
         mensaje += f"🚴 Repartidor\n"
         mensaje += f"   Nombre: {full_name}\n"
         mensaje += f"   Código interno: {code if code else 'sin asignar'}\n"
-        mensaje += f"   Estado: {status}\n"
+        mensaje += f"   Estado: {status_icon}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
 
     # Si no tiene roles
