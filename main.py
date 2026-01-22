@@ -320,36 +320,6 @@ def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
     user = update.effective_user
     update.message.reply_text(f"Tu user_id es: {user.id}")
-def pedido_nombre_cliente(update, context):
-    context.user_data["customer_name"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
-    return PEDIDO_TELEFONO
-
-
-def pedido_telefono_cliente(update, context):
-    context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la dirección de entrega del cliente.")
-    return PEDIDO_DIRECCION
-
-
-def pedido_direccion_cliente(update, context):
-    context.user_data["customer_address"] = update.message.text.strip()
-
-    nombre = context.user_data.get("customer_name", "")
-    telefono = context.user_data.get("customer_phone", "")
-    direccion = context.user_data.get("customer_address", "")
-
-    texto = (
-        "Por ahora /nuevo_pedido está en construcción.\n"
-        "Hemos guardado estos datos del cliente:\n"
-        f"- Nombre: {nombre}\n"
-        f"- Teléfono: {telefono}\n"
-        f"- Dirección: {direccion}"
-    )
-
-    update.message.reply_text(texto)
-    context.user_data.clear()
-    return ConversationHandler.END
 
 
 # ----- REGISTRO DE ALIADO -----
