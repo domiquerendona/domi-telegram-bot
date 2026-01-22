@@ -69,6 +69,8 @@ from db import (
     get_all_couriers,
     update_courier,
     delete_courier,
+    get_admin_link_for_courier,
+    get_admin_link_for_ally,
 
     # Pedidos
     create_order,
@@ -276,6 +278,7 @@ def start(update, context):
         comandos.append("• /admin  - Panel de administración de plataforma")
 
     comandos.append("• /menu  - Volver a ver este menú")
+    comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
@@ -1972,6 +1975,145 @@ def mi_admin(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
+def mi_perfil(update, context):
+    """
+    Muestra perfil consolidado del usuario: roles, estados, equipos, fecha de registro.
+    """
+    telegram_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
+
+    # Obtener datos base del usuario (con created_at)
+    user = get_user_by_id(user_db_id)
+    if not user:
+        update.message.reply_text("No se encontró tu usuario en la base de datos.")
+        return
+
+    # user es dict o tupla, manejar ambos
+    username = user.get("username", "-") if isinstance(user, dict) else (user[2] if len(user) > 2 else "-")
+    fecha_registro = user.get("created_at", "(no disponible)") if isinstance(user, dict) else (user[3] if len(user) > 3 else "(no disponible)")
+
+    # Encabezado
+    mensaje = "👤 MI PERFIL\n\n"
+    mensaje += f"📱 Telegram ID: {telegram_id}\n"
+    mensaje += f"👤 Usuario: @{username if username else 'sin username'}\n"
+    mensaje += f"📅 Fecha de registro: {fecha_registro}\n\n"
+
+    # ===== ROLES Y ESTADOS =====
+    mensaje += "📋 ROLES Y ESTADO\n\n"
+
+    # Admin
+    admin = get_admin_by_user_id(user_db_id)
+    if admin:
+        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_full = get_admin_by_id(admin_id)
+
+        full_name = admin_full[2] if len(admin_full) > 2 else "-"
+        phone = admin_full[3] if len(admin_full) > 3 else "-"
+        status = admin_full[6] if len(admin_full) > 6 else "PENDING"
+        team_name = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
+        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+
+        mensaje += f"🔧 Administrador Local\n"
+        mensaje += f"   Nombre: {full_name}\n"
+        mensaje += f"   Teléfono: {phone}\n"
+        mensaje += f"   Estado: {status}\n"
+        mensaje += f"   Equipo: {team_name}\n"
+        mensaje += f"   Código: {team_code}\n\n"
+
+    # Aliado
+    ally = get_ally_by_user_id(user_db_id)
+    if ally:
+        ally_id = ally["id"] if isinstance(ally, dict) else ally[0]
+        business_name = ally["business_name"] if isinstance(ally, dict) else (ally[2] if len(ally) > 2 else "-")
+        phone = ally["phone"] if isinstance(ally, dict) else (ally[6] if len(ally) > 6 else "-")
+        status = ally["status"] if isinstance(ally, dict) else (ally[7] if len(ally) > 7 else "PENDING")
+
+        # Buscar equipo vinculado
+        admin_link = get_admin_link_for_ally(ally_id)
+        equipo_info = "(sin equipo)"
+        if admin_link:
+            team_name = admin_link[1] if len(admin_link) > 1 else "-"
+            team_code = admin_link[2] if len(admin_link) > 2 else "-"
+            link_status = admin_link[3] if len(admin_link) > 3 else "-"
+            equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
+
+        mensaje += f"🍕 Aliado\n"
+        mensaje += f"   Negocio: {business_name}\n"
+        mensaje += f"   Teléfono: {phone}\n"
+        mensaje += f"   Estado: {status}\n"
+        mensaje += f"   Equipo: {equipo_info}\n\n"
+
+    # Repartidor
+    courier = get_courier_by_user_id(user_db_id)
+    if courier:
+        courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
+        full_name = courier["full_name"] if isinstance(courier, dict) else (courier[2] if len(courier) > 2 else "-")
+        code = courier["code"] if isinstance(courier, dict) else (courier[9] if len(courier) > 9 else "-")
+        status = courier["status"] if isinstance(courier, dict) else (courier[11] if len(courier) > 11 else "PENDING")
+
+        # Buscar equipo vinculado
+        admin_link = get_admin_link_for_courier(courier_id)
+        equipo_info = "(sin equipo)"
+        if admin_link:
+            team_name = admin_link[1] if len(admin_link) > 1 else "-"
+            team_code = admin_link[2] if len(admin_link) > 2 else "-"
+            link_status = admin_link[3] if len(admin_link) > 3 else "-"
+            equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
+
+        mensaje += f"🚴 Repartidor\n"
+        mensaje += f"   Nombre: {full_name}\n"
+        mensaje += f"   Código interno: {code if code else 'sin asignar'}\n"
+        mensaje += f"   Estado: {status}\n"
+        mensaje += f"   Equipo: {equipo_info}\n\n"
+
+    # Si no tiene roles
+    if not admin and not ally and not courier:
+        mensaje += "   (Sin roles registrados)\n\n"
+
+    # ===== RESUMEN DE ESTADO OPERATIVO =====
+    mensaje += "📊 ESTADO OPERATIVO\n\n"
+
+    # Pedidos
+    if ally:
+        if status == "APPROVED":
+            mensaje += "✅ Pedidos: Puedes crear pedidos\n"
+        else:
+            mensaje += "⏳ Pedidos: Pendiente de aprobación\n"
+    else:
+        mensaje += "❌ Pedidos: No habilitado (requiere rol Aliado APPROVED)\n"
+
+    # Admin
+    if admin:
+        if status == "PENDING":
+            mensaje += "⏳ Admin: Pendiente de aprobación\n"
+        elif status == "APPROVED":
+            mensaje += "✅ Admin: Aprobado\n"
+        else:
+            mensaje += f"ℹ️ Admin: {status}\n"
+
+    # Equipo (para repartidores)
+    if courier:
+        if admin_link:
+            mensaje += f"✅ Equipo: Vinculado a {team_name} ({team_code})\n"
+        else:
+            mensaje += "ℹ️ Equipo: Puedes solicitar equipo en el registro\n"
+
+    mensaje += "\n"
+
+    # ===== ACCIONES RÁPIDAS =====
+    mensaje += "⚡ ACCIONES RÁPIDAS\n\n"
+    mensaje += "• /menu - Ver menú principal\n"
+
+    if admin:
+        mensaje += "• /mi_admin - Panel de administrador\n"
+
+    if ally and status == "APPROVED":
+        mensaje += "• /nuevo_pedido - Crear pedido\n"
+
+    update.message.reply_text(mensaje)
+
+
 def admin_local_callback(update, context):
     query = update.callback_query
     if not query:
@@ -2801,6 +2943,7 @@ def main():
     dp.add_handler(CommandHandler("admin", admin_menu))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
+    dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"

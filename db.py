@@ -2082,8 +2082,57 @@ def get_available_admins(limit=10, offset=0):
 
     rows = cur.fetchall()
     conn.close()
-    return rows 
+    return rows
 
+
+def get_admin_link_for_courier(courier_id: int):
+    """
+    Obtiene el admin vinculado más reciente a un courier_id.
+    Retorna: (admin_id, team_name, team_code, link_status) o None
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            ac.status
+        FROM admin_couriers ac
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.courier_id = ?
+          AND a.is_deleted = 0
+        ORDER BY ac.created_at DESC
+        LIMIT 1;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_admin_link_for_ally(ally_id: int):
+    """
+    Obtiene el admin vinculado más reciente a un ally_id.
+    Retorna: (admin_id, team_name, team_code, link_status) o None
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            aa.status
+        FROM admin_allies aa
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.ally_id = ?
+          AND a.is_deleted = 0
+        ORDER BY aa.created_at DESC
+        LIMIT 1;
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 
