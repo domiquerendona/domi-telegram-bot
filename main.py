@@ -1035,9 +1035,51 @@ def pedido_confirmacion(update, context):
     respuesta = update.message.text.strip().lower()
 
     if respuesta == "confirmar":
+        # Obtener datos del usuario y ally
+        user_db_id = get_user_db_id_from_update(update)
+        ally = get_ally_by_user_id(user_db_id)
+
+        if not ally:
+            update.message.reply_text("Error: No se encontró tu perfil de aliado.")
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        ally_id = ally["id"]
+
+        # Obtener ubicación por defecto del ally (si existe)
+        default_location = get_default_ally_location(ally_id)
+        pickup_location_id = default_location["id"] if default_location else None
+
+        # Obtener datos del pedido de context.user_data
+        customer_name = context.user_data.get("customer_name", "")
+        customer_phone = context.user_data.get("customer_phone", "")
+        customer_address = context.user_data.get("customer_address", "")
+
+        # Crear pedido en BD con valores por defecto para precio/fees
+        order_id = create_order(
+            ally_id=ally_id,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            customer_address=customer_address,
+            customer_city="",
+            customer_barrio="",
+            pickup_location_id=pickup_location_id,
+            pay_at_store_required=False,
+            pay_at_store_amount=0,
+            base_fee=0,
+            distance_km=0.0,
+            rain_extra=0,
+            high_demand_extra=0,
+            night_extra=0,
+            additional_incentive=0,
+            total_fee=0,
+            instructions=""
+        )
+
         update.message.reply_text(
-            "✅ Pedido creado exitosamente.\n\n"
-            "Pronto un repartidor será asignado."
+            f"✅ Pedido creado exitosamente.\n\n"
+            f"ID del pedido: {order_id}\n"
+            f"Pronto un repartidor será asignado."
         )
         context.user_data.clear()
         return ConversationHandler.END
