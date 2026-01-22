@@ -101,3 +101,65 @@ def get_tarifa_actual() -> Tarifa:
         extra_km_price=1200
     )
 
+
+def calcular_precio_distancia(
+    distancia_km: float,
+    precio_0_2km: int = 5000,
+    precio_2_3km: int = 6000,
+    base_distance_km: float = 3.0,
+    precio_km_extra_normal: int = 1200,   # aplica cuando distancia <= 10.0
+    precio_km_extra_largo: int = 1000,    # aplica cuando distancia > 10.0
+    umbral_km_largo: float = 10.0
+) -> int:
+    """
+    Calcula el precio de envío basado en la distancia con tarifa diferenciada para largas distancias.
+
+    Reglas:
+    - 0-2 km: precio_0_2km (default 5000)
+    - 2.1-3 km: precio_2_3km (default 6000)
+    - >3 km y <=10 km: precio_2_3km + (km_extra * precio_km_extra_normal)
+    - >10 km: precio_2_3km + (km_extra * precio_km_extra_largo)
+
+    Los km_extra se calculan con math.ceil desde base_distance_km.
+
+    Args:
+        distancia_km: Distancia en kilómetros
+        precio_0_2km: Precio para 0-2 km
+        precio_2_3km: Precio para 2-3 km
+        base_distance_km: Distancia base (3.0 km)
+        precio_km_extra_normal: Precio por km adicional cuando distancia <= 10 km
+        precio_km_extra_largo: Precio por km adicional cuando distancia > 10 km
+        umbral_km_largo: Umbral para cambiar a tarifa larga (10.0 km)
+
+    Returns:
+        Precio calculado en pesos
+
+    Ejemplos:
+        >>> calcular_precio_distancia(1.5)
+        5000
+        >>> calcular_precio_distancia(2.5)
+        6000
+        >>> calcular_precio_distancia(3.1)
+        7200  # 6000 + (1 * 1200)
+        >>> calcular_precio_distancia(6.1)
+        10800  # 6000 + (4 * 1200)
+        >>> calcular_precio_distancia(11.1)
+        15000  # 6000 + (9 * 1000)
+    """
+    import math
+
+    if distancia_km <= 0:
+        return 0
+
+    if distancia_km <= 2.0:
+        return precio_0_2km
+
+    if distancia_km <= 3.0:
+        return precio_2_3km
+
+    km_extra = math.ceil(distancia_km - base_distance_km)
+
+    precio_km_extra = precio_km_extra_largo if distancia_km > umbral_km_largo else precio_km_extra_normal
+
+    return precio_2_3km + (km_extra * precio_km_extra)
+

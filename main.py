@@ -18,7 +18,7 @@ from telegram.ext import (
 from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
 from db import get_local_admins_count
 from db import force_platform_admin
-from services import admin_puede_operar
+from services import admin_puede_operar, calcular_precio_distancia
 from db import (
     init_db,
     ensure_user,
@@ -164,6 +164,12 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 # Estados para crear un pedido
 # =========================
 PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION, PEDIDO_CONFIRMACION = range(14, 19)
+
+
+# =========================
+# Estados para cotizador interno
+# =========================
+COTIZAR_DISTANCIA = 901
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -1645,6 +1651,37 @@ def cancel_conversacion(update, context):
 
     return ConversationHandler.END
 
+
+# ----- COTIZADOR INTERNO -----
+
+def cotizar_start(update, context):
+    update.message.reply_text(
+        "COTIZADOR\n\n"
+        "Enviame la distancia en km (ej: 5.9)."
+    )
+    return COTIZAR_DISTANCIA
+
+def cotizar_distancia(update, context):
+    texto = (update.message.text or "").strip().replace(",", ".")
+    try:
+        distancia = float(texto)
+    except ValueError:
+        update.message.reply_text("Valor invalido. Escribe la distancia en km (ej: 5.9).")
+        return COTIZAR_DISTANCIA
+
+    if distancia <= 0:
+        update.message.reply_text("La distancia debe ser mayor a 0. Ej: 3.1")
+        return COTIZAR_DISTANCIA
+
+    precio = calcular_precio_distancia(distancia)
+
+    update.message.reply_text(
+        f"Distancia: {distancia:.1f} km\n"
+        f"Precio: ${precio:,}".replace(",", ".")
+    )
+    return ConversationHandler.END
+
+
 def courier_pick_admin_callback(update, context):
     query = update.callback_query
     data = query.data
@@ -1984,7 +2021,16 @@ nuevo_pedido_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
     allow_reentry=True,
 )
-           
+
+# Conversación para /cotizar
+cotizar_conv = ConversationHandler(
+    entry_points=[CommandHandler("cotizar", cotizar_start)],
+    states={
+        COTIZAR_DISTANCIA: [MessageHandler(Filters.text & ~Filters.command, cotizar_distancia)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
+
 
 def mi_admin(update, context):
     user_db_id = get_user_db_id_from_update(update)
@@ -3099,6 +3145,7 @@ def main():
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
 
