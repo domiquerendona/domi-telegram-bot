@@ -2097,37 +2097,6 @@ def mi_perfil(update, context):
     if not admin and not ally and not courier:
         mensaje += "   (Sin roles registrados)\n\n"
 
-    # ===== RESUMEN DE ESTADO OPERATIVO =====
-    mensaje += "📊 ESTADO OPERATIVO\n\n"
-
-    # Pedidos
-    if ally:
-        if status == "APPROVED":
-            mensaje += "✅ Pedidos: Puedes crear pedidos\n"
-        else:
-            mensaje += "⏳ Pedidos: Pendiente de aprobación\n"
-    else:
-        mensaje += "❌ Pedidos: No habilitado (requiere rol Aliado APPROVED)\n"
-
-    # Admin
-    if admin:
-        admin_status = admin_full["status"] if admin_full["status"] else "PENDING"
-        if admin_status == "PENDING":
-            mensaje += "⏳ Admin: Pendiente de aprobación\n"
-        elif admin_status == "APPROVED":
-            mensaje += "✅ Admin: Aprobado\n"
-        else:
-            mensaje += f"ℹ️ Admin: {admin_status}\n"
-
-    # Equipo (para repartidores)
-    if courier:
-        if admin_link:
-            mensaje += f"✅ Equipo: Vinculado a {team_name} ({team_code})\n"
-        else:
-            mensaje += "ℹ️ Equipo: Puedes solicitar equipo en el registro\n"
-
-    mensaje += "\n"
-
     # ===== ACCIONES RÁPIDAS =====
     mensaje += "⚡ ACCIONES RÁPIDAS\n\n"
     mensaje += "• /menu - Ver menú principal\n"
