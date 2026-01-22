@@ -1,7 +1,11 @@
 import os
 import hashlib
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from dotenv import load_dotenv
+load_dotenv()
+
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -11,16 +15,24 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
-from db import get_local_admins_count
-from db import force_platform_admin
-from services import admin_puede_operar
+from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
 from db import (
     init_db,
+    force_platform_admin,
+    ensure_pricing_defaults,
     ensure_user,
     get_user_by_telegram_id,
+    get_user_by_id,
+    get_admin_rejection_type_by_id,
+    get_ally_rejection_type_by_id,
+    get_courier_rejection_type_by_id,
     get_setting,
     set_setting,
+    get_available_admin_teams,
+    get_platform_admin_id,
+    upsert_admin_ally_link,
+    create_admin_courier_link,
+    get_local_admins_count,
 
     # Aliados
     create_ally,
@@ -35,6 +47,7 @@ from db import (
     # Admins
     create_admin,
     get_admin_by_user_id,
+    get_admin_by_telegram_id,
     get_all_admins,
     get_pending_admins,
     get_admin_by_id,
@@ -61,6 +74,8 @@ from db import (
     get_all_couriers,
     update_courier,
     delete_courier,
+    get_admin_link_for_courier,
+    get_admin_link_for_ally,
 
     # Pedidos
     create_order,
@@ -75,6 +90,12 @@ from db import (
 
     # Calificaciones
     add_courier_rating,
+
+    # Términos y condiciones
+    get_active_terms_version,
+    has_accepted_terms,
+    save_terms_acceptance,
+    save_terms_session_ack,
 )
 
 # ============================================================
@@ -99,10 +120,34 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Platafo
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
+# Constante para equipo de plataforma
+PLATFORM_TEAM_CODE = "PLATFORM"
+
 
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
+
+
+def es_admin_plataforma(telegram_id: int) -> bool:
+    """
+    Valida si el usuario es Administrador de Plataforma.
+    Verifica que exista en admins con team_code='PLATFORM' y status='APPROVED'.
+    """
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        return False
+
+    # Soportar dict o sqlite3.Row
+    if isinstance(admin, dict):
+        team_code = admin.get("team_code")
+        status = admin.get("status")
+    else:
+        # sqlite3.Row
+        team_code = admin["team_code"] if "team_code" in admin.keys() else None
+        status = admin["status"] if "status" in admin.keys() else None
+
+    return team_code == "PLATFORM" and status == "APPROVED"
 
 
 # =========================
@@ -144,7 +189,19 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 # =========================
 # Estados para crear un pedido
 # =========================
-PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION = range(14, 17)
+PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION, PEDIDO_CONFIRMACION = range(14, 19)
+
+
+# =========================
+# Estados para cotizador interno
+# =========================
+COTIZAR_DISTANCIA = 901
+
+
+# =========================
+# Estados para configuración de tarifas (Admin Plataforma)
+# =========================
+TARIFAS_VALOR = 902
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -250,21 +307,32 @@ def start(update, context):
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
 
-    comandos = [
-        "• /soy_aliado  - Registrar tu negocio aliado",
-        "• /soy_repartidor  - Registrarte como repartidor",
-        "• /soy_administrador  - Registrarte como administrador",
-    ]
+    # Construir menú según roles del usuario
+    comandos = []
 
-    if ally and ally.get("status") == "APPROVED":
-        comandos.append("• /nuevo_pedido  - Crear nuevo pedido (aliados aprobados)")
+    # Comandos principales (para todos)
+    comandos.append("• /menu  - Ver este menú")
+    comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
+    comandos.append("• /cotizar  - Cotizar por distancia")
 
-    if admin_local:
-        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
+    # Nuevo pedido (solo aliados aprobados)
+    if ally and ally["status"] == "APPROVED":
+        comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
+
+    # Admin (según tipo, evitar duplicados)
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
+        comandos.append("• /tarifas  - Configurar tarifas")
+    elif admin_local:
+        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
 
-    comandos.append("• /menu  - Volver a ver este menú")
+    # Registro (solo si NO tiene ningún rol)
+    if not (ally or courier or admin_local or es_admin_plataforma):
+        comandos.append("")
+        comandos.append("Registro:")
+        comandos.append("• /soy_aliado  - Registrar tu negocio")
+        comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+        comandos.append("• /soy_administrador  - Registrarte como administrador")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
@@ -278,7 +346,17 @@ def start(update, context):
         + "\n"
     )
 
-    update.message.reply_text(mensaje)
+    # Mostrar ReplyKeyboard SOLO para usuarios nuevos (sin roles)
+    if not estado_lineas and not context.user_data.get('keyboard_shown'):
+        keyboard = [
+            ['/soy_aliado', '/soy_repartidor'],
+            ['/soy_admin', '/menu']
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        context.user_data['keyboard_shown'] = True
+        update.message.reply_text(mensaje, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(mensaje)
 
 
 def menu(update, context):
@@ -290,46 +368,48 @@ def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
     user = update.effective_user
     update.message.reply_text(f"Tu user_id es: {user.id}")
-def pedido_nombre_cliente(update, context):
-    context.user_data["customer_name"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
-    return PEDIDO_TELEFONO
-
-
-def pedido_telefono_cliente(update, context):
-    context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la dirección de entrega del cliente.")
-    return PEDIDO_DIRECCION
-
-
-def pedido_direccion_cliente(update, context):
-    context.user_data["customer_address"] = update.message.text.strip()
-
-    nombre = context.user_data.get("customer_name", "")
-    telefono = context.user_data.get("customer_phone", "")
-    direccion = context.user_data.get("customer_address", "")
-
-    texto = (
-        "Por ahora /nuevo_pedido está en construcción.\n"
-        "Hemos guardado estos datos del cliente:\n"
-        f"- Nombre: {nombre}\n"
-        f"- Teléfono: {telefono}\n"
-        f"- Dirección: {direccion}"
-    )
-
-    update.message.reply_text(texto)
-    context.user_data.clear()
-    return ConversationHandler.END
 
 
 # ----- REGISTRO DE ALIADO -----
 
 def soy_aliado(update, context):
-    user = update.effective_user
-    ensure_user(user.id, user.username)
+    user_db_id = get_user_db_id_from_update(update)
+    context.user_data.clear()
+
+    # Validación anti-duplicados
+    existing = get_ally_by_user_id(user_db_id)
+    if existing:
+        status = existing["status"] if isinstance(existing, dict) else existing[8]
+        ally_id = existing["id"] if isinstance(existing, dict) else existing[0]
+
+        # Obtener rejection_type usando función específica
+        rejection_type = get_ally_rejection_type_by_id(ally_id)
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de aliado en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de aliado aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
+            )
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
+
     update.message.reply_text(
-        "👨‍🍳 Registro de aliado\n\n"
+        "Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
+        reply_markup=ReplyKeyboardRemove()
     )
     return ALLY_NAME
 
@@ -337,41 +417,62 @@ def soy_aliado(update, context):
 def ally_name(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("El nombre del negocio no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El nombre del negocio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_NAME
 
     context.user_data.clear()
     context.user_data["business_name"] = texto
-    update.message.reply_text("Escribe el nombre del dueño o administrador:")
+    update.message.reply_text(
+        "Escribe el nombre del dueño o administrador:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_OWNER
 
 
 def ally_owner(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("El nombre del dueño no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El nombre del dueño no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_OWNER
 
     context.user_data["owner_name"] = texto
-    update.message.reply_text("Escribe la dirección del negocio:")
+    update.message.reply_text(
+        "Escribe la dirección del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_ADDRESS
 
 
 def ally_address(update, context):
     texto = update.message.text.strip()
     context.user_data["address"] = texto
-    update.message.reply_text("Escribe la ciudad del negocio:")
+    update.message.reply_text(
+        "Escribe la ciudad del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_CITY
 
 
 def ally_city(update, context):
     texto = update.message.text.strip()
     if not texto:
-        update.message.reply_text("La ciudad del negocio no puede estar vacía. Escríbela de nuevo:")
+        update.message.reply_text(
+            "La ciudad del negocio no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_CITY
 
     context.user_data["city"] = texto
-    update.message.reply_text("Escribe el teléfono de contacto del negocio:")
+    update.message.reply_text(
+        "Escribe el teléfono de contacto del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_PHONE
 
 
@@ -381,14 +482,20 @@ def ally_phone(update, context):
     # Validación mínima: que tenga al menos 7 dígitos
     digits = "".join([c for c in phone if c.isdigit()])
     if len(digits) < 7:
-        update.message.reply_text("Ese teléfono no parece válido. Escríbelo de nuevo, por favor.")
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_PHONE
 
     # Guardamos en el contexto con el mismo término que acordamos: ally_phone
     context.user_data["ally_phone"] = phone
 
     # Siguiente paso
-    update.message.reply_text("Escribe el barrio del negocio:")
+    update.message.reply_text(
+        "Escribe el barrio del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return ALLY_BARRIO
 
 
@@ -399,7 +506,10 @@ def ally_barrio(update, context):
 
     text = (update.message.text or "").strip()
     if not text:
-        update.message.reply_text("El barrio no puede estar vacío. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El barrio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return ALLY_BARRIO
 
     barrio = text
@@ -481,8 +591,12 @@ def show_ally_team_selection(update, context):
             admin_id = row[0]
             team_name = row[1]
             team_code = row[2]
+            admin_status = row[3] if len(row) > 3 else 'APPROVED'
 
+            # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
+            if admin_status == 'PENDING':
+                label += " [Pendiente]"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team:{team_code}")])
 
     # Opción Ninguno (default plataforma)
@@ -501,6 +615,7 @@ def show_ally_team_selection(update, context):
 def ally_team_callback(update, context):
     query = update.callback_query
     data = (query.data or "").strip()
+    print(f"[DEBUG] ally_team_callback recibió data={data}")
     query.answer()
 
     # Validación básica
@@ -517,10 +632,6 @@ def ally_team_callback(update, context):
 
     # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
-        # Aquí definimos el TEAM_CODE del Admin de Plataforma.
-        # Ajusta esto a tu realidad. Recomendación: crea un admin plataforma con team_code = 'PLATFORM'
-        PLATFORM_TEAM_CODE = "PLATFORM"
-
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
             query.edit_message_text(
@@ -531,7 +642,17 @@ def ally_team_callback(update, context):
             return ConversationHandler.END
 
         platform_admin_id = platform_admin[0]
-        upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING", is_active=0)
+
+        try:
+            upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
+            print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
+        except Exception as e:
+            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
+            query.edit_message_text(
+                "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
 
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
@@ -554,7 +675,16 @@ def ally_team_callback(update, context):
     team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
     team_code = admin_row[5]
 
-    upsert_admin_ally_link(admin_id, ally_id, status="PENDING", is_active=0)
+    try:
+        upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
+        print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
+    except Exception as e:
+        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
+        query.edit_message_text(
+            "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
@@ -569,49 +699,98 @@ def ally_team_callback(update, context):
 # ----- REGISTRO DE REPARTIDOR -----
 
 def soy_repartidor(update, context):
-    user = update.effective_user
-    ensure_user(user.id, user.username)
+    user_db_id = get_user_db_id_from_update(update)
     context.user_data.clear()
+
+    # Validación anti-duplicados
+    existing = get_courier_by_user_id(user_db_id)
+    if existing:
+        status = existing["status"] if isinstance(existing, dict) else existing[11]
+        courier_id = existing["id"] if isinstance(existing, dict) else existing[0]
+
+        # Obtener rejection_type usando función específica
+        rejection_type = get_courier_rejection_type_by_id(courier_id)
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de repartidor en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de repartidor aprobado (APPROVED). Si necesitas cambios, contacta al administrador."
+            )
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
+
     update.message.reply_text(
-        "🛵 Registro de repartidor\n\n"
+        "Registro de repartidor\n\n"
         "Escribe tu nombre completo:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
+        reply_markup=ReplyKeyboardRemove()
     )
     return COURIER_FULLNAME
 
 
 def courier_fullname(update, context):
     context.user_data["full_name"] = update.message.text.strip()
-    update.message.reply_text("Escribe tu número de identificación:")
+    update.message.reply_text(
+        "Escribe tu número de identificación:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_IDNUMBER
 
 
 def courier_idnumber(update, context):
     context.user_data["id_number"] = update.message.text.strip()
-    update.message.reply_text("Escribe tu número de celular:")
+    update.message.reply_text(
+        "Escribe tu número de celular:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_PHONE
 
 
 def courier_phone(update, context):
     context.user_data["phone"] = update.message.text.strip()
-    update.message.reply_text("Escribe la ciudad donde trabajas:")
+    update.message.reply_text(
+        "Escribe la ciudad donde trabajas:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_CITY
 
 
 def courier_city(update, context):
     context.user_data["city"] = update.message.text.strip()
-    update.message.reply_text("Escribe el barrio o sector principal donde trabajas:")
+    update.message.reply_text(
+        "Escribe el barrio o sector principal donde trabajas:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_BARRIO
 
 
 def courier_barrio(update, context):
     context.user_data["barrio"] = update.message.text.strip()
-    update.message.reply_text("Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):")
+    update.message.reply_text(
+        "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_PLATE
 
 
 def courier_plate(update, context):
     context.user_data["plate"] = update.message.text.strip()
-    update.message.reply_text("Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):")
+    update.message.reply_text(
+        "Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     return COURIER_BIKETYPE
 
 
@@ -637,6 +816,7 @@ def courier_biketype(update, context):
         f"Tipo de moto: {bike_type}\n\n"
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, usa /cancel y vuelve a /soy_repartidor"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
 
     update.message.reply_text(resumen)
@@ -716,10 +896,31 @@ def courier_teamcode(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    if text in ("NO", "N", "NO.", "N."):
+    if text in ("NO", "N", "NO.", "N.", "NINGUNO", ""):
+        # FASE 1: Asignar a Admin de Plataforma por defecto
+        platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
+        if not platform_admin:
+            update.message.reply_text(
+                "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
+                "Crea/asegura ese admin en la tabla admins con team_code='PLATFORM', luego intenta de nuevo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        platform_admin_id = platform_admin[0]
+
+        try:
+            create_admin_courier_link(platform_admin_id, courier_id)
+            print(f"[DEBUG] courier_teamcode: vínculo creado courier_id={courier_id}, admin_id={platform_admin_id}, team=PLATFORM")
+        except Exception as e:
+            print(f"[ERROR] courier_teamcode: create_admin_courier_link falló: {e}")
+            update.message.reply_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
+            context.user_data.clear()
+            return ConversationHandler.END
+
         update.message.reply_text(
-            "Perfecto. Quedas registrado.\n\n"
-            "Cuando tengas un código de equipo, podrás solicitar unirte más adelante."
+            "Perfecto. Quedas registrado en el equipo de PLATAFORMA.\n\n"
+            "Cuando tengas un código TEAM, podrás pedir cambio más adelante."
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -735,16 +936,15 @@ def courier_teamcode(update, context):
         )
         return COURIER_TEAMCODE
 
+    # get_admin_by_team_code retorna:
+    # (admin_id, user_id, full_name, status, team_name, team_code, telegram_id)
     admin_id = admin[0]
-
-    # IMPORTANTE: aquí admin[1] debe ser el TELEGRAM_ID real del admin.
-    # Si tu get_admin_by_team_code devuelve user_id interno, esto fallará.
-    admin_telegram_id = admin[1]
-
+    admin_user_db_id = admin[1]  # users.id (NO telegram_id)
     admin_name = admin[2]
     admin_status = admin[3]
     admin_team = admin[4]
     admin_team_code = admin[5]
+    admin_telegram_id = admin[6]  # telegram_id REAL para notificaciones
 
     try:
         create_admin_courier_link(admin_id, courier_id)
@@ -809,8 +1009,36 @@ def nuevo_pedido(update, context):
     context.user_data.clear()
     update.message.reply_text(
         "Crear nuevo pedido.\n\n"
-        "Perfecto, empecemos.\n"
-        "Primero escribe el nombre del cliente."
+        "¿Qué tipo de servicio necesitas?\n\n"
+        "Opciones:\n"
+        "1. Entrega rápida (30-45 min)\n"
+        "2. Entrega programada\n"
+        "3. Recogida en tienda\n\n"
+        "Escribe el número de tu opción (1, 2 o 3)."
+    )
+    return PEDIDO_TIPO_SERVICIO
+
+
+def pedido_tipo_servicio(update, context):
+    tipo = update.message.text.strip()
+
+    # Mapeo de opciones
+    tipos_validos = {
+        "1": "Entrega rápida",
+        "2": "Entrega programada",
+        "3": "Recogida en tienda"
+    }
+
+    if tipo not in tipos_validos:
+        update.message.reply_text(
+            "Opción no válida. Por favor escribe 1, 2 o 3."
+        )
+        return PEDIDO_TIPO_SERVICIO
+
+    context.user_data["service_type"] = tipos_validos[tipo]
+    update.message.reply_text(
+        f"Perfecto, servicio seleccionado: {tipos_validos[tipo]}\n\n"
+        "Ahora escribe el nombre del cliente."
     )
     return PEDIDO_NOMBRE
 
@@ -830,23 +1058,98 @@ def pedido_telefono_cliente(update, context):
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
 
-    nombre = context.user_data.get("customer_name", "")
-    telefono = context.user_data.get("customer_phone", "")
-    direccion = context.user_data.get("customer_address", "")
+    # Obtener datos guardados
+    tipo_servicio = context.user_data.get("service_type", "-")
+    nombre = context.user_data.get("customer_name", "-")
+    telefono = context.user_data.get("customer_phone", "-")
+    direccion = context.user_data.get("customer_address", "-")
 
-    texto = (
-        "Por ahora /nuevo_pedido está en construcción.\n"
-        "Hemos guardado estos datos del cliente:\n"
-        f"- Nombre: {nombre}\n"
-        f"- Teléfono: {telefono}\n"
-        f"- Dirección: {direccion}"
+    # Mostrar resumen
+    resumen = (
+        "📋 RESUMEN DEL PEDIDO\n\n"
+        f"Tipo de servicio: {tipo_servicio}\n"
+        f"Cliente: {nombre}\n"
+        f"Teléfono: {telefono}\n"
+        f"Dirección: {direccion}\n\n"
+        "¿Confirmas este pedido?\n\n"
+        "Escribe 'confirmar' o 'cancelar'."
     )
 
-    update.message.reply_text(texto)
-    context.user_data.clear()
-    return ConversationHandler.END
+    update.message.reply_text(resumen)
+    return PEDIDO_CONFIRMACION
 
-    
+
+def pedido_confirmacion(update, context):
+    respuesta = update.message.text.strip().lower()
+
+    if respuesta == "confirmar":
+        # Obtener datos del usuario y ally
+        user_db_id = get_user_db_id_from_update(update)
+        ally = get_ally_by_user_id(user_db_id)
+
+        if not ally:
+            update.message.reply_text("Error: No se encontró tu perfil de aliado.")
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        ally_id = ally["id"]
+
+        # Obtener ubicación por defecto del ally (si existe)
+        default_location = get_default_ally_location(ally_id)
+        pickup_location_id = default_location["id"] if default_location else None
+
+        # Obtener datos del pedido de context.user_data
+        customer_name = context.user_data.get("customer_name", "")
+        customer_phone = context.user_data.get("customer_phone", "")
+        customer_address = context.user_data.get("customer_address", "")
+
+        # Crear pedido en BD con valores por defecto para precio/fees
+        try:
+            order_id = create_order(
+                ally_id=ally_id,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                customer_address=customer_address,
+                customer_city="",
+                customer_barrio="",
+                pickup_location_id=pickup_location_id,
+                pay_at_store_required=False,
+                pay_at_store_amount=0,
+                base_fee=0,
+                distance_km=0.0,
+                rain_extra=0,
+                high_demand_extra=0,
+                night_extra=0,
+                additional_incentive=0,
+                total_fee=0,
+                instructions=""
+            )
+
+            # Mensaje de éxito SOLO si create_order fue exitoso
+            update.message.reply_text(
+                f"✅ Pedido creado exitosamente.\n\n"
+                f"ID del pedido: {order_id}\n"
+                f"Pronto un repartidor será asignado."
+            )
+        except Exception as e:
+            update.message.reply_text(
+                f"❌ Error al crear el pedido: {str(e)}\n\n"
+                f"Por favor intenta nuevamente más tarde."
+            )
+
+        context.user_data.clear()
+        return ConversationHandler.END
+    elif respuesta == "cancelar":
+        update.message.reply_text("Pedido cancelado.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    else:
+        update.message.reply_text(
+            "Respuesta no válida. Escribe 'confirmar' o 'cancelar'."
+        )
+        return PEDIDO_CONFIRMACION
+
+
 def aliados_pendientes(update, context):
     """Lista aliados PENDING solo para el Administrador de Plataforma."""
     message = update.effective_message
@@ -982,25 +1285,58 @@ def soy_admin(update, context):
 
     existing = get_admin_by_user_id(user_db_id)
     if existing:
-        team_name = existing[8] if len(existing) > 8 and existing[8] else existing[2]
-        doc = existing[9] if len(existing) > 9 and existing[9] else "No registrado"
+        status = existing.get("status") if isinstance(existing, dict) else existing[7]
+        admin_id = existing.get("id") if isinstance(existing, dict) else existing[0]
+
+        # Obtener rejection_type usando función específica
+        rejection_type = get_admin_rejection_type_by_id(admin_id)
+
+        # Bloquear si PENDING o APPROVED
+        if status in ("PENDING", "APPROVED"):
+            msg = (
+                "Ya tienes un registro de administrador en revisión (PENDING). Espera aprobación o usa /menu."
+                if status == "PENDING" else
+                "Ya tienes un registro de administrador aprobado (APPROVED). Si necesitas cambios, contacta al administrador de plataforma."
+            )
+            update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        # Bloquear si REJECTED + BLOCKED
+        if status == "REJECTED" and rejection_type == "BLOCKED":
+            update.message.reply_text(
+                "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Permitir actualizar si INACTIVE o REJECTED CORRECTABLE/NULL
+        team_name = existing.get("team_name") if isinstance(existing, dict) else (existing[9] if len(existing) > 9 and existing[9] else existing[3])
+        doc = existing.get("document_number") if isinstance(existing, dict) else (existing[10] if len(existing) > 10 and existing[10] else "No registrado")
+        full_name = existing.get("full_name") if isinstance(existing, dict) else existing[3]
+        phone = existing.get("phone") if isinstance(existing, dict) else existing[4]
+        city = existing.get("city") if isinstance(existing, dict) else existing[5]
+        barrio = existing.get("barrio") if isinstance(existing, dict) else existing[6]
 
         update.message.reply_text(
             "Ya tienes un registro como Administrador Local.\n"
-            f"Nombre: {existing[2]}\n"
+            f"Nombre: {full_name}\n"
             f"Documento: {doc}\n"
             f"Administración: {team_name}\n"
-            f"Teléfono: {existing[3]}\n"
-            f"Ciudad: {existing[4]}\n"
-            f"Barrio: {existing[5]}\n"
-            f"Estado: {existing[6]}\n\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n"
+            f"Estado: {status}\n\n"
             "Si deseas actualizar tus datos, escribe SI.\n"
-            "Si no, escribe NO."
+            "Si no, escribe NO.",
+            reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["admin_update_prompt"] = True
         return LOCAL_ADMIN_NAME
 
-    update.message.reply_text("Registro de Administrador Local.\nEscribe tu nombre completo:")
+    update.message.reply_text(
+        "Registro de Administrador Local.\nEscribe tu nombre completo:",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return LOCAL_ADMIN_NAME
 
 
@@ -1357,6 +1693,37 @@ def cancel_conversacion(update, context):
 
     return ConversationHandler.END
 
+
+# ----- COTIZADOR INTERNO -----
+
+def cotizar_start(update, context):
+    update.message.reply_text(
+        "COTIZADOR\n\n"
+        "Enviame la distancia en km (ej: 5.9)."
+    )
+    return COTIZAR_DISTANCIA
+
+def cotizar_distancia(update, context):
+    texto = (update.message.text or "").strip().replace(",", ".")
+    try:
+        distancia = float(texto)
+    except ValueError:
+        update.message.reply_text("Valor invalido. Escribe la distancia en km (ej: 5.9).")
+        return COTIZAR_DISTANCIA
+
+    if distancia <= 0:
+        update.message.reply_text("La distancia debe ser mayor a 0. Ej: 3.1")
+        return COTIZAR_DISTANCIA
+
+    precio = calcular_precio_distancia(distancia)
+
+    update.message.reply_text(
+        f"Distancia: {distancia:.1f} km\n"
+        f"Precio: ${precio:,}".replace(",", ".")
+    )
+    return ConversationHandler.END
+
+
 def courier_pick_admin_callback(update, context):
     query = update.callback_query
     data = query.data
@@ -1628,7 +1995,10 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        CommandHandler("menu", menu)
+    ],
     allow_reentry=True,
 )
 
@@ -1659,8 +2029,14 @@ courier_conv = ConversationHandler(
         COURIER_CONFIRM: [
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
+        COURIER_TEAMCODE: [
+            MessageHandler(Filters.text & ~Filters.command, courier_teamcode)
+        ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        CommandHandler("menu", menu)
+    ],
     allow_reentry=True,
 )
 
@@ -1668,6 +2044,9 @@ courier_conv = ConversationHandler(
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
     states={
+        PEDIDO_TIPO_SERVICIO: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
+        ],
         PEDIDO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
         ],
@@ -1677,11 +2056,172 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
+        PEDIDO_CONFIRMACION: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
+        ],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
     allow_reentry=True,
 )
-           
+
+# Conversación para /cotizar
+cotizar_conv = ConversationHandler(
+    entry_points=[CommandHandler("cotizar", cotizar_start)],
+    states={
+        COTIZAR_DISTANCIA: [MessageHandler(Filters.text & ~Filters.command, cotizar_distancia)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
+
+
+# ----- CONFIGURACION DE TARIFAS (ADMIN PLATAFORMA) -----
+
+def tarifas_start(update, context):
+    """Comando /tarifas - Solo Admin Plataforma."""
+    user = update.effective_user
+
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
+    # Cargar configuracion actual
+    config = get_pricing_config()
+
+    # Mostrar valores actuales
+    mensaje = (
+        "CONFIGURACION DE TARIFAS\n\n"
+        "Valores actuales:\n"
+        f"1. Precio 0-2 km: ${config['precio_0_2km']:,}\n"
+        f"2. Precio 2-3 km: ${config['precio_2_3km']:,}\n"
+        f"3. Base distancia (km): {config['base_distance_km']}\n"
+        f"4. Precio km extra normal (<=10km): ${config['precio_km_extra_normal']:,}\n"
+        f"5. Umbral km largo: {config['umbral_km_largo']} km\n"
+        f"6. Precio km extra largo (>10km): ${config['precio_km_extra_largo']:,}\n"
+    )
+
+    # Botones para editar
+    keyboard = [
+        [InlineKeyboardButton("Cambiar 0-2 km", callback_data="pricing_edit_precio_0_2km")],
+        [InlineKeyboardButton("Cambiar 2-3 km", callback_data="pricing_edit_precio_2_3km")],
+        [InlineKeyboardButton("Cambiar base distancia", callback_data="pricing_edit_base_distance_km")],
+        [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
+        [InlineKeyboardButton("Cambiar umbral largo", callback_data="pricing_edit_umbral_km_largo")],
+        [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
+        [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
+    ]
+
+    update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
+
+
+def tarifas_edit_callback(update, context):
+    """Callback para editar un valor de tarifa."""
+    query = update.callback_query
+    query.answer()
+
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(query.from_user.id):
+        query.edit_message_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
+    data = query.data
+
+    if data == "pricing_exit":
+        query.edit_message_text("Configuracion de tarifas cerrada.")
+        return ConversationHandler.END
+
+    # Extraer el campo a editar
+    if not data.startswith("pricing_edit_"):
+        query.edit_message_text("Opcion no valida.")
+        return ConversationHandler.END
+
+    field = data.replace("pricing_edit_", "")
+    context.user_data["pricing_field"] = field
+
+    # Mapeo de campos a nombres legibles
+    field_names = {
+        "precio_0_2km": "Precio 0-2 km",
+        "precio_2_3km": "Precio 2-3 km",
+        "base_distance_km": "Base distancia (km)",
+        "precio_km_extra_normal": "Precio km extra normal",
+        "umbral_km_largo": "Umbral km largo",
+        "precio_km_extra_largo": "Precio km extra largo",
+    }
+
+    field_name = field_names.get(field, field)
+
+    query.edit_message_text(
+        f"Editar: {field_name}\n\n"
+        f"Envia el nuevo valor (numero).\n"
+        f"O escribe /cancel para cancelar."
+    )
+
+    return TARIFAS_VALOR
+
+
+def tarifas_set_valor(update, context):
+    """Captura y guarda el nuevo valor."""
+    user = update.effective_user
+
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
+    texto = (update.message.text or "").strip().replace(",", ".")
+    field = context.user_data.get("pricing_field")
+
+    if not field:
+        update.message.reply_text("Error: no se pudo identificar el campo a editar.")
+        return ConversationHandler.END
+
+    # Validar valor numerico
+    try:
+        valor_float = float(texto)
+    except ValueError:
+        update.message.reply_text("Valor invalido. Debe ser un numero. Intenta de nuevo o usa /cancel.")
+        return TARIFAS_VALOR
+
+    # Guardar en BD
+    setting_key = f"pricing_{field}"
+    set_setting(setting_key, texto)
+
+    # Recargar config y mostrar
+    config = get_pricing_config()
+
+    # Pruebas rapidas
+    test_31 = calcular_precio_distancia(3.1)
+    test_111 = calcular_precio_distancia(11.1)
+
+    mensaje = (
+        "Guardado.\n\n"
+        "Valores actuales:\n"
+        f"- Precio 0-2 km: ${config['precio_0_2km']:,}\n"
+        f"- Precio 2-3 km: ${config['precio_2_3km']:,}\n"
+        f"- Base distancia: {config['base_distance_km']} km\n"
+        f"- Precio km extra normal: ${config['precio_km_extra_normal']:,}\n"
+        f"- Umbral largo: {config['umbral_km_largo']} km\n"
+        f"- Precio km extra largo: ${config['precio_km_extra_largo']:,}\n\n"
+        f"Prueba rapida:\n"
+        f"3.1 km -> ${test_31:,}\n"
+        f"11.1 km -> ${test_111:,}"
+    )
+
+    update.message.reply_text(mensaje)
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# Conversacion para /tarifas
+tarifas_conv = ConversationHandler(
+    entry_points=[CommandHandler("tarifas", tarifas_start)],
+    states={
+        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+)
+
 
 def mi_admin(update, context):
     user_db_id = get_user_db_id_from_update(update)
@@ -1733,20 +2273,17 @@ def mi_admin(update, context):
         )
         return
 
-    # Administrador Local normal: validación operativa en tiempo real
-    ok, msg = admin_puede_operar(admin_id)
+    # FASE 1: Mostrar estado del equipo como información, NO como bloqueo
+    ok, msg, total, okb = admin_puede_operar(admin_id)
 
-    if not ok:
-        keyboard = [
-            [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
-        ]
-        update.message.reply_text(
-            header + msg,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+    # Construir mensaje de estado (sin bloquear)
+    estado_msg = (
+        f"📊 Estado del equipo:\n"
+        f"• Repartidores vinculados: {total}\n"
+        f"• Con saldo >= 5000: {okb}\n\n"
+    )
 
-    # Si ya puede operar (menú mínimo por ahora)
+    # En FASE 1: panel siempre habilitado
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -1754,11 +2291,181 @@ def mi_admin(update, context):
     ]
 
     update.message.reply_text(
-        header +
-        "Ya cumples requisitos para operar.\n"
+        header + estado_msg +
+        "Panel de administración habilitado.\n"
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+def mi_perfil(update, context):
+    """
+    Muestra perfil consolidado del usuario: roles, estados, equipos, fecha de registro.
+    """
+    def get_status_icon(status):
+        """Retorna ícono según estado."""
+        if status == "APPROVED":
+            return "🟢 "
+        if status == "PENDING":
+            return "🟡 "
+        if status in ("REJECTED", "INACTIVE"):
+            return "🔴 "
+        return ""
+
+    telegram_id = update.effective_user.id
+    user_db_id = get_user_db_id_from_update(update)
+
+    # Obtener datos base del usuario (con created_at)
+    user = get_user_by_id(user_db_id)
+    if not user:
+        update.message.reply_text("No se encontró tu usuario en la base de datos.")
+        return
+
+    # Acceso por nombre (sqlite3.Row)
+    username = user["username"] if user["username"] else "-"
+    fecha_registro = user["created_at"] if user["created_at"] else "(no disponible)"
+
+    # Encabezado
+    mensaje = "👤 MI PERFIL\n\n"
+    mensaje += f"📱 Telegram ID: {telegram_id}\n"
+    mensaje += f"👤 Usuario: {'@' + username if username != '-' else '(sin username)'}\n"
+    mensaje += f"📅 Fecha de registro: {fecha_registro}\n\n"
+
+    # ===== ROLES Y ESTADOS =====
+    mensaje += "📋 ROLES Y ESTADO\n\n"
+
+    # Admin
+    admin = get_admin_by_user_id(user_db_id)
+    if admin:
+        admin_id = admin["id"]
+        admin_full = get_admin_by_id(admin_id)
+
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        full_name = admin_full["full_name"] if admin_full["full_name"] else "-"
+        phone = admin_full["phone"] if admin_full["phone"] else "-"
+        status = admin_full["status"] if admin_full["status"] else "PENDING"
+        team_name = admin_full["team_name"] if admin_full["team_name"] else "-"
+        team_code = admin_full["team_code"] if admin_full["team_code"] else "-"
+
+        # Construir línea de equipo (agrupar nombre y código)
+        if team_name != "-" and team_code != "-":
+            equipo_admin = f"{team_name} ({team_code})"
+        elif team_name != "-":
+            equipo_admin = team_name
+        elif team_code != "-":
+            equipo_admin = team_code
+        else:
+            equipo_admin = "-"
+
+        mensaje += f"🔧 Administrador Local\n"
+        mensaje += f"   Nombre: {full_name}\n"
+        mensaje += f"   Teléfono: {phone}\n"
+        mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
+        mensaje += f"   Equipo: {equipo_admin}\n\n"
+
+    # Aliado
+    ally = get_ally_by_user_id(user_db_id)
+    if ally:
+        ally_id = ally["id"]
+
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        business_name = ally["business_name"] if ally["business_name"] else "-"
+        phone = ally["phone"] if ally["phone"] else "-"
+        status = ally["status"] if ally["status"] else "PENDING"
+
+        # Buscar equipo vinculado
+        admin_link = get_admin_link_for_ally(ally_id)
+        equipo_info = "(sin equipo)"
+        if admin_link:
+            # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+            team_name = admin_link["team_name"] if admin_link["team_name"] else "-"
+            team_code = admin_link["team_code"] if admin_link["team_code"] else "-"
+            link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
+            equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
+
+        mensaje += f"🍕 Aliado\n"
+        mensaje += f"   Negocio: {business_name}\n"
+        mensaje += f"   Teléfono: {phone}\n"
+        mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
+        mensaje += f"   Equipo: {equipo_info}\n\n"
+
+    # Repartidor
+    courier = get_courier_by_user_id(user_db_id)
+    if courier:
+        courier_id = courier["id"]
+
+        # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+        full_name = courier["full_name"] if courier["full_name"] else "-"
+        code = courier["code"] if courier["code"] else "-"
+        status = courier["status"] if courier["status"] else "PENDING"
+
+        # Buscar equipo vinculado
+        admin_link = get_admin_link_for_courier(courier_id)
+        equipo_info = "(sin equipo)"
+        if admin_link:
+            # Acceso por nombre (sqlite3.Row) - sin índices mágicos
+            team_name = admin_link["team_name"] if admin_link["team_name"] else "-"
+            team_code = admin_link["team_code"] if admin_link["team_code"] else "-"
+            link_status = admin_link["link_status"] if admin_link["link_status"] else "-"
+            equipo_info = f"{team_name} ({team_code}) - Vínculo: {link_status}"
+
+        mensaje += f"🚴 Repartidor\n"
+        mensaje += f"   Nombre: {full_name}\n"
+        mensaje += f"   Código interno: {code if code else 'sin asignar'}\n"
+        mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
+        mensaje += f"   Equipo: {equipo_info}\n\n"
+
+    # Si no tiene roles
+    if not admin and not ally and not courier:
+        mensaje += "   (Sin roles registrados)\n\n"
+
+    # ===== ESTADO OPERATIVO =====
+    mensaje += "📊 ESTADO OPERATIVO\n\n"
+
+    # Pedidos
+    if ally:
+        ally_status = ally["status"] if ally["status"] else "PENDING"
+        if ally_status == "APPROVED":
+            mensaje += f"{get_status_icon(ally_status)}Pedidos: Habilitados\n"
+        else:
+            mensaje += f"{get_status_icon(ally_status)}Pedidos: No habilitados\n"
+    else:
+        mensaje += "❌ Pedidos: Requiere rol Aliado\n"
+
+    # Admin
+    if admin:
+        admin_status = admin_full["status"] if admin_full["status"] else "PENDING"
+        if admin_status == "APPROVED":
+            mensaje += f"{get_status_icon(admin_status)}Admin: Aprobado\n"
+        elif admin_status == "PENDING":
+            mensaje += f"{get_status_icon(admin_status)}Admin: Pendiente de aprobación\n"
+        else:
+            mensaje += f"{get_status_icon(admin_status)}Admin: {admin_status}\n"
+
+    # Repartidor
+    if courier:
+        courier_status = courier["status"] if courier["status"] else "PENDING"
+        if courier_status == "APPROVED":
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: Activo\n"
+        elif courier_status == "PENDING":
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: Pendiente\n"
+        else:
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: No activo\n"
+
+    mensaje += "\n"
+
+    # ===== ACCIONES RÁPIDAS =====
+    mensaje += "⚡ ACCIONES RÁPIDAS\n\n"
+    mensaje += "• /menu - Ver menú principal\n"
+
+    if admin:
+        mensaje += "• /mi_admin - Panel de administrador\n"
+
+    if ally and status == "APPROVED":
+        mensaje += "• /nuevo_pedido - Crear pedido\n"
+
+    update.message.reply_text(mensaje)
+
 
 def admin_local_callback(update, context):
     query = update.callback_query
@@ -1810,29 +2517,25 @@ def admin_local_callback(update, context):
             )
             return
 
-        # Administrador Local normal: validar requisitos
-        ok, msg = admin_puede_operar(admin_id)
+        # FASE 1: Mostrar requisitos como información, NO como bloqueo
+        ok, msg, total, okb = admin_puede_operar(admin_id)
 
-        if not ok:
-            keyboard = [
-                [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
-            ]
-            query.edit_message_text(
-                "Panel Administrador Local\n\n"
-                f"Estado: {status}\n\n"
-                + msg,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
+        estado_msg = (
+            f"📊 Estado del equipo:\n"
+            f"• Repartidores vinculados: {total}\n"
+            f"• Con saldo >= 5000: {okb}\n\n"
+        )
 
         keyboard = [
+            [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-            [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+            [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
         ]
         query.edit_message_text(
             "Panel Administrador Local\n\n"
-            "Ya cumples requisitos para operar.\n"
-            "Selecciona una opción:",
+            f"Estado: {status}\n\n"
+            + estado_msg +
+            "Panel habilitado. Selecciona una opción:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -2557,6 +3260,7 @@ def terms_callback(update, context):
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
+    ensure_pricing_defaults()
 
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
@@ -2566,9 +3270,6 @@ def main():
     token_suffix = BOT_TOKEN[-6:] if len(BOT_TOKEN) >= 6 else "***"
     print(f"[BOT] TOKEN fingerprint: hash={token_hash} suffix=...{token_suffix}")
     print(f"[BOT] Ambiente: {ENV}")
-
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -2593,6 +3294,7 @@ def main():
     dp.add_handler(CommandHandler("admin", admin_menu))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
+    dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
@@ -2625,6 +3327,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
+    # Configuracion de tarifas (botones pricing_*)
+    dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
+
 
     # -------------------------
     # Conversaciones completas
@@ -2632,6 +3337,8 @@ def main():
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(cotizar_conv)       # /cotizar
+    dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
 
@@ -2673,10 +3380,10 @@ def main():
 
 
     # Iniciar el bot
-    updater.start_polling()
+    updater.start_polling(drop_pending_updates=True)
     print("[BOOT] Polling iniciado. Bot activo.")
+    updater.idle()
 
-    
-    
+
 if __name__ == "__main__":
     main()

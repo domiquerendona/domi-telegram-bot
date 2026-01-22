@@ -321,6 +321,36 @@ def init_db():
     if "deleted_at" not in allies_cols:
         cur.execute("ALTER TABLE allies ADD COLUMN deleted_at TEXT")
 
+    # admins: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN rejected_at TEXT")
+
+    # allies: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN rejected_at TEXT")
+
+    # couriers: rejection_type, rejection_reason, rejected_at
+    cur.execute("PRAGMA table_info(couriers)")
+    couriers_cols = [r[1] for r in cur.fetchall()]
+    if "rejection_type" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejection_type TEXT")
+    if "rejection_reason" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejection_reason TEXT")
+    if "rejected_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN rejected_at TEXT")
+
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
     # ============================================================
@@ -560,6 +590,7 @@ def init_db():
             version TEXT NOT NULL,
             url TEXT NOT NULL,
             sha256 TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
             status TEXT DEFAULT 'APPROVED',
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(role, version)
@@ -590,6 +621,23 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
     """)
+
+    # Migración: agregar columna is_active si no existe
+    cur.execute("PRAGMA table_info(terms_versions)")
+    columns = [col[1] for col in cur.fetchall()]
+    if 'is_active' not in columns:
+        cur.execute("ALTER TABLE terms_versions ADD COLUMN is_active INTEGER DEFAULT 1")
+
+    # Bootstrap: insertar términos por defecto para ALLY si no existen
+    cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
+    if not cur.fetchone():
+        import hashlib
+        terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
+        sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
+        cur.execute(
+            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
+            ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
+        )
 
     conn.commit()
     conn.close()
@@ -856,8 +904,8 @@ def get_platform_admin_id() -> int:
 def get_available_admin_teams():
     """
     Devuelve lista de equipos disponibles para que un aliado elija.
-    Solo admins aprobados y no borrados.
-    Retorna filas con: (admin_id, team_name, team_code)
+    FASE 1: Incluye admins PENDING y APPROVED para permitir migración desde WhatsApp.
+    Retorna filas con: (admin_id, team_name, team_code, status)
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -865,9 +913,10 @@ def get_available_admin_teams():
         SELECT
             a.id,
             COALESCE(a.team_name, a.full_name) AS team_name,
-            a.team_code
+            a.team_code,
+            a.status
         FROM admins a
-        WHERE a.status = 'APPROVED'
+        WHERE a.status IN ('PENDING', 'APPROVED')
           AND a.is_deleted = 0
           AND a.team_code IS NOT NULL
           AND TRIM(a.team_code) <> ''
@@ -878,28 +927,28 @@ def get_available_admin_teams():
     return rows
 
 
-def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING", is_active: int = 0):
+def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING"):
     """
     Crea o actualiza el vínculo admin_allies para este aliado con este admin.
-    Por defecto queda PENDING hasta aprobación, y is_active=0.
+    Por defecto queda PENDING hasta aprobación.
+    Solo usa estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     # Inserta si no existe
     cur.execute("""
-        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, is_active, balance, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
-    """, (admin_id, ally_id, status, is_active))
+        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, balance, created_at, updated_at)
+        VALUES (?, ?, ?, 0, datetime('now'), datetime('now'))
+    """, (admin_id, ally_id, status))
 
-    # Si ya existía, actualiza status/is_active y updated_at
+    # Si ya existía, actualiza status y updated_at
     cur.execute("""
         UPDATE admin_allies
         SET status = ?,
-            is_active = ?,
             updated_at = datetime('now')
         WHERE admin_id = ? AND ally_id = ?
-    """, (status, is_active, admin_id, ally_id))
+    """, (status, admin_id, ally_id))
 
     conn.commit()
     conn.close()
@@ -931,6 +980,25 @@ def set_setting(key: str, value: str):
     """, (key, value))
     conn.commit()
     conn.close()
+
+
+def ensure_pricing_defaults():
+    """
+    Inicializa valores por defecto de tarifas de precio en settings.
+    Solo inserta si no existen (idempotente).
+    """
+    defaults = {
+        "pricing_precio_0_2km": "5000",
+        "pricing_precio_2_3km": "6000",
+        "pricing_base_distance_km": "3.0",
+        "pricing_km_extra_normal": "1200",
+        "pricing_umbral_km_largo": "10.0",
+        "pricing_km_extra_largo": "1000",
+    }
+    for k, v in defaults.items():
+        existing = get_setting(k)
+        if existing is None:
+            set_setting(k, v)
 
 
 # ---------- ALIADOS ----------
@@ -1133,39 +1201,111 @@ def get_all_admins():
     conn.close()
     return rows
 
-def update_admin_status_by_id(admin_id: int, new_status: str):
+def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admins
-        SET status = ?
-        WHERE id = ? AND is_deleted = 0;
-    """, (new_status, admin_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE admins
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND is_deleted = 0;
+        """, (new_status, rejection_type, rejection_reason, admin_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE admins
+            SET status = ?
+            WHERE id = ? AND is_deleted = 0;
+        """, (new_status, admin_id))
+
     conn.commit()
     conn.close()
 
-def update_courier_status_by_id(courier_id: int, new_status: str):
+def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE couriers
-        SET status = ?
-        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
-    """, (new_status, courier_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE couriers
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, rejection_type, rejection_reason, courier_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE couriers
+            SET status = ?
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, courier_id))
+
     conn.commit()
     conn.close()
 
-def update_ally_status_by_id(ally_id: int, new_status: str):
+def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE allies
-        SET status = ?
-        WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
-    """, (new_status, ally_id))
+
+    if new_status == "REJECTED" and rejection_type:
+        # Rechazo tipificado: actualizar status + rejection fields + rejected_at
+        cur.execute("""
+            UPDATE allies
+            SET status = ?,
+                rejection_type = ?,
+                rejection_reason = ?,
+                rejected_at = datetime('now')
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, rejection_type, rejection_reason, ally_id))
+    else:
+        # Actualizar solo status (compatible con llamadas existentes)
+        cur.execute("""
+            UPDATE allies
+            SET status = ?
+            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+        """, (new_status, ally_id))
+
     conn.commit()
     conn.close()
-    
+
+
+def get_admin_rejection_type_by_id(admin_id: int):
+    """Devuelve el rejection_type del admin especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM admins WHERE id = ?", (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_ally_rejection_type_by_id(ally_id: int):
+    """Devuelve el rejection_type del aliado especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM allies WHERE id = ?", (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_courier_rejection_type_by_id(courier_id: int):
+    """Devuelve el rejection_type del repartidor especificado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT rejection_type FROM couriers WHERE id = ?", (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 
 def get_local_admins_count():
     conn = get_connection()
@@ -1955,7 +2095,8 @@ def set_admin_team_code(admin_id: int, team_code: str):
 def get_available_admins(limit=10, offset=0):
     """
     Lista admins locales disponibles para que un repartidor elija.
-    Retorna: [(admin_id, team_name, team_code, city), ...]
+    FASE 1: Incluye admins PENDING y APPROVED para permitir migración desde WhatsApp.
+    Retorna: [(admin_id, team_name, team_code, city, status), ...]
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -1965,9 +2106,10 @@ def get_available_admins(limit=10, offset=0):
             id,
             COALESCE(team_name, full_name) AS team_name,
             team_code,
-            city
+            city,
+            status
         FROM admins
-        WHERE status = 'APPROVED'
+        WHERE status IN ('PENDING', 'APPROVED')
           AND is_deleted = 0
           AND team_code IS NOT NULL
           AND TRIM(team_code) != ''
@@ -1977,8 +2119,57 @@ def get_available_admins(limit=10, offset=0):
 
     rows = cur.fetchall()
     conn.close()
-    return rows 
+    return rows
 
+
+def get_admin_link_for_courier(courier_id: int):
+    """
+    Obtiene el admin vinculado más reciente a un courier_id.
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, link_status
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            ac.status AS link_status
+        FROM admin_couriers ac
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.courier_id = ?
+          AND a.is_deleted = 0
+        ORDER BY ac.created_at DESC
+        LIMIT 1;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_admin_link_for_ally(ally_id: int):
+    """
+    Obtiene el admin vinculado más reciente a un ally_id.
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, link_status
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            aa.status AS link_status
+        FROM admin_allies aa
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.ally_id = ?
+          AND a.is_deleted = 0
+        ORDER BY aa.created_at DESC
+        LIMIT 1;
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 
