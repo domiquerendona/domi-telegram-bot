@@ -2097,6 +2097,41 @@ def mi_perfil(update, context):
     if not admin and not ally and not courier:
         mensaje += "   (Sin roles registrados)\n\n"
 
+    # ===== ESTADO OPERATIVO =====
+    mensaje += "📊 ESTADO OPERATIVO\n\n"
+
+    # Pedidos
+    if ally:
+        ally_status = ally["status"] if ally["status"] else "PENDING"
+        if ally_status == "APPROVED":
+            mensaje += f"{get_status_icon(ally_status)}Pedidos: Habilitados\n"
+        else:
+            mensaje += f"{get_status_icon(ally_status)}Pedidos: No habilitados\n"
+    else:
+        mensaje += "❌ Pedidos: Requiere rol Aliado\n"
+
+    # Admin
+    if admin:
+        admin_status = admin_full["status"] if admin_full["status"] else "PENDING"
+        if admin_status == "APPROVED":
+            mensaje += f"{get_status_icon(admin_status)}Admin: Aprobado\n"
+        elif admin_status == "PENDING":
+            mensaje += f"{get_status_icon(admin_status)}Admin: Pendiente de aprobación\n"
+        else:
+            mensaje += f"{get_status_icon(admin_status)}Admin: {admin_status}\n"
+
+    # Repartidor
+    if courier:
+        courier_status = courier["status"] if courier["status"] else "PENDING"
+        if courier_status == "APPROVED":
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: Activo\n"
+        elif courier_status == "PENDING":
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: Pendiente\n"
+        else:
+            mensaje += f"{get_status_icon(courier_status)}Repartidor: No activo\n"
+
+    mensaje += "\n"
+
     # ===== ACCIONES RÁPIDAS =====
     mensaje += "⚡ ACCIONES RÁPIDAS\n\n"
     mensaje += "• /menu - Ver menú principal\n"
