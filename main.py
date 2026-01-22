@@ -15,12 +15,11 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from db import get_available_admin_teams, get_platform_admin_id, upsert_admin_ally_link, create_admin_courier_link
-from db import get_local_admins_count
-from db import force_platform_admin, ensure_pricing_defaults
 from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
 from db import (
     init_db,
+    force_platform_admin,
+    ensure_pricing_defaults,
     ensure_user,
     get_user_by_telegram_id,
     get_user_by_id,
@@ -29,6 +28,11 @@ from db import (
     get_courier_rejection_type_by_id,
     get_setting,
     set_setting,
+    get_available_admin_teams,
+    get_platform_admin_id,
+    upsert_admin_ally_link,
+    create_admin_courier_link,
+    get_local_admins_count,
 
     # Aliados
     create_ally,
@@ -43,6 +47,7 @@ from db import (
     # Admins
     create_admin,
     get_admin_by_user_id,
+    get_admin_by_telegram_id,
     get_all_admins,
     get_pending_admins,
     get_admin_by_id,
@@ -122,6 +127,27 @@ PLATFORM_TEAM_CODE = "PLATFORM"
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
+
+
+def es_admin_plataforma(telegram_id: int) -> bool:
+    """
+    Valida si el usuario es Administrador de Plataforma.
+    Verifica que exista en admins con team_code='PLATFORM' y status='APPROVED'.
+    """
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        return False
+
+    # Soportar dict o sqlite3.Row
+    if isinstance(admin, dict):
+        team_code = admin.get("team_code")
+        status = admin.get("status")
+    else:
+        # sqlite3.Row
+        team_code = admin["team_code"] if "team_code" in admin.keys() else None
+        status = admin["status"] if "status" in admin.keys() else None
+
+    return team_code == "PLATFORM" and status == "APPROVED"
 
 
 # =========================
@@ -2045,7 +2071,7 @@ def tarifas_start(update, context):
     user = update.effective_user
 
     # Validar que es Admin de Plataforma
-    if not es_admin(user.id):
+    if not es_admin_plataforma(user.id):
         update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
         return ConversationHandler.END
 
@@ -2084,6 +2110,11 @@ def tarifas_edit_callback(update, context):
     query = update.callback_query
     query.answer()
 
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(query.from_user.id):
+        query.edit_message_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
     data = query.data
 
     if data == "pricing_exit":
@@ -2121,6 +2152,13 @@ def tarifas_edit_callback(update, context):
 
 def tarifas_set_valor(update, context):
     """Captura y guarda el nuevo valor."""
+    user = update.effective_user
+
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
     texto = (update.message.text or "").strip().replace(",", ".")
     field = context.user_data.get("pricing_field")
 
