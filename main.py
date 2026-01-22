@@ -1056,31 +1056,39 @@ def pedido_confirmacion(update, context):
         customer_address = context.user_data.get("customer_address", "")
 
         # Crear pedido en BD con valores por defecto para precio/fees
-        order_id = create_order(
-            ally_id=ally_id,
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            customer_address=customer_address,
-            customer_city="",
-            customer_barrio="",
-            pickup_location_id=pickup_location_id,
-            pay_at_store_required=False,
-            pay_at_store_amount=0,
-            base_fee=0,
-            distance_km=0.0,
-            rain_extra=0,
-            high_demand_extra=0,
-            night_extra=0,
-            additional_incentive=0,
-            total_fee=0,
-            instructions=""
-        )
+        try:
+            order_id = create_order(
+                ally_id=ally_id,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                customer_address=customer_address,
+                customer_city="",
+                customer_barrio="",
+                pickup_location_id=pickup_location_id,
+                pay_at_store_required=False,
+                pay_at_store_amount=0,
+                base_fee=0,
+                distance_km=0.0,
+                rain_extra=0,
+                high_demand_extra=0,
+                night_extra=0,
+                additional_incentive=0,
+                total_fee=0,
+                instructions=""
+            )
 
-        update.message.reply_text(
-            f"✅ Pedido creado exitosamente.\n\n"
-            f"ID del pedido: {order_id}\n"
-            f"Pronto un repartidor será asignado."
-        )
+            # Mensaje de éxito SOLO si create_order fue exitoso
+            update.message.reply_text(
+                f"✅ Pedido creado exitosamente.\n\n"
+                f"ID del pedido: {order_id}\n"
+                f"Pronto un repartidor será asignado."
+            )
+        except Exception as e:
+            update.message.reply_text(
+                f"❌ Error al crear el pedido: {str(e)}\n\n"
+                f"Por favor intenta nuevamente más tarde."
+            )
+
         context.user_data.clear()
         return ConversationHandler.END
     elif respuesta == "cancelar":
