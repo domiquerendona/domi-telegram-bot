@@ -11,9 +11,6 @@ if DB_ENGINE == "postgres":
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
-# Ruta del archivo de base de datos
-DB_PATH = os.getenv("DB_PATH", "domiquerendona.db")
-
 # ----------------- Normalización -----------------
 
 def normalize_phone(phone: str) -> str:
@@ -177,7 +174,11 @@ def add_user_role(user_id: int, role: str) -> None:
         conn.close()
 
 def get_connection():
-    """Devuelve una conexión a la base de datos (PostgreSQL o SQLite)."""
+    """
+    Devuelve una conexión a la base de datos.
+    - SQLite si NO existe DATABASE_URL.
+    - PostgreSQL si existe DATABASE_URL.
+    """
     if DB_ENGINE == "postgres":
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
