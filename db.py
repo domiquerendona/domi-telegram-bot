@@ -2,6 +2,15 @@ import sqlite3
 import os
 import re
 
+# Detectar motor de base de datos
+DATABASE_URL = os.getenv("DATABASE_URL")
+DB_ENGINE = "postgres" if DATABASE_URL else "sqlite"
+
+# Importar Postgres solo si aplica
+if DB_ENGINE == "postgres":
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
 # Ruta del archivo de base de datos
 DB_PATH = os.getenv("DB_PATH", "domiquerendona.db")
 
@@ -168,12 +177,12 @@ def add_user_role(user_id: int, role: str) -> None:
         conn.close()
 
 def get_connection():
-    """Devuelve una conexión a la base de datos SQLite."""
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
+    """Devuelve una conexión a la base de datos (PostgreSQL o SQLite)."""
+    if DB_ENGINE == "postgres":
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-    conn = sqlite3.connect(DB_PATH)
+    db_path = os.getenv("DB_PATH", "domiquerendona.db")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
