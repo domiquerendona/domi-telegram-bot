@@ -1130,16 +1130,21 @@ def pedido_selector_cliente_callback(update, context):
             context.user_data["customer_address"] = last_order["customer_address"]
             context.user_data["is_new_customer"] = False
 
+            # Mostrar info del pedido anterior y botones de tipo de servicio
+            keyboard = [
+                [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
+                [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
+                [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+                [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             query.edit_message_text(
                 "REPETIR ULTIMO PEDIDO\n\n"
                 f"Cliente: {last_order['customer_name']}\n"
                 f"Telefono: {last_order['customer_phone']}\n"
                 f"Direccion: {last_order['customer_address']}\n\n"
-                "Selecciona el tipo de servicio:\n"
-                "1. Entrega rapida (30-45 min)\n"
-                "2. Entrega programada\n"
-                "3. Recogida en tienda\n\n"
-                "Escribe 1, 2 o 3."
+                "Selecciona el tipo de servicio:",
+                reply_markup=reply_markup
             )
             return PEDIDO_TIPO_SERVICIO
         else:
@@ -1253,76 +1258,203 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
 
-        query.edit_message_text(
-            f"Direccion seleccionada: {address['address_text']}\n\n"
-            "Selecciona el tipo de servicio:\n"
-            "1. Entrega rapida (30-45 min)\n"
-            "2. Entrega programada\n"
-            "3. Recogida en tienda\n\n"
-            "Escribe 1, 2 o 3."
-        )
-        return PEDIDO_TIPO_SERVICIO
+        # Mostrar selector de tipo de servicio con botones
+        return mostrar_selector_tipo_servicio(query, context, edit=True)
 
     return PEDIDO_SELECCIONAR_DIRECCION
 
 
+def mostrar_selector_tipo_servicio(query_or_update, context, edit=False):
+    """Muestra selector de tipo de servicio con botones."""
+    keyboard = [
+        [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
+        [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
+        [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+        [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    texto = "TIPO DE SERVICIO\n\nSelecciona el tipo de servicio:"
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(texto, reply_markup=reply_markup)
+    else:
+        # Es un CallbackQuery, usar edit
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+
+    return PEDIDO_TIPO_SERVICIO
+
+
+def pedido_tipo_servicio_callback(update, context):
+    """Maneja la seleccion de tipo de servicio por boton."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    # Mapeo de callbacks a texto legible
+    tipos_map = {
+        "pedido_tipo_entrega_rapida": "Entrega rapida (30-45 min)",
+        "pedido_tipo_domicilio": "Domicilio",
+        "pedido_tipo_mensajeria": "Mensajeria",
+        "pedido_tipo_recogida": "Recogida en tienda",
+    }
+
+    if data not in tipos_map:
+        query.edit_message_text("Opcion no valida. Usa /nuevo_pedido de nuevo.")
+        return ConversationHandler.END
+
+    context.user_data["service_type"] = tipos_map[data]
+
+    # Verificar si ya tenemos todos los datos del cliente
+    has_name = context.user_data.get("customer_name")
+    has_phone = context.user_data.get("customer_phone")
+    has_address = context.user_data.get("customer_address")
+
+    if has_name and has_phone and has_address:
+        # Cliente recurrente o repetir: ir directo a confirmacion
+        return mostrar_resumen_confirmacion(query, context, edit=True)
+    else:
+        # Cliente nuevo: pedir nombre
+        query.edit_message_text(
+            f"Tipo de servicio: {tipos_map[data]}\n\n"
+            "Ahora escribe el nombre del cliente:"
+        )
+        return PEDIDO_NOMBRE
+
+
 def pedido_tipo_servicio(update, context):
+    """Fallback: maneja tipo de servicio por texto (compatibilidad)."""
     tipo = update.message.text.strip()
 
-    # Mapeo de opciones
+    # Mapeo de opciones antiguas
     tipos_validos = {
-        "1": "Entrega rápida",
-        "2": "Entrega programada",
-        "3": "Recogida en tienda"
+        "1": "Entrega rapida (30-45 min)",
+        "2": "Domicilio",
+        "3": "Mensajeria",
+        "4": "Recogida en tienda"
     }
 
     if tipo not in tipos_validos:
+        # Mostrar botones en lugar de error
+        keyboard = [
+            [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
+            [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
+            [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+            [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         update.message.reply_text(
-            "Opción no válida. Por favor escribe 1, 2 o 3."
+            "Por favor usa los botones para seleccionar el tipo de servicio:",
+            reply_markup=reply_markup
         )
         return PEDIDO_TIPO_SERVICIO
 
     context.user_data["service_type"] = tipos_validos[tipo]
-    update.message.reply_text(
-        f"Perfecto, servicio seleccionado: {tipos_validos[tipo]}\n\n"
-        "Ahora escribe el nombre del cliente."
-    )
-    return PEDIDO_NOMBRE
+
+    # Verificar si ya tenemos todos los datos
+    has_name = context.user_data.get("customer_name")
+    has_phone = context.user_data.get("customer_phone")
+    has_address = context.user_data.get("customer_address")
+
+    if has_name and has_phone and has_address:
+        return mostrar_resumen_confirmacion_msg(update, context)
+    else:
+        update.message.reply_text(
+            f"Tipo de servicio: {tipos_validos[tipo]}\n\n"
+            "Ahora escribe el nombre del cliente:"
+        )
+        return PEDIDO_NOMBRE
 
 
 def pedido_nombre_cliente(update, context):
     context.user_data["customer_name"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe el número de teléfono del cliente.")
+    update.message.reply_text("Ahora escribe el numero de telefono del cliente.")
     return PEDIDO_TELEFONO
 
 
 def pedido_telefono_cliente(update, context):
     context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la dirección de entrega del cliente.")
+    update.message.reply_text("Ahora escribe la direccion de entrega del cliente.")
     return PEDIDO_DIRECCION
 
 
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
 
-    # Obtener datos guardados
+    # Verificar si ya tenemos tipo de servicio
+    if not context.user_data.get("service_type"):
+        # Pedir tipo de servicio con botones
+        keyboard = [
+            [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
+            [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
+            [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+            [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            "TIPO DE SERVICIO\n\nSelecciona el tipo de servicio:",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_TIPO_SERVICIO
+
+    # Ya tenemos todo, mostrar resumen con botones
+    return mostrar_resumen_confirmacion_msg(update, context)
+
+
+def mostrar_resumen_confirmacion(query, context, edit=True):
+    """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
     tipo_servicio = context.user_data.get("service_type", "-")
     nombre = context.user_data.get("customer_name", "-")
     telefono = context.user_data.get("customer_phone", "-")
     direccion = context.user_data.get("customer_address", "-")
 
-    # Mostrar resumen
+    keyboard = [
+        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     resumen = (
-        "📋 RESUMEN DEL PEDIDO\n\n"
+        "RESUMEN DEL PEDIDO\n\n"
         f"Tipo de servicio: {tipo_servicio}\n"
         f"Cliente: {nombre}\n"
-        f"Teléfono: {telefono}\n"
-        f"Dirección: {direccion}\n\n"
-        "¿Confirmas este pedido?\n\n"
-        "Escribe 'confirmar' o 'cancelar'."
+        f"Telefono: {telefono}\n"
+        f"Direccion: {direccion}\n\n"
+        "Confirmas este pedido?"
     )
 
-    update.message.reply_text(resumen)
+    if edit:
+        query.edit_message_text(resumen, reply_markup=reply_markup)
+    else:
+        query.message.reply_text(resumen, reply_markup=reply_markup)
+
+    return PEDIDO_CONFIRMACION
+
+
+def mostrar_resumen_confirmacion_msg(update, context):
+    """Muestra resumen del pedido con botones de confirmacion (para Message)."""
+    tipo_servicio = context.user_data.get("service_type", "-")
+    nombre = context.user_data.get("customer_name", "-")
+    telefono = context.user_data.get("customer_phone", "-")
+    direccion = context.user_data.get("customer_address", "-")
+
+    keyboard = [
+        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    resumen = (
+        "RESUMEN DEL PEDIDO\n\n"
+        f"Tipo de servicio: {tipo_servicio}\n"
+        f"Cliente: {nombre}\n"
+        f"Telefono: {telefono}\n"
+        f"Direccion: {direccion}\n\n"
+        "Confirmas este pedido?"
+    )
+
+    update.message.reply_text(resumen, reply_markup=reply_markup)
     return PEDIDO_CONFIRMACION
 
 
@@ -1410,10 +1542,111 @@ def pedido_confirmacion(update, context):
         context.user_data.clear()
         return ConversationHandler.END
     else:
+        # Mostrar botones en lugar de error
+        keyboard = [
+            [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
+            [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         update.message.reply_text(
-            "Respuesta no valida. Escribe 'confirmar' o 'cancelar'."
+            "Por favor usa los botones para confirmar o cancelar:",
+            reply_markup=reply_markup
         )
         return PEDIDO_CONFIRMACION
+
+
+def pedido_confirmacion_callback(update, context):
+    """Maneja la confirmacion/cancelacion del pedido por botones."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    # Anti doble-click: verificar si ya fue procesado
+    if context.user_data.get("pedido_processed"):
+        query.edit_message_text("Este pedido ya fue procesado.")
+        return ConversationHandler.END
+
+    if data == "pedido_confirmar":
+        # Marcar como procesado ANTES de crear el pedido
+        context.user_data["pedido_processed"] = True
+
+        # Obtener datos del usuario y ally
+        ally_id = context.user_data.get("ally_id")
+        if not ally_id:
+            query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+            context.user_data.clear()
+            return ConversationHandler.END
+
+        # Obtener ubicacion por defecto del ally (si existe)
+        default_location = get_default_ally_location(ally_id)
+        pickup_location_id = default_location["id"] if default_location else None
+
+        # Obtener datos del pedido de context.user_data
+        customer_name = context.user_data.get("customer_name", "")
+        customer_phone = context.user_data.get("customer_phone", "")
+        customer_address = context.user_data.get("customer_address", "")
+        customer_city = context.user_data.get("customer_city", "")
+        customer_barrio = context.user_data.get("customer_barrio", "")
+
+        # Crear pedido en BD
+        try:
+            order_id = create_order(
+                ally_id=ally_id,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                customer_address=customer_address,
+                customer_city=customer_city,
+                customer_barrio=customer_barrio,
+                pickup_location_id=pickup_location_id,
+                pay_at_store_required=False,
+                pay_at_store_amount=0,
+                base_fee=0,
+                distance_km=0.0,
+                rain_extra=0,
+                high_demand_extra=0,
+                night_extra=0,
+                additional_incentive=0,
+                total_fee=0,
+                instructions=""
+            )
+            context.user_data["order_id"] = order_id
+
+            # Si es cliente nuevo, preguntar si guardar
+            is_new_customer = context.user_data.get("is_new_customer", False)
+            if is_new_customer:
+                keyboard = [
+                    [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
+                    [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                query.edit_message_text(
+                    f"Pedido #{order_id} creado exitosamente.\n\n"
+                    "Quieres guardar este cliente para futuros pedidos?",
+                    reply_markup=reply_markup
+                )
+                return PEDIDO_GUARDAR_CLIENTE
+            else:
+                query.edit_message_text(
+                    f"Pedido #{order_id} creado exitosamente.\n\n"
+                    "Pronto un repartidor sera asignado."
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
+
+        except Exception as e:
+            query.edit_message_text(
+                f"Error al crear el pedido: {str(e)}\n\n"
+                "Por favor intenta nuevamente mas tarde."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
+    elif data == "pedido_cancelar":
+        query.edit_message_text("Pedido cancelado.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    return PEDIDO_CONFIRMACION
 
 
 def pedido_guardar_cliente_callback(update, context):
@@ -2895,6 +3128,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^pedido_")
         ],
         PEDIDO_TIPO_SERVICIO: [
+            CallbackQueryHandler(pedido_tipo_servicio_callback, pattern=r"^pedido_tipo_"),
             MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
         ],
         PEDIDO_NOMBRE: [
@@ -2907,6 +3141,7 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_CONFIRMACION: [
+            CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
         ],
         PEDIDO_GUARDAR_CLIENTE: [
