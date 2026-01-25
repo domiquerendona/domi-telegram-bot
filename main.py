@@ -96,6 +96,22 @@ from db import (
     has_accepted_terms,
     save_terms_acceptance,
     save_terms_session_ack,
+
+    # Clientes recurrentes de aliados
+    create_ally_customer,
+    update_ally_customer,
+    archive_ally_customer,
+    restore_ally_customer,
+    get_ally_customer_by_id,
+    list_ally_customers,
+    search_ally_customers,
+    create_customer_address,
+    update_customer_address,
+    archive_customer_address,
+    restore_customer_address,
+    get_customer_address_by_id,
+    list_customer_addresses,
+    get_last_order_by_ally,
 )
 
 # ============================================================
@@ -187,9 +203,41 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 
 
 # =========================
-# Estados para crear un pedido
+# Estados para crear un pedido (modificado para cliente recurrente)
 # =========================
-PEDIDO_TIPO_SERVICIO, PEDIDO_NOMBRE, PEDIDO_TELEFONO, PEDIDO_DIRECCION, PEDIDO_CONFIRMACION = range(14, 19)
+(
+    PEDIDO_SELECTOR_CLIENTE,      # Nuevo: selector cliente recurrente/nuevo
+    PEDIDO_BUSCAR_CLIENTE,        # Nuevo: buscar cliente por nombre/telefono
+    PEDIDO_SELECCIONAR_DIRECCION, # Nuevo: seleccionar dirección del cliente
+    PEDIDO_TIPO_SERVICIO,
+    PEDIDO_NOMBRE,
+    PEDIDO_TELEFONO,
+    PEDIDO_DIRECCION,
+    PEDIDO_CONFIRMACION,
+    PEDIDO_GUARDAR_CLIENTE,       # Nuevo: preguntar si guardar cliente nuevo
+) = range(14, 23)
+
+
+# =========================
+# Estados para /clientes (agenda de clientes recurrentes)
+# =========================
+(
+    CLIENTES_MENU,
+    CLIENTES_NUEVO_NOMBRE,
+    CLIENTES_NUEVO_TELEFONO,
+    CLIENTES_NUEVO_NOTAS,
+    CLIENTES_NUEVO_DIRECCION_LABEL,
+    CLIENTES_NUEVO_DIRECCION_TEXT,
+    CLIENTES_BUSCAR,
+    CLIENTES_VER_CLIENTE,
+    CLIENTES_EDITAR_NOMBRE,
+    CLIENTES_EDITAR_TELEFONO,
+    CLIENTES_EDITAR_NOTAS,
+    CLIENTES_DIR_NUEVA_LABEL,
+    CLIENTES_DIR_NUEVA_TEXT,
+    CLIENTES_DIR_EDITAR_LABEL,
+    CLIENTES_DIR_EDITAR_TEXT,
+) = range(400, 415)
 
 
 # =========================
@@ -315,11 +363,12 @@ def start(update, context):
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
 
-    # Nuevo pedido (solo aliados aprobados)
+    # Nuevo pedido y clientes (solo aliados aprobados)
     if ally and ally["status"] == "APPROVED":
         comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
+        comandos.append("• /clientes  - Agenda de clientes recurrentes")
 
-    # Admin (según tipo, evitar duplicados)
+    # Admin (segun tipo, evitar duplicados)
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
@@ -983,40 +1032,238 @@ def nuevo_pedido(update, context):
     db_user = get_user_by_telegram_id(user.id)
 
     if not db_user:
-        update.message.reply_text("Aún no estás registrado en el sistema. Usa /start primero.")
+        update.message.reply_text("Aun no estas registrado en el sistema. Usa /start primero.")
         return ConversationHandler.END
 
     ally = get_ally_by_user_id(db_user["id"])
     if not ally:
         update.message.reply_text(
-            "Aún no estás registrado como aliado.\n"
-            "Si tienes un negocio, regístrate con /soy_aliado."
+            "Aun no estas registrado como aliado.\n"
+            "Si tienes un negocio, registrate con /soy_aliado."
         )
         return ConversationHandler.END
 
     if ally["status"] != "APPROVED":
         update.message.reply_text(
-            "Tu registro como aliado todavía no ha sido aprobado por el administrador.\n"
-            "Cuando tu estado sea APPROVED podrás crear pedidos con /nuevo_pedido."
+            "Tu registro como aliado todavia no ha sido aprobado por el administrador.\n"
+            "Cuando tu estado sea APPROVED podras crear pedidos con /nuevo_pedido."
         )
         return ConversationHandler.END
 
-    # Si tienes ensure_terms implementado y quieres exigirlo, déjalo.
-    # Si NO lo tienes, comenta estas 2 líneas.
+    # Si tienes ensure_terms implementado y quieres exigirlo, dejalo.
+    # Si NO lo tienes, comenta estas 2 lineas.
     if not ensure_terms(update, context, user.id, role="ALLY"):
         return ConversationHandler.END
 
     context.user_data.clear()
+    context.user_data["ally_id"] = ally["id"]
+
+    # Mostrar selector de cliente recurrente/nuevo
+    keyboard = [
+        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+    ]
+
+    # Verificar si hay ultimo pedido para ofrecer repetir
+    last_order = get_last_order_by_ally(ally["id"])
+    if last_order:
+        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
-        "Crear nuevo pedido.\n\n"
-        "¿Qué tipo de servicio necesitas?\n\n"
-        "Opciones:\n"
-        "1. Entrega rápida (30-45 min)\n"
-        "2. Entrega programada\n"
-        "3. Recogida en tienda\n\n"
-        "Escribe el número de tu opción (1, 2 o 3)."
+        "CREAR NUEVO PEDIDO\n\n"
+        "Selecciona una opcion:",
+        reply_markup=reply_markup
     )
-    return PEDIDO_TIPO_SERVICIO
+    return PEDIDO_SELECTOR_CLIENTE
+
+
+def pedido_selector_cliente_callback(update, context):
+    """Maneja la seleccion de tipo de cliente en /nuevo_pedido."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    ally_id = context.user_data.get("ally_id")
+    if not ally_id:
+        query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+        return ConversationHandler.END
+
+    if data == "pedido_cliente_recurrente":
+        # Mostrar lista de clientes recurrentes
+        customers = list_ally_customers(ally_id, limit=10)
+        if not customers:
+            query.edit_message_text(
+                "No tienes clientes guardados.\n\n"
+                "Escribe el nombre del cliente para crear el pedido:"
+            )
+            context.user_data["is_new_customer"] = True
+            return PEDIDO_NOMBRE
+
+        keyboard = []
+        for c in customers:
+            btn_text = f"{c['name']} - {c['phone']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
+
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(
+            "CLIENTES RECURRENTES\n\n"
+            "Selecciona un cliente:",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_SELECTOR_CLIENTE
+
+    elif data == "pedido_cliente_nuevo":
+        query.edit_message_text("Escribe el nombre del cliente:")
+        context.user_data["is_new_customer"] = True
+        return PEDIDO_NOMBRE
+
+    elif data == "pedido_repetir_ultimo":
+        ally_id = context.user_data.get("ally_id")
+        last_order = get_last_order_by_ally(ally_id)
+        if last_order:
+            context.user_data["customer_name"] = last_order["customer_name"]
+            context.user_data["customer_phone"] = last_order["customer_phone"]
+            context.user_data["customer_address"] = last_order["customer_address"]
+            context.user_data["is_new_customer"] = False
+
+            query.edit_message_text(
+                "REPETIR ULTIMO PEDIDO\n\n"
+                f"Cliente: {last_order['customer_name']}\n"
+                f"Telefono: {last_order['customer_phone']}\n"
+                f"Direccion: {last_order['customer_address']}\n\n"
+                "Selecciona el tipo de servicio:\n"
+                "1. Entrega rapida (30-45 min)\n"
+                "2. Entrega programada\n"
+                "3. Recogida en tienda\n\n"
+                "Escribe 1, 2 o 3."
+            )
+            return PEDIDO_TIPO_SERVICIO
+        else:
+            query.edit_message_text("No hay pedidos anteriores. Escribe el nombre del cliente:")
+            context.user_data["is_new_customer"] = True
+            return PEDIDO_NOMBRE
+
+    elif data == "pedido_buscar_cliente":
+        query.edit_message_text("Escribe el nombre o telefono del cliente a buscar:")
+        return PEDIDO_BUSCAR_CLIENTE
+
+    elif data.startswith("pedido_sel_cust_"):
+        # Selecciono un cliente recurrente
+        customer_id = int(data.replace("pedido_sel_cust_", ""))
+        customer = get_ally_customer_by_id(customer_id, ally_id)
+        if not customer:
+            query.edit_message_text("Cliente no encontrado. Escribe el nombre del cliente:")
+            context.user_data["is_new_customer"] = True
+            return PEDIDO_NOMBRE
+
+        context.user_data["customer_id"] = customer_id
+        context.user_data["customer_name"] = customer["name"]
+        context.user_data["customer_phone"] = customer["phone"]
+        context.user_data["is_new_customer"] = False
+
+        # Mostrar direcciones del cliente
+        addresses = list_customer_addresses(customer_id)
+        if not addresses:
+            query.edit_message_text(
+                f"Cliente: {customer['name']}\n"
+                f"Telefono: {customer['phone']}\n\n"
+                "Este cliente no tiene direcciones guardadas.\n"
+                "Escribe la direccion de entrega:"
+            )
+            return PEDIDO_DIRECCION
+
+        keyboard = []
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            btn_text = f"{label}: {addr['address_text'][:30]}..."
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_addr_{addr['id']}")])
+
+        keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(
+            f"Cliente: {customer['name']}\n"
+            f"Telefono: {customer['phone']}\n\n"
+            "Selecciona la direccion de entrega:",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_SELECCIONAR_DIRECCION
+
+    return PEDIDO_SELECTOR_CLIENTE
+
+
+def pedido_buscar_cliente(update, context):
+    """Busca clientes por nombre o telefono."""
+    query_text = update.message.text.strip()
+    ally_id = context.user_data.get("ally_id")
+
+    if not ally_id:
+        update.message.reply_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+        return ConversationHandler.END
+
+    results = search_ally_customers(ally_id, query_text, limit=10)
+    if not results:
+        update.message.reply_text(
+            f"No se encontraron clientes con '{query_text}'.\n\n"
+            "Escribe el nombre del cliente para crear el pedido:"
+        )
+        context.user_data["is_new_customer"] = True
+        return PEDIDO_NOMBRE
+
+    keyboard = []
+    for c in results:
+        btn_text = f"{c['name']} - {c['phone']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
+
+    keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        f"Resultados para '{query_text}':\n\n"
+        "Selecciona un cliente:",
+        reply_markup=reply_markup
+    )
+    return PEDIDO_SELECTOR_CLIENTE
+
+
+def pedido_seleccionar_direccion_callback(update, context):
+    """Maneja la seleccion de direccion del cliente."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "pedido_nueva_dir":
+        query.edit_message_text("Escribe la nueva direccion de entrega:")
+        return PEDIDO_DIRECCION
+
+    elif data.startswith("pedido_sel_addr_"):
+        address_id = int(data.replace("pedido_sel_addr_", ""))
+        customer_id = context.user_data.get("customer_id")
+        address = get_customer_address_by_id(address_id, customer_id)
+
+        if not address:
+            query.edit_message_text("Direccion no encontrada. Escribe la direccion de entrega:")
+            return PEDIDO_DIRECCION
+
+        context.user_data["customer_address"] = address["address_text"]
+        context.user_data["customer_city"] = address["city"] or ""
+        context.user_data["customer_barrio"] = address["barrio"] or ""
+
+        query.edit_message_text(
+            f"Direccion seleccionada: {address['address_text']}\n\n"
+            "Selecciona el tipo de servicio:\n"
+            "1. Entrega rapida (30-45 min)\n"
+            "2. Entrega programada\n"
+            "3. Recogida en tienda\n\n"
+            "Escribe 1, 2 o 3."
+        )
+        return PEDIDO_TIPO_SERVICIO
+
+    return PEDIDO_SELECCIONAR_DIRECCION
 
 
 def pedido_tipo_servicio(update, context):
@@ -1084,17 +1331,17 @@ def pedido_confirmacion(update, context):
 
     if respuesta == "confirmar":
         # Obtener datos del usuario y ally
-        user_db_id = get_user_db_id_from_update(update)
-        ally = get_ally_by_user_id(user_db_id)
+        ally_id = context.user_data.get("ally_id")
+        if not ally_id:
+            user_db_id = get_user_db_id_from_update(update)
+            ally = get_ally_by_user_id(user_db_id)
+            if not ally:
+                update.message.reply_text("Error: No se encontro tu perfil de aliado.")
+                context.user_data.clear()
+                return ConversationHandler.END
+            ally_id = ally["id"]
 
-        if not ally:
-            update.message.reply_text("Error: No se encontró tu perfil de aliado.")
-            context.user_data.clear()
-            return ConversationHandler.END
-
-        ally_id = ally["id"]
-
-        # Obtener ubicación por defecto del ally (si existe)
+        # Obtener ubicacion por defecto del ally (si existe)
         default_location = get_default_ally_location(ally_id)
         pickup_location_id = default_location["id"] if default_location else None
 
@@ -1102,6 +1349,8 @@ def pedido_confirmacion(update, context):
         customer_name = context.user_data.get("customer_name", "")
         customer_phone = context.user_data.get("customer_phone", "")
         customer_address = context.user_data.get("customer_address", "")
+        customer_city = context.user_data.get("customer_city", "")
+        customer_barrio = context.user_data.get("customer_barrio", "")
 
         # Crear pedido en BD con valores por defecto para precio/fees
         try:
@@ -1110,8 +1359,8 @@ def pedido_confirmacion(update, context):
                 customer_name=customer_name,
                 customer_phone=customer_phone,
                 customer_address=customer_address,
-                customer_city="",
-                customer_barrio="",
+                customer_city=customer_city,
+                customer_barrio=customer_barrio,
                 pickup_location_id=pickup_location_id,
                 pay_at_store_required=False,
                 pay_at_store_amount=0,
@@ -1124,30 +1373,84 @@ def pedido_confirmacion(update, context):
                 total_fee=0,
                 instructions=""
             )
+            context.user_data["order_id"] = order_id
 
-            # Mensaje de éxito SOLO si create_order fue exitoso
-            update.message.reply_text(
-                f"✅ Pedido creado exitosamente.\n\n"
-                f"ID del pedido: {order_id}\n"
-                f"Pronto un repartidor será asignado."
-            )
+            # Si es cliente nuevo, preguntar si guardar
+            is_new_customer = context.user_data.get("is_new_customer", False)
+            if is_new_customer:
+                keyboard = [
+                    [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
+                    [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                update.message.reply_text(
+                    f"Pedido #{order_id} creado exitosamente.\n\n"
+                    "Quieres guardar este cliente para futuros pedidos?",
+                    reply_markup=reply_markup
+                )
+                return PEDIDO_GUARDAR_CLIENTE
+            else:
+                update.message.reply_text(
+                    f"Pedido #{order_id} creado exitosamente.\n\n"
+                    "Pronto un repartidor sera asignado."
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
+
         except Exception as e:
             update.message.reply_text(
-                f"❌ Error al crear el pedido: {str(e)}\n\n"
-                f"Por favor intenta nuevamente más tarde."
+                f"Error al crear el pedido: {str(e)}\n\n"
+                "Por favor intenta nuevamente mas tarde."
             )
+            context.user_data.clear()
+            return ConversationHandler.END
 
-        context.user_data.clear()
-        return ConversationHandler.END
     elif respuesta == "cancelar":
         update.message.reply_text("Pedido cancelado.")
         context.user_data.clear()
         return ConversationHandler.END
     else:
         update.message.reply_text(
-            "Respuesta no válida. Escribe 'confirmar' o 'cancelar'."
+            "Respuesta no valida. Escribe 'confirmar' o 'cancelar'."
         )
         return PEDIDO_CONFIRMACION
+
+
+def pedido_guardar_cliente_callback(update, context):
+    """Maneja la decision de guardar o no el cliente nuevo."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "pedido_guardar_si":
+        ally_id = context.user_data.get("ally_id")
+        customer_name = context.user_data.get("customer_name", "")
+        customer_phone = context.user_data.get("customer_phone", "")
+        customer_address = context.user_data.get("customer_address", "")
+
+        try:
+            # Crear cliente
+            customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
+            # Crear direccion
+            create_customer_address(customer_id, "Principal", customer_address)
+
+            query.edit_message_text(
+                f"Cliente '{customer_name}' guardado exitosamente.\n\n"
+                "Podras usarlo en tus proximos pedidos desde 'Cliente recurrente'."
+            )
+        except Exception as e:
+            query.edit_message_text(
+                f"El pedido fue creado pero hubo un error al guardar el cliente: {str(e)}"
+            )
+
+    elif data == "pedido_guardar_no":
+        query.edit_message_text(
+            "Entendido. El pedido fue creado.\n"
+            "Pronto un repartidor sera asignado."
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 def aliados_pendientes(update, context):
@@ -1979,9 +2282,547 @@ def pendientes(update, context):
     ]
 
     update.message.reply_text(
-        "Seleccione qué desea revisar:",
+        "Seleccione que desea revisar:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+# ============================================================
+# COMANDO /clientes - AGENDA DE CLIENTES RECURRENTES
+# ============================================================
+
+def clientes_cmd(update, context):
+    """Comando /clientes - Solo para aliados aprobados."""
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+
+    if not db_user:
+        update.message.reply_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        update.message.reply_text(
+            "Este comando es solo para aliados registrados.\n"
+            "Si tienes un negocio, registrate con /soy_aliado."
+        )
+        return ConversationHandler.END
+
+    if ally["status"] != "APPROVED":
+        update.message.reply_text(
+            "Tu registro como aliado aun no ha sido aprobado.\n"
+            "Cuando tu estado sea APPROVED podras usar esta funcion."
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    context.user_data["ally_id"] = ally["id"]
+
+    return clientes_mostrar_menu(update, context)
+
+
+def clientes_mostrar_menu(update, context, edit_message=False):
+    """Muestra el menu principal de clientes."""
+    keyboard = [
+        [InlineKeyboardButton("Nuevo cliente", callback_data="cust_nuevo")],
+        [InlineKeyboardButton("Buscar cliente", callback_data="cust_buscar")],
+        [InlineKeyboardButton("Mis clientes", callback_data="cust_lista")],
+        [InlineKeyboardButton("Clientes archivados", callback_data="cust_archivados")],
+        [InlineKeyboardButton("Cerrar", callback_data="cust_cerrar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "AGENDA DE CLIENTES\n\nSelecciona una opcion:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(text, reply_markup=reply_markup)
+
+    return CLIENTES_MENU
+
+
+def clientes_menu_callback(update, context):
+    """Maneja los callbacks del menu de clientes."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ally_id")
+
+    if not ally_id:
+        query.edit_message_text("Sesion expirada. Usa /clientes de nuevo.")
+        return ConversationHandler.END
+
+    if data == "cust_nuevo":
+        query.edit_message_text("NUEVO CLIENTE\n\nEscribe el nombre del cliente:")
+        return CLIENTES_NUEVO_NOMBRE
+
+    elif data == "cust_buscar":
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        return CLIENTES_BUSCAR
+
+    elif data == "cust_lista":
+        customers = list_ally_customers(ally_id, limit=10, include_inactive=False)
+        if not customers:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="cust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes guardados.\n\n"
+                "Usa 'Nuevo cliente' para agregar uno.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return CLIENTES_MENU
+
+        keyboard = []
+        for c in customers:
+            btn_text = f"{c['name']} - {c['phone']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_ver_{c['id']}")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="cust_volver_menu")])
+
+        query.edit_message_text(
+            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_MENU
+
+    elif data == "cust_archivados":
+        customers = list_ally_customers(ally_id, limit=20, include_inactive=True)
+        archived = [c for c in customers if c["status"] == "INACTIVE"]
+
+        if not archived:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="cust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes archivados.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return CLIENTES_MENU
+
+        keyboard = []
+        for c in archived:
+            btn_text = f"{c['name']} - {c['phone']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_restaurar_{c['id']}")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="cust_volver_menu")])
+
+        query.edit_message_text(
+            "CLIENTES ARCHIVADOS\n\nSelecciona uno para restaurar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_MENU
+
+    elif data == "cust_volver_menu":
+        return clientes_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "cust_cerrar":
+        query.edit_message_text("Agenda de clientes cerrada.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    elif data.startswith("cust_ver_"):
+        customer_id = int(data.replace("cust_ver_", ""))
+        return clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("cust_restaurar_"):
+        customer_id = int(data.replace("cust_restaurar_", ""))
+        if restore_ally_customer(customer_id, ally_id):
+            query.edit_message_text("Cliente restaurado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo restaurar el cliente.")
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    return CLIENTES_MENU
+
+
+def clientes_ver_cliente(query, context, customer_id):
+    """Muestra detalles de un cliente y sus opciones."""
+    ally_id = context.user_data.get("ally_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return CLIENTES_MENU
+
+    context.user_data["current_customer_id"] = customer_id
+
+    addresses = list_customer_addresses(customer_id)
+    addr_text = ""
+    if addresses:
+        for i, addr in enumerate(addresses, 1):
+            label = addr["label"] or "Sin etiqueta"
+            addr_text += f"{i}. {label}: {addr['address_text']}\n"
+    else:
+        addr_text = "Sin direcciones guardadas\n"
+
+    notas = customer["notes"] or "Sin notas"
+
+    keyboard = [
+        [InlineKeyboardButton("Direcciones", callback_data="cust_dirs")],
+        [InlineKeyboardButton("Editar", callback_data="cust_editar")],
+        [InlineKeyboardButton("Archivar", callback_data="cust_archivar")],
+        [InlineKeyboardButton("Volver", callback_data="cust_volver_menu")],
+    ]
+
+    query.edit_message_text(
+        f"CLIENTE: {customer['name']}\n"
+        f"Telefono: {customer['phone']}\n"
+        f"Notas: {notas}\n\n"
+        f"DIRECCIONES:\n{addr_text}\n"
+        "Selecciona una accion:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CLIENTES_VER_CLIENTE
+
+
+def clientes_ver_cliente_callback(update, context):
+    """Maneja callbacks de la vista de cliente."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ally_id")
+    customer_id = context.user_data.get("current_customer_id")
+
+    if data == "cust_dirs":
+        addresses = list_customer_addresses(customer_id)
+        keyboard = []
+
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            btn_text = f"{label}: {addr['address_text'][:25]}..."
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_dir_ver_{addr['id']}")])
+
+        keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="cust_dir_nueva")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data=f"cust_ver_{customer_id}")])
+
+        query.edit_message_text(
+            "DIRECCIONES DEL CLIENTE\n\nSelecciona una para editar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_VER_CLIENTE
+
+    elif data == "cust_editar":
+        keyboard = [
+            [InlineKeyboardButton("Editar nombre", callback_data="cust_edit_nombre")],
+            [InlineKeyboardButton("Editar telefono", callback_data="cust_edit_telefono")],
+            [InlineKeyboardButton("Editar notas", callback_data="cust_edit_notas")],
+            [InlineKeyboardButton("Volver", callback_data=f"cust_ver_{customer_id}")],
+        ]
+        query.edit_message_text(
+            "Que deseas editar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_VER_CLIENTE
+
+    elif data == "cust_edit_nombre":
+        query.edit_message_text("Escribe el nuevo nombre del cliente:")
+        return CLIENTES_EDITAR_NOMBRE
+
+    elif data == "cust_edit_telefono":
+        query.edit_message_text("Escribe el nuevo telefono del cliente:")
+        return CLIENTES_EDITAR_TELEFONO
+
+    elif data == "cust_edit_notas":
+        query.edit_message_text("Escribe las nuevas notas del cliente (o 'ninguna' para borrar):")
+        return CLIENTES_EDITAR_NOTAS
+
+    elif data == "cust_archivar":
+        if archive_ally_customer(customer_id, ally_id):
+            query.edit_message_text("Cliente archivado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo archivar el cliente.")
+        context.user_data.pop("current_customer_id", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    elif data == "cust_dir_nueva":
+        query.edit_message_text("NUEVA DIRECCION\n\nEscribe la etiqueta (Casa, Trabajo, Otro):")
+        return CLIENTES_DIR_NUEVA_LABEL
+
+    elif data.startswith("cust_dir_ver_"):
+        address_id = int(data.replace("cust_dir_ver_", ""))
+        address = get_customer_address_by_id(address_id, customer_id)
+        if not address:
+            query.edit_message_text("Direccion no encontrada.")
+            return CLIENTES_VER_CLIENTE
+
+        context.user_data["current_address_id"] = address_id
+        label = address["label"] or "Sin etiqueta"
+
+        keyboard = [
+            [InlineKeyboardButton("Editar", callback_data="cust_dir_editar")],
+            [InlineKeyboardButton("Archivar", callback_data="cust_dir_archivar")],
+            [InlineKeyboardButton("Volver", callback_data="cust_dirs")],
+        ]
+
+        query.edit_message_text(
+            f"DIRECCION: {label}\n\n"
+            f"Direccion: {address['address_text']}\n"
+            f"Ciudad: {address['city'] or 'N/A'}\n"
+            f"Barrio: {address['barrio'] or 'N/A'}\n\n"
+            "Selecciona una accion:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_VER_CLIENTE
+
+    elif data == "cust_dir_editar":
+        query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
+        return CLIENTES_DIR_EDITAR_LABEL
+
+    elif data == "cust_dir_archivar":
+        address_id = context.user_data.get("current_address_id")
+        if archive_customer_address(address_id, customer_id):
+            query.edit_message_text("Direccion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la direccion.")
+        context.user_data.pop("current_address_id", None)
+        return clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("cust_ver_"):
+        cid = int(data.replace("cust_ver_", ""))
+        return clientes_ver_cliente(query, context, cid)
+
+    elif data == "cust_volver_menu":
+        context.user_data.pop("current_customer_id", None)
+        return clientes_mostrar_menu(update, context, edit_message=True)
+
+    return CLIENTES_VER_CLIENTE
+
+
+def clientes_nuevo_nombre(update, context):
+    """Recibe nombre del nuevo cliente."""
+    context.user_data["new_customer_name"] = update.message.text.strip()
+    update.message.reply_text("Escribe el telefono del cliente:")
+    return CLIENTES_NUEVO_TELEFONO
+
+
+def clientes_nuevo_telefono(update, context):
+    """Recibe telefono del nuevo cliente."""
+    context.user_data["new_customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
+    return CLIENTES_NUEVO_NOTAS
+
+
+def clientes_nuevo_notas(update, context):
+    """Recibe notas del nuevo cliente."""
+    notas = update.message.text.strip()
+    if notas.lower() == "ninguna":
+        notas = None
+    context.user_data["new_customer_notes"] = notas
+    update.message.reply_text("Escribe la etiqueta de la direccion (Casa, Trabajo, Otro):")
+    return CLIENTES_NUEVO_DIRECCION_LABEL
+
+
+def clientes_nuevo_direccion_label(update, context):
+    """Recibe etiqueta de direccion del nuevo cliente."""
+    context.user_data["new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return CLIENTES_NUEVO_DIRECCION_TEXT
+
+
+def clientes_nuevo_direccion_text(update, context):
+    """Recibe direccion y guarda el nuevo cliente."""
+    address_text = update.message.text.strip()
+    ally_id = context.user_data.get("ally_id")
+    name = context.user_data.get("new_customer_name")
+    phone = context.user_data.get("new_customer_phone")
+    notes = context.user_data.get("new_customer_notes")
+    label = context.user_data.get("new_address_label")
+
+    try:
+        customer_id = create_ally_customer(ally_id, name, phone, notes)
+        create_customer_address(customer_id, label, address_text)
+
+        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+        update.message.reply_text(
+            f"Cliente '{name}' creado exitosamente.\n\n"
+            f"Telefono: {phone}\n"
+            f"Direccion ({label}): {address_text}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        update.message.reply_text(f"Error al crear cliente: {str(e)}")
+
+    # Limpiar datos temporales
+    for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label"]:
+        context.user_data.pop(key, None)
+
+    return CLIENTES_MENU
+
+
+def clientes_buscar(update, context):
+    """Busca clientes por nombre o telefono."""
+    query_text = update.message.text.strip()
+    ally_id = context.user_data.get("ally_id")
+
+    results = search_ally_customers(ally_id, query_text, limit=10)
+    if not results:
+        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+        update.message.reply_text(
+            f"No se encontraron clientes con '{query_text}'.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_MENU
+
+    keyboard = []
+    for c in results:
+        btn_text = f"{c['name']} - {c['phone']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_ver_{c['id']}")])
+    keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")])
+
+    update.message.reply_text(
+        f"Resultados para '{query_text}':",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CLIENTES_MENU
+
+
+def clientes_editar_nombre(update, context):
+    """Actualiza el nombre del cliente."""
+    nuevo_nombre = update.message.text.strip()
+    ally_id = context.user_data.get("ally_id")
+    customer_id = context.user_data.get("current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+
+    if customer:
+        update_ally_customer(customer_id, ally_id, nuevo_nombre, customer["phone"], customer["notes"])
+        update.message.reply_text(f"Nombre actualizado a: {nuevo_nombre}")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_editar_telefono(update, context):
+    """Actualiza el telefono del cliente."""
+    nuevo_telefono = update.message.text.strip()
+    ally_id = context.user_data.get("ally_id")
+    customer_id = context.user_data.get("current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+
+    if customer:
+        update_ally_customer(customer_id, ally_id, customer["name"], nuevo_telefono, customer["notes"])
+        update.message.reply_text(f"Telefono actualizado a: {nuevo_telefono}")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_editar_notas(update, context):
+    """Actualiza las notas del cliente."""
+    nuevas_notas = update.message.text.strip()
+    if nuevas_notas.lower() == "ninguna":
+        nuevas_notas = None
+    ally_id = context.user_data.get("ally_id")
+    customer_id = context.user_data.get("current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+
+    if customer:
+        update_ally_customer(customer_id, ally_id, customer["name"], customer["phone"], nuevas_notas)
+        update.message.reply_text("Notas actualizadas.")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_nueva_label(update, context):
+    """Recibe etiqueta de nueva direccion."""
+    context.user_data["new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return CLIENTES_DIR_NUEVA_TEXT
+
+
+def clientes_dir_nueva_text(update, context):
+    """Crea nueva direccion para cliente existente."""
+    address_text = update.message.text.strip()
+    customer_id = context.user_data.get("current_customer_id")
+    label = context.user_data.get("new_address_label")
+
+    try:
+        create_customer_address(customer_id, label, address_text)
+        update.message.reply_text(f"Direccion agregada: {label} - {address_text}")
+    except Exception as e:
+        update.message.reply_text(f"Error: {str(e)}")
+
+    context.user_data.pop("new_address_label", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_editar_label(update, context):
+    """Recibe nueva etiqueta para editar direccion."""
+    context.user_data["edit_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la nueva direccion completa:")
+    return CLIENTES_DIR_EDITAR_TEXT
+
+
+def clientes_dir_editar_text(update, context):
+    """Actualiza direccion existente."""
+    address_text = update.message.text.strip()
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+    label = context.user_data.get("edit_address_label")
+
+    try:
+        update_customer_address(address_id, customer_id, label, address_text)
+        update.message.reply_text("Direccion actualizada.")
+    except Exception as e:
+        update.message.reply_text(f"Error: {str(e)}")
+
+    context.user_data.pop("edit_address_label", None)
+    context.user_data.pop("current_address_id", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+# ConversationHandler para /clientes
+clientes_conv = ConversationHandler(
+    entry_points=[CommandHandler("clientes", clientes_cmd)],
+    states={
+        CLIENTES_MENU: [
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_")
+        ],
+        CLIENTES_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+        ],
+        CLIENTES_NUEVO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+        ],
+        CLIENTES_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+        ],
+        CLIENTES_NUEVO_DIRECCION_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+        ],
+        CLIENTES_NUEVO_DIRECCION_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+        ],
+        CLIENTES_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+        ],
+        CLIENTES_VER_CLIENTE: [
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_")
+        ],
+        CLIENTES_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+        ],
+        CLIENTES_EDITAR_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+        ],
+        CLIENTES_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+        ],
+        CLIENTES_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+        ],
+        CLIENTES_DIR_NUEVA_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+        ],
+        CLIENTES_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+        ],
+        CLIENTES_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    allow_reentry=True,
+)
 
 
 ally_conv = ConversationHandler(
@@ -2040,10 +2881,19 @@ courier_conv = ConversationHandler(
     allow_reentry=True,
 )
 
-# Conversación para /nuevo_pedido
+# Conversacion para /nuevo_pedido (con selector de cliente recurrente)
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
     states={
+        PEDIDO_SELECTOR_CLIENTE: [
+            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_")
+        ],
+        PEDIDO_BUSCAR_CLIENTE: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_buscar_cliente)
+        ],
+        PEDIDO_SELECCIONAR_DIRECCION: [
+            CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^pedido_")
+        ],
         PEDIDO_TIPO_SERVICIO: [
             MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
         ],
@@ -2058,6 +2908,9 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_CONFIRMACION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
+        ],
+        PEDIDO_GUARDAR_CLIENTE: [
+            CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
         ],
     },
     fallbacks=[CommandHandler("cancel", cancel_conversacion)],
@@ -3337,6 +4190,7 @@ def main():
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones

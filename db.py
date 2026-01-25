@@ -632,6 +632,51 @@ def init_db():
         );
     """)
 
+    # ============================================================
+    # G) TABLAS PARA AGENDA DE CLIENTES RECURRENTES (ally_customers)
+    # ============================================================
+
+    # Tabla: ally_customers (clientes recurrentes de cada aliado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+
+    # Índice para búsqueda rápida por aliado y teléfono
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customers_ally_id ON ally_customers(ally_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customers_ally_phone ON ally_customers(ally_id, phone)")
+
+    # Tabla: ally_customer_addresses (direcciones de clientes recurrentes)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_customer_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            label TEXT,
+            address_text TEXT NOT NULL,
+            city TEXT,
+            barrio TEXT,
+            notes TEXT,
+            lat REAL,
+            lng REAL,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (customer_id) REFERENCES ally_customers(id)
+        );
+    """)
+
+    # Índice para búsqueda por cliente
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customer_addresses_customer_id ON ally_customer_addresses(customer_id)")
+
     # Migración: agregar columna is_active si no existe
     cur.execute("PRAGMA table_info(terms_versions)")
     columns = [col[1] for col in cur.fetchall()]
@@ -2176,6 +2221,312 @@ def get_admin_link_for_ally(ally_id: int):
           AND a.is_deleted = 0
         ORDER BY aa.created_at DESC
         LIMIT 1;
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+# ============================================================
+# CLIENTES RECURRENTES DE ALIADOS (ally_customers)
+# ============================================================
+
+def create_ally_customer(ally_id: int, name: str, phone: str, notes: str = None) -> int:
+    """
+    Crea un cliente recurrente para un aliado.
+    Retorna el customer_id creado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO ally_customers (ally_id, name, phone, notes, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'ACTIVE', datetime('now'), datetime('now'))
+    """, (ally_id, name.strip(), normalize_phone(phone), notes))
+    customer_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return customer_id
+
+
+def update_ally_customer(customer_id: int, ally_id: int, name: str, phone: str, notes: str = None) -> bool:
+    """
+    Actualiza un cliente recurrente (validando ownership por ally_id).
+    Retorna True si se actualizó, False si no existe o no pertenece al aliado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customers
+        SET name = ?, phone = ?, notes = ?, updated_at = datetime('now')
+        WHERE id = ? AND ally_id = ? AND status = 'ACTIVE'
+    """, (name.strip(), normalize_phone(phone), notes, customer_id, ally_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_ally_customer(customer_id: int, ally_id: int) -> bool:
+    """
+    Archiva (soft delete) un cliente recurrente.
+    Retorna True si se archivó, False si no existe o no pertenece al aliado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customers
+        SET status = 'INACTIVE', updated_at = datetime('now')
+        WHERE id = ? AND ally_id = ? AND status = 'ACTIVE'
+    """, (customer_id, ally_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_ally_customer(customer_id: int, ally_id: int) -> bool:
+    """
+    Restaura un cliente archivado.
+    Retorna True si se restauró, False si no existe o no pertenece al aliado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customers
+        SET status = 'ACTIVE', updated_at = datetime('now')
+        WHERE id = ? AND ally_id = ? AND status = 'INACTIVE'
+    """, (customer_id, ally_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_ally_customer_by_id(customer_id: int, ally_id: int = None):
+    """
+    Obtiene un cliente por ID. Si se pasa ally_id, valida ownership.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if ally_id:
+        cur.execute("""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE id = ? AND ally_id = ?
+        """, (customer_id, ally_id))
+    else:
+        cur.execute("""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE id = ?
+        """, (customer_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_ally_customers(ally_id: int, limit: int = 10, include_inactive: bool = False):
+    """
+    Lista los clientes recurrentes de un aliado (últimos primero).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute("""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE ally_id = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (ally_id, limit))
+    else:
+        cur.execute("""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE ally_id = ? AND status = 'ACTIVE'
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (ally_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def search_ally_customers(ally_id: int, query: str, limit: int = 10):
+    """
+    Busca clientes por nombre o teléfono (solo activos).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    search_term = f"%{query.strip()}%"
+    cur.execute("""
+        SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+        FROM ally_customers
+        WHERE ally_id = ? AND status = 'ACTIVE'
+          AND (name LIKE ? OR phone LIKE ?)
+        ORDER BY updated_at DESC
+        LIMIT ?
+    """, (ally_id, search_term, search_term, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ============================================================
+# DIRECCIONES DE CLIENTES RECURRENTES (ally_customer_addresses)
+# ============================================================
+
+def create_customer_address(
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None
+) -> int:
+    """
+    Crea una dirección para un cliente recurrente.
+    Retorna el address_id creado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO ally_customer_addresses
+        (customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', datetime('now'), datetime('now'))
+    """, (customer_id, label, address_text.strip(), city, barrio, notes, lat, lng))
+    address_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return address_id
+
+
+def update_customer_address(
+    address_id: int,
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None
+) -> bool:
+    """
+    Actualiza una dirección (validando ownership por customer_id).
+    Retorna True si se actualizó.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customer_addresses
+        SET label = ?, address_text = ?, city = ?, barrio = ?, notes = ?, lat = ?, lng = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND customer_id = ? AND status = 'ACTIVE'
+    """, (label, address_text.strip(), city, barrio, notes, lat, lng, address_id, customer_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_customer_address(address_id: int, customer_id: int) -> bool:
+    """
+    Archiva (soft delete) una dirección de cliente.
+    Retorna True si se archivó.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customer_addresses
+        SET status = 'INACTIVE', updated_at = datetime('now')
+        WHERE id = ? AND customer_id = ? AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_customer_address(address_id: int, customer_id: int) -> bool:
+    """
+    Restaura una dirección archivada.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_customer_addresses
+        SET status = 'ACTIVE', updated_at = datetime('now')
+        WHERE id = ? AND customer_id = ? AND status = 'INACTIVE'
+    """, (address_id, customer_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_customer_address_by_id(address_id: int, customer_id: int = None):
+    """
+    Obtiene una dirección por ID. Si se pasa customer_id, valida ownership.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if customer_id:
+        cur.execute("""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM ally_customer_addresses
+            WHERE id = ? AND customer_id = ?
+        """, (address_id, customer_id))
+    else:
+        cur.execute("""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM ally_customer_addresses
+            WHERE id = ?
+        """, (address_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_customer_addresses(customer_id: int, include_inactive: bool = False):
+    """
+    Lista las direcciones de un cliente recurrente.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute("""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM ally_customer_addresses
+            WHERE customer_id = ?
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    else:
+        cur.execute("""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM ally_customer_addresses
+            WHERE customer_id = ? AND status = 'ACTIVE'
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_last_order_by_ally(ally_id: int):
+    """
+    Obtiene el último pedido creado por un aliado (para repetir pedido).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, customer_name, customer_phone, customer_address, customer_city, customer_barrio
+        FROM orders
+        WHERE ally_id = ?
+        ORDER BY id DESC
+        LIMIT 1
     """, (ally_id,))
     row = cur.fetchone()
     conn.close()
