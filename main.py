@@ -1255,6 +1255,17 @@ def pedido_seleccionar_direccion_callback(update, context):
     return PEDIDO_SELECCIONAR_DIRECCION
 
 
+def get_tipo_servicio_keyboard():
+    """Retorna InlineKeyboardMarkup con opciones de tipo de servicio."""
+    keyboard = [
+        [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
+        [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
+        [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+        [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def mostrar_selector_tipo_servicio(query_or_update, context, edit=False, texto_intro=None):
     """Muestra selector de tipo de servicio con botones.
 
@@ -1264,13 +1275,7 @@ def mostrar_selector_tipo_servicio(query_or_update, context, edit=False, texto_i
         edit: Si True, edita el mensaje existente
         texto_intro: Texto introductorio opcional (ej: info del cliente)
     """
-    keyboard = [
-        [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
-        [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
-        [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
-        [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = get_tipo_servicio_keyboard()
 
     if texto_intro:
         texto = f"{texto_intro}\n\nSelecciona el tipo de servicio:"
