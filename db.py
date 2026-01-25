@@ -677,6 +677,14 @@ def init_db():
     # Índice para búsqueda por cliente
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customer_addresses_customer_id ON ally_customer_addresses(customer_id)")
 
+    # Migración: agregar campos para base requerida en orders
+    cur.execute("PRAGMA table_info(orders)")
+    order_columns = [col[1] for col in cur.fetchall()]
+    if 'requires_cash' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN requires_cash INTEGER DEFAULT 0")
+    if 'cash_required_amount' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN cash_required_amount INTEGER DEFAULT 0")
+
     # Migración: agregar columna is_active si no existe
     cur.execute("PRAGMA table_info(terms_versions)")
     columns = [col[1] for col in cur.fetchall()]
@@ -1611,6 +1619,8 @@ def create_order(
     additional_incentive: int,
     total_fee: int,
     instructions: str,
+    requires_cash: bool = False,
+    cash_required_amount: int = 0,
 ):
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
@@ -1635,8 +1645,10 @@ def create_order(
             night_extra,
             additional_incentive,
             total_fee,
-            instructions
-        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            instructions,
+            requires_cash,
+            cash_required_amount
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -1655,6 +1667,8 @@ def create_order(
         additional_incentive,
         total_fee,
         instructions,
+        1 if requires_cash else 0,
+        cash_required_amount,
     ))
     conn.commit()
     order_id = cur.lastrowid

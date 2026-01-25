@@ -186,3 +186,24 @@ def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:
 
     return precio_2_3km + (km_extra * precio_km_extra)
 
+
+def quote_order(distance_km: float) -> dict:
+    """
+    Calcula cotizacion de un pedido basado en la distancia.
+    Reutiliza la misma formula de /cotizar.
+
+    Args:
+        distance_km: Distancia en kilometros
+
+    Returns:
+        dict con: distance_km, price, config (tarifas usadas)
+    """
+    config = get_pricing_config()
+    price = calcular_precio_distancia(distance_km, config)
+
+    return {
+        "distance_km": distance_km,
+        "price": price,
+        "config": config
+    }
+

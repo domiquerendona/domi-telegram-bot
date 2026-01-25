@@ -15,7 +15,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
+from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config, quote_order
 from db import (
     init_db,
     force_platform_admin,
@@ -206,16 +206,19 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
 # Estados para crear un pedido (modificado para cliente recurrente)
 # =========================
 (
-    PEDIDO_SELECTOR_CLIENTE,      # Nuevo: selector cliente recurrente/nuevo
-    PEDIDO_BUSCAR_CLIENTE,        # Nuevo: buscar cliente por nombre/telefono
-    PEDIDO_SELECCIONAR_DIRECCION, # Nuevo: seleccionar dirección del cliente
+    PEDIDO_SELECTOR_CLIENTE,      # Selector cliente recurrente/nuevo
+    PEDIDO_BUSCAR_CLIENTE,        # Buscar cliente por nombre/telefono
+    PEDIDO_SELECCIONAR_DIRECCION, # Seleccionar direccion del cliente
     PEDIDO_TIPO_SERVICIO,
     PEDIDO_NOMBRE,
     PEDIDO_TELEFONO,
     PEDIDO_DIRECCION,
+    PEDIDO_REQUIERE_BASE,         # Preguntar si requiere base
+    PEDIDO_VALOR_BASE,            # Capturar valor de base
+    PEDIDO_DISTANCIA,             # Capturar distancia estimada
     PEDIDO_CONFIRMACION,
-    PEDIDO_GUARDAR_CLIENTE,       # Nuevo: preguntar si guardar cliente nuevo
-) = range(14, 23)
+    PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
+) = range(14, 26)
 
 
 # =========================
@@ -1318,8 +1321,8 @@ def pedido_tipo_servicio_callback(update, context):
     has_address = context.user_data.get("customer_address")
 
     if has_name and has_phone and has_address:
-        # Cliente recurrente o repetir: ir directo a confirmacion
-        return mostrar_resumen_confirmacion(query, context, edit=True)
+        # Ya tenemos datos del cliente, preguntar por base requerida
+        return mostrar_pregunta_base(query, context, edit=True)
     else:
         # Cliente nuevo: pedir nombre
         query.edit_message_text(
@@ -1327,6 +1330,146 @@ def pedido_tipo_servicio_callback(update, context):
             "Ahora escribe el nombre del cliente:"
         )
         return PEDIDO_NOMBRE
+
+
+def mostrar_pregunta_base(query_or_update, context, edit=False):
+    """Muestra pregunta de si requiere base."""
+    keyboard = [
+        [InlineKeyboardButton("Si, requiere base", callback_data="pedido_base_si")],
+        [InlineKeyboardButton("No requiere base", callback_data="pedido_base_no")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    texto = (
+        "BASE REQUERIDA\n\n"
+        "El repartidor debe pagar/adelantar dinero al recoger el pedido?"
+    )
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(texto, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+
+    return PEDIDO_REQUIERE_BASE
+
+
+def pedido_requiere_base_callback(update, context):
+    """Maneja la respuesta de si requiere base."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "pedido_base_no":
+        context.user_data["requires_cash"] = False
+        context.user_data["cash_required_amount"] = 0
+        # Ir a pedir distancia
+        return mostrar_pedir_distancia(query, context, edit=True)
+
+    elif data == "pedido_base_si":
+        context.user_data["requires_cash"] = True
+        # Mostrar opciones de monto
+        keyboard = [
+            [
+                InlineKeyboardButton("$5.000", callback_data="pedido_base_5000"),
+                InlineKeyboardButton("$10.000", callback_data="pedido_base_10000"),
+            ],
+            [
+                InlineKeyboardButton("$20.000", callback_data="pedido_base_20000"),
+                InlineKeyboardButton("$50.000", callback_data="pedido_base_50000"),
+            ],
+            [InlineKeyboardButton("Otro valor", callback_data="pedido_base_otro")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(
+            "VALOR DE BASE\n\n"
+            "Cuanto debe adelantar el repartidor?",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_VALOR_BASE
+
+    return PEDIDO_REQUIERE_BASE
+
+
+def pedido_valor_base_callback(update, context):
+    """Maneja la seleccion del valor de base."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    valores_map = {
+        "pedido_base_5000": 5000,
+        "pedido_base_10000": 10000,
+        "pedido_base_20000": 20000,
+        "pedido_base_50000": 50000,
+    }
+
+    if data in valores_map:
+        context.user_data["cash_required_amount"] = valores_map[data]
+        return mostrar_pedir_distancia(query, context, edit=True)
+
+    elif data == "pedido_base_otro":
+        query.edit_message_text(
+            "Escribe el valor de la base (solo numeros):"
+        )
+        return PEDIDO_VALOR_BASE
+
+    return PEDIDO_VALOR_BASE
+
+
+def pedido_valor_base_texto(update, context):
+    """Maneja el valor de base ingresado por texto."""
+    texto = update.message.text.strip().replace(".", "").replace(",", "")
+    try:
+        valor = int(texto)
+        if valor <= 0:
+            raise ValueError("Valor debe ser mayor a 0")
+        context.user_data["cash_required_amount"] = valor
+        return mostrar_pedir_distancia(update, context, edit=False)
+    except ValueError:
+        update.message.reply_text(
+            "Valor invalido. Escribe solo numeros (ej: 15000):"
+        )
+        return PEDIDO_VALOR_BASE
+
+
+def mostrar_pedir_distancia(query_or_update, context, edit=False):
+    """Pide la distancia estimada."""
+    texto = (
+        "DISTANCIA\n\n"
+        "Escribe la distancia estimada en km (ej: 3.5):"
+    )
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(texto)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(texto)
+    else:
+        query_or_update.edit_message_text(texto)
+
+    return PEDIDO_DISTANCIA
+
+
+def pedido_distancia(update, context):
+    """Captura la distancia y calcula cotizacion."""
+    texto = (update.message.text or "").strip().replace(",", ".")
+    try:
+        distancia = float(texto)
+        if distancia <= 0:
+            raise ValueError("Distancia debe ser mayor a 0")
+    except ValueError:
+        update.message.reply_text(
+            "Valor invalido. Escribe la distancia en km (ej: 3.5):"
+        )
+        return PEDIDO_DISTANCIA
+
+    # Calcular cotizacion usando la misma formula de /cotizar
+    cotizacion = quote_order(distancia)
+    context.user_data["quote_distance_km"] = cotizacion["distance_km"]
+    context.user_data["quote_price"] = cotizacion["price"]
+
+    # Mostrar resumen con cotizacion
+    return mostrar_resumen_confirmacion_msg(update, context)
 
 
 def pedido_tipo_servicio(update, context):
@@ -1355,31 +1498,46 @@ def pedido_direccion_cliente(update, context):
         # Usar funcion helper para mostrar selector
         return mostrar_selector_tipo_servicio(update, context, edit=False)
 
-    # Ya tenemos todo, mostrar resumen con botones
-    return mostrar_resumen_confirmacion_msg(update, context)
+    # Ya tenemos tipo, preguntar por base
+    return mostrar_pregunta_base(update, context, edit=False)
 
 
-def mostrar_resumen_confirmacion(query, context, edit=True):
-    """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
+def construir_resumen_pedido(context):
+    """Construye el texto del resumen del pedido."""
     tipo_servicio = context.user_data.get("service_type", "-")
     nombre = context.user_data.get("customer_name", "-")
     telefono = context.user_data.get("customer_phone", "-")
     direccion = context.user_data.get("customer_address", "-")
+    distancia = context.user_data.get("quote_distance_km", 0)
+    precio = context.user_data.get("quote_price", 0)
+    requires_cash = context.user_data.get("requires_cash", False)
+    cash_amount = context.user_data.get("cash_required_amount", 0)
 
+    resumen = (
+        "RESUMEN DEL PEDIDO\n\n"
+        f"Tipo: {tipo_servicio}\n"
+        f"Cliente: {nombre}\n"
+        f"Telefono: {telefono}\n"
+        f"Entrega: {direccion}\n"
+        f"Distancia: {distancia:.1f} km\n"
+        f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
+    )
+
+    if requires_cash and cash_amount > 0:
+        resumen += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
+
+    resumen += "\nConfirmas este pedido?"
+    return resumen
+
+
+def mostrar_resumen_confirmacion(query, context, edit=True):
+    """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
     keyboard = [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    resumen = (
-        "RESUMEN DEL PEDIDO\n\n"
-        f"Tipo de servicio: {tipo_servicio}\n"
-        f"Cliente: {nombre}\n"
-        f"Telefono: {telefono}\n"
-        f"Direccion: {direccion}\n\n"
-        "Confirmas este pedido?"
-    )
+    resumen = construir_resumen_pedido(context)
 
     if edit:
         query.edit_message_text(resumen, reply_markup=reply_markup)
@@ -1391,25 +1549,12 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
 
 def mostrar_resumen_confirmacion_msg(update, context):
     """Muestra resumen del pedido con botones de confirmacion (para Message)."""
-    tipo_servicio = context.user_data.get("service_type", "-")
-    nombre = context.user_data.get("customer_name", "-")
-    telefono = context.user_data.get("customer_phone", "-")
-    direccion = context.user_data.get("customer_address", "-")
-
     keyboard = [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    resumen = (
-        "RESUMEN DEL PEDIDO\n\n"
-        f"Tipo de servicio: {tipo_servicio}\n"
-        f"Cliente: {nombre}\n"
-        f"Telefono: {telefono}\n"
-        f"Direccion: {direccion}\n\n"
-        "Confirmas este pedido?"
-    )
+    resumen = construir_resumen_pedido(context)
 
     update.message.reply_text(resumen, reply_markup=reply_markup)
     return PEDIDO_CONFIRMACION
@@ -1446,6 +1591,7 @@ def pedido_confirmacion_callback(update, context):
         # Obtener ubicacion por defecto del ally (si existe)
         default_location = get_default_ally_location(ally_id)
         pickup_location_id = default_location["id"] if default_location else None
+        pickup_text = default_location["address"] if default_location else "No definida"
 
         # Obtener datos del pedido de context.user_data
         customer_name = context.user_data.get("customer_name", "")
@@ -1453,6 +1599,13 @@ def pedido_confirmacion_callback(update, context):
         customer_address = context.user_data.get("customer_address", "")
         customer_city = context.user_data.get("customer_city", "")
         customer_barrio = context.user_data.get("customer_barrio", "")
+        service_type = context.user_data.get("service_type", "")
+
+        # Obtener datos de cotizacion
+        distance_km = context.user_data.get("quote_distance_km", 0.0)
+        quote_price = context.user_data.get("quote_price", 0)
+        requires_cash = context.user_data.get("requires_cash", False)
+        cash_required_amount = context.user_data.get("cash_required_amount", 0)
 
         # Crear pedido en BD
         try:
@@ -1467,15 +1620,23 @@ def pedido_confirmacion_callback(update, context):
                 pay_at_store_required=False,
                 pay_at_store_amount=0,
                 base_fee=0,
-                distance_km=0.0,
+                distance_km=distance_km,
                 rain_extra=0,
                 high_demand_extra=0,
                 night_extra=0,
                 additional_incentive=0,
-                total_fee=0,
-                instructions=""
+                total_fee=quote_price,
+                instructions="",
+                requires_cash=requires_cash,
+                cash_required_amount=cash_required_amount,
             )
             context.user_data["order_id"] = order_id
+
+            # Construir preview de oferta para repartidor
+            preview = construir_preview_oferta(
+                order_id, service_type, pickup_text, customer_address,
+                distance_km, quote_price, requires_cash, cash_required_amount
+            )
 
             # Si es cliente nuevo, preguntar si guardar
             is_new_customer = context.user_data.get("is_new_customer", False)
@@ -1490,11 +1651,20 @@ def pedido_confirmacion_callback(update, context):
                     "Quieres guardar este cliente para futuros pedidos?",
                     reply_markup=reply_markup
                 )
+                # Enviar preview como mensaje separado
+                context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=preview,
+                    reply_markup=get_preview_buttons()
+                )
                 return PEDIDO_GUARDAR_CLIENTE
             else:
-                query.edit_message_text(
-                    f"Pedido #{order_id} creado exitosamente.\n\n"
-                    "Pronto un repartidor sera asignado."
+                query.edit_message_text(f"Pedido #{order_id} creado exitosamente.")
+                # Enviar preview
+                context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=preview,
+                    reply_markup=get_preview_buttons()
                 )
                 context.user_data.clear()
                 return ConversationHandler.END
@@ -1513,6 +1683,49 @@ def pedido_confirmacion_callback(update, context):
         return ConversationHandler.END
 
     return PEDIDO_CONFIRMACION
+
+
+def construir_preview_oferta(order_id, service_type, pickup_text, customer_address,
+                              distance_km, price, requires_cash, cash_amount):
+    """Construye el preview de la oferta que vera el repartidor."""
+    preview = (
+        "PREVIEW: ASI VERA EL REPARTIDOR LA OFERTA\n"
+        "=" * 35 + "\n\n"
+        "OFERTA DISPONIBLE\n\n"
+        f"Servicio: {service_type}\n"
+        f"Recoge en: {pickup_text}\n"
+        f"Entrega en: {customer_address}\n"
+        f"Distancia: {distance_km:.1f} km\n"
+        f"Pago: ${price:,}".replace(",", ".") + "\n"
+    )
+
+    if requires_cash and cash_amount > 0:
+        preview += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
+        preview += (
+            "\nADVERTENCIA:\n"
+            f"Si no tienes al menos ${cash_amount:,}".replace(",", ".") + " de base, "
+            "NO tomes este servicio.\n"
+            "Sin base, no se te entregara la orden."
+        )
+
+    return preview
+
+
+def get_preview_buttons():
+    """Retorna botones simulados del preview."""
+    keyboard = [
+        [
+            InlineKeyboardButton("Aceptar (preview)", callback_data="preview_accept"),
+            InlineKeyboardButton("Rechazar (preview)", callback_data="preview_reject"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def preview_callback(update, context):
+    """Maneja clicks en botones del preview (solo informativo)."""
+    query = update.callback_query
+    query.answer("Vista previa: esto lo vera el repartidor.", show_alert=True)
 
 
 def pedido_guardar_cliente_callback(update, context):
@@ -3006,6 +3219,16 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
+        PEDIDO_REQUIERE_BASE: [
+            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_")
+        ],
+        PEDIDO_VALOR_BASE: [
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_"),
+            MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
+        ],
+        PEDIDO_DISTANCIA: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_distancia)
+        ],
         PEDIDO_CONFIRMACION: [
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
@@ -4291,6 +4514,7 @@ def main():
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
