@@ -1543,7 +1543,7 @@ def get_ally_locations(ally_id: int):
 
 
 def get_default_ally_location(ally_id: int):
-    """Devuelve la dirección principal de un aliado (o None)."""
+    """Devuelve la dirección principal de un aliado como dict (o None)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1555,7 +1555,19 @@ def get_default_ally_location(ally_id: int):
     """, (ally_id,))
     row = cur.fetchone()
     conn.close()
-    return row
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "ally_id": row[1],
+        "label": row[2],
+        "address": row[3],
+        "city": row[4],
+        "barrio": row[5],
+        "phone": row[6],
+        "is_default": row[7],
+        "created_at": row[8],
+    }
 
 
 def set_default_ally_location(location_id: int, ally_id: int):

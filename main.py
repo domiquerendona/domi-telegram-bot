@@ -1454,13 +1454,16 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     """Calcula distancia via API y muestra resumen con confirmacion."""
     ally_id = context.user_data.get("ally_id")
     customer_address = context.user_data.get("customer_address", "")
+    customer_city = context.user_data.get("customer_city", "")
 
     # Validar que el aliado tenga direccion de recogida configurada
     pickup_text = None
+    pickup_city = None
     if ally_id:
         default_location = get_default_ally_location(ally_id)
         if default_location:
             pickup_text = default_location.get("address")
+            pickup_city = default_location.get("city") or ""
 
     if not pickup_text:
         return mostrar_error_cotizacion(
@@ -1470,8 +1473,20 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
             edit=edit
         )
 
+    # Construir direcciones completas con ciudad para mejor precision API
+    origin = pickup_text
+    if pickup_city and pickup_city.lower() not in pickup_text.lower():
+        origin = f"{pickup_text}, {pickup_city}"
+
+    destination = customer_address
+    if customer_city and customer_city.lower() not in customer_address.lower():
+        destination = f"{customer_address}, {customer_city}"
+
+    # Determinar city_hint (usar ciudad del pickup o Pereira por defecto)
+    city_hint = f"{pickup_city}, Colombia" if pickup_city else "Pereira, Colombia"
+
     # Calcular cotizacion via API
-    cotizacion = quote_order_by_addresses(pickup_text, customer_address)
+    cotizacion = quote_order_by_addresses(origin, destination, city_hint)
 
     # Verificar si la API fallo
     if not cotizacion["success"]:
