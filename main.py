@@ -1728,9 +1728,9 @@ def mostrar_selector_pickup(query_or_update, context, edit=False):
         edit: Si True, edita el mensaje existente
     """
     keyboard = [
-        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_base")],
-        [InlineKeyboardButton("Elegir otra", callback_data="pickup_lista")],
-        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")],
+        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_select_base")],
+        [InlineKeyboardButton("Elegir otra", callback_data="pickup_select_lista")],
+        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_select_nueva")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1762,7 +1762,7 @@ def pedido_pickup_callback(update, context):
 
     ally_id = ally["id"]
 
-    if data == "pickup_base":
+    if data == "pickup_select_base":
         # Usar direccion base del aliado
         default_loc = get_default_ally_location(ally_id)
         if not default_loc:
@@ -1783,11 +1783,11 @@ def pedido_pickup_callback(update, context):
         # Continuar al siguiente paso
         return continuar_despues_pickup(query, context, edit=True)
 
-    elif data == "pickup_lista":
+    elif data == "pickup_select_lista":
         # Mostrar lista de direcciones guardadas
         return mostrar_lista_pickups(query, context)
 
-    elif data == "pickup_nueva":
+    elif data == "pickup_select_nueva":
         # Pedir nueva direccion
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
@@ -1840,11 +1840,11 @@ def mostrar_lista_pickups(query, context):
     keyboard = []
     for loc in locations[:8]:
         btn_text = construir_etiqueta_pickup(loc)
-        callback = f"pickup_loc_{loc['id']}"
+        callback = f"pickup_list_loc_{loc['id']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
 
-    keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")])
-    keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_volver")])
+    keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_list_nueva")])
+    keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_list_volver")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query.edit_message_text(
@@ -1861,10 +1861,10 @@ def pedido_pickup_lista_callback(update, context):
     query.answer()
     data = query.data
 
-    if data == "pickup_volver":
+    if data == "pickup_list_volver":
         return mostrar_selector_pickup(query, context, edit=True)
 
-    if data == "pickup_nueva":
+    if data == "pickup_list_nueva":
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
             "Envia la ubicacion (link de Google Maps o WhatsApp) "
@@ -1873,12 +1873,12 @@ def pedido_pickup_lista_callback(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    if data == "pickup_lista_volver":
+    if data == "pickup_list_back":
         return mostrar_lista_pickups(query, context)
 
     # Manejar marcar/desmarcar frecuente
-    if data.startswith("pickup_freq_"):
-        parts = data.replace("pickup_freq_", "").split("_")
+    if data.startswith("pickup_list_freq_"):
+        parts = data.replace("pickup_list_freq_", "").split("_")
         if len(parts) == 2:
             loc_id = int(parts[0])
             new_freq = int(parts[1])
@@ -1890,9 +1890,9 @@ def pedido_pickup_lista_callback(update, context):
             return mostrar_lista_pickups(query, context)
 
     # Usar pickup seleccionado
-    if data.startswith("pickup_usar_"):
+    if data.startswith("pickup_list_usar_"):
         try:
-            loc_id = int(data.replace("pickup_usar_", ""))
+            loc_id = int(data.replace("pickup_list_usar_", ""))
         except ValueError:
             query.edit_message_text("Error: ID invalido.")
             return ConversationHandler.END
@@ -1918,9 +1918,9 @@ def pedido_pickup_lista_callback(update, context):
         return continuar_despues_pickup(query, context, edit=True)
 
     # Seleccionar pickup - mostrar submenú
-    if data.startswith("pickup_loc_"):
+    if data.startswith("pickup_list_loc_"):
         try:
-            loc_id = int(data.replace("pickup_loc_", ""))
+            loc_id = int(data.replace("pickup_list_loc_", ""))
         except ValueError:
             query.edit_message_text("Error: ID invalido.")
             return ConversationHandler.END
@@ -1940,15 +1940,15 @@ def pedido_pickup_lista_callback(update, context):
         is_freq = location.get("is_frequent", 0)
 
         keyboard = [
-            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_usar_{loc_id}")],
+            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_list_usar_{loc_id}")],
         ]
 
         if is_freq:
-            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_freq_{loc_id}_0")])
+            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_list_freq_{loc_id}_0")])
         else:
-            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_freq_{loc_id}_1")])
+            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_list_freq_{loc_id}_1")])
 
-        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_lista_volver")])
+        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_list_back")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         query.edit_message_text(
@@ -3850,10 +3850,10 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
-            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_")
+            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
         ],
         PEDIDO_PICKUP_LISTA: [
-            CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_")
+            CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_list_")
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
