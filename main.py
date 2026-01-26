@@ -74,6 +74,8 @@ from db import (
     update_ally_location,
     update_ally_location_coords,
     delete_ally_location,
+    increment_pickup_usage,
+    set_frequent_pickup,
 
     # Repartidores
     create_courier,
@@ -1800,30 +1802,44 @@ def pedido_pickup_callback(update, context):
         return ConversationHandler.END
 
 
+def construir_etiqueta_pickup(loc):
+    """Construye etiqueta para un pickup con info de uso."""
+    label = loc.get("label") or loc.get("address", "Sin nombre")[:25]
+    tags = []
+
+    if loc.get("is_default"):
+        tags.append("BASE")
+    if loc.get("is_frequent"):
+        tags.append("FRECUENTE")
+    elif loc.get("use_count", 0) > 0:
+        tags.append(f"x{loc['use_count']}")
+
+    if tags:
+        return f"{label} ({', '.join(tags)})"
+    return label
+
+
 def mostrar_lista_pickups(query, context):
-    """Muestra lista de direcciones guardadas del aliado."""
+    """Muestra lista de direcciones guardadas del aliado (max 8)."""
     ally = context.user_data.get("ally")
     if not ally:
         query.edit_message_text("Error: no se encontro informacion del aliado.")
         return ConversationHandler.END
 
     ally_id = ally["id"]
-    locations = get_ally_locations(ally_id)
+    locations = get_ally_locations(ally_id)  # Ya ordenadas por prioridad
 
     if not locations:
         query.edit_message_text(
             "No tienes direcciones guardadas.\n"
             "Agrega una nueva direccion."
         )
-        # Mostrar selector de nuevo
         return mostrar_selector_pickup(query, context, edit=False)
 
-    # Construir botones con las direcciones
+    # Construir botones con etiquetas (max 8)
     keyboard = []
-    for loc in locations:
-        label = loc.get("label") or loc.get("address", "Sin nombre")
-        is_default = " (base)" if loc.get("is_default") else ""
-        btn_text = f"{label}{is_default}"
+    for loc in locations[:8]:
+        btn_text = construir_etiqueta_pickup(loc)
         callback = f"pickup_loc_{loc['id']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
 
@@ -1857,12 +1873,28 @@ def pedido_pickup_lista_callback(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    # Debe ser pickup_loc_ID
-    if data.startswith("pickup_loc_"):
+    if data == "pickup_lista_volver":
+        return mostrar_lista_pickups(query, context)
+
+    # Manejar marcar/desmarcar frecuente
+    if data.startswith("pickup_freq_"):
+        parts = data.replace("pickup_freq_", "").split("_")
+        if len(parts) == 2:
+            loc_id = int(parts[0])
+            new_freq = int(parts[1])
+            ally = context.user_data.get("ally")
+            if ally:
+                set_frequent_pickup(loc_id, ally["id"], new_freq == 1)
+                msg = "Marcada como frecuente" if new_freq == 1 else "Desmarcada como frecuente"
+                query.answer(msg)
+            return mostrar_lista_pickups(query, context)
+
+    # Usar pickup seleccionado
+    if data.startswith("pickup_usar_"):
         try:
-            loc_id = int(data.replace("pickup_loc_", ""))
+            loc_id = int(data.replace("pickup_usar_", ""))
         except ValueError:
-            query.edit_message_text("Error: ID de direccion invalido.")
+            query.edit_message_text("Error: ID invalido.")
             return ConversationHandler.END
 
         ally = context.user_data.get("ally")
@@ -1884,6 +1916,49 @@ def pedido_pickup_lista_callback(update, context):
         context.user_data["pickup_lng"] = location.get("lng")
 
         return continuar_despues_pickup(query, context, edit=True)
+
+    # Seleccionar pickup - mostrar submenú
+    if data.startswith("pickup_loc_"):
+        try:
+            loc_id = int(data.replace("pickup_loc_", ""))
+        except ValueError:
+            query.edit_message_text("Error: ID invalido.")
+            return ConversationHandler.END
+
+        ally = context.user_data.get("ally")
+        if not ally:
+            query.edit_message_text("Error: no se encontro informacion del aliado.")
+            return ConversationHandler.END
+
+        location = get_ally_location_by_id(loc_id, ally["id"])
+        if not location:
+            query.edit_message_text("Error: direccion no encontrada.")
+            return mostrar_lista_pickups(query, context)
+
+        # Mostrar submenú para esta pickup
+        label = construir_etiqueta_pickup(location)
+        is_freq = location.get("is_frequent", 0)
+
+        keyboard = [
+            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_usar_{loc_id}")],
+        ]
+
+        if is_freq:
+            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_freq_{loc_id}_0")])
+        else:
+            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_freq_{loc_id}_1")])
+
+        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_lista_volver")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(
+            f"PICKUP SELECCIONADO\n\n"
+            f"{label}\n"
+            f"Direccion: {location.get('address', '-')}\n"
+            f"Usos: {location.get('use_count', 0)}",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_PICKUP_LISTA
 
     query.edit_message_text("Opcion no valida.")
     return ConversationHandler.END
@@ -2174,6 +2249,10 @@ def pedido_confirmacion_callback(update, context):
                 quote_source=quote_source,
             )
             context.user_data["order_id"] = order_id
+
+            # Incrementar contador de uso del pickup
+            if pickup_location_id:
+                increment_pickup_usage(pickup_location_id, ally_id)
 
             # Construir preview de oferta para repartidor
             preview = construir_preview_oferta(

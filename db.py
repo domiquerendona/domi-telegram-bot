@@ -699,6 +699,16 @@ def init_db():
     if 'lng' not in location_columns:
         cur.execute("ALTER TABLE ally_locations ADD COLUMN lng REAL")
 
+    # Migración: agregar métricas de uso a ally_locations
+    cur.execute("PRAGMA table_info(ally_locations)")
+    location_columns = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in location_columns:
+        cur.execute("ALTER TABLE ally_locations ADD COLUMN use_count INTEGER DEFAULT 0")
+    if 'is_frequent' not in location_columns:
+        cur.execute("ALTER TABLE ally_locations ADD COLUMN is_frequent INTEGER DEFAULT 0")
+    if 'last_used_at' not in location_columns:
+        cur.execute("ALTER TABLE ally_locations ADD COLUMN last_used_at TEXT")
+
     # Migración: agregar coords y quote_source a orders
     cur.execute("PRAGMA table_info(orders)")
     order_cols = [col[1] for col in cur.fetchall()]
@@ -1550,14 +1560,18 @@ def create_ally_location(
 
 
 def get_ally_locations(ally_id: int):
-    """Devuelve todas las direcciones de un aliado como lista de dicts, principal primero."""
+    """Devuelve todas las direcciones de un aliado ordenadas por prioridad.
+
+    Orden: is_default DESC, is_frequent DESC, use_count DESC, id ASC
+    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
+               lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
         WHERE ally_id = ?
-        ORDER BY is_default DESC, id ASC;
+        ORDER BY is_default DESC, is_frequent DESC, use_count DESC, id ASC;
     """, (ally_id,))
     rows = cur.fetchall()
     conn.close()
@@ -1574,9 +1588,16 @@ def get_ally_locations(ally_id: int):
             "created_at": row[8],
             "lat": row[9],
             "lng": row[10],
+            "use_count": row[11] or 0,
+            "is_frequent": row[12] or 0,
+            "last_used_at": row[13],
         }
         for row in rows
     ]
+
+
+# Alias para claridad semántica
+get_ally_pickups = get_ally_locations
 
 
 def get_default_ally_location(ally_id: int):
@@ -1584,7 +1605,8 @@ def get_default_ally_location(ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
+               lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
         WHERE ally_id = ? AND is_default = 1
         ORDER BY id ASC
@@ -1606,6 +1628,9 @@ def get_default_ally_location(ally_id: int):
         "created_at": row[8],
         "lat": row[9],
         "lng": row[10],
+        "use_count": row[11] or 0,
+        "is_frequent": row[12] or 0,
+        "last_used_at": row[13],
     }
 
 
@@ -1630,7 +1655,8 @@ def get_ally_location_by_id(location_id: int, ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
+               lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
         WHERE id = ? AND ally_id = ?
         LIMIT 1;
@@ -1651,6 +1677,9 @@ def get_ally_location_by_id(location_id: int, ally_id: int):
         "created_at": row[8],
         "lat": row[9],
         "lng": row[10],
+        "use_count": row[11] or 0,
+        "is_frequent": row[12] or 0,
+        "last_used_at": row[13],
     }
 
 
@@ -1687,6 +1716,33 @@ def update_ally_location_coords(location_id: int, lat: float, lng: float):
         "UPDATE ally_locations SET lat = ?, lng = ? WHERE id = ?;",
         (lat, lng, location_id),
     )
+    conn.commit()
+    conn.close()
+
+
+def increment_pickup_usage(location_id: int, ally_id: int):
+    """Incrementa use_count y actualiza last_used_at para una pickup."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_locations
+        SET use_count = COALESCE(use_count, 0) + 1,
+            last_used_at = datetime('now')
+        WHERE id = ? AND ally_id = ?;
+    """, (location_id, ally_id))
+    conn.commit()
+    conn.close()
+
+
+def set_frequent_pickup(location_id: int, ally_id: int, is_frequent: bool):
+    """Marca o desmarca una pickup como frecuente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ally_locations
+        SET is_frequent = ?
+        WHERE id = ? AND ally_id = ?;
+    """, (1 if is_frequent else 0, location_id, ally_id))
     conn.commit()
     conn.close()
 
