@@ -1432,35 +1432,67 @@ def pedido_valor_base_texto(update, context):
         return PEDIDO_VALOR_BASE
 
 
+def mostrar_error_cotizacion(query_or_update, context, mensaje, edit=False):
+    """Muestra error de cotizacion con botones Reintentar/Cancelar."""
+    keyboard = [
+        [InlineKeyboardButton("Reintentar cotizacion", callback_data="pedido_retry_quote")],
+        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(mensaje, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(mensaje, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(mensaje, reply_markup=reply_markup)
+
+    return PEDIDO_CONFIRMACION
+
+
 def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     """Calcula distancia via API y muestra resumen con confirmacion."""
     ally_id = context.user_data.get("ally_id")
     customer_address = context.user_data.get("customer_address", "")
 
-    # Obtener direccion de recogida del aliado
-    pickup_text = "No definida"
+    # Validar que el aliado tenga direccion de recogida configurada
+    pickup_text = None
     if ally_id:
         default_location = get_default_ally_location(ally_id)
         if default_location:
-            pickup_text = default_location.get("address", "No definida")
+            pickup_text = default_location.get("address")
+
+    if not pickup_text:
+        return mostrar_error_cotizacion(
+            query_or_update, context,
+            "No tienes una direccion base configurada.\n\n"
+            "Configura tu punto de recogida antes de crear pedidos.",
+            edit=edit
+        )
 
     # Calcular cotizacion via API
     cotizacion = quote_order_by_addresses(pickup_text, customer_address)
+
+    # Verificar si la API fallo
+    if not cotizacion["success"]:
+        return mostrar_error_cotizacion(
+            query_or_update, context,
+            "No se pudo calcular la distancia automaticamente.\n\n"
+            "Verifica que la API este activa y vuelve a intentar.",
+            edit=edit
+        )
+
+    # Guardar datos de cotizacion
     context.user_data["quote_distance_km"] = cotizacion["distance_km"]
     context.user_data["quote_price"] = cotizacion["price"]
-    context.user_data["quote_api_success"] = cotizacion["api_success"]
 
-    # Mostrar resumen con botones
+    # Mostrar resumen con botones de confirmacion
     keyboard = [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
-
-    # Agregar nota si la distancia fue estimada
-    if not cotizacion["api_success"]:
-        resumen += "\n(Distancia estimada - API no disponible)"
 
     if edit and hasattr(query_or_update, 'edit_message_text'):
         query_or_update.edit_message_text(resumen, reply_markup=reply_markup)
@@ -1470,6 +1502,13 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
         query_or_update.edit_message_text(resumen, reply_markup=reply_markup)
 
     return PEDIDO_CONFIRMACION
+
+
+def pedido_retry_quote_callback(update, context):
+    """Reintenta calcular la cotizacion."""
+    query = update.callback_query
+    query.answer()
+    return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
 
 def pedido_tipo_servicio(update, context):
@@ -3227,6 +3266,7 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
         ],
         PEDIDO_CONFIRMACION: [
+            CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
         ],

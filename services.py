@@ -218,12 +218,12 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
         city_hint: Ciudad para mejorar precision (default: Pereira, Colombia)
 
     Returns:
-        Distancia en km o None si falla la API
+        Distancia en km o None si falla la API o no hay API key
     """
     import os
     import requests
 
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY") or get_setting("google_maps_api_key", "")
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
     if not api_key:
         return None
 
@@ -280,15 +280,18 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         city_hint: Ciudad para mejorar precision de la API
 
     Returns:
-        dict con: distance_km, price, config, api_success
-        Si la API falla, retorna distancia estimada de 3km como fallback
+        dict con: distance_km, price, config, success
+        Si la API falla, distance_km y price seran None
     """
     distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
 
-    api_success = distance_km is not None
-    if not api_success:
-        # Fallback: distancia estimada de 3km
-        distance_km = 3.0
+    if distance_km is None:
+        return {
+            "distance_km": None,
+            "price": None,
+            "config": None,
+            "success": False,
+        }
 
     config = get_pricing_config()
     price = calcular_precio_distancia(distance_km, config)
@@ -297,6 +300,6 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         "distance_km": distance_km,
         "price": price,
         "config": config,
-        "api_success": api_success,
+        "success": True,
     }
 
