@@ -1473,17 +1473,25 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
             edit=edit
         )
 
-    # Construir direcciones completas con ciudad para mejor precision API
+    # Determinar ciudad efectiva (fallback: pickup_city -> Pereira)
+    effective_city = pickup_city or "Pereira"
+    delivery_city = customer_city or effective_city  # Si no hay ciudad cliente, usar la del aliado
+
+    # Construir direcciones completas para API (siempre con ciudad y Colombia)
     origin = pickup_text
-    if pickup_city and pickup_city.lower() not in pickup_text.lower():
-        origin = f"{pickup_text}, {pickup_city}"
+    if effective_city.lower() not in pickup_text.lower():
+        origin = f"{pickup_text}, {effective_city}, Colombia"
+    elif "colombia" not in pickup_text.lower():
+        origin = f"{pickup_text}, Colombia"
 
     destination = customer_address
-    if customer_city and customer_city.lower() not in customer_address.lower():
-        destination = f"{customer_address}, {customer_city}"
+    if delivery_city.lower() not in customer_address.lower():
+        destination = f"{customer_address}, {delivery_city}, Colombia"
+    elif "colombia" not in customer_address.lower():
+        destination = f"{customer_address}, Colombia"
 
-    # Determinar city_hint (usar ciudad del pickup o Pereira por defecto)
-    city_hint = f"{pickup_city}, Colombia" if pickup_city else "Pereira, Colombia"
+    # city_hint para precision adicional en API
+    city_hint = f"{effective_city}, Colombia"
 
     # Calcular cotizacion via API
     cotizacion = quote_order_by_addresses(origin, destination, city_hint)
