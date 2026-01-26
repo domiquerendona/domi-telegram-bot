@@ -1550,18 +1550,33 @@ def create_ally_location(
 
 
 def get_ally_locations(ally_id: int):
-    """Devuelve todas las direcciones de un aliado, principal primero."""
+    """Devuelve todas las direcciones de un aliado como lista de dicts, principal primero."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
         FROM ally_locations
         WHERE ally_id = ?
         ORDER BY is_default DESC, id ASC;
     """, (ally_id,))
     rows = cur.fetchall()
     conn.close()
-    return rows
+    return [
+        {
+            "id": row[0],
+            "ally_id": row[1],
+            "label": row[2],
+            "address": row[3],
+            "city": row[4],
+            "barrio": row[5],
+            "phone": row[6],
+            "is_default": row[7],
+            "created_at": row[8],
+            "lat": row[9],
+            "lng": row[10],
+        }
+        for row in rows
+    ]
 
 
 def get_default_ally_location(ally_id: int):
@@ -1608,6 +1623,35 @@ def set_default_ally_location(location_id: int, ally_id: int):
     )
     conn.commit()
     conn.close()
+
+
+def get_ally_location_by_id(location_id: int, ally_id: int):
+    """Devuelve una dirección específica de un aliado como dict (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
+        FROM ally_locations
+        WHERE id = ? AND ally_id = ?
+        LIMIT 1;
+    """, (location_id, ally_id))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "ally_id": row[1],
+        "label": row[2],
+        "address": row[3],
+        "city": row[4],
+        "barrio": row[5],
+        "phone": row[6],
+        "is_default": row[7],
+        "created_at": row[8],
+        "lat": row[9],
+        "lng": row[10],
+    }
 
 
 def update_ally_location(location_id: int, address: str, city: str, barrio: str, phone: str = None):

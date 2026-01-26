@@ -68,6 +68,7 @@ from db import (
     # Direcciones aliados
     create_ally_location,
     get_ally_locations,
+    get_ally_location_by_id,
     get_default_ally_location,
     set_default_ally_location,
     update_ally_location,
@@ -223,11 +224,16 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     PEDIDO_TELEFONO,
     PEDIDO_UBICACION,             # Capturar ubicacion (link/coords) opcional
     PEDIDO_DIRECCION,
+    PEDIDO_PICKUP_SELECTOR,       # Selector de punto de recogida
+    PEDIDO_PICKUP_LISTA,          # Lista de pickups guardados
+    PEDIDO_PICKUP_NUEVA_UBICACION,# Capturar coords de nueva direccion
+    PEDIDO_PICKUP_NUEVA_DETALLES, # Capturar detalles de nueva direccion
+    PEDIDO_PICKUP_GUARDAR,        # Preguntar si guardar nueva direccion
     PEDIDO_REQUIERE_BASE,         # Preguntar si requiere base
     PEDIDO_VALOR_BASE,            # Capturar valor de base
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
-) = range(14, 26)
+) = range(14, 31)
 
 
 # =========================
@@ -1216,14 +1222,8 @@ def pedido_selector_cliente_callback(update, context):
             context.user_data["customer_address"] = last_order["customer_address"]
             context.user_data["is_new_customer"] = False
 
-            # Usar funcion helper con texto personalizado
-            texto_intro = (
-                "REPETIR ULTIMO PEDIDO\n\n"
-                f"Cliente: {last_order['customer_name']}\n"
-                f"Telefono: {last_order['customer_phone']}\n"
-                f"Direccion: {last_order['customer_address']}"
-            )
-            return mostrar_selector_tipo_servicio(query, context, edit=True, texto_intro=texto_intro)
+            # Ir al selector de pickup
+            return mostrar_selector_pickup(query, context, edit=True)
         else:
             query.edit_message_text("No hay pedidos anteriores. Escribe el nombre del cliente:")
             context.user_data["is_new_customer"] = True
@@ -1335,8 +1335,8 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
 
-        # Mostrar selector de tipo de servicio con botones
-        return mostrar_selector_tipo_servicio(query, context, edit=True)
+        # Mostrar selector de punto de recogida
+        return mostrar_selector_pickup(query, context, edit=True)
 
     return PEDIDO_SELECCIONAR_DIRECCION
 
@@ -1544,14 +1544,14 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     dropoff_lat = context.user_data.get("dropoff_lat")
     dropoff_lng = context.user_data.get("dropoff_lng")
 
-    # Validar que el aliado tenga direccion de recogida configurada
-    pickup_text = None
-    pickup_city = None
-    pickup_lat = None
-    pickup_lng = None
-    default_location = None
+    # Usar pickup seleccionado por el usuario (del selector de pickup)
+    pickup_text = context.user_data.get("pickup_address")
+    pickup_city = context.user_data.get("pickup_city", "")
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
 
-    if ally_id:
+    # Si no hay pickup en user_data, usar default del aliado (fallback)
+    if not pickup_text and ally_id:
         default_location = get_default_ally_location(ally_id)
         if default_location:
             pickup_text = default_location.get("address")
@@ -1711,13 +1711,305 @@ def pedido_ubicacion_skip_callback(update, context):
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
 
+    # Mostrar selector de punto de recogida
+    return mostrar_selector_pickup(update, context, edit=False)
+
+
+# ---------- PICKUP SELECTOR (PUNTO DE RECOGIDA) ----------
+
+def mostrar_selector_pickup(query_or_update, context, edit=False):
+    """Muestra selector de punto de recogida con botones.
+
+    Args:
+        query_or_update: CallbackQuery o Update
+        context: Context del bot
+        edit: Si True, edita el mensaje existente
+    """
+    keyboard = [
+        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_base")],
+        [InlineKeyboardButton("Elegir otra", callback_data="pickup_lista")],
+        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    texto = (
+        "PUNTO DE RECOGIDA\n\n"
+        "Donde se recoge el pedido?"
+    )
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(texto, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+
+    return PEDIDO_PICKUP_SELECTOR
+
+
+def pedido_pickup_callback(update, context):
+    """Maneja la seleccion del tipo de pickup."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    ally = context.user_data.get("ally")
+    if not ally:
+        query.edit_message_text("Error: no se encontro informacion del aliado. Usa /nuevo_pedido de nuevo.")
+        return ConversationHandler.END
+
+    ally_id = ally["id"]
+
+    if data == "pickup_base":
+        # Usar direccion base del aliado
+        default_loc = get_default_ally_location(ally_id)
+        if not default_loc:
+            query.edit_message_text(
+                "No tienes una direccion base configurada.\n"
+                "Puedes agregar una nueva o contactar soporte."
+            )
+            return mostrar_selector_pickup(query, context, edit=False)
+
+        # Guardar pickup en user_data
+        context.user_data["pickup_location"] = default_loc
+        context.user_data["pickup_label"] = default_loc.get("label") or "Base"
+        context.user_data["pickup_address"] = default_loc.get("address", "")
+        context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_lat"] = default_loc.get("lat")
+        context.user_data["pickup_lng"] = default_loc.get("lng")
+
+        # Continuar al siguiente paso
+        return continuar_despues_pickup(query, context, edit=True)
+
+    elif data == "pickup_lista":
+        # Mostrar lista de direcciones guardadas
+        return mostrar_lista_pickups(query, context)
+
+    elif data == "pickup_nueva":
+        # Pedir nueva direccion
+        query.edit_message_text(
+            "NUEVA DIRECCION DE RECOGIDA\n\n"
+            "Envia la ubicacion (link de Google Maps o WhatsApp) "
+            "o coordenadas (lat,lng).\n\n"
+            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+        )
+        return PEDIDO_PICKUP_NUEVA_UBICACION
+
+    else:
+        query.edit_message_text("Opcion no valida. Usa /nuevo_pedido de nuevo.")
+        return ConversationHandler.END
+
+
+def mostrar_lista_pickups(query, context):
+    """Muestra lista de direcciones guardadas del aliado."""
+    ally = context.user_data.get("ally")
+    if not ally:
+        query.edit_message_text("Error: no se encontro informacion del aliado.")
+        return ConversationHandler.END
+
+    ally_id = ally["id"]
+    locations = get_ally_locations(ally_id)
+
+    if not locations:
+        query.edit_message_text(
+            "No tienes direcciones guardadas.\n"
+            "Agrega una nueva direccion."
+        )
+        # Mostrar selector de nuevo
+        return mostrar_selector_pickup(query, context, edit=False)
+
+    # Construir botones con las direcciones
+    keyboard = []
+    for loc in locations:
+        label = loc.get("label") or loc.get("address", "Sin nombre")
+        is_default = " (base)" if loc.get("is_default") else ""
+        btn_text = f"{label}{is_default}"
+        callback = f"pickup_loc_{loc['id']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
+
+    keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")])
+    keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_volver")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query.edit_message_text(
+        "ELEGIR PUNTO DE RECOGIDA\n\n"
+        "Selecciona una de tus direcciones guardadas:",
+        reply_markup=reply_markup
+    )
+    return PEDIDO_PICKUP_LISTA
+
+
+def pedido_pickup_lista_callback(update, context):
+    """Maneja la seleccion de una direccion de la lista."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "pickup_volver":
+        return mostrar_selector_pickup(query, context, edit=True)
+
+    if data == "pickup_nueva":
+        query.edit_message_text(
+            "NUEVA DIRECCION DE RECOGIDA\n\n"
+            "Envia la ubicacion (link de Google Maps o WhatsApp) "
+            "o coordenadas (lat,lng).\n\n"
+            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+        )
+        return PEDIDO_PICKUP_NUEVA_UBICACION
+
+    # Debe ser pickup_loc_ID
+    if data.startswith("pickup_loc_"):
+        try:
+            loc_id = int(data.replace("pickup_loc_", ""))
+        except ValueError:
+            query.edit_message_text("Error: ID de direccion invalido.")
+            return ConversationHandler.END
+
+        ally = context.user_data.get("ally")
+        if not ally:
+            query.edit_message_text("Error: no se encontro informacion del aliado.")
+            return ConversationHandler.END
+
+        location = get_ally_location_by_id(loc_id, ally["id"])
+        if not location:
+            query.edit_message_text("Error: direccion no encontrada.")
+            return mostrar_selector_pickup(query, context, edit=False)
+
+        # Guardar pickup en user_data
+        context.user_data["pickup_location"] = location
+        context.user_data["pickup_label"] = location.get("label") or "Recogida"
+        context.user_data["pickup_address"] = location.get("address", "")
+        context.user_data["pickup_city"] = location.get("city", "")
+        context.user_data["pickup_lat"] = location.get("lat")
+        context.user_data["pickup_lng"] = location.get("lng")
+
+        return continuar_despues_pickup(query, context, edit=True)
+
+    query.edit_message_text("Opcion no valida.")
+    return ConversationHandler.END
+
+
+def pedido_pickup_nueva_ubicacion_handler(update, context):
+    """Maneja la captura de ubicacion para nueva direccion de recogida."""
+    from services import extract_lat_lng_from_text
+
+    text = update.message.text.strip()
+
+    if text.lower() == "omitir":
+        context.user_data["new_pickup_lat"] = None
+        context.user_data["new_pickup_lng"] = None
+        update.message.reply_text(
+            "Sin ubicacion exacta.\n\n"
+            "Ahora escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias..."
+        )
+        return PEDIDO_PICKUP_NUEVA_DETALLES
+
+    coords = extract_lat_lng_from_text(text)
+    if coords:
+        lat, lng = coords
+        context.user_data["new_pickup_lat"] = lat
+        context.user_data["new_pickup_lng"] = lng
+        update.message.reply_text(
+            f"Ubicacion capturada: {lat}, {lng}\n\n"
+            "Ahora escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias..."
+        )
+    else:
+        context.user_data["new_pickup_lat"] = None
+        context.user_data["new_pickup_lng"] = None
+        update.message.reply_text(
+            "No se pudo extraer ubicacion del texto.\n\n"
+            "Escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias..."
+        )
+
+    return PEDIDO_PICKUP_NUEVA_DETALLES
+
+
+def pedido_pickup_nueva_detalles_handler(update, context):
+    """Maneja la captura de detalles de nueva direccion de recogida."""
+    text = update.message.text.strip()
+    if not text:
+        update.message.reply_text("Por favor escribe la direccion de recogida:")
+        return PEDIDO_PICKUP_NUEVA_DETALLES
+
+    context.user_data["new_pickup_address"] = text
+
+    # Usar pickup temporal en user_data
+    ally = context.user_data.get("ally")
+    default_city = "Pereira"
+    if ally:
+        default_loc = get_default_ally_location(ally["id"])
+        if default_loc and default_loc.get("city"):
+            default_city = default_loc["city"]
+
+    context.user_data["new_pickup_city"] = default_city
+
+    # Guardar pickup temporal
+    context.user_data["pickup_label"] = "Nueva"
+    context.user_data["pickup_address"] = text
+    context.user_data["pickup_city"] = default_city
+    context.user_data["pickup_lat"] = context.user_data.get("new_pickup_lat")
+    context.user_data["pickup_lng"] = context.user_data.get("new_pickup_lng")
+
+    # Preguntar si quiere guardar la direccion
+    keyboard = [
+        [InlineKeyboardButton("Si, guardar", callback_data="pickup_guardar_si")],
+        [InlineKeyboardButton("No, solo usar esta vez", callback_data="pickup_guardar_no")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        "Deseas guardar esta direccion para futuros pedidos?",
+        reply_markup=reply_markup
+    )
+    return PEDIDO_PICKUP_GUARDAR
+
+
+def pedido_pickup_guardar_callback(update, context):
+    """Maneja la decision de guardar o no la nueva direccion."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    ally = context.user_data.get("ally")
+    if not ally:
+        query.edit_message_text("Error: no se encontro informacion del aliado.")
+        return ConversationHandler.END
+
+    if data == "pickup_guardar_si":
+        # Guardar en BD
+        new_loc_id = create_ally_location(
+            ally_id=ally["id"],
+            label=context.user_data.get("new_pickup_address", "")[:30],
+            address=context.user_data.get("new_pickup_address", ""),
+            city=context.user_data.get("new_pickup_city", "Pereira"),
+            barrio="",
+            phone="",
+            is_default=False,
+            lat=context.user_data.get("new_pickup_lat"),
+            lng=context.user_data.get("new_pickup_lng"),
+        )
+        if new_loc_id:
+            query.edit_message_text("Direccion guardada correctamente.")
+        else:
+            query.edit_message_text("No se pudo guardar, pero continuamos con el pedido.")
+
+    else:
+        query.edit_message_text("OK, usaremos esta direccion solo para este pedido.")
+
+    # Continuar al siguiente paso
+    return continuar_despues_pickup(query, context, edit=False)
+
+
+def continuar_despues_pickup(query, context, edit=True):
+    """Continua el flujo despues de seleccionar el pickup."""
     # Verificar si ya tenemos tipo de servicio
     if not context.user_data.get("service_type"):
-        # Usar funcion helper para mostrar selector
-        return mostrar_selector_tipo_servicio(update, context, edit=False)
+        return mostrar_selector_tipo_servicio(query, context, edit=edit)
 
     # Ya tenemos tipo, preguntar por base
-    return mostrar_pregunta_base(update, context, edit=False)
+    return mostrar_pregunta_base(query, context, edit=edit)
 
 
 def construir_resumen_pedido(context):
@@ -1726,16 +2018,27 @@ def construir_resumen_pedido(context):
     nombre = context.user_data.get("customer_name", "-")
     telefono = context.user_data.get("customer_phone", "-")
     direccion = context.user_data.get("customer_address", "-")
+    pickup_label = context.user_data.get("pickup_label", "")
+    pickup_address = context.user_data.get("pickup_address", "")
     distancia = context.user_data.get("quote_distance_km", 0)
     precio = context.user_data.get("quote_price", 0)
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
+
+    # Mostrar recogida
+    if pickup_label and pickup_address:
+        recogida = f"{pickup_label}: {pickup_address}"
+    elif pickup_address:
+        recogida = pickup_address
+    else:
+        recogida = "-"
 
     resumen = (
         "RESUMEN DEL PEDIDO\n\n"
         f"Tipo: {tipo_servicio}\n"
         f"Cliente: {nombre}\n"
         f"Telefono: {telefono}\n"
+        f"Recogida: {recogida}\n"
         f"Entrega: {direccion}\n"
         f"Distancia: {distancia:.1f} km\n"
         f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
@@ -1806,10 +2109,20 @@ def pedido_confirmacion_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        # Obtener ubicacion por defecto del ally (si existe)
-        default_location = get_default_ally_location(ally_id)
-        pickup_location_id = default_location["id"] if default_location else None
-        pickup_text = default_location["address"] if default_location else "No definida"
+        # Obtener pickup del selector (o default si no existe)
+        pickup_location = context.user_data.get("pickup_location")
+        pickup_text = context.user_data.get("pickup_address", "")
+        if pickup_location:
+            pickup_location_id = pickup_location.get("id")
+        else:
+            # Fallback: usar default si no se selecciono ninguno
+            default_location = get_default_ally_location(ally_id)
+            pickup_location_id = default_location["id"] if default_location else None
+            if not pickup_text and default_location:
+                pickup_text = default_location.get("address", "No definida")
+
+        if not pickup_text:
+            pickup_text = "No definida"
 
         # Obtener datos del pedido de context.user_data
         customer_name = context.user_data.get("customer_name", "")
@@ -3456,6 +3769,21 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
+        ],
+        PEDIDO_PICKUP_SELECTOR: [
+            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_")
+        ],
+        PEDIDO_PICKUP_LISTA: [
+            CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_")
+        ],
+        PEDIDO_PICKUP_NUEVA_UBICACION: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
+        ],
+        PEDIDO_PICKUP_NUEVA_DETALLES: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_detalles_handler)
+        ],
+        PEDIDO_PICKUP_GUARDAR: [
+            CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
         ],
         PEDIDO_REQUIERE_BASE: [
             CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_")
