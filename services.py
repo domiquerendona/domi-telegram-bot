@@ -2,6 +2,152 @@ from typing import Tuple, Optional
 from dataclasses import dataclass
 from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting
 import math
+import re
+
+
+# ---------- PARSER DE LINKS / COORDS ----------
+
+def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
+    """
+    Extrae lat/lng de texto que puede ser:
+    - https://maps.google.com/?q=4.81,-75.69
+    - https://www.google.com/maps/@4.81,-75.69,17z
+    - https://goo.gl/maps/xxxxx (no soportado directamente)
+    - 4.81,-75.69 (coords directas)
+    - Compartido de WhatsApp: contiene lat y lng en la URL
+
+    Retorna (lat, lng) o None si no se puede extraer.
+    Valida rangos: lat [-90, 90], lng [-180, 180]
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+
+    # Patron 1: Google Maps con ?q=lat,lng o @lat,lng
+    patterns = [
+        r'[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)',           # ?q=4.81,-75.69
+        r'@(-?\d+\.?\d*),(-?\d+\.?\d*)',                 # @4.81,-75.69,17z
+        r'/place/[^/]+/@(-?\d+\.?\d*),(-?\d+\.?\d*)',   # /place/.../@4.81,-75.69
+        r'!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)',            # !3d4.81!4d-75.69
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                lat = float(match.group(1))
+                lng = float(match.group(2))
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    return (lat, lng)
+            except (ValueError, IndexError):
+                continue
+
+    # Patron 2: Coordenadas directas "lat,lng" o "lat, lng"
+    direct_pattern = r'^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$'
+    match = re.match(direct_pattern, text)
+    if match:
+        try:
+            lat = float(match.group(1))
+            lng = float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return (lat, lng)
+        except ValueError:
+            pass
+
+    return None
+
+
+# ---------- DISTANCE MATRIX POR COORDENADAS ----------
+
+def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: float) -> Optional[float]:
+    """
+    Calcula distancia en km entre dos puntos usando Google Distance Matrix API con coordenadas.
+
+    Args:
+        lat1, lng1: Coordenadas de origen
+        lat2, lng2: Coordenadas de destino
+
+    Returns:
+        Distancia en km o None si falla
+    """
+    import os
+    import requests
+
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        return None
+
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    params = {
+        "origins": f"{lat1},{lng1}",
+        "destinations": f"{lat2},{lng2}",
+        "key": api_key,
+        "units": "metric",
+        "language": "es",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+
+        if data.get("status") != "OK":
+            return None
+
+        rows = data.get("rows", [])
+        if not rows:
+            return None
+
+        elements = rows[0].get("elements", [])
+        if not elements:
+            return None
+
+        element = elements[0]
+        if element.get("status") != "OK":
+            return None
+
+        distance_meters = element.get("distance", {}).get("value", 0)
+        distance_km = distance_meters / 1000.0
+
+        return round(distance_km, 2)
+
+    except Exception:
+        return None
+
+
+def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
+    """
+    Calcula cotización usando coordenadas (más preciso que texto).
+
+    Args:
+        pickup_lat, pickup_lng: Coordenadas de recogida
+        dropoff_lat, dropoff_lng: Coordenadas de entrega
+
+    Returns:
+        dict con: success, distance_km, price, quote_source, config
+    """
+    distance_km = get_distance_from_api_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+
+    if distance_km is None:
+        return {
+            "success": False,
+            "distance_km": None,
+            "price": None,
+            "config": None,
+            "quote_source": None,
+            "error": "API no disponible o fallo",
+        }
+
+    config = get_pricing_config()
+    price = calcular_precio_distancia(distance_km, config)
+
+    return {
+        "success": True,
+        "distance_km": distance_km,
+        "price": price,
+        "config": config,
+        "quote_source": "coords",
+    }
 
 
 def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_balance: int = 5000) -> Tuple[bool, str, int, int]:
@@ -272,7 +418,7 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
 
 def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str = "Pereira, Colombia") -> dict:
     """
-    Calcula cotizacion de un pedido usando direcciones (calcula distancia automaticamente).
+    Calcula cotizacion de un pedido usando direcciones (fallback cuando no hay coords).
 
     Args:
         pickup_text: Direccion de recogida
@@ -280,7 +426,7 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         city_hint: Ciudad para mejorar precision de la API
 
     Returns:
-        dict con: distance_km, price, config, success
+        dict con: distance_km, price, config, success, quote_source
         Si la API falla, distance_km y price seran None
     """
     distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
@@ -291,6 +437,7 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
             "price": None,
             "config": None,
             "success": False,
+            "quote_source": None,
         }
 
     config = get_pricing_config()
@@ -301,5 +448,6 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         "price": price,
         "config": config,
         "success": True,
+        "quote_source": "text",
     }
 

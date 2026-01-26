@@ -691,6 +691,28 @@ def init_db():
     if 'is_active' not in columns:
         cur.execute("ALTER TABLE terms_versions ADD COLUMN is_active INTEGER DEFAULT 1")
 
+    # Migración: agregar lat/lng a ally_locations
+    cur.execute("PRAGMA table_info(ally_locations)")
+    location_columns = [col[1] for col in cur.fetchall()]
+    if 'lat' not in location_columns:
+        cur.execute("ALTER TABLE ally_locations ADD COLUMN lat REAL")
+    if 'lng' not in location_columns:
+        cur.execute("ALTER TABLE ally_locations ADD COLUMN lng REAL")
+
+    # Migración: agregar coords y quote_source a orders
+    cur.execute("PRAGMA table_info(orders)")
+    order_cols = [col[1] for col in cur.fetchall()]
+    if 'pickup_lat' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN pickup_lat REAL")
+    if 'pickup_lng' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN pickup_lng REAL")
+    if 'dropoff_lat' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lat REAL")
+    if 'dropoff_lng' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lng REAL")
+    if 'quote_source' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
+
     # Bootstrap: insertar términos por defecto para ALLY si no existen
     cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
     if not cur.fetchone():
@@ -1547,7 +1569,7 @@ def get_default_ally_location(ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at
+        SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at, lat, lng
         FROM ally_locations
         WHERE ally_id = ? AND is_default = 1
         ORDER BY id ASC
@@ -1567,6 +1589,8 @@ def get_default_ally_location(ally_id: int):
         "phone": row[6],
         "is_default": row[7],
         "created_at": row[8],
+        "lat": row[9],
+        "lng": row[10],
     }
 
 
@@ -1611,6 +1635,18 @@ def delete_ally_location(location_id: int, ally_id: int):
     conn.close()
 
 
+def update_ally_location_coords(location_id: int, lat: float, lng: float):
+    """Actualiza las coordenadas de una dirección de aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE ally_locations SET lat = ?, lng = ? WHERE id = ?;",
+        (lat, lng, location_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------- PEDIDOS (orders) ----------
 
 def create_order(
@@ -1633,6 +1669,11 @@ def create_order(
     instructions: str,
     requires_cash: bool = False,
     cash_required_amount: int = 0,
+    pickup_lat: float = None,
+    pickup_lng: float = None,
+    dropoff_lat: float = None,
+    dropoff_lng: float = None,
+    quote_source: str = None,
 ):
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
@@ -1659,8 +1700,13 @@ def create_order(
             total_fee,
             instructions,
             requires_cash,
-            cash_required_amount
-        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            cash_required_amount,
+            pickup_lat,
+            pickup_lng,
+            dropoff_lat,
+            dropoff_lng,
+            quote_source
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -1681,6 +1727,11 @@ def create_order(
         instructions,
         1 if requires_cash else 0,
         cash_required_amount,
+        pickup_lat,
+        pickup_lng,
+        dropoff_lat,
+        dropoff_lng,
+        quote_source,
     ))
     conn.commit()
     order_id = cur.lastrowid

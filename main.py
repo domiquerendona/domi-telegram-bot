@@ -15,7 +15,15 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config, quote_order, quote_order_by_addresses
+from services import (
+    admin_puede_operar,
+    calcular_precio_distancia,
+    get_pricing_config,
+    quote_order,
+    quote_order_by_addresses,
+    quote_order_by_coords,
+    extract_lat_lng_from_text,
+)
 from db import (
     init_db,
     force_platform_admin,
@@ -63,6 +71,7 @@ from db import (
     get_default_ally_location,
     set_default_ally_location,
     update_ally_location,
+    update_ally_location_coords,
     delete_ally_location,
 
     # Repartidores
@@ -212,12 +221,13 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
     PEDIDO_TIPO_SERVICIO,
     PEDIDO_NOMBRE,
     PEDIDO_TELEFONO,
+    PEDIDO_UBICACION,             # Capturar ubicacion (link/coords) opcional
     PEDIDO_DIRECCION,
     PEDIDO_REQUIERE_BASE,         # Preguntar si requiere base
     PEDIDO_VALOR_BASE,            # Capturar valor de base
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
-) = range(14, 25)
+) = range(14, 26)
 
 
 # =========================
@@ -1451,19 +1461,29 @@ def mostrar_error_cotizacion(query_or_update, context, mensaje, edit=False):
 
 
 def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
-    """Calcula distancia via API y muestra resumen con confirmacion."""
+    """Calcula distancia via API (preferente por coords) y muestra resumen."""
     ally_id = context.user_data.get("ally_id")
     customer_address = context.user_data.get("customer_address", "")
     customer_city = context.user_data.get("customer_city", "")
 
+    # Obtener coords del cliente (si se capturaron)
+    dropoff_lat = context.user_data.get("dropoff_lat")
+    dropoff_lng = context.user_data.get("dropoff_lng")
+
     # Validar que el aliado tenga direccion de recogida configurada
     pickup_text = None
     pickup_city = None
+    pickup_lat = None
+    pickup_lng = None
+    default_location = None
+
     if ally_id:
         default_location = get_default_ally_location(ally_id)
         if default_location:
             pickup_text = default_location.get("address")
             pickup_city = default_location.get("city") or ""
+            pickup_lat = default_location.get("lat")
+            pickup_lng = default_location.get("lng")
 
     if not pickup_text:
         return mostrar_error_cotizacion(
@@ -1473,28 +1493,36 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
             edit=edit
         )
 
-    # Determinar ciudad efectiva (fallback: pickup_city -> Pereira)
-    effective_city = pickup_city or "Pereira"
-    delivery_city = customer_city or effective_city  # Si no hay ciudad cliente, usar la del aliado
+    # Guardar coords de pickup para el pedido
+    context.user_data["pickup_lat"] = pickup_lat
+    context.user_data["pickup_lng"] = pickup_lng
 
-    # Construir direcciones completas para API (siempre con ciudad y Colombia)
-    origin = pickup_text
-    if effective_city.lower() not in pickup_text.lower():
-        origin = f"{pickup_text}, {effective_city}, Colombia"
-    elif "colombia" not in pickup_text.lower():
-        origin = f"{pickup_text}, Colombia"
+    # Intentar cotizar por coordenadas (más preciso)
+    cotizacion = None
+    if pickup_lat and pickup_lng and dropoff_lat and dropoff_lng:
+        cotizacion = quote_order_by_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
 
-    destination = customer_address
-    if delivery_city.lower() not in customer_address.lower():
-        destination = f"{customer_address}, {delivery_city}, Colombia"
-    elif "colombia" not in customer_address.lower():
-        destination = f"{customer_address}, Colombia"
+    # Si no hay coords o falló, usar texto como fallback
+    if not cotizacion or not cotizacion.get("success"):
+        # Determinar ciudad efectiva
+        effective_city = pickup_city or "Pereira"
+        delivery_city = customer_city or effective_city
 
-    # city_hint para precision adicional en API
-    city_hint = f"{effective_city}, Colombia"
+        # Construir direcciones completas
+        origin = pickup_text
+        if effective_city.lower() not in pickup_text.lower():
+            origin = f"{pickup_text}, {effective_city}, Colombia"
+        elif "colombia" not in pickup_text.lower():
+            origin = f"{pickup_text}, Colombia"
 
-    # Calcular cotizacion via API
-    cotizacion = quote_order_by_addresses(origin, destination, city_hint)
+        destination = customer_address
+        if delivery_city.lower() not in customer_address.lower():
+            destination = f"{customer_address}, {delivery_city}, Colombia"
+        elif "colombia" not in customer_address.lower():
+            destination = f"{customer_address}, Colombia"
+
+        city_hint = f"{effective_city}, Colombia"
+        cotizacion = quote_order_by_addresses(origin, destination, city_hint)
 
     # Verificar si la API fallo
     if not cotizacion["success"]:
@@ -1508,6 +1536,7 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     # Guardar datos de cotizacion
     context.user_data["quote_distance_km"] = cotizacion["distance_km"]
     context.user_data["quote_price"] = cotizacion["price"]
+    context.user_data["quote_source"] = cotizacion.get("quote_source", "text")
 
     # Mostrar resumen con botones de confirmacion
     keyboard = [
@@ -1516,6 +1545,12 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
+
+    # Agregar nota sobre precisión
+    if context.user_data.get("quote_source") == "coords":
+        resumen += "\n(Cotizacion precisa por ubicacion)"
+    else:
+        resumen += "\n(Cotizacion estimada por direccion)"
 
     if edit and hasattr(query_or_update, 'edit_message_text'):
         query_or_update.edit_message_text(resumen, reply_markup=reply_markup)
@@ -1548,7 +1583,54 @@ def pedido_nombre_cliente(update, context):
 
 def pedido_telefono_cliente(update, context):
     context.user_data["customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Ahora escribe la direccion de entrega del cliente.")
+    # Preguntar por ubicación (opcional)
+    keyboard = [[InlineKeyboardButton("Omitir ubicacion", callback_data="pedido_ubicacion_skip")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        "UBICACION (opcional)\n\n"
+        "Pega el enlace de ubicacion del cliente (WhatsApp/Google Maps) "
+        "o coordenadas lat,lng.\n\n"
+        "Si no tienes, toca Omitir.",
+        reply_markup=reply_markup
+    )
+    return PEDIDO_UBICACION
+
+
+def pedido_ubicacion_handler(update, context):
+    """Maneja texto de ubicación (link o coords)."""
+    texto = update.message.text.strip()
+
+    # Intentar extraer coordenadas
+    coords = extract_lat_lng_from_text(texto)
+    if coords:
+        context.user_data["dropoff_lat"] = coords[0]
+        context.user_data["dropoff_lng"] = coords[1]
+        context.user_data["customer_location_link"] = texto
+        update.message.reply_text(
+            "Ubicacion guardada.\n\n"
+            "Ahora escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+    else:
+        # No se pudo extraer, guardar como texto y advertir
+        update.message.reply_text(
+            "No se pudo extraer la ubicacion del texto.\n\n"
+            "Escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias.\n\n"
+            "(La cotizacion sera menos precisa sin ubicacion exacta)"
+        )
+    return PEDIDO_DIRECCION
+
+
+def pedido_ubicacion_skip_callback(update, context):
+    """Omite la ubicación y pide solo dirección de texto."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Escribe los detalles de la direccion:\n"
+        "barrio, conjunto, torre, apto, referencias.\n\n"
+        "(La cotizacion sera menos precisa sin ubicacion exacta)"
+    )
     return PEDIDO_DIRECCION
 
 
@@ -1669,6 +1751,13 @@ def pedido_confirmacion_callback(update, context):
         requires_cash = context.user_data.get("requires_cash", False)
         cash_required_amount = context.user_data.get("cash_required_amount", 0)
 
+        # Obtener coords y quote_source
+        pickup_lat = context.user_data.get("pickup_lat")
+        pickup_lng = context.user_data.get("pickup_lng")
+        dropoff_lat = context.user_data.get("dropoff_lat")
+        dropoff_lng = context.user_data.get("dropoff_lng")
+        quote_source = context.user_data.get("quote_source", "text")
+
         # Crear pedido en BD
         try:
             order_id = create_order(
@@ -1691,6 +1780,11 @@ def pedido_confirmacion_callback(update, context):
                 instructions="",
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
+                pickup_lat=pickup_lat,
+                pickup_lng=pickup_lng,
+                dropoff_lat=dropoff_lat,
+                dropoff_lng=dropoff_lng,
+                quote_source=quote_source,
             )
             context.user_data["order_id"] = order_id
 
@@ -3277,6 +3371,10 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_TELEFONO: [
             MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
+        ],
+        PEDIDO_UBICACION: [
+            CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
+            MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
