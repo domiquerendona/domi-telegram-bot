@@ -178,7 +178,7 @@ def es_admin_plataforma(telegram_id: int) -> bool:
 # =========================
 # Estados del registro de aliados
 # =========================
-ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TEAM = range(7)
+ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UBICACION, ALLY_TEAM = range(8)
 
 
 # =========================
@@ -561,10 +561,6 @@ def ally_phone(update, context):
 
 
 def ally_barrio(update, context):
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    user_db_id = user_row["id"]
-
     text = (update.message.text or "").strip()
     if not text:
         update.message.reply_text(
@@ -573,13 +569,70 @@ def ally_barrio(update, context):
         )
         return ALLY_BARRIO
 
-    barrio = text
+    context.user_data["barrio"] = text
+
+    # Preguntar por ubicación (opcional)
+    keyboard = [[InlineKeyboardButton("Omitir ubicacion", callback_data="ally_ubicacion_skip")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        "UBICACION DEL NEGOCIO (opcional)\n\n"
+        "Pega el enlace de ubicacion (WhatsApp/Google Maps) "
+        "o coordenadas lat,lng.\n\n"
+        "Si no tienes, toca Omitir.",
+        reply_markup=reply_markup
+    )
+    return ALLY_UBICACION
+
+
+def ally_ubicacion_handler(update, context):
+    """Maneja texto de ubicación del aliado (link o coords)."""
+    texto = update.message.text.strip()
+
+    # Intentar extraer coordenadas
+    coords = extract_lat_lng_from_text(texto)
+    if coords:
+        context.user_data["ally_lat"] = coords[0]
+        context.user_data["ally_lng"] = coords[1]
+        update.message.reply_text("Ubicacion guardada. Continuando registro...")
+    else:
+        update.message.reply_text(
+            "No se pudo extraer la ubicacion del texto.\n"
+            "Continuando sin ubicacion exacta..."
+        )
+
+    return finalizar_registro_ally(update, context)
+
+
+def ally_ubicacion_skip_callback(update, context):
+    """Omite la ubicación del aliado."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Continuando sin ubicacion exacta...")
+    return finalizar_registro_ally(query, context, from_callback=True)
+
+
+def finalizar_registro_ally(update_or_query, context, from_callback=False):
+    """Finaliza el registro del aliado creando en BD."""
+    if from_callback:
+        user_tg = update_or_query.message.chat
+        chat_id = update_or_query.message.chat_id
+    else:
+        user_tg = update_or_query.effective_user
+        chat_id = update_or_query.message.chat_id
+
+    user_row = get_user_by_telegram_id(user_tg.id if hasattr(user_tg, 'id') else chat_id)
+    if not user_row:
+        user_row = ensure_user(user_tg.id if hasattr(user_tg, 'id') else chat_id, None)
+    user_db_id = user_row["id"]
 
     business_name = context.user_data.get("business_name", "").strip()
     owner_name = context.user_data.get("owner_name", "").strip()
     address = context.user_data.get("address", "").strip()
     city = context.user_data.get("city", "").strip()
     phone = context.user_data.get("ally_phone", "").strip()
+    barrio = context.user_data.get("barrio", "").strip()
+    ally_lat = context.user_data.get("ally_lat")
+    ally_lng = context.user_data.get("ally_lng")
 
     try:
         ally_id = create_ally(
@@ -593,9 +646,8 @@ def ally_barrio(update, context):
         )
 
         context.user_data["ally_id"] = ally_id
-        context.user_data["barrio"] = barrio
 
-        create_ally_location(
+        location_id = create_ally_location(
             ally_id=ally_id,
             label="Principal",
             address=address,
@@ -604,6 +656,10 @@ def ally_barrio(update, context):
             phone=None,
             is_default=True,
         )
+
+        # Guardar coords si existen
+        if ally_lat and ally_lng and location_id:
+            update_ally_location_coords(location_id, ally_lat, ally_lng)
 
         # Notificación al Admin de Plataforma (opcional)
         try:
@@ -622,23 +678,32 @@ def ally_barrio(update, context):
         except Exception as e:
             print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-        return show_ally_team_selection(update, context)
+        return show_ally_team_selection(update_or_query, context, from_callback)
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
-        update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
+        if from_callback:
+            context.bot.send_message(chat_id=chat_id, text="Error técnico al guardar tu registro. Intenta más tarde.")
+        else:
+            update_or_query.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
 
-def show_ally_team_selection(update, context):
+def show_ally_team_selection(update_or_query, context, from_callback=False):
     """
     Muestra lista de equipos (admins disponibles) y opción Ninguno.
     Si elige Ninguno, se asigna al Admin de Plataforma (TEAM_CODE de plataforma).
     """
     ally_id = context.user_data.get("ally_id")
     if not ally_id:
-        update.message.reply_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
+        if from_callback:
+            context.bot.send_message(
+                chat_id=update_or_query.message.chat_id,
+                text="Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo."
+            )
+        else:
+            update_or_query.message.reply_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -665,11 +730,20 @@ def show_ally_team_selection(update, context):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text(
-        "¿A qué equipo (Administrador) quieres pertenecer?\n"
-        "Si eliges Ninguno, quedas por defecto con el Admin de Plataforma y recargas con él.",
-        reply_markup=reply_markup
+    texto = (
+        "A que equipo (Administrador) quieres pertenecer?\n"
+        "Si eliges Ninguno, quedas por defecto con el Admin de Plataforma y recargas con el."
     )
+
+    if from_callback:
+        context.bot.send_message(
+            chat_id=update_or_query.message.chat_id,
+            text=texto,
+            reply_markup=reply_markup
+        )
+    else:
+        update_or_query.message.reply_text(texto, reply_markup=reply_markup)
+
     return ALLY_TEAM
 
 
@@ -3302,6 +3376,10 @@ ally_conv = ConversationHandler(
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
+        ALLY_UBICACION: [
+            CallbackQueryHandler(ally_ubicacion_skip_callback, pattern=r"^ally_ubicacion_skip$"),
+            MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler)
+        ],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
     fallbacks=[
