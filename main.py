@@ -15,7 +15,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config, quote_order
+from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config, quote_order, quote_order_by_addresses
 from db import (
     init_db,
     force_platform_admin,
@@ -215,10 +215,9 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_TE
     PEDIDO_DIRECCION,
     PEDIDO_REQUIERE_BASE,         # Preguntar si requiere base
     PEDIDO_VALOR_BASE,            # Capturar valor de base
-    PEDIDO_DISTANCIA,             # Capturar distancia estimada
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
-) = range(14, 26)
+) = range(14, 25)
 
 
 # =========================
@@ -1363,8 +1362,8 @@ def pedido_requiere_base_callback(update, context):
     if data == "pedido_base_no":
         context.user_data["requires_cash"] = False
         context.user_data["cash_required_amount"] = 0
-        # Ir a pedir distancia
-        return mostrar_pedir_distancia(query, context, edit=True)
+        # Calcular cotizacion y mostrar confirmacion
+        return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
     elif data == "pedido_base_si":
         context.user_data["requires_cash"] = True
@@ -1406,7 +1405,7 @@ def pedido_valor_base_callback(update, context):
 
     if data in valores_map:
         context.user_data["cash_required_amount"] = valores_map[data]
-        return mostrar_pedir_distancia(query, context, edit=True)
+        return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
     elif data == "pedido_base_otro":
         query.edit_message_text(
@@ -1425,7 +1424,7 @@ def pedido_valor_base_texto(update, context):
         if valor <= 0:
             raise ValueError("Valor debe ser mayor a 0")
         context.user_data["cash_required_amount"] = valor
-        return mostrar_pedir_distancia(update, context, edit=False)
+        return calcular_cotizacion_y_confirmar(update, context, edit=False)
     except ValueError:
         update.message.reply_text(
             "Valor invalido. Escribe solo numeros (ej: 15000):"
@@ -1433,43 +1432,44 @@ def pedido_valor_base_texto(update, context):
         return PEDIDO_VALOR_BASE
 
 
-def mostrar_pedir_distancia(query_or_update, context, edit=False):
-    """Pide la distancia estimada."""
-    texto = (
-        "DISTANCIA\n\n"
-        "Escribe la distancia estimada en km (ej: 3.5):"
-    )
+def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
+    """Calcula distancia via API y muestra resumen con confirmacion."""
+    ally_id = context.user_data.get("ally_id")
+    customer_address = context.user_data.get("customer_address", "")
 
-    if edit and hasattr(query_or_update, 'edit_message_text'):
-        query_or_update.edit_message_text(texto)
-    elif hasattr(query_or_update, 'message') and query_or_update.message:
-        query_or_update.message.reply_text(texto)
-    else:
-        query_or_update.edit_message_text(texto)
+    # Obtener direccion de recogida del aliado
+    pickup_text = "No definida"
+    if ally_id:
+        default_location = get_default_ally_location(ally_id)
+        if default_location:
+            pickup_text = default_location.get("address", "No definida")
 
-    return PEDIDO_DISTANCIA
-
-
-def pedido_distancia(update, context):
-    """Captura la distancia y calcula cotizacion."""
-    texto = (update.message.text or "").strip().replace(",", ".")
-    try:
-        distancia = float(texto)
-        if distancia <= 0:
-            raise ValueError("Distancia debe ser mayor a 0")
-    except ValueError:
-        update.message.reply_text(
-            "Valor invalido. Escribe la distancia en km (ej: 3.5):"
-        )
-        return PEDIDO_DISTANCIA
-
-    # Calcular cotizacion usando la misma formula de /cotizar
-    cotizacion = quote_order(distancia)
+    # Calcular cotizacion via API
+    cotizacion = quote_order_by_addresses(pickup_text, customer_address)
     context.user_data["quote_distance_km"] = cotizacion["distance_km"]
     context.user_data["quote_price"] = cotizacion["price"]
+    context.user_data["quote_api_success"] = cotizacion["api_success"]
 
-    # Mostrar resumen con cotizacion
-    return mostrar_resumen_confirmacion_msg(update, context)
+    # Mostrar resumen con botones
+    keyboard = [
+        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    resumen = construir_resumen_pedido(context)
+
+    # Agregar nota si la distancia fue estimada
+    if not cotizacion["api_success"]:
+        resumen += "\n(Distancia estimada - API no disponible)"
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(resumen, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(resumen, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(resumen, reply_markup=reply_markup)
+
+    return PEDIDO_CONFIRMACION
 
 
 def pedido_tipo_servicio(update, context):
@@ -3225,9 +3225,6 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_VALOR_BASE: [
             CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_"),
             MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
-        ],
-        PEDIDO_DISTANCIA: [
-            MessageHandler(Filters.text & ~Filters.command, pedido_distancia)
         ],
         PEDIDO_CONFIRMACION: [
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),

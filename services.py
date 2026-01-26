@@ -207,3 +207,96 @@ def quote_order(distance_km: float) -> dict:
         "config": config
     }
 
+
+def get_distance_from_api(origin: str, destination: str, city_hint: str = "Pereira, Colombia") -> Optional[float]:
+    """
+    Calcula la distancia en km entre dos direcciones usando Google Distance Matrix API.
+
+    Args:
+        origin: Direccion de origen (pickup)
+        destination: Direccion de destino (dropoff)
+        city_hint: Ciudad para mejorar precision (default: Pereira, Colombia)
+
+    Returns:
+        Distancia en km o None si falla la API
+    """
+    import os
+    import requests
+
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY") or get_setting("google_maps_api_key", "")
+    if not api_key:
+        return None
+
+    # Agregar ciudad si no esta presente
+    if city_hint and city_hint.lower() not in origin.lower():
+        origin = f"{origin}, {city_hint}"
+    if city_hint and city_hint.lower() not in destination.lower():
+        destination = f"{destination}, {city_hint}"
+
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    params = {
+        "origins": origin,
+        "destinations": destination,
+        "key": api_key,
+        "units": "metric",
+        "language": "es",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+
+        if data.get("status") != "OK":
+            return None
+
+        rows = data.get("rows", [])
+        if not rows:
+            return None
+
+        elements = rows[0].get("elements", [])
+        if not elements:
+            return None
+
+        element = elements[0]
+        if element.get("status") != "OK":
+            return None
+
+        distance_meters = element.get("distance", {}).get("value", 0)
+        distance_km = distance_meters / 1000.0
+
+        return round(distance_km, 2)
+
+    except Exception:
+        return None
+
+
+def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str = "Pereira, Colombia") -> dict:
+    """
+    Calcula cotizacion de un pedido usando direcciones (calcula distancia automaticamente).
+
+    Args:
+        pickup_text: Direccion de recogida
+        dropoff_text: Direccion de entrega
+        city_hint: Ciudad para mejorar precision de la API
+
+    Returns:
+        dict con: distance_km, price, config, api_success
+        Si la API falla, retorna distancia estimada de 3km como fallback
+    """
+    distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
+
+    api_success = distance_km is not None
+    if not api_success:
+        # Fallback: distancia estimada de 3km
+        distance_km = 3.0
+
+    config = get_pricing_config()
+    price = calcular_precio_distancia(distance_km, config)
+
+    return {
+        "distance_km": distance_km,
+        "price": price,
+        "config": config,
+        "api_success": api_success,
+    }
+
