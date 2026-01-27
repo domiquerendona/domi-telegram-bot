@@ -483,11 +483,14 @@ def show_flow_menu(update, context, text=None):
     """
     reply_markup = get_flow_menu_keyboard()
 
-    if text:
-        if getattr(update, "callback_query", None):
-            update.callback_query.message.reply_text(text, reply_markup=reply_markup)
-        elif update.message:
-            update.message.reply_text(text, reply_markup=reply_markup)
+    # Si no hay texto, solo establecer el teclado sin mensaje extra
+    if not text:
+        return
+
+    if getattr(update, "callback_query", None):
+        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+    elif update.message:
+        update.message.reply_text(text, reply_markup=reply_markup)
     
 
 def cmd_id(update, context):
