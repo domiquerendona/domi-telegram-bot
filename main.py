@@ -431,12 +431,96 @@ def start(update, context):
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
+
+
+# ---------- MENÚS PERSISTENTES ----------
+
+def get_main_menu_keyboard():
+    """Retorna el teclado principal para usuarios fuera de flujos."""
+    keyboard = [
+        ['Nuevo pedido', 'Mis pedidos'],
+        ['Mi perfil', 'Ayuda'],
+        ['Menu']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_flow_menu_keyboard():
+    """Retorna el teclado reducido para usuarios dentro de flujos."""
+    keyboard = [
+        ['Cancelar', 'Volver al menu']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def show_main_menu(update, context, text=None):
+    """Muestra el menú principal completo.
+
+    Args:
+        update: Update de Telegram
+        context: Context del bot
+        text: Texto opcional a mostrar (si None, muestra mensaje default)
+    """
+    if text is None:
+        text = "Menu principal. Selecciona una opcion:"
+
+    reply_markup = get_main_menu_keyboard()
+
+    if getattr(update, "callback_query", None):
+        # Desde un callback, enviar nuevo mensaje
+        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+    elif update.message:
+        update.message.reply_text(text, reply_markup=reply_markup)
+
+
+def show_flow_menu(update, context, text=None):
+    """Muestra el menú reducido para flujos activos.
+
+    Args:
+        update: Update de Telegram
+        context: Context del bot
+        text: Texto opcional a mostrar
+    """
+    reply_markup = get_flow_menu_keyboard()
+
+    if text:
+        if getattr(update, "callback_query", None):
+            update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+        elif update.message:
+            update.message.reply_text(text, reply_markup=reply_markup)
     
 
 def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
     user = update.effective_user
     update.message.reply_text(f"Tu user_id es: {user.id}")
+
+
+def menu_button_handler(update, context):
+    """Maneja los botones del menú principal (ReplyKeyboard)."""
+    text = update.message.text.strip()
+
+    if text == "Nuevo pedido":
+        return nuevo_pedido(update, context)
+    elif text == "Mis pedidos":
+        update.message.reply_text("Funcion 'Mis pedidos' en desarrollo.")
+        return
+    elif text == "Mi perfil":
+        return mi_perfil(update, context)
+    elif text == "Ayuda":
+        update.message.reply_text(
+            "AYUDA\n\n"
+            "Comandos disponibles:\n"
+            "/nuevo_pedido - Crear un nuevo pedido\n"
+            "/clientes - Gestionar clientes\n"
+            "/cotizar - Cotizar envio por distancia\n"
+            "/mi_perfil - Ver tu perfil\n"
+            "/cancel - Cancelar proceso actual\n"
+            "/menu - Ver menu principal"
+        )
+        return
+    elif text == "Menu":
+        return start(update, context)
 
 
 # ----- REGISTRO DE ALIADO -----
@@ -1151,6 +1235,10 @@ def nuevo_pedido(update, context):
 
     context.user_data.clear()
     context.user_data["ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+
+    # Mostrar menú reducido de flujo
+    show_flow_menu(update, context, "Iniciando nuevo pedido...")
 
     # Mostrar selector de cliente recurrente/nuevo
     keyboard = [
@@ -2289,6 +2377,7 @@ def pedido_confirmacion_callback(update, context):
                     reply_markup=get_preview_buttons()
                 )
                 context.user_data.clear()
+                show_main_menu(update, context, "Pedido creado. Selecciona una opcion:")
                 return ConversationHandler.END
 
         except Exception as e:
@@ -2297,11 +2386,13 @@ def pedido_confirmacion_callback(update, context):
                 "Por favor intenta nuevamente mas tarde."
             )
             context.user_data.clear()
+            show_main_menu(update, context)
             return ConversationHandler.END
 
     elif data == "pedido_cancelar":
         query.edit_message_text("Pedido cancelado.")
         context.user_data.clear()
+        show_main_menu(update, context)
         return ConversationHandler.END
 
     return PEDIDO_CONFIRMACION
@@ -2384,6 +2475,7 @@ def pedido_guardar_cliente_callback(update, context):
         )
 
     context.user_data.clear()
+    show_main_menu(update, context, "Pedido creado. Selecciona una opcion:")
     return ConversationHandler.END
 
 
@@ -2914,21 +3006,28 @@ def admin_menu_callback(update, context):
 
 
 def cancel_conversacion(update, context):
-    # Cierra cualquier conversación activa y limpia datos temporales
+    """Cierra cualquier conversación activa y muestra menú principal."""
     try:
         context.user_data.clear()
     except Exception:
         pass
 
-    # Responder según sea mensaje o callback (si lo usas en botones)
+    # Responder según sea mensaje o callback
     if getattr(update, "callback_query", None):
         q = update.callback_query
         q.answer()
-        q.edit_message_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+        q.edit_message_text("Proceso cancelado.")
     else:
-        update.message.reply_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+        update.message.reply_text("Proceso cancelado.")
 
+    # Mostrar menú principal
+    show_main_menu(update, context, "Menu principal. Selecciona una opcion:")
     return ConversationHandler.END
+
+
+def cancel_por_texto(update, context):
+    """Handler para cuando el usuario escribe 'Cancelar' o 'Volver al menu'."""
+    return cancel_conversacion(update, context)
 
 
 # ----- COTIZADOR INTERNO -----
@@ -3754,7 +3853,10 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
     allow_reentry=True,
 )
 
@@ -3776,7 +3878,8 @@ ally_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        CommandHandler("menu", menu)
+        CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -3814,7 +3917,8 @@ courier_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        CommandHandler("menu", menu)
+        CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -3880,7 +3984,10 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
     allow_reentry=True,
 )
 
@@ -3890,7 +3997,10 @@ cotizar_conv = ConversationHandler(
     states={
         COTIZAR_DISTANCIA: [MessageHandler(Filters.text & ~Filters.command, cotizar_distancia)]
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
 )
 
 
@@ -4039,7 +4149,10 @@ tarifas_conv = ConversationHandler(
     states={
         TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
 )
 
 
@@ -5182,10 +5295,21 @@ def main():
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
             LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
         },
-       fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+        ],
     )
     dp.add_handler(admin_conv)
-    
+
+    # -------------------------
+    # Handler para botones del menú principal (ReplyKeyboard)
+    # -------------------------
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'^(Nuevo pedido|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
+        menu_button_handler
+    ))
+
     # -------------------------
     # Notificación de arranque al Administrador de Plataforma (opcional)
     # -------------------------
