@@ -14,3 +14,9 @@ __pycache__/
 # Base de datos
 *.db
 *.db-journal
+
+# Ignorar scripts accidentales
+Activate.ps1
+Activate.ps1.*
+.venvScriptsActivate.ps1*
+
