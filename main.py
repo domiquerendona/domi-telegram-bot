@@ -466,15 +466,11 @@ def show_main_menu(update, context, text=None):
 
     reply_markup = get_main_menu_keyboard()
 
-    # Obtener chat_id de forma robusta
-    chat_id = None
     if getattr(update, "callback_query", None):
-        chat_id = update.callback_query.message.chat_id
+        # Desde un callback, enviar nuevo mensaje
+        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
     elif update.message:
-        chat_id = update.message.chat_id
-
-    if chat_id:
-        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        update.message.reply_text(text, reply_markup=reply_markup)
 
 
 def show_flow_menu(update, context, text=None):
@@ -491,15 +487,10 @@ def show_flow_menu(update, context, text=None):
     if not text:
         return
 
-    # Obtener chat_id de forma robusta
-    chat_id = None
     if getattr(update, "callback_query", None):
-        chat_id = update.callback_query.message.chat_id
+        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
     elif update.message:
-        chat_id = update.message.chat_id
-
-    if chat_id:
-        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        update.message.reply_text(text, reply_markup=reply_markup)
     
 
 def cmd_id(update, context):
