@@ -109,7 +109,8 @@ def expand_short_url(text: str) -> Optional[str]:
             import requests
             url = next((t for t in text.split() if t.startswith("http")), None)
             if url:
-                r = requests.get(url, allow_redirects=True, timeout=6, stream=True)
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; DomiBot/1.0)"}
+                r = requests.get(url, allow_redirects=True, timeout=10, headers=headers)
                 return r.url or url
         except Exception:
             return None
@@ -118,12 +119,8 @@ def expand_short_url(text: str) -> Optional[str]:
 
 def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
     """
-    Extrae lat/lng de texto que puede ser:
-    - https://maps.google.com/?q=4.81,-75.69
-    - https://www.google.com/maps/@4.81,-75.69,17z
-    - https://goo.gl/maps/xxxxx (no soportado directamente)
-    - 4.81,-75.69 (coords directas)
-    - Compartido de WhatsApp: contiene lat y lng en la URL
+    Extrae lat/lng de texto/URL expandida.
+    NOTA: Si el texto es un link corto (goo.gl), debe expandirse ANTES con expand_short_url().
 
     Retorna (lat, lng) o None si no se puede extraer.
     Valida rangos: lat [-90, 90], lng [-180, 180]
@@ -133,21 +130,7 @@ def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
 
     text = text.strip()
 
-    # Soporte links cortos (maps.app.goo.gl / goo.gl): expandir redirecciones
-    if "http" in text and ("maps.app.goo.gl" in text or "goo.gl" in text):
-        try:
-            import requests
-            # tomar el primer token que parezca URL
-            url = next((t for t in text.split() if t.startswith("http")), None)
-            if url:
-                r = requests.get(url, allow_redirects=True, timeout=6, stream=True)
-                if r.url:
-                    text = r.url
-        except Exception:
-            # si falla, seguimos con el texto original
-            pass
-
-    # Patron 1: Google Maps con ?q=lat,lng o @lat,lng
+    # Patrones para extraer coords de URLs de Google Maps
     patterns = [
         r'[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)',           # ?q=4.81,-75.69
         r'@(-?\d+\.?\d*),(-?\d+\.?\d*)',                 # @4.81,-75.69,17z
