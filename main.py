@@ -27,7 +27,6 @@ from services import (
     can_call_google_today,
     extract_place_id_from_url,
     google_place_details,
-    google_geocode_forward,
 )
 from db import (
     init_db,
@@ -1758,7 +1757,7 @@ def pedido_telefono_cliente(update, context):
 
 
 def pedido_ubicacion_handler(update, context):
-    """Maneja texto de ubicación (link o coords) con cache + Google fallback."""
+    """Maneja texto de ubicación (link o coords) con cache + Google place_id only."""
     texto = update.message.text.strip()
 
     # Normalizar: tomar primer URL si hay varios tokens
@@ -1769,7 +1768,6 @@ def pedido_ubicacion_handler(update, context):
     # 1) Consultar cache
     cached = get_link_cache(raw_link)
     if cached and cached.get("lat") is not None and cached.get("lng") is not None:
-        # Cache hit con coords
         context.user_data["dropoff_lat"] = cached["lat"]
         context.user_data["dropoff_lng"] = cached["lng"]
         context.user_data["customer_location_link"] = raw_link
@@ -1783,7 +1781,7 @@ def pedido_ubicacion_handler(update, context):
     # 2) Intentar expandir link corto si aplica
     expanded = expand_short_url(raw_link) or raw_link
 
-    # 3) Extraer coordenadas del texto/URL
+    # 3) Extraer coordenadas del texto/URL con regex
     coords = extract_lat_lng_from_text(expanded)
     if coords:
         context.user_data["dropoff_lat"] = coords[0]
@@ -1797,19 +1795,10 @@ def pedido_ubicacion_handler(update, context):
         )
         return PEDIDO_DIRECCION
 
-    # 4) Fallback: intentar con Google API si fusible permite
-    if can_call_google_today():
-        google_result = None
-
-        # 4a) Intentar place_id si existe en URL
-        place_id = extract_place_id_from_url(expanded)
-        if place_id:
-            google_result = google_place_details(place_id)
-
-        # 4b) Si no hay place_id, intentar geocoding con el texto
-        if not google_result and not expanded.startswith("http"):
-            google_result = google_geocode_forward(expanded)
-
+    # 4) Fallback: Google Places API SOLO si hay place_id en URL
+    place_id = extract_place_id_from_url(expanded)
+    if place_id and can_call_google_today():
+        google_result = google_place_details(place_id)
         if google_result and google_result.get("lat") and google_result.get("lng"):
             context.user_data["dropoff_lat"] = google_result["lat"]
             context.user_data["dropoff_lng"] = google_result["lng"]
@@ -1828,12 +1817,12 @@ def pedido_ubicacion_handler(update, context):
             )
             return PEDIDO_DIRECCION
 
-    # 5) No se pudo resolver
+    # 5) No se pudo resolver - mensaje claro
     update.message.reply_text(
-        "No pude leer coordenadas de ese enlace.\n\n"
+        "Ese enlace no trae coordenadas.\n\n"
         "Escribe los detalles de la direccion:\n"
         "barrio, conjunto, torre, apto, referencias.\n\n"
-        "(Tip: pega coordenadas lat,lng o envia ubicacion por Telegram)"
+        "(Tip: pide ubicacion compartida o pega coordenadas lat,lng)"
     )
     return PEDIDO_DIRECCION
 
