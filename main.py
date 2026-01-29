@@ -453,44 +453,35 @@ def get_flow_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def show_main_menu(update, context, text=None):
-    """Muestra el menú principal completo.
-
-    Args:
-        update: Update de Telegram
-        context: Context del bot
-        text: Texto opcional a mostrar (si None, muestra mensaje default)
-    """
-    if text is None:
-        text = "Menu principal. Selecciona una opcion:"
-
+def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
+    """Muestra el menú principal completo."""
     reply_markup = get_main_menu_keyboard()
+    chat_id = None
 
     if getattr(update, "callback_query", None):
-        # Desde un callback, enviar nuevo mensaje
-        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+        chat_id = update.callback_query.message.chat_id
     elif update.message:
-        update.message.reply_text(text, reply_markup=reply_markup)
+        chat_id = update.message.chat_id
+
+    if chat_id:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 
 def show_flow_menu(update, context, text=None):
-    """Muestra el menú reducido para flujos activos.
-
-    Args:
-        update: Update de Telegram
-        context: Context del bot
-        text: Texto opcional a mostrar
-    """
-    reply_markup = get_flow_menu_keyboard()
-
-    # Si no hay texto, solo establecer el teclado sin mensaje extra
+    """Muestra el menú reducido para flujos activos."""
     if not text:
         return
 
+    reply_markup = get_flow_menu_keyboard()
+    chat_id = None
+
     if getattr(update, "callback_query", None):
-        update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+        chat_id = update.callback_query.message.chat_id
     elif update.message:
-        update.message.reply_text(text, reply_markup=reply_markup)
+        chat_id = update.message.chat_id
+
+    if chat_id:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     
 
 def cmd_id(update, context):
@@ -2372,7 +2363,8 @@ def pedido_confirmacion_callback(update, context):
                 )
                 return PEDIDO_GUARDAR_CLIENTE
             else:
-                query.edit_message_text(f"Pedido #{order_id} creado exitosamente.")
+                # Cliente existente: consolidar éxito + menú
+                query.edit_message_text("Procesando pedido...")
                 # Enviar preview
                 context.bot.send_message(
                     chat_id=query.message.chat_id,
@@ -2380,7 +2372,7 @@ def pedido_confirmacion_callback(update, context):
                     reply_markup=get_preview_buttons()
                 )
                 context.user_data.clear()
-                show_main_menu(update, context, "Pedido creado. Selecciona una opcion:")
+                show_main_menu(update, context, f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.")
                 return ConversationHandler.END
 
         except Exception as e:
@@ -2461,25 +2453,23 @@ def pedido_guardar_cliente_callback(update, context):
             customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
             create_customer_address(customer_id, "Principal", customer_address)
-
-            query.edit_message_text(
-                f"Cliente '{customer_name}' guardado exitosamente.\n\n"
-                "Podras usarlo en tus proximos pedidos desde 'Cliente recurrente'."
-            )
+            query.edit_message_text("Guardando cliente...")
+            context.user_data.clear()
+            show_main_menu(update, context, f"Cliente '{customer_name}' guardado.\nPedido creado exitosamente. Pronto un repartidor sera asignado.")
+            return ConversationHandler.END
         except Exception as e:
-            query.edit_message_text(
-                f"El pedido fue creado pero hubo un error al guardar el cliente: {str(e)}"
-            )
+            query.edit_message_text("Procesando...")
+            context.user_data.clear()
+            show_main_menu(update, context, f"Pedido creado, pero hubo un error al guardar cliente: {str(e)}")
+            return ConversationHandler.END
 
     elif data == "pedido_guardar_no":
-        query.edit_message_text(
-            "Entendido. El pedido fue creado.\n"
-            "Pronto un repartidor sera asignado."
-        )
+        query.edit_message_text("Procesando...")
+        context.user_data.clear()
+        show_main_menu(update, context, "Pedido creado exitosamente.\nPronto un repartidor sera asignado.")
+        return ConversationHandler.END
 
-    context.user_data.clear()
-    show_main_menu(update, context, "Pedido creado. Selecciona una opcion:")
-    return ConversationHandler.END
+    return PEDIDO_GUARDAR_CLIENTE
 
 
 def aliados_pendientes(update, context):
