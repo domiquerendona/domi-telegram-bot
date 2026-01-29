@@ -453,36 +453,30 @@ def get_flow_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
+def _get_chat_id(update):
+    """Extrae chat_id de forma robusta desde update."""
+    if getattr(update, "callback_query", None) and update.callback_query.message:
+        return update.callback_query.message.chat_id
+    if getattr(update, "message", None):
+        return update.message.chat_id
+    return None
+
+
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
     """Muestra el menú principal completo."""
     reply_markup = get_main_menu_keyboard()
-    chat_id = None
-
-    if getattr(update, "callback_query", None):
-        chat_id = update.callback_query.message.chat_id
-    elif update.message:
-        chat_id = update.message.chat_id
-
+    chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 
-def show_flow_menu(update, context, text=None):
+def show_flow_menu(update, context, text):
     """Muestra el menú reducido para flujos activos."""
-    if not text:
-        return
-
     reply_markup = get_flow_menu_keyboard()
-    chat_id = None
-
-    if getattr(update, "callback_query", None):
-        chat_id = update.callback_query.message.chat_id
-    elif update.message:
-        chat_id = update.message.chat_id
-
-    if chat_id:
+    chat_id = _get_chat_id(update)
+    if chat_id and text:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-    
+
 
 def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
@@ -2363,14 +2357,7 @@ def pedido_confirmacion_callback(update, context):
                 )
                 return PEDIDO_GUARDAR_CLIENTE
             else:
-                # Cliente existente: consolidar éxito + menú
-                query.edit_message_text("Procesando pedido...")
-                # Enviar preview
-                context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=preview,
-                    reply_markup=get_preview_buttons()
-                )
+                # Cliente existente: éxito directo + menú
                 context.user_data.clear()
                 show_main_menu(update, context, f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.")
                 return ConversationHandler.END
@@ -2453,18 +2440,15 @@ def pedido_guardar_cliente_callback(update, context):
             customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
             create_customer_address(customer_id, "Principal", customer_address)
-            query.edit_message_text("Guardando cliente...")
             context.user_data.clear()
-            show_main_menu(update, context, f"Cliente '{customer_name}' guardado.\nPedido creado exitosamente. Pronto un repartidor sera asignado.")
+            show_main_menu(update, context, f"Pedido creado exitosamente.\nCliente '{customer_name}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.")
             return ConversationHandler.END
         except Exception as e:
-            query.edit_message_text("Procesando...")
             context.user_data.clear()
-            show_main_menu(update, context, f"Pedido creado, pero hubo un error al guardar cliente: {str(e)}")
+            show_main_menu(update, context, f"Pedido creado exitosamente.\nError al guardar cliente: {str(e)}\nPronto un repartidor sera asignado.")
             return ConversationHandler.END
 
     elif data == "pedido_guardar_no":
-        query.edit_message_text("Procesando...")
         context.user_data.clear()
         show_main_menu(update, context, "Pedido creado exitosamente.\nPronto un repartidor sera asignado.")
         return ConversationHandler.END
