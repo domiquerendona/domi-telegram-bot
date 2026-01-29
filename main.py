@@ -2439,7 +2439,13 @@ def pedido_guardar_cliente_callback(update, context):
             # Crear cliente
             customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
-            create_customer_address(customer_id, "Principal", customer_address)
+            create_customer_address(
+                customer_id,
+                "Principal",
+                customer_address,
+                lat=context.user_data.get("dropoff_lat"),
+                lng=context.user_data.get("dropoff_lng"),
+            )
             context.user_data.clear()
             show_main_menu(update, context, f"Pedido creado exitosamente.\nCliente '{customer_name}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.")
             return ConversationHandler.END
