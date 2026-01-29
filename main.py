@@ -23,6 +23,7 @@ from services import (
     quote_order_by_addresses,
     quote_order_by_coords,
     extract_lat_lng_from_text,
+    expand_short_url,
 )
 from db import (
     init_db,
@@ -124,6 +125,10 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
+
+    # Cache de links de ubicación
+    get_link_cache,
+    upsert_link_cache,
 )
 
 # ============================================================
@@ -1749,27 +1754,51 @@ def pedido_telefono_cliente(update, context):
 
 
 def pedido_ubicacion_handler(update, context):
-    """Maneja texto de ubicación (link o coords)."""
+    """Maneja texto de ubicación (link o coords) con cache."""
     texto = update.message.text.strip()
 
-    # Intentar extraer coordenadas
-    coords = extract_lat_lng_from_text(texto)
+    # Normalizar: tomar primer URL si hay varios tokens
+    raw_link = texto
+    if "http" in texto:
+        raw_link = next((t for t in texto.split() if t.startswith("http")), texto)
+
+    # 1) Consultar cache
+    cached = get_link_cache(raw_link)
+    if cached and cached[2] is not None and cached[3] is not None:
+        # Cache hit con coords
+        context.user_data["dropoff_lat"] = cached[2]
+        context.user_data["dropoff_lng"] = cached[3]
+        context.user_data["customer_location_link"] = raw_link
+        update.message.reply_text(
+            "Ubicacion guardada (desde cache).\n\n"
+            "Ahora escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
+
+    # 2) Intentar expandir link corto si aplica
+    expanded = expand_short_url(raw_link) or raw_link
+
+    # 3) Extraer coordenadas
+    coords = extract_lat_lng_from_text(expanded)
     if coords:
         context.user_data["dropoff_lat"] = coords[0]
         context.user_data["dropoff_lng"] = coords[1]
-        context.user_data["customer_location_link"] = texto
+        context.user_data["customer_location_link"] = raw_link
+        # Guardar en cache
+        upsert_link_cache(raw_link, expanded, coords[0], coords[1])
         update.message.reply_text(
             "Ubicacion guardada.\n\n"
             "Ahora escribe los detalles de la direccion:\n"
             "barrio, conjunto, torre, apto, referencias."
         )
     else:
-        # No se pudo extraer, guardar como texto y advertir
+        # No se pudo extraer
         update.message.reply_text(
-            "No se pudo extraer la ubicacion del texto.\n\n"
+            "No pude leer coordenadas de ese enlace.\n\n"
             "Escribe los detalles de la direccion:\n"
             "barrio, conjunto, torre, apto, referencias.\n\n"
-            "(La cotizacion sera menos precisa sin ubicacion exacta)"
+            "(Tip: pega coordenadas lat,lng o envia ubicacion por Telegram)"
         )
     return PEDIDO_DIRECCION
 

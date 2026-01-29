@@ -7,6 +7,23 @@ import re
 
 # ---------- PARSER DE LINKS / COORDS ----------
 
+def expand_short_url(text: str) -> Optional[str]:
+    """Expande links cortos de Google Maps (maps.app.goo.gl / goo.gl)."""
+    if not text:
+        return None
+    text = text.strip()
+    if "http" in text and ("maps.app.goo.gl" in text or "goo.gl" in text):
+        try:
+            import requests
+            url = next((t for t in text.split() if t.startswith("http")), None)
+            if url:
+                r = requests.get(url, allow_redirects=True, timeout=6, stream=True)
+                return r.url or url
+        except Exception:
+            return None
+    return None
+
+
 def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
     """
     Extrae lat/lng de texto que puede ser:

@@ -281,6 +281,17 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS map_link_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_link TEXT UNIQUE,
+            expanded_link TEXT,
+            lat REAL,
+            lng REAL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
     # ============================================================
@@ -2710,8 +2721,32 @@ def get_last_order_by_ally(ally_id: int):
     return row
 
 
+# ---------- CACHE DE LINKS DE UBICACIÓN ----------
+
+def get_link_cache(raw_link: str):
+    """Busca un link en cache. Retorna tupla (raw_link, expanded_link, lat, lng) o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT raw_link, expanded_link, lat, lng FROM map_link_cache WHERE raw_link = ?", (raw_link,))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
+def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = None, lng: float = None):
+    """Inserta o actualiza un link en cache."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO map_link_cache (raw_link, expanded_link, lat, lng)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(raw_link) DO UPDATE SET
+          expanded_link = COALESCE(excluded.expanded_link, map_link_cache.expanded_link),
+          lat = COALESCE(excluded.lat, map_link_cache.lat),
+          lng = COALESCE(excluded.lng, map_link_cache.lng)
+    """, (raw_link, expanded_link, lat, lng))
+    conn.commit()
+    conn.close()
 
 
 
