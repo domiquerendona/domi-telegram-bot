@@ -24,6 +24,20 @@ def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
 
     text = text.strip()
 
+    # Soporte links cortos (maps.app.goo.gl / goo.gl): expandir redirecciones
+    if "http" in text and ("maps.app.goo.gl" in text or "goo.gl" in text):
+        try:
+            import requests
+            # tomar el primer token que parezca URL
+            url = next((t for t in text.split() if t.startswith("http")), None)
+            if url:
+                r = requests.get(url, allow_redirects=True, timeout=6, stream=True)
+                if r.url:
+                    text = r.url
+        except Exception:
+            # si falla, seguimos con el texto original
+            pass
+
     # Patron 1: Google Maps con ?q=lat,lng o @lat,lng
     patterns = [
         r'[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)',           # ?q=4.81,-75.69
