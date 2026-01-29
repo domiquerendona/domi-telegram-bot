@@ -24,6 +24,10 @@ from services import (
     quote_order_by_coords,
     extract_lat_lng_from_text,
     expand_short_url,
+    can_call_google_today,
+    extract_place_id_from_url,
+    google_place_details,
+    google_geocode_forward,
 )
 from db import (
     init_db,
@@ -1754,7 +1758,7 @@ def pedido_telefono_cliente(update, context):
 
 
 def pedido_ubicacion_handler(update, context):
-    """Maneja texto de ubicación (link o coords) con cache."""
+    """Maneja texto de ubicación (link o coords) con cache + Google fallback."""
     texto = update.message.text.strip()
 
     # Normalizar: tomar primer URL si hay varios tokens
@@ -1764,10 +1768,10 @@ def pedido_ubicacion_handler(update, context):
 
     # 1) Consultar cache
     cached = get_link_cache(raw_link)
-    if cached and cached[2] is not None and cached[3] is not None:
+    if cached and cached.get("lat") is not None and cached.get("lng") is not None:
         # Cache hit con coords
-        context.user_data["dropoff_lat"] = cached[2]
-        context.user_data["dropoff_lng"] = cached[3]
+        context.user_data["dropoff_lat"] = cached["lat"]
+        context.user_data["dropoff_lng"] = cached["lng"]
         context.user_data["customer_location_link"] = raw_link
         update.message.reply_text(
             "Ubicacion guardada (desde cache).\n\n"
@@ -1779,27 +1783,58 @@ def pedido_ubicacion_handler(update, context):
     # 2) Intentar expandir link corto si aplica
     expanded = expand_short_url(raw_link) or raw_link
 
-    # 3) Extraer coordenadas
+    # 3) Extraer coordenadas del texto/URL
     coords = extract_lat_lng_from_text(expanded)
     if coords:
         context.user_data["dropoff_lat"] = coords[0]
         context.user_data["dropoff_lng"] = coords[1]
         context.user_data["customer_location_link"] = raw_link
-        # Guardar en cache
-        upsert_link_cache(raw_link, expanded, coords[0], coords[1])
+        upsert_link_cache(raw_link, expanded, coords[0], coords[1], provider="regex")
         update.message.reply_text(
             "Ubicacion guardada.\n\n"
             "Ahora escribe los detalles de la direccion:\n"
             "barrio, conjunto, torre, apto, referencias."
         )
-    else:
-        # No se pudo extraer
-        update.message.reply_text(
-            "No pude leer coordenadas de ese enlace.\n\n"
-            "Escribe los detalles de la direccion:\n"
-            "barrio, conjunto, torre, apto, referencias.\n\n"
-            "(Tip: pega coordenadas lat,lng o envia ubicacion por Telegram)"
-        )
+        return PEDIDO_DIRECCION
+
+    # 4) Fallback: intentar con Google API si fusible permite
+    if can_call_google_today():
+        google_result = None
+
+        # 4a) Intentar place_id si existe en URL
+        place_id = extract_place_id_from_url(expanded)
+        if place_id:
+            google_result = google_place_details(place_id)
+
+        # 4b) Si no hay place_id, intentar geocoding con el texto
+        if not google_result and not expanded.startswith("http"):
+            google_result = google_geocode_forward(expanded)
+
+        if google_result and google_result.get("lat") and google_result.get("lng"):
+            context.user_data["dropoff_lat"] = google_result["lat"]
+            context.user_data["dropoff_lng"] = google_result["lng"]
+            context.user_data["customer_location_link"] = raw_link
+            upsert_link_cache(
+                raw_link, expanded,
+                google_result["lat"], google_result["lng"],
+                google_result.get("formatted_address"),
+                google_result.get("provider"),
+                google_result.get("place_id")
+            )
+            update.message.reply_text(
+                "Ubicacion guardada (via Google).\n\n"
+                "Ahora escribe los detalles de la direccion:\n"
+                "barrio, conjunto, torre, apto, referencias."
+            )
+            return PEDIDO_DIRECCION
+
+    # 5) No se pudo resolver
+    update.message.reply_text(
+        "No pude leer coordenadas de ese enlace.\n\n"
+        "Escribe los detalles de la direccion:\n"
+        "barrio, conjunto, torre, apto, referencias.\n\n"
+        "(Tip: pega coordenadas lat,lng o envia ubicacion por Telegram)"
+    )
     return PEDIDO_DIRECCION
 
 

@@ -292,6 +292,16 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS api_usage_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_name TEXT NOT NULL,
+            usage_date TEXT NOT NULL,
+            call_count INTEGER DEFAULT 0,
+            UNIQUE(api_name, usage_date)
+        );
+    """)
+
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
     # ============================================================
@@ -301,6 +311,16 @@ def init_db():
     users_cols = [r[1] for r in cur.fetchall()]
     if "person_id" not in users_cols:
         cur.execute("ALTER TABLE users ADD COLUMN person_id INTEGER")
+
+    # map_link_cache: formatted_address, provider, place_id
+    cur.execute("PRAGMA table_info(map_link_cache)")
+    cache_cols = [r[1] for r in cur.fetchall()]
+    if "formatted_address" not in cache_cols:
+        cur.execute("ALTER TABLE map_link_cache ADD COLUMN formatted_address TEXT")
+    if "provider" not in cache_cols:
+        cur.execute("ALTER TABLE map_link_cache ADD COLUMN provider TEXT")
+    if "place_id" not in cache_cols:
+        cur.execute("ALTER TABLE map_link_cache ADD COLUMN place_id TEXT")
 
     # allies.document_number
     cur.execute("PRAGMA table_info(allies)")
@@ -2724,27 +2744,73 @@ def get_last_order_by_ally(ally_id: int):
 # ---------- CACHE DE LINKS DE UBICACIÓN ----------
 
 def get_link_cache(raw_link: str):
-    """Busca un link en cache. Retorna tupla (raw_link, expanded_link, lat, lng) o None."""
+    """Busca un link en cache. Retorna dict o None."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT raw_link, expanded_link, lat, lng FROM map_link_cache WHERE raw_link = ?", (raw_link,))
+    cur.execute("""
+        SELECT raw_link, expanded_link, lat, lng, formatted_address, provider, place_id
+        FROM map_link_cache WHERE raw_link = ?
+    """, (raw_link,))
     row = cur.fetchone()
     conn.close()
-    return row
+    if row:
+        return {
+            "raw_link": row[0],
+            "expanded_link": row[1],
+            "lat": row[2],
+            "lng": row[3],
+            "formatted_address": row[4],
+            "provider": row[5],
+            "place_id": row[6],
+        }
+    return None
 
 
-def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = None, lng: float = None):
+def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = None, lng: float = None,
+                      formatted_address: str = None, provider: str = None, place_id: str = None):
     """Inserta o actualiza un link en cache."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO map_link_cache (raw_link, expanded_link, lat, lng)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO map_link_cache (raw_link, expanded_link, lat, lng, formatted_address, provider, place_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(raw_link) DO UPDATE SET
           expanded_link = COALESCE(excluded.expanded_link, map_link_cache.expanded_link),
           lat = COALESCE(excluded.lat, map_link_cache.lat),
-          lng = COALESCE(excluded.lng, map_link_cache.lng)
-    """, (raw_link, expanded_link, lat, lng))
+          lng = COALESCE(excluded.lng, map_link_cache.lng),
+          formatted_address = COALESCE(excluded.formatted_address, map_link_cache.formatted_address),
+          provider = COALESCE(excluded.provider, map_link_cache.provider),
+          place_id = COALESCE(excluded.place_id, map_link_cache.place_id)
+    """, (raw_link, expanded_link, lat, lng, formatted_address, provider, place_id))
+    conn.commit()
+    conn.close()
+
+
+# ---------- API USAGE DAILY (FUSIBLE) ----------
+
+def get_api_usage_today(api_name: str) -> int:
+    """Retorna el número de llamadas hoy para una API."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT call_count FROM api_usage_daily
+        WHERE api_name = ? AND usage_date = date('now')
+    """, (api_name,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def increment_api_usage(api_name: str):
+    """Incrementa el contador de uso diario para una API."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO api_usage_daily (api_name, usage_date, call_count)
+        VALUES (?, date('now'), 1)
+        ON CONFLICT(api_name, usage_date) DO UPDATE SET
+          call_count = api_usage_daily.call_count + 1
+    """, (api_name,))
     conn.commit()
     conn.close()
 
