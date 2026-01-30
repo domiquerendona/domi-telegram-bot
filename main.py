@@ -1817,13 +1817,34 @@ def pedido_ubicacion_handler(update, context):
             )
             return PEDIDO_DIRECCION
 
-    # 5) No se pudo resolver - mensaje claro
-    update.message.reply_text(
-        "Ese enlace no trae coordenadas.\n\n"
-        "Escribe los detalles de la direccion:\n"
-        "barrio, conjunto, torre, apto, referencias.\n\n"
-        "(Tip: pide ubicacion compartida o pega coordenadas lat,lng)"
-    )
+    # 5) No se pudo resolver
+    # Detectar si es un link de maps.app.goo.gl para mensaje UX especial
+    es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
+
+    if es_link_corto_google:
+        # UX especial para links de Google Maps sin coordenadas
+        keyboard = [[InlineKeyboardButton(
+            "📋 Copiar mensaje para enviar al cliente",
+            callback_data="ubicacion_copiar_msg_cliente"
+        )]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            "⚠️ Ese enlace no incluye coordenadas exactas.\n\n"
+            "👉 Para registrar la dirección rápido, pídele al cliente una de estas opciones (toma 5 segundos):\n"
+            "• En WhatsApp: 📎 → Ubicación → Enviar ubicación actual\n"
+            "• En Google Maps: tocar el punto azul → Compartir → copiar el link largo\n\n"
+            "Mientras tanto, escribe los detalles de la dirección:\n"
+            "barrio, conjunto, torre, apto, referencias.",
+            reply_markup=reply_markup
+        )
+    else:
+        # Mensaje genérico para otros casos
+        update.message.reply_text(
+            "No pude extraer coordenadas de ese texto.\n\n"
+            "Escribe los detalles de la dirección:\n"
+            "barrio, conjunto, torre, apto, referencias.\n\n"
+            "(Tip: pega coordenadas lat,lng o pide ubicación por WhatsApp)"
+        )
     return PEDIDO_DIRECCION
 
 
@@ -1836,6 +1857,25 @@ def pedido_ubicacion_skip_callback(update, context):
         "barrio, conjunto, torre, apto, referencias.\n\n"
         "(La cotizacion sera menos precisa sin ubicacion exacta)"
     )
+    return PEDIDO_DIRECCION
+
+
+def pedido_ubicacion_copiar_msg_callback(update, context):
+    """Envía mensaje listo para copiar y enviar al cliente."""
+    query = update.callback_query
+    query.answer()
+    # Enviar mensaje listo para copiar
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=(
+            "📋 *Copia y envía este mensaje al cliente:*\n\n"
+            "Hola 👋 ¿me puedes enviar tu ubicación por WhatsApp "
+            "(📍Enviar ubicación actual) o un link largo de Google Maps? "
+            "Es para registrar tu dirección rápido. Gracias 🙏"
+        ),
+        parse_mode="Markdown"
+    )
+    # No cambiar de estado, seguir esperando la dirección
     return PEDIDO_DIRECCION
 
 
@@ -3987,6 +4027,7 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
+            CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
