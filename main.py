@@ -499,9 +499,7 @@ def menu_button_handler(update, context):
     """Maneja los botones del menú principal (ReplyKeyboard)."""
     text = update.message.text.strip()
 
-    if text == "Nuevo pedido":
-        return nuevo_pedido(update, context)
-    elif text == "Mis pedidos":
+    if text == "Mis pedidos":
         update.message.reply_text("Funcion 'Mis pedidos' en desarrollo.")
         return
     elif text == "Mi perfil":
@@ -4165,7 +4163,10 @@ courier_conv = ConversationHandler(
 
 # Conversacion para /nuevo_pedido (con selector de cliente recurrente)
 nuevo_pedido_conv = ConversationHandler(
-    entry_points=[CommandHandler("nuevo_pedido", nuevo_pedido)],
+    entry_points=[
+        CommandHandler("nuevo_pedido", nuevo_pedido),
+        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
+    ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
             CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_")
@@ -5581,7 +5582,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Nuevo pedido|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
+        Filters.regex(r'^(Mis pedidos|Mi perfil|Ayuda|Menu)$'),
         menu_button_handler
     ))
 
