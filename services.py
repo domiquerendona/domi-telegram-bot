@@ -355,49 +355,43 @@ def get_tarifa_actual() -> Tarifa:
     )
 
 
+def _to_int(val, default):
+    try:
+        return int(float(val))
+    except:
+        return default
+
+
+def _to_float(val, default):
+    try:
+        return float(val)
+    except:
+        return default
+
+
 def get_pricing_config():
     """
     Carga la configuración de precios desde BD (tabla settings).
     Retorna un dict con todos los parámetros necesarios para calcular_precio_distancia.
     """
-    def to_int(val, default):
-        try:
-            return int(float(val))
-        except:
-            return default
-
-    def to_float(val, default):
-        try:
-            return float(val)
-        except:
-            return default
-
     return {
-        "precio_0_2km": to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
-        "precio_2_3km": to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
-        "base_distance_km": to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
-        "precio_km_extra_normal": to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
-        "umbral_km_largo": to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
-        "precio_km_extra_largo": to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
+        "precio_0_2km": _to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
+        "precio_2_3km": _to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
+        "base_distance_km": _to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
+        "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
+        "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
+        "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
     }
 
 
 def get_buy_pricing_config():
-    """
-    Carga la configuracion de recargos por productos (Compras) desde BD.
-    """
-    def to_int(val, default):
-        try:
-            return int(float(val))
-        except:
-            return default
-
+    """Carga la configuracion de recargos por productos (Compras) desde BD."""
     return {
-        "tier1_max": to_int(get_setting("buy_tier1_max", "5"), 5),
-        "tier1_fee": to_int(get_setting("buy_tier1_fee", "1000"), 1000),
-        "tier2_max": to_int(get_setting("buy_tier2_max", "5"), 5),
-        "tier2_fee": to_int(get_setting("buy_tier2_fee", "700"), 700),
-        "tier3_fee": to_int(get_setting("buy_tier3_fee", "500"), 500),
+        "tier1_max": _to_int(get_setting("buy_tier1_max", "5"), 5),
+        "tier1_fee": _to_int(get_setting("buy_tier1_fee", "1000"), 1000),
+        "tier2_max": _to_int(get_setting("buy_tier2_max", "5"), 5),
+        "tier2_fee": _to_int(get_setting("buy_tier2_fee", "700"), 700),
+        "tier3_fee": _to_int(get_setting("buy_tier3_fee", "500"), 500),
     }
 
 
