@@ -1,20 +1,126 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
-from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting
+from db import (
+    get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
+    get_api_usage_today, increment_api_usage
+)
 import math
 import re
+import os
+
+# Límite diario de llamadas a Google (configurable)
+GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+
+
+# ---------- GOOGLE API HELPERS ----------
+
+def can_call_google_today() -> bool:
+    """Verifica si podemos hacer más llamadas a Google hoy (fusible)."""
+    usage = get_api_usage_today("google_maps")
+    return usage < GOOGLE_LOOKUP_DAILY_LIMIT
+
+
+def extract_place_id_from_url(url: str) -> Optional[str]:
+    """Extrae place_id de una URL de Google Maps si existe."""
+    if not url:
+        return None
+    # Patrones comunes: place_id=xxx, query_place_id=xxx, /place/xxx/
+    patterns = [
+        r'place_id=([A-Za-z0-9_-]+)',
+        r'query_place_id=([A-Za-z0-9_-]+)',
+        r'/place/[^/]+/data=[^/]*!1s([A-Za-z0-9_-]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
+    """Obtiene detalles de un lugar por place_id usando Places API."""
+    if not GOOGLE_MAPS_API_KEY or not place_id:
+        return None
+    try:
+        import requests
+        url = "https://maps.googleapis.com/maps/api/place/details/json"
+        params = {
+            "place_id": place_id,
+            "fields": "geometry,formatted_address,name",
+            "key": GOOGLE_MAPS_API_KEY
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if data.get("status") == "OK" and data.get("result"):
+            result = data["result"]
+            geo = result.get("geometry", {}).get("location", {})
+            increment_api_usage("google_maps")
+            return {
+                "lat": geo.get("lat"),
+                "lng": geo.get("lng"),
+                "formatted_address": result.get("formatted_address"),
+                "place_id": place_id,
+                "provider": "google_places"
+            }
+    except Exception:
+        pass
+    return None
+
+
+def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
+    """Geocodifica una dirección de texto usando Geocoding API."""
+    if not GOOGLE_MAPS_API_KEY or not query:
+        return None
+    try:
+        import requests
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {
+            "address": query,
+            "key": GOOGLE_MAPS_API_KEY
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if data.get("status") == "OK" and data.get("results"):
+            result = data["results"][0]
+            geo = result.get("geometry", {}).get("location", {})
+            increment_api_usage("google_maps")
+            return {
+                "lat": geo.get("lat"),
+                "lng": geo.get("lng"),
+                "formatted_address": result.get("formatted_address"),
+                "place_id": result.get("place_id"),
+                "provider": "google_geocode"
+            }
+    except Exception:
+        pass
+    return None
 
 
 # ---------- PARSER DE LINKS / COORDS ----------
 
+def expand_short_url(text: str) -> Optional[str]:
+    """Expande links cortos de Google Maps (maps.app.goo.gl / goo.gl)."""
+    if not text:
+        return None
+    text = text.strip()
+    if "http" in text and ("maps.app.goo.gl" in text or "goo.gl" in text):
+        try:
+            import requests
+            url = next((t for t in text.split() if t.startswith("http")), None)
+            if url:
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; DomiBot/1.0)"}
+                r = requests.get(url, allow_redirects=True, timeout=10, headers=headers)
+                return r.url or url
+        except Exception:
+            return None
+    return None
+
+
 def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
     """
-    Extrae lat/lng de texto que puede ser:
-    - https://maps.google.com/?q=4.81,-75.69
-    - https://www.google.com/maps/@4.81,-75.69,17z
-    - https://goo.gl/maps/xxxxx (no soportado directamente)
-    - 4.81,-75.69 (coords directas)
-    - Compartido de WhatsApp: contiene lat y lng en la URL
+    Extrae lat/lng de texto/URL expandida.
+    NOTA: Si el texto es un link corto (goo.gl), debe expandirse ANTES con expand_short_url().
 
     Retorna (lat, lng) o None si no se puede extraer.
     Valida rangos: lat [-90, 90], lng [-180, 180]
@@ -24,7 +130,7 @@ def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
 
     text = text.strip()
 
-    # Patron 1: Google Maps con ?q=lat,lng o @lat,lng
+    # Patrones para extraer coords de URLs de Google Maps
     patterns = [
         r'[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)',           # ?q=4.81,-75.69
         r'@(-?\d+\.?\d*),(-?\d+\.?\d*)',                 # @4.81,-75.69,17z

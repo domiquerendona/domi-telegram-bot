@@ -23,6 +23,10 @@ from services import (
     quote_order_by_addresses,
     quote_order_by_coords,
     extract_lat_lng_from_text,
+    expand_short_url,
+    can_call_google_today,
+    extract_place_id_from_url,
+    google_place_details,
 )
 from db import (
     init_db,
@@ -124,6 +128,10 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
+
+    # Cache de links de ubicación
+    get_link_cache,
+    upsert_link_cache,
 )
 
 # ============================================================
@@ -431,12 +439,84 @@ def start(update, context):
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
-    
+
+
+# ---------- MENÚS PERSISTENTES ----------
+
+def get_main_menu_keyboard():
+    """Retorna el teclado principal para usuarios fuera de flujos."""
+    keyboard = [
+        ['Nuevo pedido', 'Mis pedidos'],
+        ['Mi perfil', 'Ayuda'],
+        ['Menu']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_flow_menu_keyboard():
+    """Retorna el teclado reducido para usuarios dentro de flujos."""
+    keyboard = [
+        ['Cancelar', 'Volver al menu']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def _get_chat_id(update):
+    """Extrae chat_id de forma robusta desde update."""
+    if getattr(update, "callback_query", None) and update.callback_query.message:
+        return update.callback_query.message.chat_id
+    if getattr(update, "message", None):
+        return update.message.chat_id
+    return None
+
+
+def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
+    """Muestra el menú principal completo."""
+    reply_markup = get_main_menu_keyboard()
+    chat_id = _get_chat_id(update)
+    if chat_id:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+
+def show_flow_menu(update, context, text):
+    """Muestra el menú reducido para flujos activos."""
+    reply_markup = get_flow_menu_keyboard()
+    chat_id = _get_chat_id(update)
+    if chat_id and text:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
 
 def cmd_id(update, context):
     """Muestra el user_id de Telegram del usuario."""
     user = update.effective_user
     update.message.reply_text(f"Tu user_id es: {user.id}")
+
+
+def menu_button_handler(update, context):
+    """Maneja los botones del menú principal (ReplyKeyboard)."""
+    text = update.message.text.strip()
+
+    if text == "Nuevo pedido":
+        return nuevo_pedido(update, context)
+    elif text == "Mis pedidos":
+        update.message.reply_text("Funcion 'Mis pedidos' en desarrollo.")
+        return
+    elif text == "Mi perfil":
+        return mi_perfil(update, context)
+    elif text == "Ayuda":
+        update.message.reply_text(
+            "AYUDA\n\n"
+            "Comandos disponibles:\n"
+            "/nuevo_pedido - Crear un nuevo pedido\n"
+            "/clientes - Gestionar clientes\n"
+            "/cotizar - Cotizar envio por distancia\n"
+            "/mi_perfil - Ver tu perfil\n"
+            "/cancel - Cancelar proceso actual\n"
+            "/menu - Ver menu principal"
+        )
+        return
+    elif text == "Menu":
+        return start(update, context)
 
 
 # ----- REGISTRO DE ALIADO -----
@@ -1151,6 +1231,10 @@ def nuevo_pedido(update, context):
 
     context.user_data.clear()
     context.user_data["ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+
+    # Mostrar menú reducido de flujo
+    show_flow_menu(update, context, "Iniciando nuevo pedido...")
 
     # Mostrar selector de cliente recurrente/nuevo
     keyboard = [
@@ -1673,27 +1757,93 @@ def pedido_telefono_cliente(update, context):
 
 
 def pedido_ubicacion_handler(update, context):
-    """Maneja texto de ubicación (link o coords)."""
+    """Maneja texto de ubicación (link o coords) con cache + Google place_id only."""
     texto = update.message.text.strip()
 
-    # Intentar extraer coordenadas
-    coords = extract_lat_lng_from_text(texto)
+    # Normalizar: tomar primer URL si hay varios tokens
+    raw_link = texto
+    if "http" in texto:
+        raw_link = next((t for t in texto.split() if t.startswith("http")), texto)
+
+    # 1) Consultar cache
+    cached = get_link_cache(raw_link)
+    if cached and cached.get("lat") is not None and cached.get("lng") is not None:
+        context.user_data["dropoff_lat"] = cached["lat"]
+        context.user_data["dropoff_lng"] = cached["lng"]
+        context.user_data["customer_location_link"] = raw_link
+        update.message.reply_text(
+            "Ubicacion guardada (desde cache).\n\n"
+            "Ahora escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
+
+    # 2) Intentar expandir link corto si aplica
+    expanded = expand_short_url(raw_link) or raw_link
+
+    # 3) Extraer coordenadas del texto/URL con regex
+    coords = extract_lat_lng_from_text(expanded)
     if coords:
         context.user_data["dropoff_lat"] = coords[0]
         context.user_data["dropoff_lng"] = coords[1]
-        context.user_data["customer_location_link"] = texto
+        context.user_data["customer_location_link"] = raw_link
+        upsert_link_cache(raw_link, expanded, coords[0], coords[1], provider="regex")
         update.message.reply_text(
             "Ubicacion guardada.\n\n"
             "Ahora escribe los detalles de la direccion:\n"
             "barrio, conjunto, torre, apto, referencias."
         )
-    else:
-        # No se pudo extraer, guardar como texto y advertir
+        return PEDIDO_DIRECCION
+
+    # 4) Fallback: Google Places API SOLO si hay place_id en URL
+    place_id = extract_place_id_from_url(expanded)
+    if place_id and can_call_google_today():
+        google_result = google_place_details(place_id)
+        if google_result and google_result.get("lat") and google_result.get("lng"):
+            context.user_data["dropoff_lat"] = google_result["lat"]
+            context.user_data["dropoff_lng"] = google_result["lng"]
+            context.user_data["customer_location_link"] = raw_link
+            upsert_link_cache(
+                raw_link, expanded,
+                google_result["lat"], google_result["lng"],
+                google_result.get("formatted_address"),
+                google_result.get("provider"),
+                google_result.get("place_id")
+            )
+            update.message.reply_text(
+                "Ubicacion guardada (via Google).\n\n"
+                "Ahora escribe los detalles de la direccion:\n"
+                "barrio, conjunto, torre, apto, referencias."
+            )
+            return PEDIDO_DIRECCION
+
+    # 5) No se pudo resolver
+    # Detectar si es un link de maps.app.goo.gl para mensaje UX especial
+    es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
+
+    if es_link_corto_google:
+        # UX especial para links de Google Maps sin coordenadas
+        keyboard = [[InlineKeyboardButton(
+            "📋 Copiar mensaje para enviar al cliente",
+            callback_data="ubicacion_copiar_msg_cliente"
+        )]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         update.message.reply_text(
-            "No se pudo extraer la ubicacion del texto.\n\n"
-            "Escribe los detalles de la direccion:\n"
+            "⚠️ Ese enlace no incluye coordenadas exactas.\n\n"
+            "👉 Para registrar la dirección rápido, pídele al cliente una de estas opciones (toma 5 segundos):\n"
+            "• En WhatsApp: 📎 → Ubicación → Enviar ubicación actual\n"
+            "• En Google Maps: tocar el punto azul → Compartir → copiar el link largo\n\n"
+            "Mientras tanto, escribe los detalles de la dirección:\n"
+            "barrio, conjunto, torre, apto, referencias.",
+            reply_markup=reply_markup
+        )
+    else:
+        # Mensaje genérico para otros casos
+        update.message.reply_text(
+            "No pude extraer coordenadas de ese texto.\n\n"
+            "Escribe los detalles de la dirección:\n"
             "barrio, conjunto, torre, apto, referencias.\n\n"
-            "(La cotizacion sera menos precisa sin ubicacion exacta)"
+            "(Tip: pega coordenadas lat,lng o pide ubicación por WhatsApp)"
         )
     return PEDIDO_DIRECCION
 
@@ -1708,6 +1858,23 @@ def pedido_ubicacion_skip_callback(update, context):
         "(La cotizacion sera menos precisa sin ubicacion exacta)"
     )
     return PEDIDO_DIRECCION
+
+
+def pedido_ubicacion_copiar_msg_callback(update, context):
+    """Envía mensaje listo para copiar y enviar al cliente."""
+    query = update.callback_query
+    query.answer()
+    # Enviar mensaje listo para copiar (texto plano)
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=(
+            "📋 Copia y envía este mensaje al cliente:\n\n"
+            "Hola 👋 ¿me puedes enviar tu ubicación por WhatsApp "
+            "(📍Enviar ubicación actual) o un link largo de Google Maps? "
+            "Es para registrar tu dirección rápido. Gracias 🙏"
+        )
+    )
+    return PEDIDO_UBICACION
 
 
 def pedido_direccion_cliente(update, context):
@@ -1728,9 +1895,9 @@ def mostrar_selector_pickup(query_or_update, context, edit=False):
         edit: Si True, edita el mensaje existente
     """
     keyboard = [
-        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_base")],
-        [InlineKeyboardButton("Elegir otra", callback_data="pickup_lista")],
-        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")],
+        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_select_base")],
+        [InlineKeyboardButton("Elegir otra", callback_data="pickup_select_lista")],
+        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_select_nueva")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1762,7 +1929,7 @@ def pedido_pickup_callback(update, context):
 
     ally_id = ally["id"]
 
-    if data == "pickup_base":
+    if data == "pickup_select_base":
         # Usar direccion base del aliado
         default_loc = get_default_ally_location(ally_id)
         if not default_loc:
@@ -1783,11 +1950,11 @@ def pedido_pickup_callback(update, context):
         # Continuar al siguiente paso
         return continuar_despues_pickup(query, context, edit=True)
 
-    elif data == "pickup_lista":
+    elif data == "pickup_select_lista":
         # Mostrar lista de direcciones guardadas
         return mostrar_lista_pickups(query, context)
 
-    elif data == "pickup_nueva":
+    elif data == "pickup_select_nueva":
         # Pedir nueva direccion
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
@@ -1840,11 +2007,11 @@ def mostrar_lista_pickups(query, context):
     keyboard = []
     for loc in locations[:8]:
         btn_text = construir_etiqueta_pickup(loc)
-        callback = f"pickup_loc_{loc['id']}"
+        callback = f"pickup_list_loc_{loc['id']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
 
-    keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_nueva")])
-    keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_volver")])
+    keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_list_nueva")])
+    keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_list_volver")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query.edit_message_text(
@@ -1861,10 +2028,10 @@ def pedido_pickup_lista_callback(update, context):
     query.answer()
     data = query.data
 
-    if data == "pickup_volver":
+    if data == "pickup_list_volver":
         return mostrar_selector_pickup(query, context, edit=True)
 
-    if data == "pickup_nueva":
+    if data == "pickup_list_nueva":
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
             "Envia la ubicacion (link de Google Maps o WhatsApp) "
@@ -1873,12 +2040,12 @@ def pedido_pickup_lista_callback(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    if data == "pickup_lista_volver":
+    if data == "pickup_list_back":
         return mostrar_lista_pickups(query, context)
 
     # Manejar marcar/desmarcar frecuente
-    if data.startswith("pickup_freq_"):
-        parts = data.replace("pickup_freq_", "").split("_")
+    if data.startswith("pickup_list_freq_"):
+        parts = data.replace("pickup_list_freq_", "").split("_")
         if len(parts) == 2:
             loc_id = int(parts[0])
             new_freq = int(parts[1])
@@ -1890,9 +2057,9 @@ def pedido_pickup_lista_callback(update, context):
             return mostrar_lista_pickups(query, context)
 
     # Usar pickup seleccionado
-    if data.startswith("pickup_usar_"):
+    if data.startswith("pickup_list_usar_"):
         try:
-            loc_id = int(data.replace("pickup_usar_", ""))
+            loc_id = int(data.replace("pickup_list_usar_", ""))
         except ValueError:
             query.edit_message_text("Error: ID invalido.")
             return ConversationHandler.END
@@ -1918,9 +2085,9 @@ def pedido_pickup_lista_callback(update, context):
         return continuar_despues_pickup(query, context, edit=True)
 
     # Seleccionar pickup - mostrar submenú
-    if data.startswith("pickup_loc_"):
+    if data.startswith("pickup_list_loc_"):
         try:
-            loc_id = int(data.replace("pickup_loc_", ""))
+            loc_id = int(data.replace("pickup_list_loc_", ""))
         except ValueError:
             query.edit_message_text("Error: ID invalido.")
             return ConversationHandler.END
@@ -1940,15 +2107,15 @@ def pedido_pickup_lista_callback(update, context):
         is_freq = location.get("is_frequent", 0)
 
         keyboard = [
-            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_usar_{loc_id}")],
+            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_list_usar_{loc_id}")],
         ]
 
         if is_freq:
-            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_freq_{loc_id}_0")])
+            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_list_freq_{loc_id}_0")])
         else:
-            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_freq_{loc_id}_1")])
+            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_list_freq_{loc_id}_1")])
 
-        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_lista_volver")])
+        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_list_back")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         query.edit_message_text(
@@ -2281,14 +2448,9 @@ def pedido_confirmacion_callback(update, context):
                 )
                 return PEDIDO_GUARDAR_CLIENTE
             else:
-                query.edit_message_text(f"Pedido #{order_id} creado exitosamente.")
-                # Enviar preview
-                context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=preview,
-                    reply_markup=get_preview_buttons()
-                )
+                # Cliente existente: éxito directo + menú
                 context.user_data.clear()
+                show_main_menu(update, context, f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.")
                 return ConversationHandler.END
 
         except Exception as e:
@@ -2297,11 +2459,13 @@ def pedido_confirmacion_callback(update, context):
                 "Por favor intenta nuevamente mas tarde."
             )
             context.user_data.clear()
+            show_main_menu(update, context)
             return ConversationHandler.END
 
     elif data == "pedido_cancelar":
         query.edit_message_text("Pedido cancelado.")
         context.user_data.clear()
+        show_main_menu(update, context)
         return ConversationHandler.END
 
     return PEDIDO_CONFIRMACION
@@ -2366,25 +2530,27 @@ def pedido_guardar_cliente_callback(update, context):
             # Crear cliente
             customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
-            create_customer_address(customer_id, "Principal", customer_address)
-
-            query.edit_message_text(
-                f"Cliente '{customer_name}' guardado exitosamente.\n\n"
-                "Podras usarlo en tus proximos pedidos desde 'Cliente recurrente'."
+            create_customer_address(
+                customer_id,
+                "Principal",
+                customer_address,
+                lat=context.user_data.get("dropoff_lat"),
+                lng=context.user_data.get("dropoff_lng"),
             )
+            context.user_data.clear()
+            show_main_menu(update, context, f"Pedido creado exitosamente.\nCliente '{customer_name}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.")
+            return ConversationHandler.END
         except Exception as e:
-            query.edit_message_text(
-                f"El pedido fue creado pero hubo un error al guardar el cliente: {str(e)}"
-            )
+            context.user_data.clear()
+            show_main_menu(update, context, f"Pedido creado exitosamente.\nError al guardar cliente: {str(e)}\nPronto un repartidor sera asignado.")
+            return ConversationHandler.END
 
     elif data == "pedido_guardar_no":
-        query.edit_message_text(
-            "Entendido. El pedido fue creado.\n"
-            "Pronto un repartidor sera asignado."
-        )
+        context.user_data.clear()
+        show_main_menu(update, context, "Pedido creado exitosamente.\nPronto un repartidor sera asignado.")
+        return ConversationHandler.END
 
-    context.user_data.clear()
-    return ConversationHandler.END
+    return PEDIDO_GUARDAR_CLIENTE
 
 
 def aliados_pendientes(update, context):
@@ -2914,21 +3080,28 @@ def admin_menu_callback(update, context):
 
 
 def cancel_conversacion(update, context):
-    # Cierra cualquier conversación activa y limpia datos temporales
+    """Cierra cualquier conversación activa y muestra menú principal."""
     try:
         context.user_data.clear()
     except Exception:
         pass
 
-    # Responder según sea mensaje o callback (si lo usas en botones)
+    # Responder según sea mensaje o callback
     if getattr(update, "callback_query", None):
         q = update.callback_query
         q.answer()
-        q.edit_message_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+        q.edit_message_text("Proceso cancelado.")
     else:
-        update.message.reply_text("Proceso cancelado. Puedes iniciar de nuevo cuando quieras.")
+        update.message.reply_text("Proceso cancelado.")
 
+    # Mostrar menú principal
+    show_main_menu(update, context, "Menu principal. Selecciona una opcion:")
     return ConversationHandler.END
+
+
+def cancel_por_texto(update, context):
+    """Handler para cuando el usuario escribe 'Cancelar' o 'Volver al menu'."""
+    return cancel_conversacion(update, context)
 
 
 # ----- COTIZADOR INTERNO -----
@@ -3754,7 +3927,10 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
     allow_reentry=True,
 )
 
@@ -3776,7 +3952,8 @@ ally_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        CommandHandler("menu", menu)
+        CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -3814,7 +3991,8 @@ courier_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        CommandHandler("menu", menu)
+        CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -3844,16 +4022,17 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
+            CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
-            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_")
+            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
         ],
         PEDIDO_PICKUP_LISTA: [
-            CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_")
+            CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_list_")
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
@@ -3880,7 +4059,10 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
         ],
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
     allow_reentry=True,
 )
 
@@ -3890,7 +4072,10 @@ cotizar_conv = ConversationHandler(
     states={
         COTIZAR_DISTANCIA: [MessageHandler(Filters.text & ~Filters.command, cotizar_distancia)]
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
 )
 
 
@@ -4039,7 +4224,10 @@ tarifas_conv = ConversationHandler(
     states={
         TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
     },
-    fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+    ],
 )
 
 
@@ -5182,10 +5370,21 @@ def main():
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
             LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
         },
-       fallbacks=[CommandHandler("cancel", cancel_conversacion)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'^(Cancelar|Volver al menu)$'), cancel_por_texto),
+        ],
     )
     dp.add_handler(admin_conv)
-    
+
+    # -------------------------
+    # Handler para botones del menú principal (ReplyKeyboard)
+    # -------------------------
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'^(Nuevo pedido|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
+        menu_button_handler
+    ))
+
     # -------------------------
     # Notificación de arranque al Administrador de Plataforma (opcional)
     # -------------------------
