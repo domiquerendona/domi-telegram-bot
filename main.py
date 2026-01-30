@@ -3261,6 +3261,15 @@ def cancel_por_texto(update, context):
     return cancel_conversacion(update, context)
 
 
+def volver_menu_global(update, context):
+    """Handler global para 'Cancelar' o 'Volver al menu' fuera de conversaciones."""
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
+    show_main_menu(update, context, "Menu principal. Selecciona una opcion:")
+
+
 # ----- COTIZADOR INTERNO -----
 
 def cotizar_start(update, context):
@@ -5574,6 +5583,12 @@ def main():
     dp.add_handler(MessageHandler(
         Filters.regex(r'^(Nuevo pedido|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
         menu_button_handler
+    ))
+
+    # Handler global para "Cancelar" y "Volver al menu" (fuera de conversaciones)
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'^(Cancelar|Volver al menu)$'),
+        volver_menu_global
     ))
 
     # -------------------------
