@@ -536,6 +536,8 @@ def init_db():
             city TEXT NOT NULL,
             barrio TEXT NOT NULL,
             phone TEXT,
+            lat REAL,
+            lng REAL,
             is_default INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (ally_id) REFERENCES allies(id)
@@ -1566,6 +1568,8 @@ def create_ally_location(
     barrio: str,
     phone: str = None,
     is_default: bool = False,
+    lat: float = None,
+    lng: float = None,
 ):
     """Crea una dirección de recogida para un aliado."""
     conn = get_connection()
@@ -1580,9 +1584,9 @@ def create_ally_location(
 
     cur.execute("""
         INSERT INTO ally_locations (
-            ally_id, label, address, city, barrio, phone, is_default
-        ) VALUES (?, ?, ?, ?, ?, ?, ?);
-    """, (ally_id, label, address, city, barrio, phone, 1 if is_default else 0))
+            ally_id, label, address, city, barrio, phone, is_default, lat, lng
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """, (ally_id, label, address, city, barrio, phone, 1 if is_default else 0, lat, lng))
 
     conn.commit()
     location_id = cur.lastrowid
