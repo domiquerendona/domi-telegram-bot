@@ -1864,19 +1864,17 @@ def pedido_ubicacion_copiar_msg_callback(update, context):
     """Envía mensaje listo para copiar y enviar al cliente."""
     query = update.callback_query
     query.answer()
-    # Enviar mensaje listo para copiar
+    # Enviar mensaje listo para copiar (texto plano)
     context.bot.send_message(
         chat_id=query.message.chat_id,
         text=(
-            "📋 *Copia y envía este mensaje al cliente:*\n\n"
+            "📋 Copia y envía este mensaje al cliente:\n\n"
             "Hola 👋 ¿me puedes enviar tu ubicación por WhatsApp "
             "(📍Enviar ubicación actual) o un link largo de Google Maps? "
             "Es para registrar tu dirección rápido. Gracias 🙏"
-        ),
-        parse_mode="Markdown"
+        )
     )
-    # No cambiar de estado, seguir esperando la dirección
-    return PEDIDO_DIRECCION
+    return PEDIDO_UBICACION
 
 
 def pedido_direccion_cliente(update, context):
@@ -4024,10 +4022,10 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
+            CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
-            CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
