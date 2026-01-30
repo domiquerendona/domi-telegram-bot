@@ -2133,7 +2133,7 @@ def pedido_pickup_lista_callback(update, context):
 
 def pedido_pickup_nueva_ubicacion_handler(update, context):
     """Maneja la captura de ubicacion para nueva direccion de recogida."""
-    from services import extract_lat_lng_from_text
+    from services import extract_lat_lng_from_text, expand_short_url
 
     text = update.message.text.strip()
 
@@ -2147,7 +2147,15 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
-    coords = extract_lat_lng_from_text(text)
+    # Normalizar: tomar primer URL si hay varios tokens
+    raw_link = text
+    if "http" in text:
+        raw_link = next((t for t in text.split() if t.startswith("http")), text)
+
+    # Expandir link corto si aplica
+    expanded = expand_short_url(raw_link) or raw_link
+
+    coords = extract_lat_lng_from_text(expanded)
     if coords:
         lat, lng = coords
         context.user_data["new_pickup_lat"] = lat
@@ -2157,9 +2165,30 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
             "Ahora escribe los detalles de la direccion de recogida:\n"
             "direccion, barrio, referencias..."
         )
+        return PEDIDO_PICKUP_NUEVA_DETALLES
+
+    # No se pudo extraer - detectar si es link corto de Google
+    context.user_data["new_pickup_lat"] = None
+    context.user_data["new_pickup_lng"] = None
+
+    es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
+
+    if es_link_corto_google:
+        keyboard = [[InlineKeyboardButton(
+            "📋 Copiar mensaje para enviar al cliente",
+            callback_data="pickup_copiar_msg_cliente"
+        )]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            "⚠️ Ese enlace no incluye coordenadas exactas.\n\n"
+            "👉 Pidele al cliente una de estas opciones:\n"
+            "• En WhatsApp: 📎 → Ubicacion → Enviar ubicacion actual\n"
+            "• En Google Maps: tocar el punto azul → Compartir → copiar el link largo\n\n"
+            "Mientras tanto, escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias...",
+            reply_markup=reply_markup
+        )
     else:
-        context.user_data["new_pickup_lat"] = None
-        context.user_data["new_pickup_lng"] = None
         update.message.reply_text(
             "No se pudo extraer ubicacion del texto.\n\n"
             "Escribe los detalles de la direccion de recogida:\n"
@@ -2167,6 +2196,22 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
 
     return PEDIDO_PICKUP_NUEVA_DETALLES
+
+
+def pickup_nueva_copiar_msg_callback(update, context):
+    """Envia mensaje listo para copiar (flujo pickup nueva)."""
+    query = update.callback_query
+    query.answer()
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=(
+            "📋 Copia y envia este mensaje al cliente:\n\n"
+            "Hola 👋 ¿me puedes enviar tu ubicacion por WhatsApp "
+            "(📍Enviar ubicacion actual) o un link largo de Google Maps? "
+            "Es para registrar tu direccion rapido. Gracias 🙏"
+        )
+    )
+    return PEDIDO_PICKUP_NUEVA_UBICACION
 
 
 def pedido_pickup_nueva_detalles_handler(update, context):
@@ -4035,6 +4080,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_list_")
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
+            CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
         ],
         PEDIDO_PICKUP_NUEVA_DETALLES: [
