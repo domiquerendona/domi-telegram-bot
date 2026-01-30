@@ -19,6 +19,8 @@ from services import (
     admin_puede_operar,
     calcular_precio_distancia,
     get_pricing_config,
+    get_buy_pricing_config,
+    calc_buy_products_surcharge,
     quote_order,
     quote_order_by_addresses,
     quote_order_by_coords,
@@ -243,7 +245,8 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     PEDIDO_VALOR_BASE,            # Capturar valor de base
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
-) = range(14, 31)
+    PEDIDO_COMPRAS_CANTIDAD,      # Capturar cantidad de productos
+) = range(14, 32)
 
 
 # =========================
@@ -1459,6 +1462,7 @@ def get_tipo_servicio_keyboard():
         [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
         [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
         [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
+        [InlineKeyboardButton("🛒 Compras", callback_data="pedido_tipo_compras")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1501,6 +1505,7 @@ def pedido_tipo_servicio_callback(update, context):
         "pedido_tipo_domicilio": "Domicilio",
         "pedido_tipo_mensajeria": "Mensajeria",
         "pedido_tipo_recogida": "Recogida en tienda",
+        "pedido_tipo_compras": "Compras",
     }
 
     if data not in tipos_map:
@@ -1508,6 +1513,16 @@ def pedido_tipo_servicio_callback(update, context):
         return ConversationHandler.END
 
     context.user_data["service_type"] = tipos_map[data]
+
+    # Si es Compras, pedir cantidad de productos
+    if data == "pedido_tipo_compras":
+        query.edit_message_text(
+            "🛒 COMPRAS\n\n"
+            "Cuantos productos son en total?\n\n"
+            "(Cada 3 unidades de un producto = 1 producto.\n"
+            "Unidades adicionales cuentan como producto extra)"
+        )
+        return PEDIDO_COMPRAS_CANTIDAD
 
     # Verificar si ya tenemos todos los datos del cliente
     has_name = context.user_data.get("customer_name")
@@ -1521,6 +1536,45 @@ def pedido_tipo_servicio_callback(update, context):
         # Cliente nuevo: pedir nombre
         query.edit_message_text(
             f"Tipo de servicio: {tipos_map[data]}\n\n"
+            "Ahora escribe el nombre del cliente:"
+        )
+        return PEDIDO_NOMBRE
+
+
+def pedido_compras_cantidad_handler(update, context):
+    """Captura la cantidad de productos para Compras."""
+    texto = update.message.text.strip()
+
+    try:
+        cantidad = int(texto)
+        if cantidad <= 0:
+            update.message.reply_text(
+                "Cantidad invalida. Escribe un numero mayor a 0:"
+            )
+            return PEDIDO_COMPRAS_CANTIDAD
+        if cantidad > 50:
+            update.message.reply_text(
+                "Maximo 50 productos. Escribe una cantidad valida:"
+            )
+            return PEDIDO_COMPRAS_CANTIDAD
+    except ValueError:
+        update.message.reply_text(
+            "Valor invalido. Escribe un numero entero:"
+        )
+        return PEDIDO_COMPRAS_CANTIDAD
+
+    context.user_data["buy_products_count"] = cantidad
+
+    # Continuar con el flujo normal
+    has_name = context.user_data.get("customer_name")
+    has_phone = context.user_data.get("customer_phone")
+    has_address = context.user_data.get("customer_address")
+
+    if has_name and has_phone and has_address:
+        return mostrar_pregunta_base(update, context, edit=False)
+    else:
+        update.message.reply_text(
+            f"Productos: {cantidad}\n\n"
             "Ahora escribe el nombre del cliente:"
         )
         return PEDIDO_NOMBRE
@@ -1720,7 +1774,16 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
 
     # Guardar datos de cotizacion
     context.user_data["quote_distance_km"] = cotizacion["distance_km"]
-    context.user_data["quote_price"] = cotizacion["price"]
+    base_price = cotizacion["price"]
+
+    # Si es servicio de Compras, calcular recargo por productos
+    buy_surcharge = 0
+    if context.user_data.get("service_type") == "Compras":
+        n_products = context.user_data.get("buy_products_count", 0)
+        buy_surcharge = calc_buy_products_surcharge(n_products)
+        context.user_data["buy_surcharge"] = buy_surcharge
+
+    context.user_data["quote_price"] = base_price + buy_surcharge
     context.user_data["quote_source"] = cotizacion.get("quote_source", "text")
 
     # Mostrar resumen con botones de confirmacion
@@ -2350,6 +2413,8 @@ def construir_resumen_pedido(context):
     precio = context.user_data.get("quote_price", 0)
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
+    buy_products = context.user_data.get("buy_products_count", 0)
+    buy_surcharge = context.user_data.get("buy_surcharge", 0)
 
     # Mostrar recogida
     if pickup_label and pickup_address:
@@ -2367,8 +2432,16 @@ def construir_resumen_pedido(context):
         f"Recogida: {recogida}\n"
         f"Entrega: {direccion}\n"
         f"Distancia: {distancia:.1f} km\n"
-        f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
     )
+
+    # Si es Compras, mostrar desglose
+    if tipo_servicio == "Compras" and buy_products > 0:
+        tarifa_distancia = precio - buy_surcharge
+        resumen += f"Tarifa distancia: ${tarifa_distancia:,}".replace(",", ".") + "\n"
+        resumen += f"Productos: {buy_products}\n"
+        resumen += f"Recargo productos: ${buy_surcharge:,}".replace(",", ".") + "\n"
+
+    resumen += f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
 
     if requires_cash and cash_amount > 0:
         resumen += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
@@ -4098,6 +4171,9 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_tipo_servicio_callback, pattern=r"^pedido_tipo_"),
             MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
         ],
+        PEDIDO_COMPRAS_CANTIDAD: [
+            MessageHandler(Filters.text & ~Filters.command, pedido_compras_cantidad_handler)
+        ],
         PEDIDO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
         ],
@@ -4177,17 +4253,22 @@ def tarifas_start(update, context):
 
     # Cargar configuracion actual
     config = get_pricing_config()
+    buy_config = get_buy_pricing_config()
 
     # Mostrar valores actuales
     mensaje = (
         "CONFIGURACION DE TARIFAS\n\n"
-        "Valores actuales:\n"
+        "TARIFAS POR DISTANCIA:\n"
         f"1. Precio 0-2 km: ${config['precio_0_2km']:,}\n"
         f"2. Precio 2-3 km: ${config['precio_2_3km']:,}\n"
         f"3. Base distancia (km): {config['base_distance_km']}\n"
         f"4. Precio km extra normal (<=10km): ${config['precio_km_extra_normal']:,}\n"
         f"5. Umbral km largo: {config['umbral_km_largo']} km\n"
         f"6. Precio km extra largo (>10km): ${config['precio_km_extra_largo']:,}\n"
+        "\nTARIFAS COMPRAS (recargo por productos):\n"
+        f"7. Productos 1-{buy_config['tier1_max']}: ${buy_config['tier1_fee']:,} c/u\n"
+        f"8. Productos {buy_config['tier1_max']+1}-{buy_config['tier1_max']+buy_config['tier2_max']}: ${buy_config['tier2_fee']:,} c/u\n"
+        f"9. Productos {buy_config['tier1_max']+buy_config['tier2_max']+1}+: ${buy_config['tier3_fee']:,} c/u\n"
     )
 
     # Botones para editar
@@ -4198,6 +4279,11 @@ def tarifas_start(update, context):
         [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
         [InlineKeyboardButton("Cambiar umbral largo", callback_data="pricing_edit_umbral_km_largo")],
         [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
+        [InlineKeyboardButton("Compras: max tier1", callback_data="pricing_edit_buy_tier1_max")],
+        [InlineKeyboardButton("Compras: fee tier1", callback_data="pricing_edit_buy_tier1_fee")],
+        [InlineKeyboardButton("Compras: max tier2", callback_data="pricing_edit_buy_tier2_max")],
+        [InlineKeyboardButton("Compras: fee tier2", callback_data="pricing_edit_buy_tier2_fee")],
+        [InlineKeyboardButton("Compras: fee tier3", callback_data="pricing_edit_buy_tier3_fee")],
         [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
     ]
 
@@ -4237,6 +4323,11 @@ def tarifas_edit_callback(update, context):
         "precio_km_extra_normal": "Precio km extra normal",
         "umbral_km_largo": "Umbral km largo",
         "precio_km_extra_largo": "Precio km extra largo",
+        "buy_tier1_max": "Compras: max productos tier1 (default 5)",
+        "buy_tier1_fee": "Compras: recargo tier1 c/u (default 1000)",
+        "buy_tier2_max": "Compras: max productos tier2 (default 5)",
+        "buy_tier2_fee": "Compras: recargo tier2 c/u (default 700)",
+        "buy_tier3_fee": "Compras: recargo tier3+ c/u (default 500)",
     }
 
     field_name = field_names.get(field, field)
@@ -4273,29 +4364,44 @@ def tarifas_set_valor(update, context):
         update.message.reply_text("Valor invalido. Debe ser un numero. Intenta de nuevo o usa /cancel.")
         return TARIFAS_VALOR
 
-    # Guardar en BD
-    setting_key = f"pricing_{field}"
+    # Guardar en BD - campos de compras usan prefijo 'buy_', distancia usa 'pricing_'
+    if field.startswith("buy_"):
+        setting_key = field
+    else:
+        setting_key = f"pricing_{field}"
     set_setting(setting_key, texto)
 
     # Recargar config y mostrar
     config = get_pricing_config()
+    buy_config = get_buy_pricing_config()
 
     # Pruebas rapidas
     test_31 = calcular_precio_distancia(3.1)
     test_111 = calcular_precio_distancia(11.1)
+    test_buy_3 = calc_buy_products_surcharge(3)
+    test_buy_8 = calc_buy_products_surcharge(8)
+    test_buy_15 = calc_buy_products_surcharge(15)
 
     mensaje = (
         "Guardado.\n\n"
-        "Valores actuales:\n"
+        "TARIFAS DISTANCIA:\n"
         f"- Precio 0-2 km: ${config['precio_0_2km']:,}\n"
         f"- Precio 2-3 km: ${config['precio_2_3km']:,}\n"
         f"- Base distancia: {config['base_distance_km']} km\n"
         f"- Precio km extra normal: ${config['precio_km_extra_normal']:,}\n"
         f"- Umbral largo: {config['umbral_km_largo']} km\n"
         f"- Precio km extra largo: ${config['precio_km_extra_largo']:,}\n\n"
-        f"Prueba rapida:\n"
+        f"TARIFAS COMPRAS:\n"
+        f"- Tier1 (1-{buy_config['tier1_max']}): ${buy_config['tier1_fee']:,} c/u\n"
+        f"- Tier2 ({buy_config['tier1_max']+1}-{buy_config['tier1_max']+buy_config['tier2_max']}): ${buy_config['tier2_fee']:,} c/u\n"
+        f"- Tier3 ({buy_config['tier1_max']+buy_config['tier2_max']+1}+): ${buy_config['tier3_fee']:,} c/u\n\n"
+        f"Prueba rapida distancia:\n"
         f"3.1 km -> ${test_31:,}\n"
-        f"11.1 km -> ${test_111:,}"
+        f"11.1 km -> ${test_111:,}\n\n"
+        f"Prueba rapida compras:\n"
+        f"3 productos -> ${test_buy_3:,}\n"
+        f"8 productos -> ${test_buy_8:,}\n"
+        f"15 productos -> ${test_buy_15:,}"
     )
 
     update.message.reply_text(mensaje)

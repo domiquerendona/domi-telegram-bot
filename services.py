@@ -355,31 +355,79 @@ def get_tarifa_actual() -> Tarifa:
     )
 
 
+def _to_int(val, default):
+    try:
+        return int(float(val))
+    except:
+        return default
+
+
+def _to_float(val, default):
+    try:
+        return float(val)
+    except:
+        return default
+
+
 def get_pricing_config():
     """
     Carga la configuración de precios desde BD (tabla settings).
     Retorna un dict con todos los parámetros necesarios para calcular_precio_distancia.
     """
-    def to_int(val, default):
-        try:
-            return int(float(val))
-        except:
-            return default
-
-    def to_float(val, default):
-        try:
-            return float(val)
-        except:
-            return default
-
     return {
-        "precio_0_2km": to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
-        "precio_2_3km": to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
-        "base_distance_km": to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
-        "precio_km_extra_normal": to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
-        "umbral_km_largo": to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
-        "precio_km_extra_largo": to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
+        "precio_0_2km": _to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
+        "precio_2_3km": _to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
+        "base_distance_km": _to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
+        "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
+        "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
+        "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
     }
+
+
+def get_buy_pricing_config():
+    """Carga la configuracion de recargos por productos (Compras) desde BD."""
+    return {
+        "tier1_max": _to_int(get_setting("buy_tier1_max", "5"), 5),
+        "tier1_fee": _to_int(get_setting("buy_tier1_fee", "1000"), 1000),
+        "tier2_max": _to_int(get_setting("buy_tier2_max", "5"), 5),
+        "tier2_fee": _to_int(get_setting("buy_tier2_fee", "700"), 700),
+        "tier3_fee": _to_int(get_setting("buy_tier3_fee", "500"), 500),
+    }
+
+
+def calc_buy_products_surcharge(n_products: int, config: dict = None) -> int:
+    """
+    Calcula el recargo por productos para servicio de Compras.
+
+    Tramos:
+    - 1 a tier1_max (default 5): +tier1_fee c/u
+    - tier1_max+1 a tier1_max+tier2_max (default 6-10): +tier2_fee c/u
+    - tier1_max+tier2_max+1 en adelante (default 11+): +tier3_fee c/u
+
+    Args:
+        n_products: Numero de productos
+        config: Dict con configuracion. Si None, carga desde BD.
+
+    Returns:
+        Recargo total en pesos
+    """
+    if n_products <= 0:
+        return 0
+
+    if config is None:
+        config = get_buy_pricing_config()
+
+    tier1_max = config["tier1_max"]
+    tier1_fee = config["tier1_fee"]
+    tier2_max = config["tier2_max"]
+    tier2_fee = config["tier2_fee"]
+    tier3_fee = config["tier3_fee"]
+
+    tier1 = min(n_products, tier1_max) * tier1_fee
+    tier2 = min(max(n_products - tier1_max, 0), tier2_max) * tier2_fee
+    tier3 = max(n_products - tier1_max - tier2_max, 0) * tier3_fee
+
+    return tier1 + tier2 + tier3
 
 
 def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:
