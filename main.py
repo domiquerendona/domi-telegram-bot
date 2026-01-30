@@ -1408,6 +1408,29 @@ def pedido_seleccionar_direccion_callback(update, context):
         query.edit_message_text("Escribe la nueva direccion de entrega:")
         return PEDIDO_DIRECCION
 
+    elif data == "guardar_dir_cliente_si":
+        # Guardar la direccion del cliente
+        customer_id = context.user_data.get("customer_id")
+        address_text = context.user_data.get("customer_address", "")
+        lat = context.user_data.get("dropoff_lat")
+        lng = context.user_data.get("dropoff_lng")
+        if customer_id and address_text:
+            create_customer_address(
+                customer_id=customer_id,
+                label=address_text[:30],
+                address_text=address_text,
+                lat=lat,
+                lng=lng
+            )
+            query.edit_message_text("Direccion guardada.")
+        else:
+            query.edit_message_text("OK, continuamos.")
+        return mostrar_selector_pickup(query, context, edit=False)
+
+    elif data == "guardar_dir_cliente_no":
+        query.edit_message_text("OK, usaremos esta direccion solo esta vez.")
+        return mostrar_selector_pickup(query, context, edit=False)
+
     elif data.startswith("pedido_sel_addr_"):
         address_id = int(data.replace("pedido_sel_addr_", ""))
         customer_id = context.user_data.get("customer_id")
@@ -1420,6 +1443,8 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_address"] = address["address_text"]
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
+        context.user_data["dropoff_lat"] = address.get("lat")
+        context.user_data["dropoff_lng"] = address.get("lng")
 
         # Mostrar selector de punto de recogida
         return mostrar_selector_pickup(query, context, edit=True)
@@ -1880,7 +1905,21 @@ def pedido_ubicacion_copiar_msg_callback(update, context):
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
 
-    # Mostrar selector de punto de recogida
+    # Si hay cliente existente (recurrente), preguntar si guardar direccion
+    customer_id = context.user_data.get("customer_id")
+    if customer_id and not context.user_data.get("is_new_customer"):
+        keyboard = [
+            [InlineKeyboardButton("Si, guardar", callback_data="guardar_dir_cliente_si")],
+            [InlineKeyboardButton("No, solo usar esta vez", callback_data="guardar_dir_cliente_no")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            "Deseas guardar esta direccion para futuros pedidos?",
+            reply_markup=reply_markup
+        )
+        return PEDIDO_SELECCIONAR_DIRECCION
+
+    # Cliente nuevo o sin guardar - continuar al pickup
     return mostrar_selector_pickup(update, context, edit=False)
 
 
