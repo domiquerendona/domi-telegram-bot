@@ -1232,6 +1232,7 @@ def nuevo_pedido(update, context):
 
     context.user_data.clear()
     context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
     context.user_data["ally"] = ally
 
     # Mostrar menú reducido de flujo
@@ -1263,9 +1264,9 @@ def pedido_selector_cliente_callback(update, context):
     query.answer()
     data = query.data
 
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     if not ally_id:
-        query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+        query.edit_message_text("No hay un aliado activo. Regresa al menu e inicia el pedido nuevamente.")
         return ConversationHandler.END
 
     if data == "pedido_cliente_recurrente":
@@ -1301,7 +1302,6 @@ def pedido_selector_cliente_callback(update, context):
         return PEDIDO_NOMBRE
 
     elif data == "pedido_repetir_ultimo":
-        ally_id = context.user_data.get("ally_id")
         last_order = get_last_order_by_ally(ally_id)
         if last_order:
             context.user_data["customer_name"] = last_order["customer_name"]
@@ -1368,10 +1368,10 @@ def pedido_selector_cliente_callback(update, context):
 def pedido_buscar_cliente(update, context):
     """Busca clientes por nombre o telefono."""
     query_text = update.message.text.strip()
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
 
     if not ally_id:
-        update.message.reply_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+        update.message.reply_text("No hay un aliado activo. Regresa al menu e inicia el pedido nuevamente.")
         return ConversationHandler.END
 
     results = search_ally_customers(ally_id, query_text, limit=10)
@@ -2676,7 +2676,7 @@ def pedido_guardar_cliente_callback(update, context):
     data = query.data
 
     if data == "pedido_guardar_si":
-        ally_id = context.user_data.get("ally_id")
+        ally_id = context.user_data.get("active_ally_id")
         customer_name = context.user_data.get("customer_name", "")
         customer_phone = context.user_data.get("customer_phone", "")
         customer_address = context.user_data.get("customer_address", "")
@@ -3588,7 +3588,7 @@ def clientes_cmd(update, context):
         return ConversationHandler.END
 
     context.user_data.clear()
-    context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
 
     return clientes_mostrar_menu(update, context)
 
@@ -3618,10 +3618,10 @@ def clientes_menu_callback(update, context):
     query = update.callback_query
     query.answer()
     data = query.data
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
 
     if not ally_id:
-        query.edit_message_text("Sesion expirada. Usa /clientes de nuevo.")
+        query.edit_message_text("No hay un aliado activo. Regresa al menu e inicia el pedido nuevamente.")
         return ConversationHandler.END
 
     if data == "cust_nuevo":
@@ -3704,7 +3704,7 @@ def clientes_menu_callback(update, context):
 
 def clientes_ver_cliente(query, context, customer_id):
     """Muestra detalles de un cliente y sus opciones."""
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     customer = get_ally_customer_by_id(customer_id, ally_id)
 
     if not customer:
@@ -3747,7 +3747,7 @@ def clientes_ver_cliente_callback(update, context):
     query = update.callback_query
     query.answer()
     data = query.data
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     customer_id = context.user_data.get("current_customer_id")
 
     if data == "cust_dirs":
@@ -3889,7 +3889,7 @@ def clientes_nuevo_direccion_label(update, context):
 def clientes_nuevo_direccion_text(update, context):
     """Recibe direccion y guarda el nuevo cliente."""
     address_text = update.message.text.strip()
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     name = context.user_data.get("new_customer_name")
     phone = context.user_data.get("new_customer_phone")
     notes = context.user_data.get("new_customer_notes")
@@ -3919,7 +3919,7 @@ def clientes_nuevo_direccion_text(update, context):
 def clientes_buscar(update, context):
     """Busca clientes por nombre o telefono."""
     query_text = update.message.text.strip()
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
 
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
@@ -3946,7 +3946,7 @@ def clientes_buscar(update, context):
 def clientes_editar_nombre(update, context):
     """Actualiza el nombre del cliente."""
     nuevo_nombre = update.message.text.strip()
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     customer_id = context.user_data.get("current_customer_id")
     customer = get_ally_customer_by_id(customer_id, ally_id)
 
@@ -3962,7 +3962,7 @@ def clientes_editar_nombre(update, context):
 def clientes_editar_telefono(update, context):
     """Actualiza el telefono del cliente."""
     nuevo_telefono = update.message.text.strip()
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     customer_id = context.user_data.get("current_customer_id")
     customer = get_ally_customer_by_id(customer_id, ally_id)
 
@@ -3980,7 +3980,7 @@ def clientes_editar_notas(update, context):
     nuevas_notas = update.message.text.strip()
     if nuevas_notas.lower() == "ninguna":
         nuevas_notas = None
-    ally_id = context.user_data.get("ally_id")
+    ally_id = context.user_data.get("active_ally_id")
     customer_id = context.user_data.get("current_customer_id")
     customer = get_ally_customer_by_id(customer_id, ally_id)
 
