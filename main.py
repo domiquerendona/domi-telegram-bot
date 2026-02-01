@@ -4218,8 +4218,8 @@ def agenda_menu_callback(update, context):
         return agenda_pickups_mostrar(query, context)
 
     elif data == "agenda_clientes":
-        # Redirigir a /clientes reutilizando el flujo existente
-        return clientes_mostrar_menu(update, context, edit_message=True)
+        query.edit_message_text("Agenda de clientes: usa /clientes para abrirla.")
+        return ConversationHandler.END
 
     elif data == "agenda_cerrar":
         query.edit_message_text("Agenda cerrada.")
@@ -4450,7 +4450,6 @@ agenda_conv = ConversationHandler(
     states={
         DIRECCIONES_MENU: [
             CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_"),
-            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_"),
         ],
         DIRECCIONES_PICKUPS: [
             CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_")
