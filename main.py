@@ -4093,7 +4093,7 @@ clientes_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -4117,7 +4117,7 @@ ally_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -4156,7 +4156,7 @@ courier_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -4172,7 +4172,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_")
         ],
         PEDIDO_BUSCAR_CLIENTE: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_buscar_cliente)
         ],
         PEDIDO_SELECCIONAR_DIRECCION: [
@@ -4183,25 +4183,25 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
         ],
         PEDIDO_COMPRAS_CANTIDAD: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_compras_cantidad_handler)
         ],
         PEDIDO_NOMBRE: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
         ],
         PEDIDO_TELEFONO: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
@@ -4212,11 +4212,11 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
         ],
         PEDIDO_PICKUP_NUEVA_DETALLES: [
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_detalles_handler)
         ],
         PEDIDO_PICKUP_GUARDAR: [
@@ -4227,7 +4227,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_VALOR_BASE: [
             CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_"),
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
         ],
         PEDIDO_CONFIRMACION: [
@@ -4241,7 +4241,7 @@ nuevo_pedido_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -4254,7 +4254,7 @@ cotizar_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
 )
 
@@ -4436,7 +4436,7 @@ tarifas_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
 )
 
@@ -5582,7 +5582,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
-            MessageHandler(Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
     )
     dp.add_handler(admin_conv)
@@ -5597,7 +5597,7 @@ def main():
 
     # Handler global para "Cancelar" y "Volver al menu" (fuera de conversaciones)
     dp.add_handler(MessageHandler(
-        Filters.regex(r'(?i)^\s*(cancelar|volver al men[uú])\s*$'),
+        Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'),
         volver_menu_global
     ))
 
