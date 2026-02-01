@@ -272,6 +272,18 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
 
 
 # =========================
+# Estados para /direcciones (panel Mis direcciones del aliado)
+# =========================
+(
+    DIRECCIONES_MENU,
+    DIRECCIONES_PICKUPS,
+    DIRECCIONES_PICKUP_NUEVA_UBICACION,
+    DIRECCIONES_PICKUP_NUEVA_DETALLES,
+    DIRECCIONES_PICKUP_GUARDAR,
+) = range(500, 505)
+
+
+# =========================
 # Estados para cotizador interno
 # =========================
 COTIZAR_DISTANCIA = 901
@@ -4041,6 +4053,315 @@ def clientes_dir_editar_text(update, context):
     return clientes_mostrar_menu(update, context, edit_message=False)
 
 
+# =========================
+# Panel "Mis direcciones" para aliados (/direcciones)
+# =========================
+
+def direcciones_cmd(update, context):
+    """Comando /direcciones: panel de direcciones del aliado."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+
+    if not ally:
+        update.message.reply_text(
+            "No tienes perfil de aliado registrado.\n"
+            "Usa /soy_aliado para registrarte."
+        )
+        return ConversationHandler.END
+
+    status = ally[8] if isinstance(ally, (list, tuple)) else ally.get("status")
+    if status != "APPROVED":
+        update.message.reply_text(
+            "Tu cuenta de aliado no esta aprobada.\n"
+            "Cuando tu estado sea APPROVED podras usar esta funcion."
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    ally_id = ally[0] if isinstance(ally, (list, tuple)) else ally.get("id")
+    context.user_data["active_ally_id"] = ally_id
+    context.user_data["ally"] = {"id": ally_id}
+
+    return ally_panel_direcciones(update, context)
+
+
+def ally_panel_direcciones(update, context, edit_message=False):
+    """Muestra menu principal del panel Mis direcciones."""
+    keyboard = [
+        [InlineKeyboardButton("Recogidas", callback_data="ally_panel_pickups")],
+        [InlineKeyboardButton("Clientes", callback_data="ally_panel_clientes")],
+        [InlineKeyboardButton("Cerrar", callback_data="ally_panel_cerrar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "MIS DIRECCIONES\n\nSelecciona una opcion:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(text, reply_markup=reply_markup)
+
+    return DIRECCIONES_MENU
+
+
+def ally_panel_direcciones_callback(update, context):
+    """Maneja callbacks del menu principal de direcciones."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "ally_panel_pickups":
+        return ally_panel_pickups_mostrar(query, context)
+
+    elif data == "ally_panel_clientes":
+        # Redirigir a /clientes reutilizando el flujo existente
+        query.edit_message_text("Abriendo agenda de clientes...")
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    elif data == "ally_panel_cerrar":
+        query.edit_message_text("Panel cerrado.")
+        return ConversationHandler.END
+
+    elif data == "ally_panel_volver":
+        return ally_panel_direcciones(update, context, edit_message=True)
+
+    return DIRECCIONES_MENU
+
+
+def ally_panel_pickups_mostrar(query, context):
+    """Muestra lista de recogidas del aliado."""
+    ally_id = context.user_data.get("active_ally_id")
+    if not ally_id:
+        query.edit_message_text("Error: no hay aliado activo.")
+        return ConversationHandler.END
+
+    locations = get_ally_locations(ally_id)
+
+    if not locations:
+        keyboard = [
+            [InlineKeyboardButton("Agregar nueva recogida", callback_data="ally_pickups_nueva")],
+            [InlineKeyboardButton("Volver", callback_data="ally_panel_volver")],
+        ]
+        query.edit_message_text(
+            "MIS RECOGIDAS\n\n"
+            "No tienes direcciones de recogida guardadas.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return DIRECCIONES_PICKUPS
+
+    # Construir lista de texto (max 15)
+    lines = ["MIS RECOGIDAS\n"]
+    for i, loc in enumerate(locations[:15], 1):
+        label = loc.get("label") or "Sin nombre"
+        address = loc.get("address") or ""
+        tags = []
+        if loc.get("is_default"):
+            tags.append("BASE")
+        if loc.get("is_frequent"):
+            tags.append("FRECUENTE")
+        elif loc.get("use_count", 0) > 0:
+            tags.append(f"x{loc['use_count']}")
+
+        tag_str = f" ({', '.join(tags)})" if tags else ""
+        lines.append(f"{i}. {label}{tag_str}\n   {address[:40]}")
+
+    text = "\n".join(lines)
+
+    keyboard = [
+        [InlineKeyboardButton("Agregar nueva recogida", callback_data="ally_pickups_nueva")],
+        [InlineKeyboardButton("Volver", callback_data="ally_panel_volver")],
+    ]
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return DIRECCIONES_PICKUPS
+
+
+def ally_panel_pickups_callback(update, context):
+    """Maneja callbacks de la lista de recogidas."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "ally_panel_volver":
+        return ally_panel_direcciones(update, context, edit_message=True)
+
+    elif data == "ally_pickups_nueva":
+        query.edit_message_text(
+            "NUEVA DIRECCION DE RECOGIDA\n\n"
+            "Envia la ubicacion (link de Google Maps o WhatsApp) "
+            "o coordenadas (lat,lng).\n\n"
+            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+        )
+        return DIRECCIONES_PICKUP_NUEVA_UBICACION
+
+    return DIRECCIONES_PICKUPS
+
+
+def direcciones_pickup_nueva_ubicacion(update, context):
+    """Captura ubicacion (link o coords) para nueva recogida."""
+    text = update.message.text.strip()
+
+    if text.lower() == "omitir":
+        context.user_data["new_pickup_lat"] = None
+        context.user_data["new_pickup_lng"] = None
+        update.message.reply_text(
+            "OK, sin coordenadas.\n\n"
+            "Escribe la direccion de recogida (texto):"
+        )
+        return DIRECCIONES_PICKUP_NUEVA_DETALLES
+
+    # Intentar extraer coordenadas de link de Google Maps
+    lat, lng = None, None
+    import re
+    # Patron para Google Maps: @lat,lng o ?q=lat,lng o /lat,lng
+    patterns = [
+        r'@(-?\d+\.?\d*),(-?\d+\.?\d*)',
+        r'\?q=(-?\d+\.?\d*),(-?\d+\.?\d*)',
+        r'/(-?\d+\.?\d*),(-?\d+\.?\d*)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                lat = float(match.group(1))
+                lng = float(match.group(2))
+                break
+            except ValueError:
+                continue
+
+    # Si no es link, intentar como coords directas
+    if lat is None and ',' in text:
+        try:
+            parts = text.split(',')
+            lat = float(parts[0].strip())
+            lng = float(parts[1].strip())
+        except (ValueError, IndexError):
+            pass
+
+    if lat is not None and lng is not None:
+        context.user_data["new_pickup_lat"] = lat
+        context.user_data["new_pickup_lng"] = lng
+        update.message.reply_text(
+            f"Coordenadas capturadas: {lat:.6f}, {lng:.6f}\n\n"
+            "Escribe la direccion de recogida (texto):"
+        )
+    else:
+        context.user_data["new_pickup_lat"] = None
+        context.user_data["new_pickup_lng"] = None
+        update.message.reply_text(
+            "No se detectaron coordenadas validas.\n\n"
+            "Escribe la direccion de recogida (texto):"
+        )
+
+    return DIRECCIONES_PICKUP_NUEVA_DETALLES
+
+
+def direcciones_pickup_nueva_detalles(update, context):
+    """Captura direccion en texto y pregunta si guardar."""
+    text = update.message.text.strip()
+    if not text:
+        update.message.reply_text("Por favor escribe la direccion de recogida:")
+        return DIRECCIONES_PICKUP_NUEVA_DETALLES
+
+    context.user_data["new_pickup_address"] = text
+
+    # Ciudad por defecto
+    ally_id = context.user_data.get("active_ally_id")
+    default_city = "Pereira"
+    if ally_id:
+        default_loc = get_default_ally_location(ally_id)
+        if default_loc and default_loc.get("city"):
+            default_city = default_loc["city"]
+    context.user_data["new_pickup_city"] = default_city
+
+    keyboard = [
+        [InlineKeyboardButton("Si, guardar", callback_data="dir_pickup_guardar_si")],
+        [InlineKeyboardButton("Cancelar", callback_data="dir_pickup_guardar_no")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        f"Direccion: {text}\n"
+        f"Ciudad: {default_city}\n\n"
+        "Deseas guardar esta direccion?",
+        reply_markup=reply_markup
+    )
+    return DIRECCIONES_PICKUP_GUARDAR
+
+
+def direcciones_pickup_guardar_callback(update, context):
+    """Guarda o cancela la nueva direccion de recogida."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "dir_pickup_guardar_si":
+        ally_id = context.user_data.get("active_ally_id")
+        if not ally_id:
+            query.edit_message_text("Error: no hay aliado activo.")
+            return ConversationHandler.END
+
+        address = context.user_data.get("new_pickup_address", "")
+        city = context.user_data.get("new_pickup_city", "Pereira")
+        lat = context.user_data.get("new_pickup_lat")
+        lng = context.user_data.get("new_pickup_lng")
+
+        new_loc_id = create_ally_location(
+            ally_id=ally_id,
+            label=address[:30],
+            address=address,
+            city=city,
+            barrio="",
+            phone="",
+            is_default=False,
+            lat=lat,
+            lng=lng,
+        )
+
+        if new_loc_id:
+            query.edit_message_text("Direccion guardada correctamente.")
+        else:
+            query.edit_message_text("Error al guardar la direccion.")
+
+        # Limpiar datos temporales
+        context.user_data.pop("new_pickup_address", None)
+        context.user_data.pop("new_pickup_city", None)
+        context.user_data.pop("new_pickup_lat", None)
+        context.user_data.pop("new_pickup_lng", None)
+
+        # Volver a mostrar lista de pickups
+        return ally_panel_pickups_mostrar(query, context)
+
+    else:
+        query.edit_message_text("Operacion cancelada.")
+        return ally_panel_direcciones(update, context, edit_message=True)
+
+
+# ConversationHandler para /direcciones
+direcciones_conv = ConversationHandler(
+    entry_points=[CommandHandler("direcciones", direcciones_cmd)],
+    states={
+        DIRECCIONES_MENU: [
+            CallbackQueryHandler(ally_panel_direcciones_callback, pattern=r"^ally_panel_")
+        ],
+        DIRECCIONES_PICKUPS: [
+            CallbackQueryHandler(ally_panel_pickups_callback, pattern=r"^(ally_panel_|ally_pickups_)")
+        ],
+        DIRECCIONES_PICKUP_NUEVA_UBICACION: [
+            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ubicacion)
+        ],
+        DIRECCIONES_PICKUP_NUEVA_DETALLES: [
+            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_detalles)
+        ],
+        DIRECCIONES_PICKUP_GUARDAR: [
+            CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+
 # ConversationHandler para /clientes
 clientes_conv = ConversationHandler(
     entry_points=[CommandHandler("clientes", clientes_cmd)],
@@ -5557,6 +5878,7 @@ def main():
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
+    dp.add_handler(direcciones_conv)   # /direcciones (panel Mis direcciones)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
