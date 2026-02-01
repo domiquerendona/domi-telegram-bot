@@ -231,6 +231,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     PEDIDO_SELECTOR_CLIENTE,      # Selector cliente recurrente/nuevo
     PEDIDO_BUSCAR_CLIENTE,        # Buscar cliente por nombre/telefono
     PEDIDO_SELECCIONAR_DIRECCION, # Seleccionar direccion del cliente
+    PEDIDO_INSTRUCCIONES_EXTRA,   # Preguntar si agregar instrucciones adicionales
     PEDIDO_TIPO_SERVICIO,
     PEDIDO_NOMBRE,
     PEDIDO_TELEFONO,
@@ -246,7 +247,7 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
     PEDIDO_COMPRAS_CANTIDAD,      # Capturar cantidad de productos
-) = range(14, 32)
+) = range(14, 33)
 
 
 # =========================
@@ -268,7 +269,8 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     CLIENTES_DIR_NUEVA_TEXT,
     CLIENTES_DIR_EDITAR_LABEL,
     CLIENTES_DIR_EDITAR_TEXT,
-) = range(400, 415)
+    CLIENTES_DIR_EDITAR_NOTA,
+) = range(400, 416)
 
 
 # =========================
@@ -1459,10 +1461,64 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["dropoff_lat"] = address.get("lat")
         context.user_data["dropoff_lng"] = address.get("lng")
 
-        # Mostrar selector de punto de recogida
+        # Guardar nota de la direccion si existe
+        nota_direccion = address.get("notes") or ""
+        context.user_data["nota_direccion"] = nota_direccion
+
+        # Si hay nota de direccion, mostrarla y preguntar si agregar instrucciones
+        if nota_direccion:
+            keyboard = [
+                [InlineKeyboardButton("Si", callback_data="pedido_instr_si")],
+                [InlineKeyboardButton("No", callback_data="pedido_instr_no")],
+            ]
+            query.edit_message_text(
+                f"Nota para el repartidor:\n{nota_direccion}\n\n"
+                "Deseas agregar instrucciones adicionales para este pedido?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return PEDIDO_INSTRUCCIONES_EXTRA
+
+        # Sin nota, continuar al selector de pickup
         return mostrar_selector_pickup(query, context, edit=True)
 
     return PEDIDO_SELECCIONAR_DIRECCION
+
+
+def pedido_instrucciones_callback(update, context):
+    """Maneja la respuesta sobre instrucciones adicionales."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "pedido_instr_si":
+        query.edit_message_text(
+            "Escribe las instrucciones adicionales para el repartidor:"
+        )
+        return PEDIDO_INSTRUCCIONES_EXTRA
+
+    elif data == "pedido_instr_no":
+        # Usar solo la nota de la direccion como instrucciones finales
+        nota_direccion = context.user_data.get("nota_direccion", "")
+        context.user_data["instructions"] = nota_direccion
+        return mostrar_selector_pickup(query, context, edit=True)
+
+    return PEDIDO_INSTRUCCIONES_EXTRA
+
+
+def pedido_instrucciones_text(update, context):
+    """Captura las instrucciones adicionales escritas por el aliado."""
+    texto_adicional = update.message.text.strip()
+    nota_direccion = context.user_data.get("nota_direccion", "")
+
+    # Concatenar nota de direccion con instrucciones adicionales
+    if nota_direccion and texto_adicional:
+        context.user_data["instructions"] = f"{nota_direccion}\n{texto_adicional}"
+    elif texto_adicional:
+        context.user_data["instructions"] = texto_adicional
+    else:
+        context.user_data["instructions"] = nota_direccion
+
+    return mostrar_selector_pickup(update, context, edit=False)
 
 
 def get_tipo_servicio_keyboard():
@@ -2573,7 +2629,7 @@ def pedido_confirmacion_callback(update, context):
                 night_extra=0,
                 additional_incentive=0,
                 total_fee=quote_price,
-                instructions="",
+                instructions=context.user_data.get("instructions", ""),
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
                 pickup_lat=pickup_lat,
@@ -3728,13 +3784,13 @@ def clientes_ver_cliente(query, context, customer_id):
     addresses = list_customer_addresses(customer_id)
     addr_text = ""
     if addresses:
-        for i, addr in enumerate(addresses, 1):
+        for addr in addresses:
             label = addr["label"] or "Sin etiqueta"
-            addr_text += f"{i}. {label}: {addr['address_text']}\n"
+            addr_text += f"- {label}: {addr['address_text'][:35]}...\n"
     else:
         addr_text = "Sin direcciones guardadas\n"
 
-    notas = customer["notes"] or "Sin notas"
+    nota_interna = customer["notes"] or "Sin notas"
 
     keyboard = [
         [InlineKeyboardButton("Direcciones", callback_data="cust_dirs")],
@@ -3744,11 +3800,10 @@ def clientes_ver_cliente(query, context, customer_id):
     ]
 
     query.edit_message_text(
-        f"CLIENTE: {customer['name']}\n"
-        f"Telefono: {customer['phone']}\n"
-        f"Notas: {notas}\n\n"
-        f"DIRECCIONES:\n{addr_text}\n"
-        "Selecciona una accion:",
+        f"Cliente: {customer['name']}\n"
+        f"Telefono: {customer['phone']}\n\n"
+        f"Nota interna:\n{nota_interna}\n\n"
+        f"Direcciones guardadas:\n{addr_text}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CLIENTES_VER_CLIENTE
@@ -3826,19 +3881,19 @@ def clientes_ver_cliente_callback(update, context):
 
         context.user_data["current_address_id"] = address_id
         label = address["label"] or "Sin etiqueta"
+        nota_entrega = address["notes"] or "Sin nota"
 
         keyboard = [
             [InlineKeyboardButton("Editar", callback_data="cust_dir_editar")],
+            [InlineKeyboardButton("Editar nota entrega", callback_data="cust_dir_edit_nota")],
             [InlineKeyboardButton("Archivar", callback_data="cust_dir_archivar")],
             [InlineKeyboardButton("Volver", callback_data="cust_dirs")],
         ]
 
         query.edit_message_text(
-            f"DIRECCION: {label}\n\n"
-            f"Direccion: {address['address_text']}\n"
-            f"Ciudad: {address['city'] or 'N/A'}\n"
-            f"Barrio: {address['barrio'] or 'N/A'}\n\n"
-            "Selecciona una accion:",
+            f"{label}\n"
+            f"{address['address_text']}\n\n"
+            f"Nota para entrega:\n{nota_entrega}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CLIENTES_VER_CLIENTE
@@ -3846,6 +3901,14 @@ def clientes_ver_cliente_callback(update, context):
     elif data == "cust_dir_editar":
         query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
         return CLIENTES_DIR_EDITAR_LABEL
+
+    elif data == "cust_dir_edit_nota":
+        query.edit_message_text(
+            "Escribe la nota para entrega.\n"
+            "Esta nota sera visible para el repartidor.\n\n"
+            "Escribe 'ninguna' para borrar la nota:"
+        )
+        return CLIENTES_DIR_EDITAR_NOTA
 
     elif data == "cust_dir_archivar":
         address_id = context.user_data.get("current_address_id")
@@ -4053,12 +4116,50 @@ def clientes_dir_editar_text(update, context):
     return clientes_mostrar_menu(update, context, edit_message=False)
 
 
+def clientes_dir_editar_nota(update, context):
+    """Actualiza la nota para entrega de una direccion."""
+    nota_text = update.message.text.strip()
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+
+    # Obtener la direccion actual para preservar los otros campos
+    address = get_customer_address_by_id(address_id, customer_id)
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    # Si escribe "ninguna", borrar la nota
+    nueva_nota = None if nota_text.lower() == "ninguna" else nota_text
+
+    try:
+        update_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"],
+            barrio=address["barrio"],
+            notes=nueva_nota,
+            lat=address["lat"],
+            lng=address["lng"]
+        )
+        if nueva_nota:
+            update.message.reply_text("Nota para entrega actualizada.")
+        else:
+            update.message.reply_text("Nota para entrega eliminada.")
+    except Exception as e:
+        update.message.reply_text(f"Error: {str(e)}")
+
+    context.user_data.pop("current_address_id", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
 # =========================
-# Panel "Mis direcciones" para aliados (/direcciones)
+# Panel "Agenda del aliado" (/agenda)
 # =========================
 
-def direcciones_cmd(update, context):
-    """Comando /direcciones: panel de direcciones del aliado."""
+def agenda_cmd(update, context):
+    """Comando /agenda: panel principal del aliado."""
     user_db_id = get_user_db_id_from_update(update)
     ally = get_ally_by_user_id(user_db_id)
 
@@ -4082,18 +4183,22 @@ def direcciones_cmd(update, context):
     context.user_data["active_ally_id"] = ally_id
     context.user_data["ally"] = {"id": ally_id}
 
-    return ally_panel_direcciones(update, context)
+    return agenda_mostrar_menu(update, context)
 
 
-def ally_panel_direcciones(update, context, edit_message=False):
-    """Muestra menu principal del panel Mis direcciones."""
+def agenda_mostrar_menu(update, context, edit_message=False):
+    """Muestra menu principal de la agenda del aliado."""
     keyboard = [
-        [InlineKeyboardButton("Recogidas", callback_data="ally_panel_pickups")],
-        [InlineKeyboardButton("Clientes", callback_data="ally_panel_clientes")],
-        [InlineKeyboardButton("Cerrar", callback_data="ally_panel_cerrar")],
+        [InlineKeyboardButton("Clientes", callback_data="agenda_clientes")],
+        [InlineKeyboardButton("Direcciones de recogida", callback_data="agenda_pickups")],
+        [InlineKeyboardButton("Cerrar", callback_data="agenda_cerrar")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "MIS DIRECCIONES\n\nSelecciona una opcion:"
+    text = (
+        "Agenda del aliado\n\n"
+        "Desde aqui puedes administrar tus clientes y direcciones "
+        "guardadas para agilizar tus pedidos."
+    )
 
     if edit_message and update.callback_query:
         update.callback_query.edit_message_text(text, reply_markup=reply_markup)
@@ -4103,32 +4208,31 @@ def ally_panel_direcciones(update, context, edit_message=False):
     return DIRECCIONES_MENU
 
 
-def ally_panel_direcciones_callback(update, context):
-    """Maneja callbacks del menu principal de direcciones."""
+def agenda_menu_callback(update, context):
+    """Maneja callbacks del menu principal de la agenda."""
     query = update.callback_query
     query.answer()
     data = query.data
 
-    if data == "ally_panel_pickups":
-        return ally_panel_pickups_mostrar(query, context)
+    if data == "agenda_pickups":
+        return agenda_pickups_mostrar(query, context)
 
-    elif data == "ally_panel_clientes":
+    elif data == "agenda_clientes":
         # Redirigir a /clientes reutilizando el flujo existente
-        query.edit_message_text("Abriendo agenda de clientes...")
-        return clientes_mostrar_menu(update, context, edit_message=False)
+        return clientes_mostrar_menu(update, context, edit_message=True)
 
-    elif data == "ally_panel_cerrar":
-        query.edit_message_text("Panel cerrado.")
+    elif data == "agenda_cerrar":
+        query.edit_message_text("Agenda cerrada.")
         return ConversationHandler.END
 
-    elif data == "ally_panel_volver":
-        return ally_panel_direcciones(update, context, edit_message=True)
+    elif data == "agenda_volver":
+        return agenda_mostrar_menu(update, context, edit_message=True)
 
     return DIRECCIONES_MENU
 
 
-def ally_panel_pickups_mostrar(query, context):
-    """Muestra lista de recogidas del aliado."""
+def agenda_pickups_mostrar(query, context):
+    """Muestra lista de direcciones de recogida del aliado."""
     ally_id = context.user_data.get("active_ally_id")
     if not ally_id:
         query.edit_message_text("Error: no hay aliado activo.")
@@ -4138,54 +4242,60 @@ def ally_panel_pickups_mostrar(query, context):
 
     if not locations:
         keyboard = [
-            [InlineKeyboardButton("Agregar nueva recogida", callback_data="ally_pickups_nueva")],
-            [InlineKeyboardButton("Volver", callback_data="ally_panel_volver")],
+            [InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")],
+            [InlineKeyboardButton("Volver", callback_data="agenda_volver")],
         ]
         query.edit_message_text(
-            "MIS RECOGIDAS\n\n"
+            "Direcciones de recogida\n\n"
+            "Estas son las direcciones desde donde normalmente recoges pedidos.\n\n"
             "No tienes direcciones de recogida guardadas.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return DIRECCIONES_PICKUPS
 
-    # Construir lista de texto (max 15)
-    lines = ["MIS RECOGIDAS\n"]
-    for i, loc in enumerate(locations[:15], 1):
+    # Construir lista con botones
+    lines = [
+        "Direcciones de recogida\n\n"
+        "Estas son las direcciones desde donde normalmente recoges pedidos.\n"
+    ]
+
+    keyboard = []
+    for loc in locations[:10]:
         label = loc.get("label") or "Sin nombre"
-        address = loc.get("address") or ""
         tags = []
         if loc.get("is_default"):
             tags.append("BASE")
         if loc.get("is_frequent"):
             tags.append("FRECUENTE")
-        elif loc.get("use_count", 0) > 0:
-            tags.append(f"x{loc['use_count']}")
+        use_count = loc.get("use_count", 0)
+        if use_count > 0:
+            tags.append(f"x{use_count}")
 
-        tag_str = f" ({', '.join(tags)})" if tags else ""
-        lines.append(f"{i}. {label}{tag_str}\n   {address[:40]}")
+        tag_str = f" ({' - '.join(tags)})" if tags else ""
+        btn_text = f"{label}{tag_str}"
+        lines.append(f"- {btn_text}")
 
     text = "\n".join(lines)
 
-    keyboard = [
-        [InlineKeyboardButton("Agregar nueva recogida", callback_data="ally_pickups_nueva")],
-        [InlineKeyboardButton("Volver", callback_data="ally_panel_volver")],
-    ]
+    keyboard.append([InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")])
+    keyboard.append([InlineKeyboardButton("Volver", callback_data="agenda_volver")])
+
     query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     return DIRECCIONES_PICKUPS
 
 
-def ally_panel_pickups_callback(update, context):
+def agenda_pickups_callback(update, context):
     """Maneja callbacks de la lista de recogidas."""
     query = update.callback_query
     query.answer()
     data = query.data
 
-    if data == "ally_panel_volver":
-        return ally_panel_direcciones(update, context, edit_message=True)
+    if data == "agenda_volver":
+        return agenda_mostrar_menu(update, context, edit_message=True)
 
-    elif data == "ally_pickups_nueva":
+    elif data == "agenda_pickups_nueva":
         query.edit_message_text(
-            "NUEVA DIRECCION DE RECOGIDA\n\n"
+            "Nueva direccion de recogida\n\n"
             "Envia la ubicacion (link de Google Maps o WhatsApp) "
             "o coordenadas (lat,lng).\n\n"
             "Tambien puedes escribir 'omitir' para ingresar solo texto."
@@ -4327,22 +4437,23 @@ def direcciones_pickup_guardar_callback(update, context):
         context.user_data.pop("new_pickup_lng", None)
 
         # Volver a mostrar lista de pickups
-        return ally_panel_pickups_mostrar(query, context)
+        return agenda_pickups_mostrar(query, context)
 
     else:
         query.edit_message_text("Operacion cancelada.")
-        return ally_panel_direcciones(update, context, edit_message=True)
+        return agenda_mostrar_menu(update, context, edit_message=True)
 
 
-# ConversationHandler para /direcciones
-direcciones_conv = ConversationHandler(
-    entry_points=[CommandHandler("direcciones", direcciones_cmd)],
+# ConversationHandler para /agenda
+agenda_conv = ConversationHandler(
+    entry_points=[CommandHandler("agenda", agenda_cmd)],
     states={
         DIRECCIONES_MENU: [
-            CallbackQueryHandler(ally_panel_direcciones_callback, pattern=r"^ally_panel_")
+            CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_"),
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_"),
         ],
         DIRECCIONES_PICKUPS: [
-            CallbackQueryHandler(ally_panel_pickups_callback, pattern=r"^(ally_panel_|ally_pickups_)")
+            CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_")
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ubicacion)
@@ -4410,6 +4521,9 @@ clientes_conv = ConversationHandler(
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+        ],
+        CLIENTES_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
         ],
     },
     fallbacks=[
@@ -4498,6 +4612,10 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_SELECCIONAR_DIRECCION: [
             CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^pedido_")
+        ],
+        PEDIDO_INSTRUCCIONES_EXTRA: [
+            CallbackQueryHandler(pedido_instrucciones_callback, pattern=r"^pedido_instr_"),
+            MessageHandler(Filters.text & ~Filters.command, pedido_instrucciones_text)
         ],
         PEDIDO_TIPO_SERVICIO: [
             CallbackQueryHandler(pedido_tipo_servicio_callback, pattern=r"^pedido_tipo_"),
@@ -5878,7 +5996,7 @@ def main():
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
-    dp.add_handler(direcciones_conv)   # /direcciones (panel Mis direcciones)
+    dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
