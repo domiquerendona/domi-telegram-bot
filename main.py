@@ -2388,6 +2388,19 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
     return PEDIDO_PICKUP_NUEVA_DETALLES
 
 
+def pedido_pickup_nueva_ubicacion_location_handler(update, context):
+    """Maneja ubicacion nativa de Telegram (PIN) para nueva direccion de recogida en pedido."""
+    loc = update.message.location
+    context.user_data["new_pickup_lat"] = loc.latitude
+    context.user_data["new_pickup_lng"] = loc.longitude
+    update.message.reply_text(
+        f"Ubicacion capturada: {loc.latitude}, {loc.longitude}\n\n"
+        "Ahora escribe los detalles de la direccion de recogida:\n"
+        "direccion, barrio, referencias..."
+    )
+    return PEDIDO_PICKUP_NUEVA_DETALLES
+
+
 def pickup_nueva_copiar_msg_callback(update, context):
     """Envia mensaje listo para copiar (flujo pickup nueva)."""
     query = update.callback_query
@@ -4386,6 +4399,18 @@ def direcciones_pickup_nueva_ubicacion(update, context):
     return DIRECCIONES_PICKUP_NUEVA_DETALLES
 
 
+def direcciones_pickup_nueva_ubicacion_location_handler(update, context):
+    """Maneja ubicacion nativa de Telegram (PIN) para nueva recogida en /agenda."""
+    loc = update.message.location
+    context.user_data["new_pickup_lat"] = loc.latitude
+    context.user_data["new_pickup_lng"] = loc.longitude
+    update.message.reply_text(
+        f"Coordenadas capturadas: {loc.latitude:.6f}, {loc.longitude:.6f}\n\n"
+        "Escribe la direccion de recogida (texto):"
+    )
+    return DIRECCIONES_PICKUP_NUEVA_DETALLES
+
+
 def direcciones_pickup_nueva_detalles(update, context):
     """Captura direccion en texto y pregunta si guardar."""
     text = update.message.text.strip()
@@ -4477,6 +4502,7 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_")
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
+            MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ubicacion)
         ],
         DIRECCIONES_PICKUP_NUEVA_DETALLES: [
@@ -4674,6 +4700,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
+            MessageHandler(Filters.location, pedido_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
         ],
