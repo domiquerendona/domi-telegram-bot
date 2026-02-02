@@ -1,6 +1,7 @@
 # Importa el enum que define los posibles estados del usuario
 # Ejemplo: PENDING, APPROVED, REJECTED, INACTIVE
-from web.users.models import UserStatus
+from web.users.status import UserStatus
+
 
 
 def approve_user(user):
