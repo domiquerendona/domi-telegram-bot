@@ -3304,8 +3304,8 @@ def admin_menu_callback(update, context):
         current_admin = get_admin_by_telegram_id(query.from_user.id)
         es_plataforma = (
             current_admin and
-            current_admin[9] == "APPROVED" and
-            current_admin[8] == "PLATFORM"
+            current_admin.get("status") == "APPROVED" and
+            current_admin.get("team_code") == "PLATFORM"
         )
 
         # Solo Admin Plataforma puede cambiar status
@@ -3350,8 +3350,8 @@ def admin_menu_callback(update, context):
         current_admin = get_admin_by_telegram_id(query.from_user.id)
         es_plataforma = (
             current_admin and
-            current_admin[9] == "APPROVED" and
-            current_admin[8] == "PLATFORM"
+            current_admin.get("status") == "APPROVED" and
+            current_admin.get("team_code") == "PLATFORM"
         )
 
         if not es_plataforma:
