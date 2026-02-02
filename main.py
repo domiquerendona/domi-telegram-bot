@@ -62,6 +62,7 @@ from db import (
     create_admin,
     get_admin_by_user_id,
     get_admin_by_telegram_id,
+    user_has_platform_admin,
     get_all_admins,
     get_pending_admins,
     get_admin_by_id,
@@ -3301,12 +3302,7 @@ def admin_menu_callback(update, context):
         keyboard = []
 
         # Verificar si el usuario actual es Admin Plataforma
-        current_admin = get_admin_by_telegram_id(query.from_user.id)
-        es_plataforma = (
-            current_admin and
-            current_admin.get("status") == "APPROVED" and
-            current_admin.get("team_code") == "PLATFORM"
-        )
+        es_plataforma = user_has_platform_admin(query.from_user.id)
 
         # Solo Admin Plataforma puede cambiar status
         # Y no puede modificar a otro admin PLATFORM (proteger)
@@ -3347,12 +3343,7 @@ def admin_menu_callback(update, context):
             return
 
         # Verificar permisos: el usuario actual debe ser Admin Plataforma aprobado
-        current_admin = get_admin_by_telegram_id(query.from_user.id)
-        es_plataforma = (
-            current_admin and
-            current_admin.get("status") == "APPROVED" and
-            current_admin.get("team_code") == "PLATFORM"
-        )
+        es_plataforma = user_has_platform_admin(query.from_user.id)
 
         if not es_plataforma:
             query.answer("Sin permisos para esta accion")

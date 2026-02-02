@@ -845,6 +845,26 @@ def get_admin_by_telegram_id(telegram_id: int):
     return get_admin_by_user_id(user_id)
 
 
+def user_has_platform_admin(telegram_id: int) -> bool:
+    """
+    Retorna True si el usuario (telegram_id) tiene un admin en admins con:
+    team_code='PLATFORM' y status='APPROVED' (is_deleted=0).
+    """
+    user_id = get_user_id_from_telegram_id(telegram_id)
+    if not user_id:
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM admins
+        WHERE user_id = ? AND team_code = 'PLATFORM' AND status = 'APPROVED' AND is_deleted = 0
+        LIMIT 1;
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_admin_by_user_id(user_id: int):
     """
     user_id = users.id (interno).
