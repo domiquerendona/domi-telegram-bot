@@ -3213,7 +3213,7 @@ def admin_menu_callback(update, context):
             )
         return
 
-    # Submenú admins: listar administradores registrados (solo lectura)
+    # Submenú admins: listar administradores registrados
     if data == "admin_admins_registrados":
         query.answer()
         admins = get_all_admins()
@@ -3229,25 +3229,202 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for a in admins:
-            admin_id = a[0]
+            adm_id = a[0]
             full_name = a[2]
             team_name = a[8] or "-"
             status = a[6]
             keyboard.append([InlineKeyboardButton(
-                "ID {} - {} | {} ({})".format(admin_id, full_name, team_name, status),
-                callback_data="admin_noop"
+                "ID {} - {} | {} ({})".format(adm_id, full_name, team_name, status),
+                callback_data="admin_ver_admin_{}".format(adm_id)
             )])
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
         query.edit_message_text(
-            "Administradores registrados:\n\n(Lista solo lectura por ahora)",
+            "Administradores registrados:\n\nToca un admin para ver detalles.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    # Handler noop para botones de solo lectura
-    if data == "admin_noop":
-        query.answer("Solo lectura")
+    # Ver detalle de un admin
+    if data.startswith("admin_ver_admin_"):
+        query.answer()
+        adm_id = int(data.replace("admin_ver_admin_", ""))
+        admin_obj = get_admin_by_id(adm_id)
+
+        if not admin_obj:
+            query.edit_message_text(
+                "Admin no encontrado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")]
+                ])
+            )
+            return
+
+        # Datos del admin objetivo
+        # get_admin_by_id: id[0], user_id[1], full_name[2], phone[3], city[4], barrio[5],
+        #                  team_name[6], document_number[7], team_code[8], status[9], created_at[10]
+        adm_full_name = admin_obj[2] or "-"
+        adm_phone = admin_obj[3] or "-"
+        adm_city = admin_obj[4] or "-"
+        adm_barrio = admin_obj[5] or "-"
+        adm_team_name = admin_obj[6] or "-"
+        adm_document = admin_obj[7] or "-"
+        adm_team_code = admin_obj[8] or "-"
+        adm_status = admin_obj[9] or "-"
+
+        # Tipo de admin
+        tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
+
+        # Contadores
+        num_couriers = count_admin_couriers(adm_id)
+        num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Telefono: {}\n"
+            "Documento: {}\n"
+            "Estado: {}\n"
+            "Tipo: {}\n\n"
+            "CONTADORES:\n"
+            "Mensajeros vinculados: {}\n"
+            "Mensajeros con saldo >= 5000: {}"
+        ).format(
+            adm_id, adm_full_name, adm_team_name, adm_team_code,
+            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            num_couriers, num_couriers_balance
+        )
+
+        keyboard = []
+
+        # Verificar si el usuario actual es Admin Plataforma
+        current_admin = get_admin_by_telegram_id(query.from_user.id)
+        es_plataforma = (
+            current_admin and
+            current_admin[9] == "APPROVED" and
+            current_admin[8] == "PLATFORM"
+        )
+
+        # Solo Admin Plataforma puede cambiar status
+        # Y no puede modificar a otro admin PLATFORM (proteger)
+        if es_plataforma and adm_team_code != "PLATFORM":
+            keyboard.append([InlineKeyboardButton(
+                "Activar (APPROVED)",
+                callback_data="admin_set_status_{}_APPROVED".format(adm_id)
+            )])
+            keyboard.append([InlineKeyboardButton(
+                "Desactivar (INACTIVE)",
+                callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
+            )])
+            keyboard.append([InlineKeyboardButton(
+                "Rechazar (REJECTED)",
+                callback_data="admin_set_status_{}_REJECTED".format(adm_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Cambiar status de un admin (solo Admin Plataforma)
+    if data.startswith("admin_set_status_"):
+        # Formato: admin_set_status_{id}_{STATUS}
+        parts = data.replace("admin_set_status_", "").rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido")
+            return
+
+        adm_id = int(parts[0])
+        nuevo_status = parts[1]
+
+        # Validar que sea un status permitido
+        if nuevo_status not in ("APPROVED", "INACTIVE", "REJECTED"):
+            query.answer("Status no valido")
+            return
+
+        # Verificar permisos: el usuario actual debe ser Admin Plataforma aprobado
+        current_admin = get_admin_by_telegram_id(query.from_user.id)
+        es_plataforma = (
+            current_admin and
+            current_admin[9] == "APPROVED" and
+            current_admin[8] == "PLATFORM"
+        )
+
+        if not es_plataforma:
+            query.answer("Sin permisos para esta accion")
+            return
+
+        # Verificar que el admin objetivo no sea PLATFORM (proteger)
+        admin_obj = get_admin_by_id(adm_id)
+        if not admin_obj:
+            query.answer("Admin no encontrado")
+            return
+
+        if admin_obj[8] == "PLATFORM":
+            query.answer("No puedes modificar a un admin de plataforma")
+            return
+
+        # Aplicar cambio
+        update_admin_status_by_id(adm_id, nuevo_status)
+        query.answer("Estado actualizado a {}".format(nuevo_status))
+
+        # Recargar el detalle
+        admin_obj = get_admin_by_id(adm_id)
+        adm_full_name = admin_obj[2] or "-"
+        adm_phone = admin_obj[3] or "-"
+        adm_city = admin_obj[4] or "-"
+        adm_barrio = admin_obj[5] or "-"
+        adm_team_name = admin_obj[6] or "-"
+        adm_document = admin_obj[7] or "-"
+        adm_team_code = admin_obj[8] or "-"
+        adm_status = admin_obj[9] or "-"
+
+        tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
+        num_couriers = count_admin_couriers(adm_id)
+        num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Telefono: {}\n"
+            "Documento: {}\n"
+            "Estado: {}\n"
+            "Tipo: {}\n\n"
+            "CONTADORES:\n"
+            "Mensajeros vinculados: {}\n"
+            "Mensajeros con saldo >= 5000: {}\n\n"
+            "Estado actualizado a {}"
+        ).format(
+            adm_id, adm_full_name, adm_team_name, adm_team_code,
+            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            num_couriers, num_couriers_balance, nuevo_status
+        )
+
+        keyboard = []
+        # El admin objetivo no es PLATFORM, así que podemos mostrar botones
+        keyboard.append([InlineKeyboardButton(
+            "Activar (APPROVED)",
+            callback_data="admin_set_status_{}_APPROVED".format(adm_id)
+        )])
+        keyboard.append([InlineKeyboardButton(
+            "Desactivar (INACTIVE)",
+            callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
+        )])
+        keyboard.append([InlineKeyboardButton(
+            "Rechazar (REJECTED)",
+            callback_data="admin_set_status_{}_REJECTED".format(adm_id)
+        )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
