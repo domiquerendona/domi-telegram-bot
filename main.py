@@ -706,6 +706,15 @@ def ally_ubicacion_handler(update, context):
     return finalizar_registro_ally(update, context)
 
 
+def ally_ubicacion_location_handler(update, context):
+    """Maneja ubicacion nativa de Telegram (PIN) para registro de aliado."""
+    loc = update.message.location
+    context.user_data["ally_lat"] = loc.latitude
+    context.user_data["ally_lng"] = loc.longitude
+    update.message.reply_text("Ubicacion guardada. Continuando registro...")
+    return finalizar_registro_ally(update, context)
+
+
 def ally_ubicacion_skip_callback(update, context):
     """Omite la ubicación del aliado."""
     query = update.callback_query
@@ -1458,11 +1467,11 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_address"] = address["address_text"]
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
-        context.user_data["dropoff_lat"] = address.get("lat")
-        context.user_data["dropoff_lng"] = address.get("lng")
+        context.user_data["dropoff_lat"] = address["lat"]
+        context.user_data["dropoff_lng"] = address["lng"]
 
         # Guardar nota de la direccion si existe
-        nota_direccion = address.get("notes") or ""
+        nota_direccion = address["notes"] or ""
         context.user_data["nota_direccion"] = nota_direccion
 
         # Si hay nota de direccion, mostrarla y preguntar si agregar instrucciones
@@ -1999,6 +2008,19 @@ def pedido_ubicacion_handler(update, context):
             "barrio, conjunto, torre, apto, referencias.\n\n"
             "(Tip: pega coordenadas lat,lng o pide ubicación por WhatsApp)"
         )
+    return PEDIDO_DIRECCION
+
+
+def pedido_ubicacion_location_handler(update, context):
+    """Maneja ubicacion nativa de Telegram (PIN) enviada por el usuario."""
+    loc = update.message.location
+    context.user_data["dropoff_lat"] = loc.latitude
+    context.user_data["dropoff_lng"] = loc.longitude
+    update.message.reply_text(
+        "Ubicacion guardada.\n\n"
+        "Ahora escribe los detalles de la direccion:\n"
+        "barrio, conjunto, torre, apto, referencias."
+    )
     return PEDIDO_DIRECCION
 
 
@@ -4544,6 +4566,7 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
         ALLY_UBICACION: [
             CallbackQueryHandler(ally_ubicacion_skip_callback, pattern=r"^ally_ubicacion_skip$"),
+            MessageHandler(Filters.location, ally_ubicacion_location_handler),
             MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler)
         ],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
@@ -4635,6 +4658,7 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
+            MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
         ],
@@ -5511,7 +5535,7 @@ def courier_approval_callback(update, context):
     # Notificar al repartidor si existe get_user_by_id (recomendado).
     # Si no existe, solo omitimos notificación sin romper.
     try:
-        u = get_user_by_id(courier_user_id)  # debe existir en db.py
+        u = get_user_by_id(courier_user_db_id)  # debe existir en db.py
         courier_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
 
         if accion == "approve":
