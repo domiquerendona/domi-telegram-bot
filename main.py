@@ -679,8 +679,9 @@ def ally_barrio(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
         "UBICACION DEL NEGOCIO (opcional)\n\n"
-        "Pega el enlace de ubicacion (WhatsApp/Google Maps) "
-        "o coordenadas lat,lng.\n\n"
+        "Envia la ubicacion (PIN de Telegram), "
+        "pega el enlace (Google Maps/WhatsApp) "
+        "o escribe coordenadas (lat,lng).\n\n"
         "Si no tienes, toca Omitir.",
         reply_markup=reply_markup
     )
@@ -1911,8 +1912,9 @@ def pedido_telefono_cliente(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
         "UBICACION (opcional)\n\n"
-        "Pega el enlace de ubicacion del cliente (WhatsApp/Google Maps) "
-        "o coordenadas lat,lng.\n\n"
+        "Envia la ubicacion (PIN de Telegram), "
+        "pega el enlace (Google Maps/WhatsApp) "
+        "o escribe coordenadas (lat,lng).\n\n"
         "Si no tienes, toca Omitir.",
         reply_markup=reply_markup
     )
@@ -2148,8 +2150,9 @@ def pedido_pickup_callback(update, context):
         # Pedir nueva direccion
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
-            "Envia la ubicacion (link de Google Maps o WhatsApp) "
-            "o coordenadas (lat,lng).\n\n"
+            "Envia la ubicacion (PIN de Telegram), "
+            "pega el enlace (Google Maps/WhatsApp) "
+            "o escribe coordenadas (lat,lng).\n\n"
             "Tambien puedes escribir 'omitir' para ingresar solo texto."
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
@@ -2224,8 +2227,9 @@ def pedido_pickup_lista_callback(update, context):
     if data == "pickup_list_nueva":
         query.edit_message_text(
             "NUEVA DIRECCION DE RECOGIDA\n\n"
-            "Envia la ubicacion (link de Google Maps o WhatsApp) "
-            "o coordenadas (lat,lng).\n\n"
+            "Envia la ubicacion (PIN de Telegram), "
+            "pega el enlace (Google Maps/WhatsApp) "
+            "o escribe coordenadas (lat,lng).\n\n"
             "Tambien puedes escribir 'omitir' para ingresar solo texto."
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
@@ -4331,8 +4335,9 @@ def agenda_pickups_callback(update, context):
     elif data == "agenda_pickups_nueva":
         query.edit_message_text(
             "Nueva direccion de recogida\n\n"
-            "Envia la ubicacion (link de Google Maps o WhatsApp) "
-            "o coordenadas (lat,lng).\n\n"
+            "Envia la ubicacion (PIN de Telegram), "
+            "pega el enlace (Google Maps/WhatsApp) "
+            "o escribe coordenadas (lat,lng).\n\n"
             "Tambien puedes escribir 'omitir' para ingresar solo texto."
         )
         return DIRECCIONES_PICKUP_NUEVA_UBICACION
