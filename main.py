@@ -3213,16 +3213,41 @@ def admin_menu_callback(update, context):
             )
         return
 
-    # Submenú admins: registrados (placeholder por ahora)
+    # Submenú admins: listar administradores registrados (solo lectura)
     if data == "admin_admins_registrados":
         query.answer()
+        admins = get_all_admins()
+
+        if not admins:
+            query.edit_message_text(
+                "No hay administradores registrados en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for a in admins:
+            admin_id = a[0]
+            full_name = a[2]
+            team_name = a[8] or "-"
+            status = a[6]
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} | {} ({})".format(admin_id, full_name, team_name, status),
+                callback_data="admin_noop"
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
         query.edit_message_text(
-            "Administradores registrados: (pendiente de implementar)\n\n"
-            "⬅️ Usa el botón 'Volver al Panel' para regresar.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
-            ])
+            "Administradores registrados:\n\n(Lista solo lectura por ahora)",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
+
+    # Handler noop para botones de solo lectura
+    if data == "admin_noop":
+        query.answer("Solo lectura")
         return
 
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
