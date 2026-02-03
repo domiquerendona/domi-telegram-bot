@@ -15,6 +15,25 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+# Importa la clase principal de FastAPI
+from fastapi import FastAPI
+
+# Importa el router administrativo
+# Se le asigna un alias para mayor claridad
+from web.api.admin import router as admin_router
+
+
+# Se crea la instancia principal de la aplicación FastAPI
+# Esta es la app que se ejecuta con Uvicorn
+app = FastAPI()
+
+
+# Se registran las rutas administrativas dentro de la aplicación
+# Esto habilita endpoints como:
+# POST /admin/users/{user_id}/approve
+app.include_router(admin_router)
+
+
 from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
 from db import (
     init_db,
