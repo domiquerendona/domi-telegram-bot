@@ -3168,8 +3168,8 @@ def admin_menu_callback(update, context):
     data = query.data
     user_id = query.from_user.id
 
-    # Solo el Administrador de Plataforma puede usar estos botones
-    if user_id != ADMIN_USER_ID:
+    # Solo el Admin de Plataforma aprobado puede usar estos botones
+    if not user_has_platform_admin(user_id):
         query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
         return
 
