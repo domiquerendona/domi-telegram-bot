@@ -55,6 +55,7 @@ from db import (
     get_pending_allies,
     get_ally_by_id,
     update_ally_status,
+    update_ally_status_by_id,
     get_all_allies,
     update_ally,
     delete_ally,
@@ -92,6 +93,7 @@ from db import (
     get_pending_couriers,
     get_pending_couriers_by_admin,
     update_courier_status,
+    update_courier_status_by_id,
     get_all_couriers,
     update_courier,
     delete_courier,
@@ -6087,6 +6089,18 @@ def admin_config_callback(update, context):
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_administradores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("config_ally_disable_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "INACTIVE")
+        query.edit_message_text("Aliado desactivado (INACTIVE).")
+        return
+
+    if data.startswith("config_ally_enable_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "APPROVED")
+        query.edit_message_text("Aliado activado (APPROVED).")
         return
 
     if data.startswith("config_courier_disable_"):
