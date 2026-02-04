@@ -6,6 +6,7 @@ load_dotenv()
 
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.error import BadRequest
 from telegram.ext import (
     Updater,
     CommandHandler,
@@ -89,6 +90,7 @@ from db import (
     get_courier_by_user_id,
     get_courier_by_id,
     get_pending_couriers,
+    get_pending_couriers_by_admin,
     update_courier_status,
     get_all_couriers,
     update_courier,
@@ -5414,12 +5416,18 @@ def admin_local_callback(update, context):
             keyboard = [
                 [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             ]
-            query.edit_message_text(
-                "Panel Administrador Local\n\n"
-                "Como Administrador de Plataforma, tu operación está habilitada.\n"
-                "Selecciona una opción:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            try:
+                query.edit_message_text(
+                    "Panel Administrador Local\n\n"
+                    "Como Administrador de Plataforma, tu operación está habilitada.\n"
+                    "Selecciona una opción:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    query.answer("Sin cambios.")
+                    return
+                raise
             return
 
         # FASE 1: Mostrar requisitos como información, NO como bloqueo
@@ -5436,13 +5444,19 @@ def admin_local_callback(update, context):
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
         ]
-        query.edit_message_text(
-            "Panel Administrador Local\n\n"
-            f"Estado: {status}\n\n"
-            + estado_msg +
-            "Panel habilitado. Selecciona una opción:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            query.edit_message_text(
+                "Panel Administrador Local\n\n"
+                f"Estado: {status}\n\n"
+                + estado_msg +
+                "Panel habilitado. Selecciona una opción:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                query.answer("Sin cambios.")
+                return
+            raise
         return
 
     if data.startswith("local_status_"):
