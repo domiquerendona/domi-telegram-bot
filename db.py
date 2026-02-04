@@ -771,6 +771,11 @@ def init_db():
     conn.close()
 
 def force_platform_admin(platform_telegram_id: int):
+    """
+    Asegura que el telegram_id tenga un admin PLATFORM aprobado en BD.
+    - Crea user si no existe
+    - Crea o actualiza admin PLATFORM para ese user_id
+    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -787,22 +792,24 @@ def force_platform_admin(platform_telegram_id: int):
         )
         user_id = cur.lastrowid
 
-    # 2) asegurar admins
+    # 2) asegurar admins - buscar por user_id Y team_code
     cur.execute("""
         SELECT id FROM admins
-        WHERE team_code = 'PLATFORM' AND is_deleted = 0
+        WHERE user_id = ? AND team_code = 'PLATFORM' AND is_deleted = 0
         LIMIT 1
-    """)
+    """, (user_id,))
     admin_row = cur.fetchone()
 
     if admin_row:
+        # Ya existe, asegurar que tenga status APPROVED
         admin_id = admin_row[0] if not isinstance(admin_row, sqlite3.Row) else admin_row["id"]
         cur.execute("""
             UPDATE admins
-            SET team_code='PLATFORM', status='APPROVED'
+            SET status = 'APPROVED'
             WHERE id = ?
         """, (admin_id,))
     else:
+        # No existe, crear nuevo
         cur.execute("""
             INSERT INTO admins (
                 user_id, full_name, phone, city, barrio,
@@ -819,7 +826,7 @@ def force_platform_admin(platform_telegram_id: int):
             "PLATAFORMA",
             "PLATAFORMA",
             "PLATAFORMA",  # team_name
-            "PLATFORM",    # document_number (si no tienes cédula real, usa algo fijo)
+            "PLATFORM",    # document_number
         ))
 
     conn.commit()
