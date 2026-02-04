@@ -5984,6 +5984,33 @@ def admin_config_callback(update, context):
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    if data == "config_gestion_repartidores":
+        couriers = get_all_couriers()
+        if not couriers:
+            query.edit_message_text(
+                "No hay repartidores registrados en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for courier in couriers:
+            courier_id = courier[0]
+            full_name = courier[2]
+            status = courier[10]
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(courier_id, full_name, status),
+                callback_data="config_ver_courier_{}".format(courier_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Repartidores registrados. Toca uno para ver detalle.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
 
     if data == "config_gestion_administradores":
         admins = get_all_admins()
