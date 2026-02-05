@@ -6094,25 +6094,29 @@ def admin_config_callback(update, context):
     if data.startswith("config_ally_disable_"):
         ally_id = int(data.split("_")[-1])
         update_ally_status_by_id(ally_id, "INACTIVE")
-        query.edit_message_text("Aliado desactivado (INACTIVE).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
         update_ally_status_by_id(ally_id, "APPROVED")
-        query.edit_message_text("Aliado activado (APPROVED).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_disable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "INACTIVE")
-        query.edit_message_text("Repartidor desactivado (INACTIVE).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_enable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "APPROVED")
-        query.edit_message_text("Repartidor activado (APPROVED).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_admin_approve_"):
