@@ -3140,9 +3140,9 @@ def admin_menu(update, context):
     user = update.effective_user
     user_db_id = get_user_db_id_from_update(update)
 
-    # Solo el Administrador de Plataforma puede usar este comando
-    if user.id != ADMIN_USER_ID:
-        update.message.reply_text("Este comando es solo para el Administrador de Plataforma.")
+    # Solo el Admin de Plataforma aprobado puede usar este comando
+    if not user_has_platform_admin(user.id):
+        update.message.reply_text("Acceso restringido: tu Admin de Plataforma no esta APPROVED.")
         return
 
     texto = (
@@ -5821,8 +5821,8 @@ def admin_config_callback(update, context):
     user_id = query.from_user.id
     query.answer()
 
-    if not es_admin(user_id):
-        query.answer("No tienes permisos para esto.", show_alert=True)
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Administrador de Plataforma puede usar este menu.", show_alert=True)
         return
 
     if data == "config_totales":
