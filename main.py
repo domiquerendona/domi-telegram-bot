@@ -3457,7 +3457,6 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
             [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
             [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-            [InlineKeyboardButton("Gestionar administradores", callback_data="config_gestion_administradores")],
         ]
 
         query.edit_message_text(
@@ -5808,7 +5807,6 @@ def admin_configuraciones(update, context):
         [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
         [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
         [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-        [InlineKeyboardButton("Gestionar administradores", callback_data="config_gestion_administradores")],
         [InlineKeyboardButton("Cerrar", callback_data="config_cerrar")],
     ]
     update.message.reply_text(
@@ -6003,83 +6001,6 @@ def admin_config_callback(update, context):
         )
         return
 
-    if data == "config_gestion_administradores":
-        admins = get_all_admins()
-        if not admins:
-            query.edit_message_text("No hay administradores registrados en este momento.")
-            return
-
-        keyboard = []
-        for a in admins:
-            admin_id = a[0]
-            full_name = a[2]
-            team_name = a[8] or "-"
-            status = a[6]
-            keyboard.append([InlineKeyboardButton(
-                "ID {} - {} | {} ({})".format(admin_id, full_name, team_name, status),
-                callback_data="config_ver_admin_{}".format(admin_id)
-            )])
-
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
-        query.edit_message_text(
-            "Administradores registrados. Toca uno para ver detalle.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    if data.startswith("config_ver_admin_"):
-        admin_id = int(data.split("_")[-1])
-        admin = get_admin_by_id(admin_id)
-        if not admin:
-            query.edit_message_text("No se encontró el administrador.")
-            return
-
-        status = admin[6]
-        total_couriers = count_admin_couriers(admin_id)
-        couriers_ok_balance = count_admin_couriers_with_min_balance(admin_id, 5000)
-
-        texto = (
-            "Detalle del administrador:\n\n"
-            "ID: {id}\n"
-            "Nombre: {full_name}\n"
-            "Teléfono: {phone}\n"
-            "Ciudad: {city}\n"
-            "Barrio: {barrio}\n"
-            "Equipo: {team}\n"
-            "Documento: {doc}\n"
-            "Estado: {status}\n\n"
-            "Regla de aprobación:\n"
-            "- Repartidores vinculados: {total}\n"
-            "- Con saldo >= 5000: {ok}\n"
-            "Requisito: 10 y 10"
-        ).format(
-            id=admin[0],
-            full_name=admin[2],
-            phone=admin[3],
-            city=admin[4],
-            barrio=admin[5],
-            team=admin[8] or "-",
-            doc=admin[9] or "-",
-            status=status,
-            total=total_couriers,
-            ok=couriers_ok_balance,
-        )
-
-        keyboard = []
-        if status == "PENDING":
-            keyboard.append([
-                InlineKeyboardButton("✅ Aprobar", callback_data="config_admin_approve_{}".format(admin_id)),
-                InlineKeyboardButton("❌ Rechazar", callback_data="config_admin_reject_{}".format(admin_id)),
-            ])
-        if status == "APPROVED":
-            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_admin_disable_{}".format(admin_id))])
-        if status == "INACTIVE":
-            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_admin_enable_{}".format(admin_id))])
-
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_administradores")])
-        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
     if data.startswith("config_ally_disable_"):
         ally_id = int(data.split("_")[-1])
         update_ally_status_by_id(ally_id, "INACTIVE")
@@ -6120,33 +6041,6 @@ def admin_config_callback(update, context):
         update_courier_status_by_id(courier_id, "REJECTED")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    if data.startswith("config_admin_approve_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "APPROVED")
-        query.edit_message_text(
-            "Administrador aprobado (APPROVED).\n\n"
-            "Nota: la operación se habilita automáticamente cuando cumpla requisitos (10 repartidores y saldo >= 5000)."
-        )
-        return
-
-    if data.startswith("config_admin_reject_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "REJECTED")
-        query.edit_message_text("Administrador rechazado (REJECTED).")
-        return
-
-    if data.startswith("config_admin_disable_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "INACTIVE")
-        query.edit_message_text("Administrador desactivado (INACTIVE).")
-        return
-
-    if data.startswith("config_admin_enable_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "APPROVED")
-        query.edit_message_text("Administrador activado (APPROVED).")
         return
 
     if data == "config_cerrar":
