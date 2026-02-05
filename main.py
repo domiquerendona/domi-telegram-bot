@@ -5903,7 +5903,7 @@ def admin_config_callback(update, context):
             ])
         if status == "APPROVED":
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
-        if status == "INACTIVE" or status == "REJECTED":
+        if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
@@ -5968,7 +5968,7 @@ def admin_config_callback(update, context):
             ])
         if status == "APPROVED":
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
-        if status == "INACTIVE" or status == "REJECTED":
+        if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
