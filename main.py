@@ -5896,20 +5896,15 @@ def admin_config_callback(update, context):
         status = ally[8]
         keyboard = []
 
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_ally_enable_{}".format(ally_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_ally_reject_{}".format(ally_id)),
+            ])
         if status == "APPROVED":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "⛔ Desactivar",
-                    callback_data="config_ally_disable_{}".format(ally_id)
-                )
-            ])
-        elif status == "INACTIVE":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Activar",
-                    callback_data="config_ally_enable_{}".format(ally_id)
-                )
-            ])
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
+        if status == "INACTIVE" or status == "REJECTED":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
@@ -5933,6 +5928,12 @@ def admin_config_callback(update, context):
         )
         return
 
+    if data.startswith("config_ver_courier_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
 
         texto = (
             "Detalle del repartidor:\n\n"
@@ -5957,32 +5958,20 @@ def admin_config_callback(update, context):
             status=courier[10],
         )
 
-        # Estado actual del repartidor
         status = courier[10]
-
         keyboard = []
 
-        # Solo mostramos la acción coherente según estado
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_courier_enable_{}".format(courier_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_courier_reject_{}".format(courier_id)),
+            ])
         if status == "APPROVED":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "⛔ Desactivar repartidor",
-                    callback_data="config_courier_disable_{}".format(courier_id)
-                )
-            ])
-        elif status == "INACTIVE":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Activar repartidor",
-                    callback_data="config_courier_enable_{}".format(courier_id)
-                )
-            ])
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
+        if status == "INACTIVE" or status == "REJECTED":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
 
-        # Siempre permitir volver
-        keyboard.append([
-            InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")
-        ])
-
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
@@ -6105,6 +6094,13 @@ def admin_config_callback(update, context):
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
+    if data.startswith("config_ally_reject_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "REJECTED")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
     if data.startswith("config_courier_disable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "INACTIVE")
@@ -6117,6 +6113,13 @@ def admin_config_callback(update, context):
         update_courier_status_by_id(courier_id, "APPROVED")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_courier_reject_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "REJECTED")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_admin_approve_"):
