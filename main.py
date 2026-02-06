@@ -3311,18 +3311,16 @@ def admin_menu_callback(update, context):
         # Solo Admin Plataforma puede cambiar status
         # Y no puede modificar a otro admin PLATFORM (proteger)
         if es_plataforma and adm_team_code != "PLATFORM":
-            keyboard.append([InlineKeyboardButton(
-                "Activar (APPROVED)",
-                callback_data="admin_set_status_{}_APPROVED".format(adm_id)
-            )])
-            keyboard.append([InlineKeyboardButton(
-                "Desactivar (INACTIVE)",
-                callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
-            )])
-            keyboard.append([InlineKeyboardButton(
-                "Rechazar (REJECTED)",
-                callback_data="admin_set_status_{}_REJECTED".format(adm_id)
-            )])
+            if adm_status == "PENDING":
+                keyboard.append([
+                    InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                ])
+            if adm_status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+            if adm_status == "INACTIVE":
+                keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+            # REJECTED: sin botones de accion (estado terminal)
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
@@ -3403,19 +3401,17 @@ def admin_menu_callback(update, context):
         )
 
         keyboard = []
-        # El admin objetivo no es PLATFORM, así que podemos mostrar botones
-        keyboard.append([InlineKeyboardButton(
-            "Activar (APPROVED)",
-            callback_data="admin_set_status_{}_APPROVED".format(adm_id)
-        )])
-        keyboard.append([InlineKeyboardButton(
-            "Desactivar (INACTIVE)",
-            callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
-        )])
-        keyboard.append([InlineKeyboardButton(
-            "Rechazar (REJECTED)",
-            callback_data="admin_set_status_{}_REJECTED".format(adm_id)
-        )])
+        # El admin objetivo no es PLATFORM, mostrar botones segun nuevo status
+        if adm_status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+            ])
+        if adm_status == "APPROVED":
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+        if adm_status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+        # REJECTED: sin botones de accion (estado terminal)
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
 
@@ -5567,6 +5563,14 @@ def admin_local_callback(update, context):
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
+
+    # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
+    if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
+        admin_full = get_admin_by_id(admin_id)
+        admin_status = admin_full[9] if admin_full else None
+        if admin_status != "APPROVED":
+            query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
+            return
 
     if data.startswith("local_courier_approve_"):
         courier_id = int(data.split("_")[-1])
