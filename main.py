@@ -30,6 +30,8 @@ from services import (
     can_call_google_today,
     extract_place_id_from_url,
     google_place_details,
+    approve_recharge_request,
+    reject_recharge_request,
 )
 from db import (
     init_db,
@@ -55,6 +57,7 @@ from db import (
     get_pending_allies,
     get_ally_by_id,
     update_ally_status,
+    update_ally_status_by_id,
     get_all_allies,
     update_ally,
     delete_ally,
@@ -92,6 +95,7 @@ from db import (
     get_pending_couriers,
     get_pending_couriers_by_admin,
     update_courier_status,
+    update_courier_status_by_id,
     get_all_couriers,
     update_courier,
     delete_courier,
@@ -137,6 +141,25 @@ from db import (
     # Cache de links de ubicación
     get_link_cache,
     upsert_link_cache,
+
+    # Sistema de recargas
+    get_approved_admin_link_for_courier,
+    get_approved_admin_link_for_ally,
+    get_admin_balance,
+    get_platform_admin,
+    create_recharge_request,
+    list_pending_recharges_for_admin,
+    get_recharge_request,
+    get_admin_payment_info,
+    update_admin_payment_info,
+    update_recharge_proof,
+
+    # Metodos de pago
+    create_payment_method,
+    get_payment_method_by_id,
+    list_payment_methods,
+    toggle_payment_method,
+    delete_payment_method,
 )
 
 # ============================================================
@@ -299,6 +322,21 @@ COTIZAR_DISTANCIA = 901
 # =========================
 TARIFAS_VALOR = 902
 
+# =========================
+# Estados para sistema de recargas
+# =========================
+RECARGAR_MONTO = 950
+RECARGAR_ADMIN = 951
+RECARGAR_COMPROBANTE = 952
+
+# =========================
+# Estados para configurar datos de pago
+# =========================
+PAGO_TELEFONO = 960
+PAGO_BANCO = 961
+PAGO_TITULAR = 962
+PAGO_INSTRUCCIONES = 963
+
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
@@ -411,6 +449,12 @@ def start(update, context):
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
 
+    # Saldo y recargas (para usuarios con rol)
+    if ally or courier or admin_local or es_admin_plataforma:
+        comandos.append("• /saldo  - Ver tu saldo")
+    if ally or courier:
+        comandos.append("• /recargar  - Solicitar recarga")
+
     # Nuevo pedido y clientes (solo aliados aprobados)
     if ally and ally["status"] == "APPROVED":
         comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
@@ -420,8 +464,14 @@ def start(update, context):
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
+        comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
+        comandos.append("• /configurar_pagos  - Configurar datos de pago")
     elif admin_local:
         comandos.append("• /mi_admin  - Ver tu panel de administrador local")
+        admin_status = admin_local["status"] if isinstance(admin_local, dict) else admin_local[6]
+        if admin_status == "APPROVED":
+            comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
+            comandos.append("• /configurar_pagos  - Configurar datos de pago")
 
     # Registro (solo si NO tiene ningún rol)
     if not (ally or courier or admin_local or es_admin_plataforma):
@@ -3138,9 +3188,9 @@ def admin_menu(update, context):
     user = update.effective_user
     user_db_id = get_user_db_id_from_update(update)
 
-    # Solo el Administrador de Plataforma puede usar este comando
-    if user.id != ADMIN_USER_ID:
-        update.message.reply_text("Este comando es solo para el Administrador de Plataforma.")
+    # Solo el Admin de Plataforma aprobado puede usar este comando
+    if not user_has_platform_admin(user.id):
+        update.message.reply_text("Acceso restringido: tu Admin de Plataforma no esta APPROVED.")
         return
 
     texto = (
@@ -3309,18 +3359,16 @@ def admin_menu_callback(update, context):
         # Solo Admin Plataforma puede cambiar status
         # Y no puede modificar a otro admin PLATFORM (proteger)
         if es_plataforma and adm_team_code != "PLATFORM":
-            keyboard.append([InlineKeyboardButton(
-                "Activar (APPROVED)",
-                callback_data="admin_set_status_{}_APPROVED".format(adm_id)
-            )])
-            keyboard.append([InlineKeyboardButton(
-                "Desactivar (INACTIVE)",
-                callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
-            )])
-            keyboard.append([InlineKeyboardButton(
-                "Rechazar (REJECTED)",
-                callback_data="admin_set_status_{}_REJECTED".format(adm_id)
-            )])
+            if adm_status == "PENDING":
+                keyboard.append([
+                    InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                ])
+            if adm_status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+            if adm_status == "INACTIVE":
+                keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+            # REJECTED: sin botones de accion (estado terminal)
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
@@ -3401,19 +3449,17 @@ def admin_menu_callback(update, context):
         )
 
         keyboard = []
-        # El admin objetivo no es PLATFORM, así que podemos mostrar botones
-        keyboard.append([InlineKeyboardButton(
-            "Activar (APPROVED)",
-            callback_data="admin_set_status_{}_APPROVED".format(adm_id)
-        )])
-        keyboard.append([InlineKeyboardButton(
-            "Desactivar (INACTIVE)",
-            callback_data="admin_set_status_{}_INACTIVE".format(adm_id)
-        )])
-        keyboard.append([InlineKeyboardButton(
-            "Rechazar (REJECTED)",
-            callback_data="admin_set_status_{}_REJECTED".format(adm_id)
-        )])
+        # El admin objetivo no es PLATFORM, mostrar botones segun nuevo status
+        if adm_status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+            ])
+        if adm_status == "APPROVED":
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+        if adm_status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+        # REJECTED: sin botones de accion (estado terminal)
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
 
@@ -3455,7 +3501,6 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
             [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
             [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-            [InlineKeyboardButton("Gestionar administradores", callback_data="config_gestion_administradores")],
         ]
 
         query.edit_message_text(
@@ -5374,6 +5419,792 @@ def mi_perfil(update, context):
     update.message.reply_text(mensaje)
 
 
+# ============================================================
+# SISTEMA DE RECARGAS
+# ============================================================
+
+def cmd_saldo(update, context):
+    """
+    Comando /saldo - Muestra el saldo según el rol del usuario:
+    - Courier: balance del vínculo APPROVED más reciente
+    - Ally: balance del vínculo APPROVED más reciente
+    - Admin: balance del admin (admins.balance)
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    mensaje = ""
+
+    admin = get_admin_by_user_id(user_db_id)
+    if admin:
+        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        balance = get_admin_balance(admin_id)
+        team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
+        mensaje += f"Admin ({team_name or 'sin nombre'}):\n"
+        mensaje += f"   Saldo disponible: ${balance:,}\n\n"
+
+    courier = get_courier_by_user_id(user_db_id)
+    if courier:
+        courier_id = courier["id"]
+        link = get_approved_admin_link_for_courier(courier_id)
+        if link:
+            balance = link["balance"] if link["balance"] else 0
+            team_name = link["team_name"] or "-"
+            mensaje += f"Repartidor (equipo {team_name}):\n"
+            mensaje += f"   Saldo: ${balance:,}\n\n"
+        else:
+            mensaje += "Repartidor:\n"
+            mensaje += "   Sin vínculo APPROVED con admin.\n"
+            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+
+    ally = get_ally_by_user_id(user_db_id)
+    if ally:
+        ally_id = ally["id"]
+        link = get_approved_admin_link_for_ally(ally_id)
+        if link:
+            balance = link["balance"] if link["balance"] else 0
+            team_name = link["team_name"] or "-"
+            mensaje += f"Aliado (equipo {team_name}):\n"
+            mensaje += f"   Saldo: ${balance:,}\n\n"
+        else:
+            mensaje += "Aliado:\n"
+            mensaje += "   Sin vínculo APPROVED con admin.\n"
+            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+
+    if not mensaje:
+        mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
+
+    update.message.reply_text(mensaje)
+
+
+def cmd_recargar(update, context):
+    """
+    Comando /recargar - Inicia el flujo de solicitud de recarga.
+    Determina el rol y muestra opciones de admin.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    courier = get_courier_by_user_id(user_db_id)
+    ally = get_ally_by_user_id(user_db_id)
+
+    if not courier and not ally:
+        update.message.reply_text(
+            "Para solicitar recargas debes ser Repartidor o Aliado.\n"
+            "Usa /soy_repartidor o /soy_aliado para registrarte."
+        )
+        return ConversationHandler.END
+
+    if courier:
+        context.user_data["recargar_target_type"] = "COURIER"
+        context.user_data["recargar_target_id"] = courier["id"]
+        context.user_data["recargar_target_name"] = courier["full_name"]
+    else:
+        context.user_data["recargar_target_type"] = "ALLY"
+        context.user_data["recargar_target_id"] = ally["id"]
+        context.user_data["recargar_target_name"] = ally["business_name"]
+
+    update.message.reply_text(
+        "Escribe el monto que deseas recargar (solo numeros).\n"
+        "Ejemplo: 10000"
+    )
+    return RECARGAR_MONTO
+
+
+def recargar_monto(update, context):
+    """Recibe el monto de la recarga."""
+    texto = update.message.text.strip().replace(".", "").replace(",", "")
+
+    try:
+        monto = int(texto)
+    except ValueError:
+        update.message.reply_text("Por favor ingresa solo numeros. Ejemplo: 10000")
+        return RECARGAR_MONTO
+
+    if monto < 1000:
+        update.message.reply_text("El monto minimo es $1,000.")
+        return RECARGAR_MONTO
+
+    if monto > 1000000:
+        update.message.reply_text("El monto maximo es $1,000,000.")
+        return RECARGAR_MONTO
+
+    context.user_data["recargar_monto"] = monto
+
+    target_type = context.user_data["recargar_target_type"]
+    target_id = context.user_data["recargar_target_id"]
+
+    if target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+    else:
+        link = get_approved_admin_link_for_ally(target_id)
+
+    buttons = []
+
+    if link:
+        admin_id = link["admin_id"]
+        team_name = link["team_name"] or "Mi admin"
+        buttons.append([InlineKeyboardButton(
+            f"Mi admin: {team_name}",
+            callback_data=f"recargar_admin_{admin_id}"
+        )])
+        context.user_data["recargar_mi_admin_id"] = admin_id
+
+    platform = get_platform_admin()
+    if platform:
+        platform_id = platform[0]
+        platform_name = platform[3] or platform[2] or "Plataforma"
+        if not link or link["admin_id"] != platform_id:
+            buttons.append([InlineKeyboardButton(
+                f"Plataforma: {platform_name}",
+                callback_data=f"recargar_admin_{platform_id}"
+            )])
+
+    if not buttons:
+        update.message.reply_text(
+            "No hay admins disponibles para procesar recargas.\n"
+            "Contacta al soporte."
+        )
+        return ConversationHandler.END
+
+    buttons.append([InlineKeyboardButton("Cancelar", callback_data="recargar_cancel")])
+
+    update.message.reply_text(
+        f"Monto: ${monto:,}\n\n"
+        f"Selecciona a quien solicitar la recarga:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RECARGAR_ADMIN
+
+
+def recargar_admin_callback(update, context):
+    """Callback para seleccionar admin y mostrar datos de pago."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "recargar_cancel":
+        query.edit_message_text("Solicitud de recarga cancelada.")
+        return ConversationHandler.END
+
+    if not data.startswith("recargar_admin_"):
+        return RECARGAR_ADMIN
+
+    admin_id = int(data.replace("recargar_admin_", ""))
+
+    target_type = context.user_data.get("recargar_target_type")
+    target_id = context.user_data.get("recargar_target_id")
+    if not target_type or not target_id:
+        query.edit_message_text("Error: datos incompletos. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
+    platform_admin = get_platform_admin()
+    platform_admin_id = platform_admin[0] if platform_admin else None
+
+    mi_admin_id = None
+    if target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+        mi_admin_id = link["admin_id"] if link else None
+    elif target_type == "ALLY":
+        link = get_approved_admin_link_for_ally(target_id)
+        mi_admin_id = link["admin_id"] if link else None
+
+    allowed_admin_ids = {aid for aid in [platform_admin_id, mi_admin_id] if aid}
+    if admin_id not in allowed_admin_ids:
+        query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
+    context.user_data["recargar_admin_id"] = admin_id
+
+    monto = context.user_data.get("recargar_monto")
+
+    # Obtener cuentas de pago activas del admin
+    methods = list_payment_methods(admin_id, only_active=True)
+    admin_row = get_admin_by_id(admin_id)
+    admin_name = admin_row[2] if admin_row else "Admin"
+
+    if methods:
+        pago_texto = f"Datos para el pago:\n\n"
+        pago_texto += f"Monto a transferir: ${monto:,}\n\n"
+        pago_texto += "Cuentas disponibles:\n\n"
+
+        for m in methods:
+            pago_texto += f"{m[2]}: {m[3]}\n"
+            pago_texto += f"   Titular: {m[4]}\n"
+            if m[5]:
+                pago_texto += f"   {m[5]}\n"
+            pago_texto += "\n"
+
+        pago_texto += "Realiza la transferencia y envia una FOTO del comprobante."
+    else:
+        pago_texto = (
+            f"Monto a transferir: ${monto:,}\n\n"
+            f"Contacta a {admin_name} para obtener los datos de pago.\n\n"
+            "Una vez realices el pago, envia una FOTO del comprobante."
+        )
+
+    query.edit_message_text(pago_texto)
+
+    return RECARGAR_COMPROBANTE
+
+
+def recargar_comprobante(update, context):
+    """Recibe la foto del comprobante y crea la solicitud."""
+    if not update.message.photo:
+        update.message.reply_text("Por favor envia una FOTO del comprobante de pago.")
+        return RECARGAR_COMPROBANTE
+
+    # Obtener el file_id de la foto (mejor calidad)
+    photo = update.message.photo[-1]
+    proof_file_id = photo.file_id
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    target_type = context.user_data.get("recargar_target_type")
+    target_id = context.user_data.get("recargar_target_id")
+    monto = context.user_data.get("recargar_monto")
+    target_name = context.user_data.get("recargar_target_name", "")
+    admin_id = context.user_data.get("recargar_admin_id")
+
+    if not target_type or not target_id or not monto or not admin_id:
+        update.message.reply_text("Error: datos incompletos. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
+    request_id = create_recharge_request(
+        target_type=target_type,
+        target_id=target_id,
+        admin_id=admin_id,
+        amount=monto,
+        requested_by_user_id=user_db_id,
+        proof_file_id=proof_file_id
+    )
+
+    update.message.reply_text(
+        f"Solicitud de recarga enviada.\n\n"
+        f"ID: #{request_id}\n"
+        f"Monto: ${monto:,}\n"
+        f"Estado: PENDIENTE\n\n"
+        f"El admin verificara tu comprobante y procesara la recarga."
+    )
+
+    # Notificar al admin con la foto
+    try:
+        admin_row = get_admin_by_id(admin_id)
+        if admin_row:
+            admin_user_id = admin_row[1]
+            admin_user = get_user_by_id(admin_user_id)
+            if admin_user:
+                admin_telegram_id = admin_user["telegram_id"]
+                tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
+
+                notif_text = (
+                    f"Nueva solicitud de recarga #{request_id}\n\n"
+                    f"De: {target_name} ({tipo_label})\n"
+                    f"Monto: ${monto:,}\n\n"
+                    f"Comprobante adjunto:"
+                )
+
+                buttons = [
+                    [
+                        InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{request_id}"),
+                        InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{request_id}")
+                    ]
+                ]
+
+                # Enviar foto con caption y botones
+                context.bot.send_photo(
+                    chat_id=admin_telegram_id,
+                    photo=proof_file_id,
+                    caption=notif_text,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+    except Exception as e:
+        print(f"[WARN] No se pudo notificar al admin: {e}")
+
+    context.user_data.pop("recargar_target_type", None)
+    context.user_data.pop("recargar_target_id", None)
+    context.user_data.pop("recargar_monto", None)
+    context.user_data.pop("recargar_target_name", None)
+    context.user_data.pop("recargar_mi_admin_id", None)
+    context.user_data.pop("recargar_admin_id", None)
+
+    return ConversationHandler.END
+
+
+def cmd_recargas_pendientes(update, context):
+    """
+    Comando /recargas_pendientes - Lista las solicitudes PENDING para el admin.
+    Solo para admins.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        update.message.reply_text("Este comando es solo para administradores.")
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+
+    if admin_status != "APPROVED":
+        update.message.reply_text("Tu cuenta de admin no esta aprobada.")
+        return
+
+    pendientes = list_pending_recharges_for_admin(admin_id)
+
+    if not pendientes:
+        update.message.reply_text("No tienes solicitudes de recarga pendientes.")
+        return
+
+    for req in pendientes:
+        req_id = req[0]
+        target_type = req[1]
+        target_id = req[2]
+        amount = req[3]
+        method = req[4] or "-"
+        note = req[5] or "-"
+        created_at = req[6] or "-"
+        target_name = req[7] or "Desconocido"
+        proof_file_id = req[8] if len(req) > 8 else None
+
+        tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
+
+        texto = (
+            f"Solicitud #{req_id}\n"
+            f"De: {target_name} ({tipo_label})\n"
+            f"Monto: ${amount:,}\n"
+            f"Metodo: {method}\n"
+            f"Fecha: {created_at}\n"
+        )
+
+        buttons = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{req_id}"),
+                InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{req_id}")
+            ],
+            [
+                InlineKeyboardButton("Ver comprobante", callback_data=f"recharge_proof_{req_id}")
+            ],
+        ]
+
+        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def recharge_proof_callback(update, context):
+    """
+    Callback para ver comprobante.
+    Patron: ^recharge_proof_\\d+$
+    """
+    query = update.callback_query
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    if admin_status != "APPROVED":
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    if not data.startswith("recharge_proof_"):
+        return
+
+    request_id = int(data.replace("recharge_proof_", ""))
+    req = get_recharge_request(request_id)
+    if not req:
+        query.answer("Solicitud no encontrada.", show_alert=True)
+        return
+
+    if req[3] != admin_id:
+        is_platform = user_has_platform_admin(user_tg.id)
+        if not is_platform:
+            query.answer("Esta solicitud no te corresponde.", show_alert=True)
+            return
+
+    proof_file_id = req[12]
+    if not proof_file_id:
+        query.answer("Sin comprobante.", show_alert=True)
+        return
+
+    try:
+        context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=proof_file_id,
+            caption=f"Comprobante de solicitud #{request_id}"
+        )
+        query.answer("Comprobante enviado.")
+    except Exception as e:
+        print(f"[WARN] No se pudo enviar comprobante: {e}")
+        query.answer("No se pudo enviar el comprobante.", show_alert=True)
+
+
+def recharge_callback(update, context):
+    """
+    Callback para aprobar/rechazar solicitudes de recarga.
+    Patron: ^recharge_(approve|reject)_\\d+$
+    """
+    query = update.callback_query
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    if admin_status != "APPROVED":
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    if data.startswith("recharge_approve_"):
+        request_id = int(data.replace("recharge_approve_", ""))
+        req = get_recharge_request(request_id)
+
+        if not req:
+            query.answer("Solicitud no encontrada.", show_alert=True)
+            return
+
+        if req[3] != admin_id:
+            is_platform = user_has_platform_admin(user_tg.id)
+            if not is_platform:
+                query.answer("Esta solicitud no te corresponde.", show_alert=True)
+                return
+
+        success, msg = approve_recharge_request(request_id, admin_id)
+
+        if success:
+            query.answer("Recarga aprobada.")
+            query.edit_message_text(
+                query.message.text + f"\n\nAPROBADA por admin #{admin_id}"
+            )
+        else:
+            query.answer(msg, show_alert=True)
+
+    elif data.startswith("recharge_reject_"):
+        request_id = int(data.replace("recharge_reject_", ""))
+        req = get_recharge_request(request_id)
+
+        if not req:
+            query.answer("Solicitud no encontrada.", show_alert=True)
+            return
+
+        if req[3] != admin_id:
+            is_platform = user_has_platform_admin(user_tg.id)
+            if not is_platform:
+                query.answer("Esta solicitud no te corresponde.", show_alert=True)
+                return
+
+        success, msg = reject_recharge_request(request_id, admin_id)
+
+        if success:
+            query.answer("Solicitud rechazada.")
+            query.edit_message_text(
+                query.message.text + f"\n\nRECHAZADA por admin #{admin_id}"
+            )
+        else:
+            query.answer(msg, show_alert=True)
+
+
+# ============================================================
+# CONFIGURAR DATOS DE PAGO (ADMINS)
+# ============================================================
+
+def cmd_configurar_pagos(update, context):
+    """
+    Comando /configurar_pagos - Muestra menu de gestion de cuentas de pago.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        update.message.reply_text("Este comando es solo para administradores.")
+        return ConversationHandler.END
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    context.user_data["pago_admin_id"] = admin_id
+
+    return mostrar_menu_pagos(update, context, admin_id, es_mensaje=True)
+
+
+def mostrar_menu_pagos(update, context, admin_id, es_mensaje=False):
+    """Muestra el menu de cuentas de pago."""
+    methods = list_payment_methods(admin_id, only_active=False)
+
+    texto = "Tus cuentas de pago:\n\n"
+
+    if methods:
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            texto += f"{'🟢' if m[6] == 1 else '🔴'} {m[2]} - {m[3]} ({estado})\n"
+        texto += "\n"
+    else:
+        texto += "(No tienes cuentas configuradas)\n\n"
+
+    texto += "Selecciona una opcion:"
+
+    buttons = [
+        [InlineKeyboardButton("Agregar cuenta", callback_data="pagos_agregar")],
+    ]
+
+    if methods:
+        buttons.append([InlineKeyboardButton("Gestionar cuentas", callback_data="pagos_gestionar")])
+
+    buttons.append([InlineKeyboardButton("Cerrar", callback_data="pagos_cerrar")])
+
+    if es_mensaje:
+        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        update.callback_query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+    return ConversationHandler.END
+
+
+def pagos_callback(update, context):
+    """Callback para el menu de pagos."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.edit_message_text("No autorizado.")
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    context.user_data["pago_admin_id"] = admin_id
+
+    if data == "pagos_cerrar":
+        query.edit_message_text("Menu de pagos cerrado.")
+        return
+
+    if data == "pagos_agregar":
+        query.edit_message_text(
+            "Agregar nueva cuenta de pago.\n\n"
+            "Escribe el nombre del BANCO o BILLETERA:\n"
+            "(Ejemplo: Nequi, Daviplata, Bancolombia, etc.)"
+        )
+        return PAGO_BANCO
+
+    if data == "pagos_gestionar":
+        methods = list_payment_methods(admin_id, only_active=False)
+
+        if not methods:
+            query.edit_message_text("No tienes cuentas para gestionar.")
+            return
+
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+
+        buttons = []
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            emoji = "🟢" if m[6] == 1 else "🔴"
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {m[2]} - {m[3]} ({estado})",
+                callback_data=f"pagos_ver_{m[0]}"
+            )])
+
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data == "pagos_volver":
+        return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+
+    if data.startswith("pagos_ver_"):
+        method_id = int(data.replace("pagos_ver_", ""))
+        method = get_payment_method_by_id(method_id)
+
+        if not method:
+            query.edit_message_text("Cuenta no encontrada.")
+            return
+
+        estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
+        emoji = "🟢" if method[6] == 1 else "🔴"
+
+        texto = (
+            f"{emoji} Cuenta {estado}\n\n"
+            f"Banco/Billetera: {method[2]}\n"
+            f"Numero: {method[3]}\n"
+            f"Titular: {method[4]}\n"
+            f"Instrucciones: {method[5] or '-'}\n"
+        )
+
+        buttons = []
+        if method[6] == 1:
+            buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
+        else:
+            buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
+
+        buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("pagos_toggle_"):
+        parts = data.replace("pagos_toggle_", "").split("_")
+        method_id = int(parts[0])
+        new_status = int(parts[1])
+
+        toggle_payment_method(method_id, new_status)
+
+        estado = "activada" if new_status == 1 else "desactivada"
+        query.answer(f"Cuenta {estado}.")
+
+        # Volver a mostrar la cuenta
+        method = get_payment_method_by_id(method_id)
+        if method:
+            estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
+            emoji = "🟢" if method[6] == 1 else "🔴"
+
+            texto = (
+                f"{emoji} Cuenta {estado}\n\n"
+                f"Banco/Billetera: {method[2]}\n"
+                f"Numero: {method[3]}\n"
+                f"Titular: {method[4]}\n"
+                f"Instrucciones: {method[5] or '-'}\n"
+            )
+
+            buttons = []
+            if method[6] == 1:
+                buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
+            else:
+                buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
+
+            buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+            buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
+
+            query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("pagos_delete_"):
+        method_id = int(data.replace("pagos_delete_", ""))
+        delete_payment_method(method_id)
+        query.answer("Cuenta eliminada.")
+
+        # Volver a gestionar
+        methods = list_payment_methods(admin_id, only_active=False)
+
+        if not methods:
+            return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+
+        buttons = []
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            emoji = "🟢" if m[6] == 1 else "🔴"
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {m[2]} - {m[3]} ({estado})",
+                callback_data=f"pagos_ver_{m[0]}"
+            )])
+
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+
+def pago_banco(update, context):
+    """Recibe el banco/billetera."""
+    texto = update.message.text.strip()
+    context.user_data["pago_banco"] = texto
+
+    update.message.reply_text(
+        "Escribe el NUMERO de cuenta o celular:"
+    )
+    return PAGO_TELEFONO
+
+
+def pago_telefono(update, context):
+    """Recibe el numero de telefono/cuenta."""
+    texto = update.message.text.strip()
+    context.user_data["pago_telefono"] = texto
+
+    update.message.reply_text(
+        "Escribe el NOMBRE DEL TITULAR de la cuenta:\n"
+        "(Como aparece en la cuenta)"
+    )
+    return PAGO_TITULAR
+
+
+def pago_titular(update, context):
+    """Recibe el titular de la cuenta."""
+    texto = update.message.text.strip()
+    context.user_data["pago_titular"] = texto
+
+    update.message.reply_text(
+        "Escribe INSTRUCCIONES adicionales para el pago (opcional):\n"
+        "(Ejemplo: 'Enviar a llave Nequi', 'Notificar por WhatsApp', etc.)\n\n"
+        "Si no tienes instrucciones, escribe: ninguna"
+    )
+    return PAGO_INSTRUCCIONES
+
+
+def pago_instrucciones(update, context):
+    """Recibe las instrucciones y guarda la cuenta."""
+    texto = update.message.text.strip()
+
+    if texto.lower() in ["ninguna", "ninguno", "no", "na", "n/a", "-"]:
+        instrucciones = None
+    else:
+        instrucciones = texto
+
+    admin_id = context.user_data.get("pago_admin_id")
+
+    method_id = create_payment_method(
+        admin_id=admin_id,
+        method_name=context.user_data.get("pago_banco"),
+        account_number=context.user_data.get("pago_telefono"),
+        account_holder=context.user_data.get("pago_titular"),
+        instructions=instrucciones
+    )
+
+    resumen = (
+        "Cuenta de pago agregada:\n\n"
+        f"Banco/Billetera: {context.user_data.get('pago_banco')}\n"
+        f"Numero: {context.user_data.get('pago_telefono')}\n"
+        f"Titular: {context.user_data.get('pago_titular')}\n"
+        f"Instrucciones: {instrucciones or '-'}\n\n"
+        "Estado: ACTIVA\n\n"
+        "Usa /configurar_pagos para gestionar tus cuentas."
+    )
+
+    update.message.reply_text(resumen)
+
+    context.user_data.pop("pago_admin_id", None)
+    context.user_data.pop("pago_telefono", None)
+    context.user_data.pop("pago_banco", None)
+    context.user_data.pop("pago_titular", None)
+
+    return ConversationHandler.END
+
+
 def admin_local_callback(update, context):
     query = update.callback_query
     if not query:
@@ -5566,6 +6397,14 @@ def admin_local_callback(update, context):
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
+
+    # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
+    if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
+        admin_full = get_admin_by_id(admin_id)
+        admin_status = admin_full[9] if admin_full else None
+        if admin_status != "APPROVED":
+            query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
+            return
 
     if data.startswith("local_courier_approve_"):
         courier_id = int(data.split("_")[-1])
@@ -5806,7 +6645,6 @@ def admin_configuraciones(update, context):
         [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
         [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
         [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-        [InlineKeyboardButton("Gestionar administradores", callback_data="config_gestion_administradores")],
         [InlineKeyboardButton("Cerrar", callback_data="config_cerrar")],
     ]
     update.message.reply_text(
@@ -5821,8 +6659,8 @@ def admin_config_callback(update, context):
     user_id = query.from_user.id
     query.answer()
 
-    if not es_admin(user_id):
-        query.answer("No tienes permisos para esto.", show_alert=True)
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Administrador de Plataforma puede usar este menu.", show_alert=True)
         return
 
     if data == "config_totales":
@@ -5894,20 +6732,15 @@ def admin_config_callback(update, context):
         status = ally[8]
         keyboard = []
 
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_ally_enable_{}".format(ally_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_ally_reject_{}".format(ally_id)),
+            ])
         if status == "APPROVED":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "⛔ Desactivar",
-                    callback_data="config_ally_disable_{}".format(ally_id)
-                )
-            ])
-        elif status == "INACTIVE":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Activar",
-                    callback_data="config_ally_enable_{}".format(ally_id)
-                )
-            ])
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
+        if status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
@@ -5931,6 +6764,12 @@ def admin_config_callback(update, context):
         )
         return
 
+    if data.startswith("config_ver_courier_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
 
         texto = (
             "Detalle del repartidor:\n\n"
@@ -5955,150 +6794,91 @@ def admin_config_callback(update, context):
             status=courier[10],
         )
 
-        # Estado actual del repartidor
         status = courier[10]
-
         keyboard = []
 
-        # Solo mostramos la acción coherente según estado
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_courier_enable_{}".format(courier_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_courier_reject_{}".format(courier_id)),
+            ])
         if status == "APPROVED":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "⛔ Desactivar repartidor",
-                    callback_data="config_courier_disable_{}".format(courier_id)
-                )
-            ])
-        elif status == "INACTIVE":
-            keyboard.append([
-                InlineKeyboardButton(
-                    "✅ Activar repartidor",
-                    callback_data="config_courier_enable_{}".format(courier_id)
-                )
-            ])
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
+        if status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
 
-        # Siempre permitir volver
-        keyboard.append([
-            InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")
-        ])
-
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-
-    if data == "config_gestion_administradores":
-        admins = get_all_admins()
-        if not admins:
-            query.edit_message_text("No hay administradores registrados en este momento.")
+    if data == "config_gestion_repartidores":
+        couriers = get_all_couriers()
+        if not couriers:
+            query.edit_message_text(
+                "No hay repartidores registrados en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")]
+                ])
+            )
             return
 
         keyboard = []
-        for a in admins:
-            admin_id = a[0]
-            full_name = a[2]
-            team_name = a[8] or "-"
-            status = a[6]
+        for courier in couriers:
+            courier_id = courier[0]
+            full_name = courier[2]
+            status = courier[10]
             keyboard.append([InlineKeyboardButton(
-                "ID {} - {} | {} ({})".format(admin_id, full_name, team_name, status),
-                callback_data="config_ver_admin_{}".format(admin_id)
+                "ID {} - {} ({})".format(courier_id, full_name, status),
+                callback_data="config_ver_courier_{}".format(courier_id)
             )])
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
         query.edit_message_text(
-            "Administradores registrados. Toca uno para ver detalle.",
+            "Repartidores registrados. Toca uno para ver detalle.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    if data.startswith("config_ver_admin_"):
-        admin_id = int(data.split("_")[-1])
-        admin = get_admin_by_id(admin_id)
-        if not admin:
-            query.edit_message_text("No se encontró el administrador.")
-            return
+    if data.startswith("config_ally_disable_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "INACTIVE")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
+        return
 
-        status = admin[6]
-        total_couriers = count_admin_couriers(admin_id)
-        couriers_ok_balance = count_admin_couriers_with_min_balance(admin_id, 5000)
+    if data.startswith("config_ally_enable_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "APPROVED")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
 
-        texto = (
-            "Detalle del administrador:\n\n"
-            "ID: {id}\n"
-            "Nombre: {full_name}\n"
-            "Teléfono: {phone}\n"
-            "Ciudad: {city}\n"
-            "Barrio: {barrio}\n"
-            "Equipo: {team}\n"
-            "Documento: {doc}\n"
-            "Estado: {status}\n\n"
-            "Regla de aprobación:\n"
-            "- Repartidores vinculados: {total}\n"
-            "- Con saldo >= 5000: {ok}\n"
-            "Requisito: 10 y 10"
-        ).format(
-            id=admin[0],
-            full_name=admin[2],
-            phone=admin[3],
-            city=admin[4],
-            barrio=admin[5],
-            team=admin[8] or "-",
-            doc=admin[9] or "-",
-            status=status,
-            total=total_couriers,
-            ok=couriers_ok_balance,
-        )
-
-        keyboard = []
-        if status == "PENDING":
-            keyboard.append([
-                InlineKeyboardButton("✅ Aprobar", callback_data="config_admin_approve_{}".format(admin_id)),
-                InlineKeyboardButton("❌ Rechazar", callback_data="config_admin_reject_{}".format(admin_id)),
-            ])
-        if status == "APPROVED":
-            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_admin_disable_{}".format(admin_id))])
-        if status == "INACTIVE":
-            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_admin_enable_{}".format(admin_id))])
-
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_administradores")])
-        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+    if data.startswith("config_ally_reject_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "REJECTED")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_disable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "INACTIVE")
-        query.edit_message_text("Repartidor desactivado (INACTIVE).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_enable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "APPROVED")
-        query.edit_message_text("Repartidor activado (APPROVED).")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data.startswith("config_admin_approve_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "APPROVED")
-        query.edit_message_text(
-            "Administrador aprobado (APPROVED).\n\n"
-            "Nota: la operación se habilita automáticamente cuando cumpla requisitos (10 repartidores y saldo >= 5000)."
-        )
-        return
-
-    if data.startswith("config_admin_reject_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "REJECTED")
-        query.edit_message_text("Administrador rechazado (REJECTED).")
-        return
-
-    if data.startswith("config_admin_disable_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "INACTIVE")
-        query.edit_message_text("Administrador desactivado (INACTIVE).")
-        return
-
-    if data.startswith("config_admin_enable_"):
-        admin_id = int(data.split("_")[-1])
-        update_admin_status_by_id(admin_id, "APPROVED")
-        query.edit_message_text("Administrador activado (APPROVED).")
+    if data.startswith("config_courier_reject_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "REJECTED")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data == "config_cerrar":
@@ -6214,6 +6994,13 @@ def main():
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
+
+    # Sistema de recargas
+    dp.add_handler(CommandHandler("saldo", cmd_saldo))
+    dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
+    dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
+    dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pagos_callback, pattern=r"^pagos_"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
@@ -6263,6 +7050,36 @@ def main():
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
+    # ConversationHandler para /recargar
+    recargar_conv = ConversationHandler(
+        entry_points=[CommandHandler("recargar", cmd_recargar)],
+        states={
+            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
+            RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
+            RECARGAR_COMPROBANTE: [MessageHandler(Filters.photo, recargar_comprobante)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        ],
+    )
+    dp.add_handler(recargar_conv)
+
+    # ConversationHandler para /configurar_pagos
+    configurar_pagos_conv = ConversationHandler(
+        entry_points=[CommandHandler("configurar_pagos", cmd_configurar_pagos)],
+        states={
+            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
+            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command, pago_banco)],
+            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command, pago_titular)],
+            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command, pago_instrucciones)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        ],
+    )
+    dp.add_handler(configurar_pagos_conv)
 
     # -------------------------
     # Registro de Administradores Locales
