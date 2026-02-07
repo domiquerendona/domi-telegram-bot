@@ -1,28 +1,41 @@
-# Reglas obligatorias del proyecto Domiquerendona
+# AGENTS.md — Reglas obligatorias del proyecto Domiquerendona
 
-Este archivo define las reglas técnicas, operativas y de flujo de trabajo
-que TODOS los agentes (Claude, Codex u otros) deben obedecer estrictamente.
-No seguir estas reglas se considera un error grave.
+Este archivo define las **reglas técnicas, operativas y de flujo de trabajo**
+que **TODOS los agentes** (Claude, Codex u otros) deben obedecer **estrictamente**.
+
+⚠️ No seguir estas reglas se considera un **error grave**.  
+⚠️ Estas reglas tienen **prioridad absoluta** sobre cualquier sugerencia del agente.
 
 ---
 
 ## 1. Restricciones críticas (NO negociables)
 
-- PROHIBIDO usar parse_mode o Markdown en cualquier mensaje del bot.
-- PROHIBIDO duplicar handlers, estados de ConversationHandler o funciones.
-  Si algo se reemplaza, el código anterior DEBE eliminarse.
+- PROHIBIDO usar `parse_mode` o Markdown en cualquier mensaje del bot.
+- PROHIBIDO duplicar:
+  - handlers,
+  - estados de `ConversationHandler`,
+  - funciones,
+  - callbacks,
+  - imports.
+- Si algo se reemplaza, el código anterior **DEBE eliminarse en el mismo commit**.
 - PROHIBIDO borrar bloques grandes sin mostrar primero el bloque exacto existente.
 - PROHIBIDO ampliar el alcance sin autorización explícita del usuario.
-- Cambios mínimos: un solo objetivo por instrucción.
+- Cambios mínimos obligatorios:
+  - **un solo objetivo por instrucción**.
 
 ---
 
 ## 2. Arquitectura y código
 
-- main.py contiene solo orquestación y flujo.
-  La lógica de negocio debe vivir en services.py u otros módulos.
+- `main.py` contiene **solo**:
+  - orquestación,
+  - flujo,
+  - handlers.
+- Toda la lógica de negocio debe vivir en:
+  - `services.py`
+  - u otros módulos dedicados.
 - No crear funciones “similares” o redundantes.
-  Una función = una responsabilidad clara.
+  - Una función = **una sola responsabilidad clara**.
 - Respetar nombres, estructuras y funciones existentes.
 - No introducir nuevos patrones si ya existe uno funcional.
 
@@ -30,19 +43,21 @@ No seguir estas reglas se considera un error grave.
 
 ## 3. Base de datos (reglas estrictas)
 
-- Usar EXCLUSIVAMENTE get_connection() para acceso a base de datos.
-  Está prohibido usar sqlite3.connect directo.
-- Estados estándar únicos para TODOS los roles:
-  PENDING, APPROVED, REJECTED, INACTIVE.
-- Desde la interfaz nunca se elimina información.
-  No DELETE desde UI: solo cambio de status.
-- Permitir nuevo registro solo si el registro previo está en estado INACTIVE.
-  Bloquear acciones si está en PENDING o APPROVED.
+- Usar **EXCLUSIVAMENTE** `get_connection()` para acceso a BD.
+  - PROHIBIDO `sqlite3.connect()` directo.
+- Estados estándar **únicos** para TODOS los roles:
+PENDING, APPROVED, REJECTED, INACTIVE
+
+- Desde la interfaz **NUNCA** se elimina información.
+- No DELETE desde UI.
+- Solo cambio de `status`.
+- Permitir nuevo registro **solo** si el registro previo está en `INACTIVE`.
+- Bloquear acciones si está en `PENDING` o `APPROVED`.
 - Separación estricta de identificadores:
-  - telegram_id es solo para mensajería
-  - users.id es el ID interno principal
-  - admins.id / couriers.id / allies.id son IDs de rol
-  Nunca mezclar estos conceptos.
+- `telegram_id` → solo mensajería
+- `users.id` → ID interno principal
+- `admins.id`, `couriers.id`, `allies.id` → IDs de rol
+- **Nunca mezclar estos conceptos**.
 
 ---
 
@@ -55,45 +70,153 @@ No seguir estas reglas se considera un error grave.
 
 ---
 
-## 5. Flujo de trabajo con IA (obligatorio)
+## 5. Regla anti-duplicación (OBLIGATORIA)
 
-Antes de proponer o realizar cualquier cambio de código, el agente DEBE:
+Antes de escribir código, el agente DEBE:
 
-1. Localizar y mostrar el bloque exacto que será modificado.
+- Buscar explícitamente con:
+git grep
+
+handlers, callbacks, estados, funciones e imports.
+- Si un bloque se reemplaza:
+- eliminar el bloque anterior en el mismo commit.
+- PROHIBIDO dejar:
+- versiones muertas,
+- funciones no usadas,
+- handlers registrados dos veces,
+- callbacks duplicados con distinto patrón.
+
+---
+
+## 6. Flujo de trabajo con IA (OBLIGATORIO)
+
+### Antes de cambiar código
+El agente DEBE:
+
+1. Mostrar el bloque exacto que va a modificar.
 2. Explicar brevemente qué se va a cambiar y por qué.
-3. Confirmar la rama activa y el archivo exacto a tocar.
+3. Confirmar:
+ - rama activa,
+ - archivo exacto a tocar.
 
-Durante el trabajo:
-- No asumir errores solo por ver diffs (otros agentes usan colores visuales).
+### Durante el trabajo
+- No asumir errores solo por ver diffs.
 - No repetir pasos ya completados.
-- No borrar ni reescribir archivos completos sin autorización.
+- No reescribir archivos completos sin autorización.
 
-Después de los cambios:
-- Verificar compilación con:
-  `python -m py_compile main.py`
-- Reportar claramente qué cambió y qué se eliminó.
+### Después de los cambios
+- Ejecutar obligatoriamente:
+python -m py_compile main.py services.py db.py
+
+- Reportar claramente:
+- qué cambió,
+- qué se eliminó,
+- por qué.
 
 ---
 
-## 6. Git y ramas
+## 7. Git y ramas
 
-- Nunca trabajar directamente sobre la rama main.
+- Nunca trabajar directamente sobre `main`.
 - Confirmar siempre la rama activa antes de modificar código.
-- Si un bloque es reemplazado, el código anterior debe eliminarse
-  (no dejar versiones muertas).
-- Mantener el código limpio, sin duplicaciones ocultas.
+- Si un bloque se reemplaza:
+- el código anterior **DEBE desaparecer**.
+- Mantener el repositorio:
+- limpio,
+- sin duplicaciones ocultas,
+- sin código zombie.
 
 ---
 
-## 7. Estilo de colaboración
+## 8. Reglas específicas para agentes tipo Codex
+
+Codex **NO improvisa**.
+
+Codex DEBE:
+
+- Preguntar cuando haya ambigüedad.
+- No asumir reglas implícitas.
+- Trabajar solo en el objetivo indicado.
+- Actuar como:
+- asistente de parches, o
+- ejecutor controlado, según permisos.
+
+Si Codex puede editar y ejecutar:
+- Debe mostrar evidencia:
+- comandos ejecutados,
+- outputs relevantes,
+- pruebas mínimas en BD/servicios.
+
+Si Codex NO puede ejecutar:
+- Debe entregar:
+- bloques exactos ANTES / DESPUÉS,
+- listos para pegar,
+- sin ampliar alcance.
+
+---
+
+## 9. Reglas del sistema de recargas (CRÍTICAS)
+
+### Definición oficial
+- **“Mi admin”** =
+vínculo con `status='APPROVED'` más reciente  
+(`ORDER BY created_at DESC`).
+
+### Plataforma vs Admin Local
+- Admin Local:
+- debe tener saldo para aprobar recargas.
+- Admin Plataforma:
+- puede aprobar sin validar saldo propio.
+
+### Acreditación de saldo
+- El saldo **SIEMPRE** se acredita en:
+admin_couriers / admin_allies
+
+usando el `admin_id` de la solicitud.
+- No existe balance global del courier/ally.
+
+### Vínculos
+- No se puede aprobar una recarga
+si **no existe vínculo APPROVED** con ese admin.
+- Plataforma **NO** acredita si no hay vínculo APPROVED previo.
+
+### Integridad
+- Toda aprobación:
+- actualiza saldos,
+- registra movimiento en `ledger`.
+- PROHIBIDO:
+- doble aprobación,
+- aprobación cruzada,
+- forjar `admin_id` por callback.
+
+---
+
+## 10. Regla de decisiones y veredictos (OBLIGATORIA)
+
+Antes de emitir **cualquier veredicto técnico**, el agente DEBE:
+
+1. Preguntar primero.
+2. Esperar confirmación explícita del usuario.
+3. Solo después:
+ - dar veredicto,
+ - proponer solución,
+ - cerrar decisión.
+
+PROHIBIDO cerrar decisiones por iniciativa propia.
+
+---
+
+## 11. Estilo de colaboración
 
 - Priorizar estabilidad sobre velocidad.
-- Preguntar antes de tomar decisiones ambiguas.
+- Preguntar antes de decidir.
 - No improvisar soluciones.
-- Asumir que el usuario es técnico, detallista y quiere control total
-  sobre los cambios.
+- Asumir que el usuario:
+- es técnico,
+- es detallista,
+- quiere control total del sistema.
 
 ---
 
-Estas reglas representan el estándar real del proyecto Domiquerendona
-y deben respetarse en todas las sesiones actuales y futuras.
+Estas reglas representan el **estándar definitivo** del proyecto **Domiquerendona**
+y deben respetarse en **todas las sesiones presentes y futuras**, sin excepción.
