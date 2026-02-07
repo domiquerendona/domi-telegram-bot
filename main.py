@@ -430,6 +430,12 @@ def start(update, context):
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
 
+    # Saldo y recargas (para usuarios con rol)
+    if ally or courier or admin_local or es_admin_plataforma:
+        comandos.append("• /saldo  - Ver tu saldo")
+    if ally or courier:
+        comandos.append("• /recargar  - Solicitar recarga")
+
     # Nuevo pedido y clientes (solo aliados aprobados)
     if ally and ally["status"] == "APPROVED":
         comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
@@ -439,8 +445,12 @@ def start(update, context):
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
+        comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
     elif admin_local:
         comandos.append("• /mi_admin  - Ver tu panel de administrador local")
+        admin_status = admin_local["status"] if isinstance(admin_local, dict) else admin_local[6]
+        if admin_status == "APPROVED":
+            comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
 
     # Registro (solo si NO tiene ningún rol)
     if not (ally or courier or admin_local or es_admin_plataforma):
