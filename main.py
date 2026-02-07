@@ -5602,6 +5602,37 @@ def recargar_admin_callback(update, context):
         f"El admin recibira tu solicitud y la procesara."
     )
 
+    # Notificar al admin
+    try:
+        admin_row = get_admin_by_id(admin_id)
+        if admin_row:
+            admin_user_id = admin_row[1]
+            admin_user = get_user_by_id(admin_user_id)
+            if admin_user:
+                admin_telegram_id = admin_user["telegram_id"]
+                tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
+
+                notif_text = (
+                    f"Nueva solicitud de recarga #{request_id}\n\n"
+                    f"De: {target_name} ({tipo_label})\n"
+                    f"Monto: ${monto:,}\n"
+                )
+
+                buttons = [
+                    [
+                        InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{request_id}"),
+                        InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{request_id}")
+                    ]
+                ]
+
+                context.bot.send_message(
+                    chat_id=admin_telegram_id,
+                    text=notif_text,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+    except Exception as e:
+        print(f"[WARN] No se pudo notificar al admin: {e}")
+
     context.user_data.pop("recargar_target_type", None)
     context.user_data.pop("recargar_target_id", None)
     context.user_data.pop("recargar_monto", None)
