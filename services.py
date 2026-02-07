@@ -7,7 +7,8 @@ from db import (
     get_admin_balance, update_admin_balance,
     update_courier_link_balance, update_ally_link_balance,
     get_platform_admin,
-    get_approved_admin_link_for_courier, get_approved_admin_link_for_ally
+    get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
+    ensure_platform_link_for_courier, ensure_platform_link_for_ally
 )
 import math
 import re
@@ -633,19 +634,27 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
-    if target_type == "COURIER":
-        link = get_approved_admin_link_for_courier(target_id)
-        if not link or link["admin_id"] != admin_id:
-            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-    elif target_type == "ALLY":
-        link = get_approved_admin_link_for_ally(target_id)
-        if not link or link["admin_id"] != admin_id:
-            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-    else:
-        return False, f"Tipo de destino desconocido: {target_type}"
-
     platform_admin = get_platform_admin()
     is_platform = platform_admin and platform_admin[0] == admin_id
+
+    if is_platform:
+        if target_type == "COURIER":
+            ensure_platform_link_for_courier(admin_id, target_id)
+        elif target_type == "ALLY":
+            ensure_platform_link_for_ally(admin_id, target_id)
+        else:
+            return False, f"Tipo de destino desconocido: {target_type}"
+    else:
+        if target_type == "COURIER":
+            link = get_approved_admin_link_for_courier(target_id)
+            if not link or link["admin_id"] != admin_id:
+                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+        elif target_type == "ALLY":
+            link = get_approved_admin_link_for_ally(target_id)
+            if not link or link["admin_id"] != admin_id:
+                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+        else:
+            return False, f"Tipo de destino desconocido: {target_type}"
 
     if not is_platform:
         admin_balance = get_admin_balance(admin_id)

@@ -2978,6 +2978,35 @@ def get_api_usage_today(api_name: str) -> int:
     return row[0] if row else 0
 
 
+def ensure_platform_link_for_courier(platform_admin_id: int, courier_id: int):
+    """Crea o asegura vÃ­nculo APPROVED admin-courier para PLATAFORMA."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, status FROM admin_couriers
+        WHERE admin_id = ? AND courier_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (platform_admin_id, courier_id))
+    row = cur.fetchone()
+    if row:
+        link_id, status = row
+        if status != "APPROVED":
+            cur.execute("""
+                UPDATE admin_couriers
+                SET status = 'APPROVED', updated_at = datetime('now')
+                WHERE id = ?
+            """, (link_id,))
+    else:
+        cur.execute("""
+            INSERT INTO admin_couriers
+                (admin_id, courier_id, status, balance, created_at, updated_at)
+            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
+        """, (platform_admin_id, courier_id))
+    conn.commit()
+    conn.close()
+
+
 def increment_api_usage(api_name: str):
     """Incrementa el contador de uso diario para una API."""
     conn = get_connection()
@@ -3004,6 +3033,35 @@ def get_admin_balance(admin_id: int) -> int:
     row = cur.fetchone()
     conn.close()
     return row[0] if row else 0
+
+
+def ensure_platform_link_for_ally(platform_admin_id: int, ally_id: int):
+    """Crea o asegura vÃ­nculo APPROVED admin-ally para PLATAFORMA."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, status FROM admin_allies
+        WHERE admin_id = ? AND ally_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (platform_admin_id, ally_id))
+    row = cur.fetchone()
+    if row:
+        link_id, status = row
+        if status != "APPROVED":
+            cur.execute("""
+                UPDATE admin_allies
+                SET status = 'APPROVED', updated_at = datetime('now')
+                WHERE id = ?
+            """, (link_id,))
+    else:
+        cur.execute("""
+            INSERT INTO admin_allies
+                (admin_id, ally_id, status, balance, created_at, updated_at)
+            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
+        """, (platform_admin_id, ally_id))
+    conn.commit()
+    conn.close()
 
 
 def update_admin_balance(admin_id: int, delta: int):
