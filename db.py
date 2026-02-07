@@ -790,6 +790,7 @@ def init_db():
             decided_by_admin_id INTEGER,
             method TEXT,
             note TEXT,
+            proof_file_id TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             decided_at TEXT,
             FOREIGN KEY (admin_id) REFERENCES admins(id),
@@ -799,6 +800,24 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_recharge_requests_admin_status ON recharge_requests(admin_id, status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_recharge_requests_target ON recharge_requests(target_type, target_id)")
+
+    # Migración: agregar proof_file_id a recharge_requests si no existe
+    cur.execute("PRAGMA table_info(recharge_requests)")
+    rr_cols = [r[1] for r in cur.fetchall()]
+    if "proof_file_id" not in rr_cols:
+        cur.execute("ALTER TABLE recharge_requests ADD COLUMN proof_file_id TEXT")
+
+    # Migración: agregar campos de pago a admins si no existen
+    cur.execute("PRAGMA table_info(admins)")
+    admins_pay_cols = [r[1] for r in cur.fetchall()]
+    if "payment_phone" not in admins_pay_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN payment_phone TEXT")
+    if "payment_bank" not in admins_pay_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN payment_bank TEXT")
+    if "payment_holder" not in admins_pay_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN payment_holder TEXT")
+    if "payment_instructions" not in admins_pay_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN payment_instructions TEXT")
 
     # Tabla: ledger (movimientos contables)
     cur.execute("""
@@ -3034,7 +3053,8 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
 
 def create_recharge_request(target_type: str, target_id: int, admin_id: int,
                             amount: int, requested_by_user_id: int,
-                            method: str = None, note: str = None) -> int:
+                            method: str = None, note: str = None,
+                            proof_file_id: str = None) -> int:
     """
     Crea una solicitud de recarga PENDING.
     target_type: 'COURIER' o 'ALLY'
@@ -3044,9 +3064,9 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO recharge_requests
-            (target_type, target_id, admin_id, amount, status, requested_by_user_id, method, note)
-        VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)
-    """, (target_type, target_id, admin_id, amount, requested_by_user_id, method, note))
+            (target_type, target_id, admin_id, amount, status, requested_by_user_id, method, note, proof_file_id)
+        VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
+    """, (target_type, target_id, admin_id, amount, requested_by_user_id, method, note, proof_file_id))
     request_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -3060,7 +3080,7 @@ def get_recharge_request(request_id: int):
     cur.execute("""
         SELECT id, target_type, target_id, admin_id, amount, status,
                requested_by_user_id, decided_by_admin_id, method, note,
-               created_at, decided_at
+               created_at, decided_at, proof_file_id
         FROM recharge_requests WHERE id = ?
     """, (request_id,))
     row = cur.fetchone()
@@ -3137,5 +3157,74 @@ def get_platform_admin():
     return row
 
 
+# ============================================================
+# DATOS DE PAGO DE ADMINS
+# ============================================================
+
+def get_admin_payment_info(admin_id: int):
+    """
+    Obtiene los datos de pago de un admin.
+    Retorna dict con: payment_phone, payment_bank, payment_holder, payment_instructions
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT payment_phone, payment_bank, payment_holder, payment_instructions
+        FROM admins WHERE id = ?
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {
+            "payment_phone": row[0],
+            "payment_bank": row[1],
+            "payment_holder": row[2],
+            "payment_instructions": row[3]
+        }
+    return None
 
 
+def update_admin_payment_info(admin_id: int, payment_phone: str = None, payment_bank: str = None,
+                               payment_holder: str = None, payment_instructions: str = None):
+    """
+    Actualiza los datos de pago de un admin.
+    Solo actualiza los campos que no son None.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    updates = []
+    params = []
+
+    if payment_phone is not None:
+        updates.append("payment_phone = ?")
+        params.append(payment_phone)
+    if payment_bank is not None:
+        updates.append("payment_bank = ?")
+        params.append(payment_bank)
+    if payment_holder is not None:
+        updates.append("payment_holder = ?")
+        params.append(payment_holder)
+    if payment_instructions is not None:
+        updates.append("payment_instructions = ?")
+        params.append(payment_instructions)
+
+    if updates:
+        params.append(admin_id)
+        cur.execute(f"""
+            UPDATE admins SET {', '.join(updates)} WHERE id = ?
+        """, params)
+        conn.commit()
+
+    conn.close()
+
+
+def update_recharge_proof(request_id: int, proof_file_id: str):
+    """Actualiza el comprobante de una solicitud de recarga."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE recharge_requests SET proof_file_id = ? WHERE id = ?
+    """, (proof_file_id, request_id))
+    conn.commit()
+    conn.close()

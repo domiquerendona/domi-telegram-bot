@@ -150,6 +150,9 @@ from db import (
     create_recharge_request,
     list_pending_recharges_for_admin,
     get_recharge_request,
+    get_admin_payment_info,
+    update_admin_payment_info,
+    update_recharge_proof,
 )
 
 # ============================================================
@@ -317,6 +320,15 @@ TARIFAS_VALOR = 902
 # =========================
 RECARGAR_MONTO = 950
 RECARGAR_ADMIN = 951
+RECARGAR_COMPROBANTE = 952
+
+# =========================
+# Estados para configurar datos de pago
+# =========================
+PAGO_TELEFONO = 960
+PAGO_BANCO = 961
+PAGO_TITULAR = 962
+PAGO_INSTRUCCIONES = 963
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -446,11 +458,13 @@ def start(update, context):
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
+        comandos.append("• /configurar_pagos  - Configurar datos de pago")
     elif admin_local:
         comandos.append("• /mi_admin  - Ver tu panel de administrador local")
         admin_status = admin_local["status"] if isinstance(admin_local, dict) else admin_local[6]
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
+            comandos.append("• /configurar_pagos  - Configurar datos de pago")
 
     # Registro (solo si NO tiene ningún rol)
     if not (ally or courier or admin_local or es_admin_plataforma):
@@ -5559,7 +5573,7 @@ def recargar_monto(update, context):
 
 
 def recargar_admin_callback(update, context):
-    """Callback para seleccionar admin y crear la solicitud."""
+    """Callback para seleccionar admin y mostrar datos de pago."""
     query = update.callback_query
     query.answer()
     data = query.data
@@ -5572,6 +5586,50 @@ def recargar_admin_callback(update, context):
         return RECARGAR_ADMIN
 
     admin_id = int(data.replace("recargar_admin_", ""))
+    context.user_data["recargar_admin_id"] = admin_id
+
+    monto = context.user_data.get("recargar_monto")
+
+    # Obtener datos de pago del admin
+    payment_info = get_admin_payment_info(admin_id)
+    admin_row = get_admin_by_id(admin_id)
+    admin_name = admin_row[2] if admin_row else "Admin"
+
+    if payment_info and payment_info.get("payment_phone"):
+        pago_texto = f"Datos para el pago:\n\n"
+        pago_texto += f"Monto a transferir: ${monto:,}\n\n"
+
+        if payment_info.get("payment_bank"):
+            pago_texto += f"Banco/Billetera: {payment_info['payment_bank']}\n"
+        if payment_info.get("payment_phone"):
+            pago_texto += f"Numero: {payment_info['payment_phone']}\n"
+        if payment_info.get("payment_holder"):
+            pago_texto += f"Titular: {payment_info['payment_holder']}\n"
+        if payment_info.get("payment_instructions"):
+            pago_texto += f"\nInstrucciones:\n{payment_info['payment_instructions']}\n"
+
+        pago_texto += "\nRealiza la transferencia y envia una FOTO del comprobante."
+    else:
+        pago_texto = (
+            f"Monto a transferir: ${monto:,}\n\n"
+            f"Contacta a {admin_name} para obtener los datos de pago.\n\n"
+            "Una vez realices el pago, envia una FOTO del comprobante."
+        )
+
+    query.edit_message_text(pago_texto)
+
+    return RECARGAR_COMPROBANTE
+
+
+def recargar_comprobante(update, context):
+    """Recibe la foto del comprobante y crea la solicitud."""
+    if not update.message.photo:
+        update.message.reply_text("Por favor envia una FOTO del comprobante de pago.")
+        return RECARGAR_COMPROBANTE
+
+    # Obtener el file_id de la foto (mejor calidad)
+    photo = update.message.photo[-1]
+    proof_file_id = photo.file_id
 
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
@@ -5581,9 +5639,10 @@ def recargar_admin_callback(update, context):
     target_id = context.user_data.get("recargar_target_id")
     monto = context.user_data.get("recargar_monto")
     target_name = context.user_data.get("recargar_target_name", "")
+    admin_id = context.user_data.get("recargar_admin_id")
 
-    if not target_type or not target_id or not monto:
-        query.edit_message_text("Error: datos incompletos. Usa /recargar nuevamente.")
+    if not target_type or not target_id or not monto or not admin_id:
+        update.message.reply_text("Error: datos incompletos. Usa /recargar nuevamente.")
         return ConversationHandler.END
 
     request_id = create_recharge_request(
@@ -5591,18 +5650,19 @@ def recargar_admin_callback(update, context):
         target_id=target_id,
         admin_id=admin_id,
         amount=monto,
-        requested_by_user_id=user_db_id
+        requested_by_user_id=user_db_id,
+        proof_file_id=proof_file_id
     )
 
-    query.edit_message_text(
-        f"Solicitud de recarga creada.\n\n"
+    update.message.reply_text(
+        f"Solicitud de recarga enviada.\n\n"
         f"ID: #{request_id}\n"
         f"Monto: ${monto:,}\n"
         f"Estado: PENDIENTE\n\n"
-        f"El admin recibira tu solicitud y la procesara."
+        f"El admin verificara tu comprobante y procesara la recarga."
     )
 
-    # Notificar al admin
+    # Notificar al admin con la foto
     try:
         admin_row = get_admin_by_id(admin_id)
         if admin_row:
@@ -5615,7 +5675,8 @@ def recargar_admin_callback(update, context):
                 notif_text = (
                     f"Nueva solicitud de recarga #{request_id}\n\n"
                     f"De: {target_name} ({tipo_label})\n"
-                    f"Monto: ${monto:,}\n"
+                    f"Monto: ${monto:,}\n\n"
+                    f"Comprobante adjunto:"
                 )
 
                 buttons = [
@@ -5625,9 +5686,11 @@ def recargar_admin_callback(update, context):
                     ]
                 ]
 
-                context.bot.send_message(
+                # Enviar foto con caption y botones
+                context.bot.send_photo(
                     chat_id=admin_telegram_id,
-                    text=notif_text,
+                    photo=proof_file_id,
+                    caption=notif_text,
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
     except Exception as e:
@@ -5638,6 +5701,7 @@ def recargar_admin_callback(update, context):
     context.user_data.pop("recargar_monto", None)
     context.user_data.pop("recargar_target_name", None)
     context.user_data.pop("recargar_mi_admin_id", None)
+    context.user_data.pop("recargar_admin_id", None)
 
     return ConversationHandler.END
 
@@ -5765,6 +5829,125 @@ def recharge_callback(update, context):
             )
         else:
             query.answer(msg, show_alert=True)
+
+
+# ============================================================
+# CONFIGURAR DATOS DE PAGO (ADMINS)
+# ============================================================
+
+def cmd_configurar_pagos(update, context):
+    """
+    Comando /configurar_pagos - Permite al admin configurar sus datos de pago.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        update.message.reply_text("Este comando es solo para administradores.")
+        return ConversationHandler.END
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    context.user_data["pago_admin_id"] = admin_id
+
+    # Mostrar datos actuales
+    payment_info = get_admin_payment_info(admin_id)
+
+    if payment_info and payment_info.get("payment_phone"):
+        texto = (
+            "Tus datos de pago actuales:\n\n"
+            f"Banco/Billetera: {payment_info.get('payment_bank') or '-'}\n"
+            f"Numero: {payment_info.get('payment_phone') or '-'}\n"
+            f"Titular: {payment_info.get('payment_holder') or '-'}\n"
+            f"Instrucciones: {payment_info.get('payment_instructions') or '-'}\n\n"
+            "Vamos a actualizar tus datos.\n\n"
+        )
+    else:
+        texto = (
+            "No tienes datos de pago configurados.\n"
+            "Vamos a configurarlos para recibir recargas.\n\n"
+        )
+
+    texto += "Escribe el NUMERO de cuenta o celular (Nequi, Daviplata, cuenta bancaria, etc.):"
+
+    update.message.reply_text(texto)
+    return PAGO_TELEFONO
+
+
+def pago_telefono(update, context):
+    """Recibe el numero de telefono/cuenta."""
+    texto = update.message.text.strip()
+    context.user_data["pago_telefono"] = texto
+
+    update.message.reply_text(
+        "Escribe el nombre del BANCO o BILLETERA:\n"
+        "(Ejemplo: Nequi, Daviplata, Bancolombia, etc.)"
+    )
+    return PAGO_BANCO
+
+
+def pago_banco(update, context):
+    """Recibe el banco/billetera."""
+    texto = update.message.text.strip()
+    context.user_data["pago_banco"] = texto
+
+    update.message.reply_text(
+        "Escribe el NOMBRE DEL TITULAR de la cuenta:\n"
+        "(Como aparece en la cuenta)"
+    )
+    return PAGO_TITULAR
+
+
+def pago_titular(update, context):
+    """Recibe el titular de la cuenta."""
+    texto = update.message.text.strip()
+    context.user_data["pago_titular"] = texto
+
+    update.message.reply_text(
+        "Escribe INSTRUCCIONES adicionales para el pago (opcional):\n"
+        "(Ejemplo: 'Enviar a llave Nequi', 'Notificar por WhatsApp al 300...', etc.)\n\n"
+        "Si no tienes instrucciones adicionales, escribe: ninguna"
+    )
+    return PAGO_INSTRUCCIONES
+
+
+def pago_instrucciones(update, context):
+    """Recibe las instrucciones y guarda todo."""
+    texto = update.message.text.strip()
+
+    if texto.lower() in ["ninguna", "ninguno", "no", "na", "n/a", "-"]:
+        instrucciones = None
+    else:
+        instrucciones = texto
+
+    admin_id = context.user_data.get("pago_admin_id")
+
+    update_admin_payment_info(
+        admin_id=admin_id,
+        payment_phone=context.user_data.get("pago_telefono"),
+        payment_bank=context.user_data.get("pago_banco"),
+        payment_holder=context.user_data.get("pago_titular"),
+        payment_instructions=instrucciones
+    )
+
+    resumen = (
+        "Datos de pago guardados:\n\n"
+        f"Banco/Billetera: {context.user_data.get('pago_banco')}\n"
+        f"Numero: {context.user_data.get('pago_telefono')}\n"
+        f"Titular: {context.user_data.get('pago_titular')}\n"
+        f"Instrucciones: {instrucciones or '-'}\n\n"
+        "Cuando alguien solicite recarga contigo, vera estos datos."
+    )
+
+    update.message.reply_text(resumen)
+
+    context.user_data.pop("pago_admin_id", None)
+    context.user_data.pop("pago_telefono", None)
+    context.user_data.pop("pago_banco", None)
+    context.user_data.pop("pago_titular", None)
+
+    return ConversationHandler.END
 
 
 def admin_local_callback(update, context):
@@ -6616,6 +6799,7 @@ def main():
         states={
             RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
+            RECARGAR_COMPROBANTE: [MessageHandler(Filters.photo, recargar_comprobante)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
@@ -6623,6 +6807,22 @@ def main():
         ],
     )
     dp.add_handler(recargar_conv)
+
+    # ConversationHandler para /configurar_pagos
+    configurar_pagos_conv = ConversationHandler(
+        entry_points=[CommandHandler("configurar_pagos", cmd_configurar_pagos)],
+        states={
+            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
+            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command, pago_banco)],
+            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command, pago_titular)],
+            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command, pago_instrucciones)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        ],
+    )
+    dp.add_handler(configurar_pagos_conv)
 
     # -------------------------
     # Registro de Administradores Locales
