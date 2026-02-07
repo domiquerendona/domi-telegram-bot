@@ -5593,6 +5593,29 @@ def recargar_admin_callback(update, context):
         return RECARGAR_ADMIN
 
     admin_id = int(data.replace("recargar_admin_", ""))
+
+    target_type = context.user_data.get("recargar_target_type")
+    target_id = context.user_data.get("recargar_target_id")
+    if not target_type or not target_id:
+        query.edit_message_text("Error: datos incompletos. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
+    platform_admin = get_platform_admin()
+    platform_admin_id = platform_admin[0] if platform_admin else None
+
+    mi_admin_id = None
+    if target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+        mi_admin_id = link["admin_id"] if link else None
+    elif target_type == "ALLY":
+        link = get_approved_admin_link_for_ally(target_id)
+        mi_admin_id = link["admin_id"] if link else None
+
+    allowed_admin_ids = {aid for aid in [platform_admin_id, mi_admin_id] if aid}
+    if admin_id not in allowed_admin_ids:
+        query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
     context.user_data["recargar_admin_id"] = admin_id
 
     monto = context.user_data.get("recargar_monto")
@@ -5748,6 +5771,7 @@ def cmd_recargas_pendientes(update, context):
         note = req[5] or "-"
         created_at = req[6] or "-"
         target_name = req[7] or "Desconocido"
+        proof_file_id = req[8] if len(req) > 8 else None
 
         tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
 
@@ -5763,16 +5787,19 @@ def cmd_recargas_pendientes(update, context):
             [
                 InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{req_id}"),
                 InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{req_id}")
-            ]
+            ],
+            [
+                InlineKeyboardButton("Ver comprobante", callback_data=f"recharge_proof_{req_id}")
+            ],
         ]
 
         update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
 
 
-def recharge_callback(update, context):
+def recharge_proof_callback(update, context):
     """
-    Callback para aprobar/rechazar solicitudes de recarga.
-    Patron: ^recharge_(approve|reject)_\d+$
+    Callback para ver comprobante.
+    Patron: ^recharge_proof_\\d+$
     """
     query = update.callback_query
     data = query.data
@@ -5787,6 +5814,65 @@ def recharge_callback(update, context):
         return
 
     admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    if admin_status != "APPROVED":
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    if not data.startswith("recharge_proof_"):
+        return
+
+    request_id = int(data.replace("recharge_proof_", ""))
+    req = get_recharge_request(request_id)
+    if not req:
+        query.answer("Solicitud no encontrada.", show_alert=True)
+        return
+
+    if req[3] != admin_id:
+        is_platform = user_has_platform_admin(user_tg.id)
+        if not is_platform:
+            query.answer("Esta solicitud no te corresponde.", show_alert=True)
+            return
+
+    proof_file_id = req[12]
+    if not proof_file_id:
+        query.answer("Sin comprobante.", show_alert=True)
+        return
+
+    try:
+        context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=proof_file_id,
+            caption=f"Comprobante de solicitud #{request_id}"
+        )
+        query.answer("Comprobante enviado.")
+    except Exception as e:
+        print(f"[WARN] No se pudo enviar comprobante: {e}")
+        query.answer("No se pudo enviar el comprobante.", show_alert=True)
+
+
+def recharge_callback(update, context):
+    """
+    Callback para aprobar/rechazar solicitudes de recarga.
+    Patron: ^recharge_(approve|reject)_\\d+$
+    """
+    query = update.callback_query
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    if admin_status != "APPROVED":
+        query.answer("No autorizado.", show_alert=True)
+        return
 
     if data.startswith("recharge_approve_"):
         request_id = int(data.replace("recharge_approve_", ""))
@@ -6912,6 +6998,7 @@ def main():
     # Sistema de recargas
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
+    dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pagos_callback, pattern=r"^pagos_"))
     dp.add_handler(CallbackQueryHandler(

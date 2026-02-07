@@ -3114,7 +3114,8 @@ def list_pending_recharges_for_admin(admin_id: int):
                    WHEN rr.target_type = 'COURIER' THEN c.full_name
                    WHEN rr.target_type = 'ALLY' THEN al.business_name
                    ELSE 'Desconocido'
-               END AS target_name
+               END AS target_name,
+               rr.proof_file_id
         FROM recharge_requests rr
         LEFT JOIN couriers c ON rr.target_type = 'COURIER' AND rr.target_id = c.id
         LEFT JOIN allies al ON rr.target_type = 'ALLY' AND rr.target_id = al.id
