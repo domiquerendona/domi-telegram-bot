@@ -839,6 +839,22 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_to ON ledger(to_type, to_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(ref_type, ref_id)")
 
+    # Tabla: admin_payment_methods (metodos de pago de admins)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_payment_methods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            method_name TEXT NOT NULL,
+            account_number TEXT NOT NULL,
+            account_holder TEXT NOT NULL,
+            instructions TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_payment_methods_admin ON admin_payment_methods(admin_id, is_active)")
+
     conn.commit()
     conn.close()
 
@@ -3226,5 +3242,87 @@ def update_recharge_proof(request_id: int, proof_file_id: str):
     cur.execute("""
         UPDATE recharge_requests SET proof_file_id = ? WHERE id = ?
     """, (proof_file_id, request_id))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# METODOS DE PAGO DE ADMINS (admin_payment_methods)
+# ============================================================
+
+def create_payment_method(admin_id: int, method_name: str, account_number: str,
+                          account_holder: str, instructions: str = None) -> int:
+    """
+    Crea un nuevo metodo de pago para un admin.
+    Retorna el ID del metodo creado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO admin_payment_methods
+            (admin_id, method_name, account_number, account_holder, instructions, is_active)
+        VALUES (?, ?, ?, ?, ?, 1)
+    """, (admin_id, method_name.strip(), account_number.strip(), account_holder.strip(), instructions))
+    method_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return method_id
+
+
+def get_payment_method_by_id(method_id: int):
+    """Obtiene un metodo de pago por ID."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
+        FROM admin_payment_methods WHERE id = ?
+    """, (method_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_payment_methods(admin_id: int, only_active: bool = False):
+    """
+    Lista los metodos de pago de un admin.
+    Si only_active=True, solo retorna los activos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if only_active:
+        cur.execute("""
+            SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
+            FROM admin_payment_methods
+            WHERE admin_id = ? AND is_active = 1
+            ORDER BY created_at DESC
+        """, (admin_id,))
+    else:
+        cur.execute("""
+            SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
+            FROM admin_payment_methods
+            WHERE admin_id = ?
+            ORDER BY is_active DESC, created_at DESC
+        """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def toggle_payment_method(method_id: int, is_active: int):
+    """Activa o desactiva un metodo de pago."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_payment_methods SET is_active = ? WHERE id = ?
+    """, (is_active, method_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_payment_method(method_id: int):
+    """Elimina un metodo de pago permanentemente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM admin_payment_methods WHERE id = ?", (method_id,))
     conn.commit()
     conn.close()

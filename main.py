@@ -153,6 +153,13 @@ from db import (
     get_admin_payment_info,
     update_admin_payment_info,
     update_recharge_proof,
+
+    # Metodos de pago
+    create_payment_method,
+    get_payment_method_by_id,
+    list_payment_methods,
+    toggle_payment_method,
+    delete_payment_method,
 )
 
 # ============================================================
@@ -5590,25 +5597,24 @@ def recargar_admin_callback(update, context):
 
     monto = context.user_data.get("recargar_monto")
 
-    # Obtener datos de pago del admin
-    payment_info = get_admin_payment_info(admin_id)
+    # Obtener cuentas de pago activas del admin
+    methods = list_payment_methods(admin_id, only_active=True)
     admin_row = get_admin_by_id(admin_id)
     admin_name = admin_row[2] if admin_row else "Admin"
 
-    if payment_info and payment_info.get("payment_phone"):
+    if methods:
         pago_texto = f"Datos para el pago:\n\n"
         pago_texto += f"Monto a transferir: ${monto:,}\n\n"
+        pago_texto += "Cuentas disponibles:\n\n"
 
-        if payment_info.get("payment_bank"):
-            pago_texto += f"Banco/Billetera: {payment_info['payment_bank']}\n"
-        if payment_info.get("payment_phone"):
-            pago_texto += f"Numero: {payment_info['payment_phone']}\n"
-        if payment_info.get("payment_holder"):
-            pago_texto += f"Titular: {payment_info['payment_holder']}\n"
-        if payment_info.get("payment_instructions"):
-            pago_texto += f"\nInstrucciones:\n{payment_info['payment_instructions']}\n"
+        for m in methods:
+            pago_texto += f"{m[2]}: {m[3]}\n"
+            pago_texto += f"   Titular: {m[4]}\n"
+            if m[5]:
+                pago_texto += f"   {m[5]}\n"
+            pago_texto += "\n"
 
-        pago_texto += "\nRealiza la transferencia y envia una FOTO del comprobante."
+        pago_texto += "Realiza la transferencia y envia una FOTO del comprobante."
     else:
         pago_texto = (
             f"Monto a transferir: ${monto:,}\n\n"
@@ -5837,7 +5843,7 @@ def recharge_callback(update, context):
 
 def cmd_configurar_pagos(update, context):
     """
-    Comando /configurar_pagos - Permite al admin configurar sus datos de pago.
+    Comando /configurar_pagos - Muestra menu de gestion de cuentas de pago.
     """
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
@@ -5851,27 +5857,201 @@ def cmd_configurar_pagos(update, context):
     admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
     context.user_data["pago_admin_id"] = admin_id
 
-    # Mostrar datos actuales
-    payment_info = get_admin_payment_info(admin_id)
+    return mostrar_menu_pagos(update, context, admin_id, es_mensaje=True)
 
-    if payment_info and payment_info.get("payment_phone"):
-        texto = (
-            "Tus datos de pago actuales:\n\n"
-            f"Banco/Billetera: {payment_info.get('payment_bank') or '-'}\n"
-            f"Numero: {payment_info.get('payment_phone') or '-'}\n"
-            f"Titular: {payment_info.get('payment_holder') or '-'}\n"
-            f"Instrucciones: {payment_info.get('payment_instructions') or '-'}\n\n"
-            "Vamos a actualizar tus datos.\n\n"
-        )
+
+def mostrar_menu_pagos(update, context, admin_id, es_mensaje=False):
+    """Muestra el menu de cuentas de pago."""
+    methods = list_payment_methods(admin_id, only_active=False)
+
+    texto = "Tus cuentas de pago:\n\n"
+
+    if methods:
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            texto += f"{'🟢' if m[6] == 1 else '🔴'} {m[2]} - {m[3]} ({estado})\n"
+        texto += "\n"
     else:
+        texto += "(No tienes cuentas configuradas)\n\n"
+
+    texto += "Selecciona una opcion:"
+
+    buttons = [
+        [InlineKeyboardButton("Agregar cuenta", callback_data="pagos_agregar")],
+    ]
+
+    if methods:
+        buttons.append([InlineKeyboardButton("Gestionar cuentas", callback_data="pagos_gestionar")])
+
+    buttons.append([InlineKeyboardButton("Cerrar", callback_data="pagos_cerrar")])
+
+    if es_mensaje:
+        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        update.callback_query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+    return ConversationHandler.END
+
+
+def pagos_callback(update, context):
+    """Callback para el menu de pagos."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.edit_message_text("No autorizado.")
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    context.user_data["pago_admin_id"] = admin_id
+
+    if data == "pagos_cerrar":
+        query.edit_message_text("Menu de pagos cerrado.")
+        return
+
+    if data == "pagos_agregar":
+        query.edit_message_text(
+            "Agregar nueva cuenta de pago.\n\n"
+            "Escribe el nombre del BANCO o BILLETERA:\n"
+            "(Ejemplo: Nequi, Daviplata, Bancolombia, etc.)"
+        )
+        return PAGO_BANCO
+
+    if data == "pagos_gestionar":
+        methods = list_payment_methods(admin_id, only_active=False)
+
+        if not methods:
+            query.edit_message_text("No tienes cuentas para gestionar.")
+            return
+
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+
+        buttons = []
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            emoji = "🟢" if m[6] == 1 else "🔴"
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {m[2]} - {m[3]} ({estado})",
+                callback_data=f"pagos_ver_{m[0]}"
+            )])
+
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data == "pagos_volver":
+        return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+
+    if data.startswith("pagos_ver_"):
+        method_id = int(data.replace("pagos_ver_", ""))
+        method = get_payment_method_by_id(method_id)
+
+        if not method:
+            query.edit_message_text("Cuenta no encontrada.")
+            return
+
+        estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
+        emoji = "🟢" if method[6] == 1 else "🔴"
+
         texto = (
-            "No tienes datos de pago configurados.\n"
-            "Vamos a configurarlos para recibir recargas.\n\n"
+            f"{emoji} Cuenta {estado}\n\n"
+            f"Banco/Billetera: {method[2]}\n"
+            f"Numero: {method[3]}\n"
+            f"Titular: {method[4]}\n"
+            f"Instrucciones: {method[5] or '-'}\n"
         )
 
-    texto += "Escribe el NUMERO de cuenta o celular (Nequi, Daviplata, cuenta bancaria, etc.):"
+        buttons = []
+        if method[6] == 1:
+            buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
+        else:
+            buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
 
-    update.message.reply_text(texto)
+        buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("pagos_toggle_"):
+        parts = data.replace("pagos_toggle_", "").split("_")
+        method_id = int(parts[0])
+        new_status = int(parts[1])
+
+        toggle_payment_method(method_id, new_status)
+
+        estado = "activada" if new_status == 1 else "desactivada"
+        query.answer(f"Cuenta {estado}.")
+
+        # Volver a mostrar la cuenta
+        method = get_payment_method_by_id(method_id)
+        if method:
+            estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
+            emoji = "🟢" if method[6] == 1 else "🔴"
+
+            texto = (
+                f"{emoji} Cuenta {estado}\n\n"
+                f"Banco/Billetera: {method[2]}\n"
+                f"Numero: {method[3]}\n"
+                f"Titular: {method[4]}\n"
+                f"Instrucciones: {method[5] or '-'}\n"
+            )
+
+            buttons = []
+            if method[6] == 1:
+                buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
+            else:
+                buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
+
+            buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+            buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
+
+            query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("pagos_delete_"):
+        method_id = int(data.replace("pagos_delete_", ""))
+        delete_payment_method(method_id)
+        query.answer("Cuenta eliminada.")
+
+        # Volver a gestionar
+        methods = list_payment_methods(admin_id, only_active=False)
+
+        if not methods:
+            return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+
+        buttons = []
+        for m in methods:
+            estado = "ON" if m[6] == 1 else "OFF"
+            emoji = "🟢" if m[6] == 1 else "🔴"
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {m[2]} - {m[3]} ({estado})",
+                callback_data=f"pagos_ver_{m[0]}"
+            )])
+
+        buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+
+def pago_banco(update, context):
+    """Recibe el banco/billetera."""
+    texto = update.message.text.strip()
+    context.user_data["pago_banco"] = texto
+
+    update.message.reply_text(
+        "Escribe el NUMERO de cuenta o celular:"
+    )
     return PAGO_TELEFONO
 
 
@@ -5879,18 +6059,6 @@ def pago_telefono(update, context):
     """Recibe el numero de telefono/cuenta."""
     texto = update.message.text.strip()
     context.user_data["pago_telefono"] = texto
-
-    update.message.reply_text(
-        "Escribe el nombre del BANCO o BILLETERA:\n"
-        "(Ejemplo: Nequi, Daviplata, Bancolombia, etc.)"
-    )
-    return PAGO_BANCO
-
-
-def pago_banco(update, context):
-    """Recibe el banco/billetera."""
-    texto = update.message.text.strip()
-    context.user_data["pago_banco"] = texto
 
     update.message.reply_text(
         "Escribe el NOMBRE DEL TITULAR de la cuenta:\n"
@@ -5906,14 +6074,14 @@ def pago_titular(update, context):
 
     update.message.reply_text(
         "Escribe INSTRUCCIONES adicionales para el pago (opcional):\n"
-        "(Ejemplo: 'Enviar a llave Nequi', 'Notificar por WhatsApp al 300...', etc.)\n\n"
-        "Si no tienes instrucciones adicionales, escribe: ninguna"
+        "(Ejemplo: 'Enviar a llave Nequi', 'Notificar por WhatsApp', etc.)\n\n"
+        "Si no tienes instrucciones, escribe: ninguna"
     )
     return PAGO_INSTRUCCIONES
 
 
 def pago_instrucciones(update, context):
-    """Recibe las instrucciones y guarda todo."""
+    """Recibe las instrucciones y guarda la cuenta."""
     texto = update.message.text.strip()
 
     if texto.lower() in ["ninguna", "ninguno", "no", "na", "n/a", "-"]:
@@ -5923,21 +6091,22 @@ def pago_instrucciones(update, context):
 
     admin_id = context.user_data.get("pago_admin_id")
 
-    update_admin_payment_info(
+    method_id = create_payment_method(
         admin_id=admin_id,
-        payment_phone=context.user_data.get("pago_telefono"),
-        payment_bank=context.user_data.get("pago_banco"),
-        payment_holder=context.user_data.get("pago_titular"),
-        payment_instructions=instrucciones
+        method_name=context.user_data.get("pago_banco"),
+        account_number=context.user_data.get("pago_telefono"),
+        account_holder=context.user_data.get("pago_titular"),
+        instructions=instrucciones
     )
 
     resumen = (
-        "Datos de pago guardados:\n\n"
+        "Cuenta de pago agregada:\n\n"
         f"Banco/Billetera: {context.user_data.get('pago_banco')}\n"
         f"Numero: {context.user_data.get('pago_telefono')}\n"
         f"Titular: {context.user_data.get('pago_titular')}\n"
         f"Instrucciones: {instrucciones or '-'}\n\n"
-        "Cuando alguien solicite recarga contigo, vera estos datos."
+        "Estado: ACTIVA\n\n"
+        "Usa /configurar_pagos para gestionar tus cuentas."
     )
 
     update.message.reply_text(resumen)
@@ -6744,6 +6913,7 @@ def main():
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pagos_callback, pattern=r"^pagos_"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
