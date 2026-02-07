@@ -2,7 +2,11 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
-    get_api_usage_today, increment_api_usage
+    get_api_usage_today, increment_api_usage,
+    get_recharge_request, update_recharge_status, insert_ledger_entry,
+    get_admin_balance, update_admin_balance,
+    update_courier_link_balance, update_ally_link_balance,
+    get_platform_admin
 )
 import math
 import re
@@ -604,4 +608,120 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         "success": True,
         "quote_source": "text",
     }
+
+
+# ============================================================
+# SISTEMA DE RECARGAS
+# ============================================================
+
+def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple[bool, str]:
+    """
+    Aprueba una solicitud de recarga.
+    - Si el admin asignado es LOCAL: valida saldo y descuenta del admin.
+    - Si el admin asignado es PLATAFORMA: acredita sin validar saldo.
+    Registra el movimiento en ledger.
+
+    Retorna: (success, message)
+    """
+    req = get_recharge_request(request_id)
+    if not req:
+        return False, "Solicitud no encontrada."
+
+    req_id, target_type, target_id, admin_id, amount, status = req[:6]
+
+    if status != "PENDING":
+        return False, f"Solicitud ya procesada (status: {status})."
+
+    platform_admin = get_platform_admin()
+    is_platform = platform_admin and platform_admin[0] == admin_id
+
+    if not is_platform:
+        admin_balance = get_admin_balance(admin_id)
+        if admin_balance < amount:
+            return False, f"Saldo insuficiente. Tienes ${admin_balance:,} y se requieren ${amount:,}."
+        update_admin_balance(admin_id, -amount)
+
+    if target_type == "COURIER":
+        update_courier_link_balance(target_id, admin_id, amount)
+    elif target_type == "ALLY":
+        update_ally_link_balance(target_id, admin_id, amount)
+    else:
+        return False, f"Tipo de destino desconocido: {target_type}"
+
+    update_recharge_status(request_id, "APPROVED", decided_by_admin_id)
+
+    from_type = None if is_platform else "ADMIN"
+    from_id = None if is_platform else admin_id
+    insert_ledger_entry(
+        kind="RECHARGE",
+        from_type=from_type,
+        from_id=from_id,
+        to_type=target_type,
+        to_id=target_id,
+        amount=amount,
+        ref_type="RECHARGE_REQUEST",
+        ref_id=request_id,
+        note=f"Recarga aprobada por admin_id={decided_by_admin_id}"
+    )
+
+    return True, "Recarga aprobada exitosamente."
+
+
+def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str = None) -> Tuple[bool, str]:
+    """
+    Rechaza una solicitud de recarga.
+    No modifica saldos, solo actualiza el status.
+
+    Retorna: (success, message)
+    """
+    req = get_recharge_request(request_id)
+    if not req:
+        return False, "Solicitud no encontrada."
+
+    status = req[5]
+    if status != "PENDING":
+        return False, f"Solicitud ya procesada (status: {status})."
+
+    update_recharge_status(request_id, "REJECTED", decided_by_admin_id)
+
+    return True, "Solicitud de recarga rechazada."
+
+
+def apply_fixed_fee_300(target_type: str, target_id: int, admin_id: int, ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
+    """
+    Helper para cobrar tarifa fija de $300 por pedido (uso futuro).
+    Descuenta del balance del vínculo target-admin.
+
+    Retorna: (success, message)
+    """
+    fee = 300
+
+    if target_type == "COURIER":
+        from db import get_courier_link_balance
+        balance = get_courier_link_balance(target_id, admin_id)
+        if balance < fee:
+            return False, f"Saldo insuficiente. Balance: ${balance:,}, requerido: ${fee:,}."
+        update_courier_link_balance(target_id, admin_id, -fee)
+    elif target_type == "ALLY":
+        from db import get_ally_link_balance
+        balance = get_ally_link_balance(target_id, admin_id)
+        if balance < fee:
+            return False, f"Saldo insuficiente. Balance: ${balance:,}, requerido: ${fee:,}."
+        update_ally_link_balance(target_id, admin_id, -fee)
+    else:
+        return False, f"Tipo de destino desconocido: {target_type}"
+
+    insert_ledger_entry(
+        kind="FEE",
+        from_type=target_type,
+        from_id=target_id,
+        to_type="ADMIN",
+        to_id=admin_id,
+        amount=fee,
+        ref_type=ref_type,
+        ref_id=ref_id,
+        note="Tarifa fija por pedido"
+    )
+
+    return True, f"Tarifa de ${fee:,} aplicada."
 

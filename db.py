@@ -767,6 +767,59 @@ def init_db():
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
         )
 
+    # ============================================================
+    # H) TABLAS PARA SISTEMA DE RECARGAS
+    # ============================================================
+
+    # Migración: agregar balance a admins si no existe
+    cur.execute("PRAGMA table_info(admins)")
+    admins_cols = [r[1] for r in cur.fetchall()]
+    if "balance" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN balance INTEGER DEFAULT 0")
+
+    # Tabla: recharge_requests (solicitudes de recarga)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS recharge_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            requested_by_user_id INTEGER NOT NULL,
+            decided_by_admin_id INTEGER,
+            method TEXT,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            decided_at TEXT,
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (requested_by_user_id) REFERENCES users(id),
+            FOREIGN KEY (decided_by_admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recharge_requests_admin_status ON recharge_requests(admin_id, status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recharge_requests_target ON recharge_requests(target_type, target_id)")
+
+    # Tabla: ledger (movimientos contables)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            from_type TEXT,
+            from_id INTEGER,
+            to_type TEXT NOT NULL,
+            to_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            ref_type TEXT,
+            ref_id INTEGER,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_from ON ledger(from_type, from_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_to ON ledger(to_type, to_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(ref_type, ref_id)")
+
     conn.commit()
     conn.close()
 
@@ -2468,6 +2521,62 @@ def get_admin_link_for_ally(ally_id: int):
     return row
 
 
+def get_approved_admin_link_for_courier(courier_id: int):
+    """
+    Obtiene el admin con vínculo APPROVED más reciente para un courier.
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, balance, link_id
+    o None si no hay vínculo APPROVED.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            ac.balance AS balance,
+            ac.id AS link_id
+        FROM admin_couriers ac
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.courier_id = ?
+          AND ac.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY ac.created_at DESC
+        LIMIT 1;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_approved_admin_link_for_ally(ally_id: int):
+    """
+    Obtiene el admin con vínculo APPROVED más reciente para un aliado.
+    Retorna: sqlite3.Row con campos: admin_id, team_name, team_code, balance, link_id
+    o None si no hay vínculo APPROVED.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            aa.balance AS balance,
+            aa.id AS link_id
+        FROM admin_allies aa
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.ally_id = ?
+          AND aa.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY aa.created_at DESC
+        LIMIT 1;
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
 # ============================================================
 # CLIENTES RECURRENTES DE ALIADOS (ally_customers)
 # ============================================================
@@ -2846,6 +2955,186 @@ def increment_api_usage(api_name: str):
     """, (api_name,))
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# SISTEMA DE RECARGAS (recharge_requests, ledger)
+# ============================================================
+
+def get_admin_balance(admin_id: int) -> int:
+    """Retorna el saldo actual de un admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def update_admin_balance(admin_id: int, delta: int):
+    """Actualiza el saldo de un admin (suma delta, puede ser negativo)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admins SET balance = balance + ? WHERE id = ?
+    """, (delta, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
+    """Retorna el saldo del vínculo courier-admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT balance FROM admin_couriers
+        WHERE courier_id = ? AND admin_id = ?
+    """, (courier_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def update_courier_link_balance(courier_id: int, admin_id: int, delta: int):
+    """Actualiza el saldo del vínculo courier-admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_couriers SET balance = balance + ?, updated_at = datetime('now')
+        WHERE courier_id = ? AND admin_id = ?
+    """, (delta, courier_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def get_ally_link_balance(ally_id: int, admin_id: int) -> int:
+    """Retorna el saldo del vínculo ally-admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT balance FROM admin_allies
+        WHERE ally_id = ? AND admin_id = ?
+    """, (ally_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
+    """Actualiza el saldo del vínculo ally-admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_allies SET balance = balance + ?, updated_at = datetime('now')
+        WHERE ally_id = ? AND admin_id = ?
+    """, (delta, ally_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def create_recharge_request(target_type: str, target_id: int, admin_id: int,
+                            amount: int, requested_by_user_id: int,
+                            method: str = None, note: str = None) -> int:
+    """
+    Crea una solicitud de recarga PENDING.
+    target_type: 'COURIER' o 'ALLY'
+    Retorna: request_id
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO recharge_requests
+            (target_type, target_id, admin_id, amount, status, requested_by_user_id, method, note)
+        VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)
+    """, (target_type, target_id, admin_id, amount, requested_by_user_id, method, note))
+    request_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return request_id
+
+
+def get_recharge_request(request_id: int):
+    """Obtiene una solicitud de recarga por ID."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, target_type, target_id, admin_id, amount, status,
+               requested_by_user_id, decided_by_admin_id, method, note,
+               created_at, decided_at
+        FROM recharge_requests WHERE id = ?
+    """, (request_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_pending_recharges_for_admin(admin_id: int):
+    """Lista las solicitudes PENDING asignadas a un admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT rr.id, rr.target_type, rr.target_id, rr.amount, rr.method, rr.note, rr.created_at,
+               CASE
+                   WHEN rr.target_type = 'COURIER' THEN c.full_name
+                   WHEN rr.target_type = 'ALLY' THEN al.business_name
+                   ELSE 'Desconocido'
+               END AS target_name
+        FROM recharge_requests rr
+        LEFT JOIN couriers c ON rr.target_type = 'COURIER' AND rr.target_id = c.id
+        LEFT JOIN allies al ON rr.target_type = 'ALLY' AND rr.target_id = al.id
+        WHERE rr.admin_id = ? AND rr.status = 'PENDING'
+        ORDER BY rr.created_at ASC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def update_recharge_status(request_id: int, status: str, decided_by_admin_id: int):
+    """Actualiza el status de una solicitud (APPROVED/REJECTED)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE recharge_requests
+        SET status = ?, decided_by_admin_id = ?, decided_at = datetime('now')
+        WHERE id = ?
+    """, (status, decided_by_admin_id, request_id))
+    conn.commit()
+    conn.close()
+
+
+def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, to_id: int,
+                        amount: int, ref_type: str = None, ref_id: int = None, note: str = None) -> int:
+    """
+    Inserta un movimiento en el ledger.
+    kind: RECHARGE, FEE, ADJUST
+    Retorna: ledger_id
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note))
+    ledger_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return ledger_id
+
+
+def get_platform_admin():
+    """Obtiene el admin de plataforma (team_code='PLATFORM')."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, full_name, team_name, team_code, balance
+        FROM admins
+        WHERE team_code = 'PLATFORM' AND is_deleted = 0
+        LIMIT 1
+    """)
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 

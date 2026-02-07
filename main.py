@@ -30,6 +30,8 @@ from services import (
     can_call_google_today,
     extract_place_id_from_url,
     google_place_details,
+    approve_recharge_request,
+    reject_recharge_request,
 )
 from db import (
     init_db,
@@ -139,6 +141,15 @@ from db import (
     # Cache de links de ubicación
     get_link_cache,
     upsert_link_cache,
+
+    # Sistema de recargas
+    get_approved_admin_link_for_courier,
+    get_approved_admin_link_for_ally,
+    get_admin_balance,
+    get_platform_admin,
+    create_recharge_request,
+    list_pending_recharges_for_admin,
+    get_recharge_request,
 )
 
 # ============================================================
@@ -300,6 +311,12 @@ COTIZAR_DISTANCIA = 901
 # Estados para configuración de tarifas (Admin Plataforma)
 # =========================
 TARIFAS_VALOR = 902
+
+# =========================
+# Estados para sistema de recargas
+# =========================
+RECARGAR_MONTO = 950
+RECARGAR_ADMIN = 951
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -5371,6 +5388,344 @@ def mi_perfil(update, context):
     update.message.reply_text(mensaje)
 
 
+# ============================================================
+# SISTEMA DE RECARGAS
+# ============================================================
+
+def cmd_saldo(update, context):
+    """
+    Comando /saldo - Muestra el saldo según el rol del usuario:
+    - Courier: balance del vínculo APPROVED más reciente
+    - Ally: balance del vínculo APPROVED más reciente
+    - Admin: balance del admin (admins.balance)
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    mensaje = ""
+
+    admin = get_admin_by_user_id(user_db_id)
+    if admin:
+        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        balance = get_admin_balance(admin_id)
+        team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
+        mensaje += f"Admin ({team_name or 'sin nombre'}):\n"
+        mensaje += f"   Saldo disponible: ${balance:,}\n\n"
+
+    courier = get_courier_by_user_id(user_db_id)
+    if courier:
+        courier_id = courier["id"]
+        link = get_approved_admin_link_for_courier(courier_id)
+        if link:
+            balance = link["balance"] if link["balance"] else 0
+            team_name = link["team_name"] or "-"
+            mensaje += f"Repartidor (equipo {team_name}):\n"
+            mensaje += f"   Saldo: ${balance:,}\n\n"
+        else:
+            mensaje += "Repartidor:\n"
+            mensaje += "   Sin vínculo APPROVED con admin.\n"
+            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+
+    ally = get_ally_by_user_id(user_db_id)
+    if ally:
+        ally_id = ally["id"]
+        link = get_approved_admin_link_for_ally(ally_id)
+        if link:
+            balance = link["balance"] if link["balance"] else 0
+            team_name = link["team_name"] or "-"
+            mensaje += f"Aliado (equipo {team_name}):\n"
+            mensaje += f"   Saldo: ${balance:,}\n\n"
+        else:
+            mensaje += "Aliado:\n"
+            mensaje += "   Sin vínculo APPROVED con admin.\n"
+            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+
+    if not mensaje:
+        mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
+
+    update.message.reply_text(mensaje)
+
+
+def cmd_recargar(update, context):
+    """
+    Comando /recargar - Inicia el flujo de solicitud de recarga.
+    Determina el rol y muestra opciones de admin.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    courier = get_courier_by_user_id(user_db_id)
+    ally = get_ally_by_user_id(user_db_id)
+
+    if not courier and not ally:
+        update.message.reply_text(
+            "Para solicitar recargas debes ser Repartidor o Aliado.\n"
+            "Usa /soy_repartidor o /soy_aliado para registrarte."
+        )
+        return ConversationHandler.END
+
+    if courier:
+        context.user_data["recargar_target_type"] = "COURIER"
+        context.user_data["recargar_target_id"] = courier["id"]
+        context.user_data["recargar_target_name"] = courier["full_name"]
+    else:
+        context.user_data["recargar_target_type"] = "ALLY"
+        context.user_data["recargar_target_id"] = ally["id"]
+        context.user_data["recargar_target_name"] = ally["business_name"]
+
+    update.message.reply_text(
+        "Escribe el monto que deseas recargar (solo numeros).\n"
+        "Ejemplo: 10000"
+    )
+    return RECARGAR_MONTO
+
+
+def recargar_monto(update, context):
+    """Recibe el monto de la recarga."""
+    texto = update.message.text.strip().replace(".", "").replace(",", "")
+
+    try:
+        monto = int(texto)
+    except ValueError:
+        update.message.reply_text("Por favor ingresa solo numeros. Ejemplo: 10000")
+        return RECARGAR_MONTO
+
+    if monto < 1000:
+        update.message.reply_text("El monto minimo es $1,000.")
+        return RECARGAR_MONTO
+
+    if monto > 1000000:
+        update.message.reply_text("El monto maximo es $1,000,000.")
+        return RECARGAR_MONTO
+
+    context.user_data["recargar_monto"] = monto
+
+    target_type = context.user_data["recargar_target_type"]
+    target_id = context.user_data["recargar_target_id"]
+
+    if target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+    else:
+        link = get_approved_admin_link_for_ally(target_id)
+
+    buttons = []
+
+    if link:
+        admin_id = link["admin_id"]
+        team_name = link["team_name"] or "Mi admin"
+        buttons.append([InlineKeyboardButton(
+            f"Mi admin: {team_name}",
+            callback_data=f"recargar_admin_{admin_id}"
+        )])
+        context.user_data["recargar_mi_admin_id"] = admin_id
+
+    platform = get_platform_admin()
+    if platform:
+        platform_id = platform[0]
+        platform_name = platform[3] or platform[2] or "Plataforma"
+        if not link or link["admin_id"] != platform_id:
+            buttons.append([InlineKeyboardButton(
+                f"Plataforma: {platform_name}",
+                callback_data=f"recargar_admin_{platform_id}"
+            )])
+
+    if not buttons:
+        update.message.reply_text(
+            "No hay admins disponibles para procesar recargas.\n"
+            "Contacta al soporte."
+        )
+        return ConversationHandler.END
+
+    buttons.append([InlineKeyboardButton("Cancelar", callback_data="recargar_cancel")])
+
+    update.message.reply_text(
+        f"Monto: ${monto:,}\n\n"
+        f"Selecciona a quien solicitar la recarga:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RECARGAR_ADMIN
+
+
+def recargar_admin_callback(update, context):
+    """Callback para seleccionar admin y crear la solicitud."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "recargar_cancel":
+        query.edit_message_text("Solicitud de recarga cancelada.")
+        return ConversationHandler.END
+
+    if not data.startswith("recargar_admin_"):
+        return RECARGAR_ADMIN
+
+    admin_id = int(data.replace("recargar_admin_", ""))
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    target_type = context.user_data.get("recargar_target_type")
+    target_id = context.user_data.get("recargar_target_id")
+    monto = context.user_data.get("recargar_monto")
+    target_name = context.user_data.get("recargar_target_name", "")
+
+    if not target_type or not target_id or not monto:
+        query.edit_message_text("Error: datos incompletos. Usa /recargar nuevamente.")
+        return ConversationHandler.END
+
+    request_id = create_recharge_request(
+        target_type=target_type,
+        target_id=target_id,
+        admin_id=admin_id,
+        amount=monto,
+        requested_by_user_id=user_db_id
+    )
+
+    query.edit_message_text(
+        f"Solicitud de recarga creada.\n\n"
+        f"ID: #{request_id}\n"
+        f"Monto: ${monto:,}\n"
+        f"Estado: PENDIENTE\n\n"
+        f"El admin recibira tu solicitud y la procesara."
+    )
+
+    context.user_data.pop("recargar_target_type", None)
+    context.user_data.pop("recargar_target_id", None)
+    context.user_data.pop("recargar_monto", None)
+    context.user_data.pop("recargar_target_name", None)
+    context.user_data.pop("recargar_mi_admin_id", None)
+
+    return ConversationHandler.END
+
+
+def cmd_recargas_pendientes(update, context):
+    """
+    Comando /recargas_pendientes - Lista las solicitudes PENDING para el admin.
+    Solo para admins.
+    """
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        update.message.reply_text("Este comando es solo para administradores.")
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+
+    if admin_status != "APPROVED":
+        update.message.reply_text("Tu cuenta de admin no esta aprobada.")
+        return
+
+    pendientes = list_pending_recharges_for_admin(admin_id)
+
+    if not pendientes:
+        update.message.reply_text("No tienes solicitudes de recarga pendientes.")
+        return
+
+    for req in pendientes:
+        req_id = req[0]
+        target_type = req[1]
+        target_id = req[2]
+        amount = req[3]
+        method = req[4] or "-"
+        note = req[5] or "-"
+        created_at = req[6] or "-"
+        target_name = req[7] or "Desconocido"
+
+        tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
+
+        texto = (
+            f"Solicitud #{req_id}\n"
+            f"De: {target_name} ({tipo_label})\n"
+            f"Monto: ${amount:,}\n"
+            f"Metodo: {method}\n"
+            f"Fecha: {created_at}\n"
+        )
+
+        buttons = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{req_id}"),
+                InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{req_id}")
+            ]
+        ]
+
+        update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def recharge_callback(update, context):
+    """
+    Callback para aprobar/rechazar solicitudes de recarga.
+    Patron: ^recharge_(approve|reject)_\d+$
+    """
+    query = update.callback_query
+    data = query.data
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+
+    if data.startswith("recharge_approve_"):
+        request_id = int(data.replace("recharge_approve_", ""))
+        req = get_recharge_request(request_id)
+
+        if not req:
+            query.answer("Solicitud no encontrada.", show_alert=True)
+            return
+
+        if req[3] != admin_id:
+            is_platform = user_has_platform_admin(user_tg.id)
+            if not is_platform:
+                query.answer("Esta solicitud no te corresponde.", show_alert=True)
+                return
+
+        success, msg = approve_recharge_request(request_id, admin_id)
+
+        if success:
+            query.answer("Recarga aprobada.")
+            query.edit_message_text(
+                query.message.text + f"\n\nAPROBADA por admin #{admin_id}"
+            )
+        else:
+            query.answer(msg, show_alert=True)
+
+    elif data.startswith("recharge_reject_"):
+        request_id = int(data.replace("recharge_reject_", ""))
+        req = get_recharge_request(request_id)
+
+        if not req:
+            query.answer("Solicitud no encontrada.", show_alert=True)
+            return
+
+        if req[3] != admin_id:
+            is_platform = user_has_platform_admin(user_tg.id)
+            if not is_platform:
+                query.answer("Esta solicitud no te corresponde.", show_alert=True)
+                return
+
+        success, msg = reject_recharge_request(request_id, admin_id)
+
+        if success:
+            query.answer("Solicitud rechazada.")
+            query.edit_message_text(
+                query.message.text + f"\n\nRECHAZADA por admin #{admin_id}"
+            )
+        else:
+            query.answer(msg, show_alert=True)
+
+
 def admin_local_callback(update, context):
     query = update.callback_query
     if not query:
@@ -6160,6 +6515,11 @@ def main():
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
+
+    # Sistema de recargas
+    dp.add_handler(CommandHandler("saldo", cmd_saldo))
+    dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
+    dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
@@ -6209,6 +6569,19 @@ def main():
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
+    # ConversationHandler para /recargar
+    recargar_conv = ConversationHandler(
+        entry_points=[CommandHandler("recargar", cmd_recargar)],
+        states={
+            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
+            RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        ],
+    )
+    dp.add_handler(recargar_conv)
 
     # -------------------------
     # Registro de Administradores Locales
