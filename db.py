@@ -1008,7 +1008,10 @@ def get_admin_by_id(admin_id: int):
             document_number,    -- 7
             team_code,          -- 8
             status,             -- 9
-            created_at          -- 10
+            created_at,         -- 10
+            residence_address,  -- 11
+            residence_lat,      -- 12
+            residence_lng       -- 13
         FROM admins
         WHERE id = ?
         ORDER BY id DESC

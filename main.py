@@ -4187,7 +4187,17 @@ def admin_ver_pendiente(update, context):
         query.edit_message_text("Administrador no encontrado.")
         return
 
-    # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number
+    # id, user_id, full_name, phone, city, barrio, team_name, document_number, team_code, status, created_at, residence_address, residence_lat, residence_lng
+    residence_address = admin[11] if len(admin) > 11 else None
+    residence_lat = admin[12] if len(admin) > 12 else None
+    residence_lng = admin[13] if len(admin) > 13 else None
+    if residence_lat is not None and residence_lng is not None:
+        residence_location = "{}, {}".format(residence_lat, residence_lng)
+        maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+    else:
+        residence_location = "No disponible"
+        maps_line = ""
+
     texto = (
         "Administrador pendiente:\n\n"
         f"ID: {admin[0]}\n"
@@ -4196,8 +4206,15 @@ def admin_ver_pendiente(update, context):
         f"Ciudad: {admin[4]}\n"
         f"Barrio: {admin[5]}\n"
         f"Equipo: {admin[8] or '-'}\n"
-        f"Documento: {admin[9] or '-'}\n"
-        f"Estado: {admin[6]}"
+        f"Documento: {admin[7] or '-'}\n"
+        f"Estado: {admin[9]}\n"
+        "Residencia: {}\n"
+        "Ubicación residencia: {}\n"
+        "{}"
+    ).format(
+        residence_address or "No registrada",
+        residence_location,
+        maps_line
     )
 
     keyboard = [
