@@ -3064,15 +3064,49 @@ def ensure_platform_link_for_ally(platform_admin_id: int, ally_id: int):
     conn.close()
 
 
-def update_admin_balance(admin_id: int, delta: int):
-    """Actualiza el saldo de un admin (suma delta, puede ser negativo)."""
+def update_admin_balance_with_ledger(
+    admin_id: int,
+    delta: int,
+    kind: str,
+    note: str,
+    ref_type: str = None,
+    ref_id: int = None,
+    from_type: str = None,
+    from_id: int = None,
+) -> int:
+    """
+    Actualiza el saldo de un admin y registra el movimiento en ledger
+    en la misma transaccion (atomico).
+    amount en ledger siempre es positivo; la direccion se indica con from/to.
+    Retorna: ledger_id
+    """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admins SET balance = balance + ? WHERE id = ?
-    """, (delta, admin_id))
-    conn.commit()
-    conn.close()
+    cur.execute("BEGIN")
+    try:
+        cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            conn.close()
+            raise ValueError(f"Admin id={admin_id} no existe.")
+        cur.execute(
+            "UPDATE admins SET balance = balance + ? WHERE id = ?",
+            (delta, admin_id),
+        )
+        cur.execute("""
+            INSERT INTO ledger
+                (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+            VALUES (?, ?, ?, 'ADMIN', ?, ?, ?, ?, ?)
+        """, (kind, from_type, from_id, admin_id, abs(delta), ref_type, ref_id, note))
+        ledger_id = cur.lastrowid
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return ledger_id
 
 
 def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
