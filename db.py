@@ -339,6 +339,12 @@ def init_db():
         cur.execute("ALTER TABLE admins ADD COLUMN team_code TEXT")
     if "person_id" not in admins_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN person_id INTEGER")
+    if "residence_address" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN residence_address TEXT")
+    if "residence_lat" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN residence_lat REAL")
+    if "residence_lng" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN residence_lng REAL")
 
     # couriers.person_id + soft delete + free_orders_remaining
     cur.execute("PRAGMA table_info(couriers)")
@@ -2394,7 +2400,18 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
 import sqlite3
 from datetime import datetime
 
-def create_admin(user_id, full_name, phone, city, barrio, team_name, document_number):
+def create_admin(
+    user_id,
+    full_name,
+    phone,
+    city,
+    barrio,
+    team_name,
+    document_number,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
+):
     # 1) Identidad global
     person_id = get_or_create_identity(phone, document_number, full_name=full_name)
     ensure_user_person_id(user_id, person_id)
@@ -2406,10 +2423,23 @@ def create_admin(user_id, full_name, phone, city, barrio, team_name, document_nu
         cur.execute("""
             INSERT INTO admins (
                 user_id, person_id, full_name, phone, city, barrio,
-                status, created_at, team_name, document_number
+                status, created_at, team_name, document_number,
+                residence_address, residence_lat, residence_lng
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?)
-        """, (user_id, person_id, full_name, normalize_phone(phone), city, barrio, team_name, normalize_document(document_number)))
+            VALUES (?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            person_id,
+            full_name,
+            normalize_phone(phone),
+            city,
+            barrio,
+            team_name,
+            normalize_document(document_number),
+            residence_address,
+            residence_lat,
+            residence_lng,
+        ))
 
         admin_id = cur.lastrowid
 
