@@ -357,6 +357,12 @@ def init_db():
         cur.execute("ALTER TABLE couriers ADD COLUMN deleted_at TEXT")
     if "free_orders_remaining" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN free_orders_remaining INTEGER DEFAULT 15")
+    if "residence_address" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN residence_address TEXT")
+    if "residence_lat" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN residence_lat REAL")
+    if "residence_lng" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN residence_lng REAL")
 
     # allies.soft delete + person_id
     cur.execute("PRAGMA table_info(allies)")
@@ -1552,7 +1558,10 @@ def get_all_couriers():
             plate,
             bike_type,
             code,
-            status
+            status,
+            residence_address,
+            residence_lat,
+            residence_lng
         FROM couriers
         ORDER BY id ASC;
     """)
@@ -2224,6 +2233,9 @@ def create_courier(
     plate: str,
     bike_type: str,
     code: str,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
 ):
     """Crea un repartidor en estado PENDING y devuelve su id."""
 
@@ -2247,8 +2259,11 @@ def create_courier(
                 bike_type,
                 code,
                 status,
-                balance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0);
+                balance,
+                residence_address,
+                residence_lat,
+                residence_lng
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, ?);
         """, (
             user_id,
             person_id,
@@ -2260,6 +2275,9 @@ def create_courier(
             plate,
             bike_type,
             code,
+            residence_address,
+            residence_lat,
+            residence_lng,
         ))
         conn.commit()
         courier_id = cur.lastrowid

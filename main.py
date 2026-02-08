@@ -236,11 +236,13 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     COURIER_PHONE,
     COURIER_CITY,
     COURIER_BARRIO,
+    COURIER_RESIDENCE_ADDRESS,
+    COURIER_RESIDENCE_LOCATION,
     COURIER_PLATE,
     COURIER_BIKETYPE,
     COURIER_CONFIRM,
     COURIER_TEAMCODE,
-) = range(5, 14)
+) = range(5, 16)
 
 
 # =========================
@@ -1140,6 +1142,46 @@ def courier_city(update, context):
 def courier_barrio(update, context):
     context.user_data["barrio"] = update.message.text.strip()
     update.message.reply_text(
+        "Escribe tu dirección de residencia:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
+    return COURIER_RESIDENCE_ADDRESS
+
+
+def courier_residence_address(update, context):
+    address = update.message.text.strip()
+    if not address:
+        update.message.reply_text("La dirección no puede estar vacía. Escríbela de nuevo:")
+        return COURIER_RESIDENCE_ADDRESS
+    context.user_data["residence_address"] = address
+    update.message.reply_text(
+        "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
+    return COURIER_RESIDENCE_LOCATION
+
+
+def courier_residence_location(update, context):
+    lat = None
+    lng = None
+    if update.message.location:
+        lat = update.message.location.latitude
+        lng = update.message.location.longitude
+    else:
+        text = (update.message.text or "").strip()
+        coords = extract_lat_lng_from_text(text)
+        if coords:
+            lat, lng = coords
+
+    if lat is None or lng is None:
+        update.message.reply_text(
+            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+        )
+        return COURIER_RESIDENCE_LOCATION
+
+    context.user_data["residence_lat"] = lat
+    context.user_data["residence_lng"] = lng
+    update.message.reply_text(
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
@@ -1165,6 +1207,17 @@ def courier_biketype(update, context):
     barrio = context.user_data.get("barrio", "")
     plate = context.user_data.get("plate", "")
     bike_type = context.user_data.get("bike_type", "")
+    residence_address = context.user_data.get("residence_address")
+    residence_lat = context.user_data.get("residence_lat")
+    residence_lng = context.user_data.get("residence_lng")
+    residence_address = context.user_data.get("residence_address", "")
+    residence_address_display = residence_address or "No registrada"
+    residence_lat = context.user_data.get("residence_lat")
+    residence_lng = context.user_data.get("residence_lng")
+    if residence_lat is not None and residence_lng is not None:
+        residence_location = "{}, {}".format(residence_lat, residence_lng)
+    else:
+        residence_location = "No disponible"
 
     resumen = (
         "Verifica tus datos de repartidor:\n\n"
@@ -1173,6 +1226,8 @@ def courier_biketype(update, context):
         f"Teléfono: {phone}\n"
         f"Ciudad: {city}\n"
         f"Barrio: {barrio}\n"
+        f"Dirección residencia: {residence_address_display}\n"
+        f"Ubicación residencia: {residence_location}\n"
         f"Placa: {plate}\n"
         f"Tipo de moto: {bike_type}\n\n"
         "Si todo está bien escribe: SI\n"
@@ -1217,6 +1272,9 @@ def courier_confirm(update, context):
         plate=plate,
         bike_type=bike_type,
         code=code,
+        residence_address=residence_address,
+        residence_lat=residence_lat,
+        residence_lng=residence_lng,
     )
 
     courier = get_courier_by_user_id(db_user["id"])
@@ -5339,6 +5397,13 @@ courier_conv = ConversationHandler(
         COURIER_BARRIO: [
             MessageHandler(Filters.text & ~Filters.command, courier_barrio)
         ],
+        COURIER_RESIDENCE_ADDRESS: [
+            MessageHandler(Filters.text & ~Filters.command, courier_residence_address)
+        ],
+        COURIER_RESIDENCE_LOCATION: [
+            MessageHandler(Filters.location, courier_residence_location),
+            MessageHandler(Filters.text & ~Filters.command, courier_residence_location),
+        ],
         COURIER_PLATE: [
             MessageHandler(Filters.text & ~Filters.command, courier_plate)
         ],
@@ -6861,6 +6926,16 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
 
+        residence_address = courier[11] if len(courier) > 11 else None
+        residence_lat = courier[12] if len(courier) > 12 else None
+        residence_lng = courier[13] if len(courier) > 13 else None
+        if residence_lat is not None and residence_lng is not None:
+            residence_location = "{}, {}".format(residence_lat, residence_lng)
+            maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+        else:
+            residence_location = "No disponible"
+            maps_line = ""
+
         texto = (
             "REPARTIDOR (pendiente de tu equipo)\n\n"
             f"ID: {courier[0]}\n"
@@ -6869,8 +6944,15 @@ def admin_local_callback(update, context):
             f"Teléfono: {courier[4]}\n"
             f"Ciudad: {courier[5]}\n"
             f"Barrio: {courier[6]}\n"
+            "Dirección residencia: {}\n"
+            "Ubicación residencia: {}\n"
+            "{}"
             f"Placa: {courier[7] or '-'}\n"
             f"Moto: {courier[8] or '-'}\n"
+        ).format(
+            residence_address or "No registrada",
+            residence_location,
+            maps_line,
         )
 
         keyboard = [
