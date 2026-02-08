@@ -336,6 +336,7 @@ PAGO_TELEFONO = 960
 PAGO_BANCO = 961
 PAGO_TITULAR = 962
 PAGO_INSTRUCCIONES = 963
+PAGO_MENU = 964
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -5976,7 +5977,7 @@ def mostrar_menu_pagos(update, context, admin_id, es_mensaje=False):
     else:
         update.callback_query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
 
-    return ConversationHandler.END
+    return PAGO_MENU
 
 
 def pagos_callback(update, context):
@@ -5992,14 +5993,14 @@ def pagos_callback(update, context):
     admin = get_admin_by_user_id(user_db_id)
     if not admin:
         query.edit_message_text("No autorizado.")
-        return
+        return ConversationHandler.END
 
     admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
     context.user_data["pago_admin_id"] = admin_id
 
     if data == "pagos_cerrar":
         query.edit_message_text("Menu de pagos cerrado.")
-        return
+        return ConversationHandler.END
 
     if data == "pagos_agregar":
         query.edit_message_text(
@@ -6014,7 +6015,7 @@ def pagos_callback(update, context):
 
         if not methods:
             query.edit_message_text("No tienes cuentas para gestionar.")
-            return
+            return PAGO_MENU
 
         texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
 
@@ -6030,7 +6031,7 @@ def pagos_callback(update, context):
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        return PAGO_MENU
 
     if data == "pagos_volver":
         return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
@@ -6064,7 +6065,7 @@ def pagos_callback(update, context):
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        return PAGO_MENU
 
     if data.startswith("pagos_toggle_"):
         parts = data.replace("pagos_toggle_", "").split("_")
@@ -6100,7 +6101,7 @@ def pagos_callback(update, context):
             buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
 
             query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        return PAGO_MENU
 
     if data.startswith("pagos_delete_"):
         method_id = int(data.replace("pagos_delete_", ""))
@@ -6127,7 +6128,9 @@ def pagos_callback(update, context):
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        return PAGO_MENU
+
+    return PAGO_MENU
 
 
 def pago_banco(update, context):
@@ -7000,7 +7003,6 @@ def main():
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(pagos_callback, pattern=r"^pagos_"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
@@ -7069,6 +7071,7 @@ def main():
     configurar_pagos_conv = ConversationHandler(
         entry_points=[CommandHandler("configurar_pagos", cmd_configurar_pagos)],
         states={
+            PAGO_MENU: [CallbackQueryHandler(pagos_callback, pattern=r"^pagos_")],
             PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
             PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command, pago_banco)],
             PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command, pago_titular)],
