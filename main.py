@@ -5683,6 +5683,12 @@ def recargar_comprobante(update, context):
         requested_by_user_id=user_db_id,
         proof_file_id=proof_file_id
     )
+    if not request_id:
+        update.message.reply_text(
+            "Ya existe una recarga pendiente con este comprobante. "
+            "Espera a que sea aprobada o rechazada antes de enviar otra."
+        )
+        return ConversationHandler.END
 
     update.message.reply_text(
         f"Solicitud de recarga enviada.\n\n"

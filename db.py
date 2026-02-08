@@ -3159,6 +3159,22 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
     conn.close()
 
 
+def exists_pending_recharge_by_proof(proof_file_id: str) -> bool:
+    """Retorna True si existe una solicitud PENDING con el mismo comprobante."""
+    if not proof_file_id:
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1 FROM recharge_requests
+        WHERE proof_file_id = ? AND status = 'PENDING'
+        LIMIT 1
+    """, (proof_file_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
 def create_recharge_request(target_type: str, target_id: int, admin_id: int,
                             amount: int, requested_by_user_id: int,
                             method: str = None, note: str = None,
@@ -3168,6 +3184,8 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
     target_type: 'COURIER' o 'ALLY'
     Retorna: request_id
     """
+    if exists_pending_recharge_by_proof(proof_file_id):
+        return None
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
