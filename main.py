@@ -1208,6 +1208,9 @@ def courier_biketype(update, context):
     plate = context.user_data.get("plate", "")
     bike_type = context.user_data.get("bike_type", "")
     residence_address = context.user_data.get("residence_address", "")
+    residence_lat = context.user_data.get("residence_lat")
+    residence_lng = context.user_data.get("residence_lng")
+    residence_address = context.user_data.get("residence_address", "")
     residence_address_display = residence_address or "No registrada"
     residence_lat = context.user_data.get("residence_lat")
     residence_lng = context.user_data.get("residence_lng")
