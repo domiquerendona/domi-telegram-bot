@@ -523,8 +523,17 @@ def menu(update, context):
 
 # ---------- MENÚS PERSISTENTES ----------
 
-def get_main_menu_keyboard():
+def get_main_menu_keyboard(has_any_role: bool):
     """Retorna el teclado principal para usuarios fuera de flujos."""
+    if not has_any_role:
+        keyboard = [
+            ['/soy_aliado', '/soy_repartidor'],
+            ['/soy_admin'],
+            ['Mi perfil', 'Ayuda'],
+            ['Menu']
+        ]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
     keyboard = [
         ['Nuevo pedido', 'Mis pedidos'],
         ['Mi perfil', 'Ayuda'],
@@ -550,9 +559,24 @@ def _get_chat_id(update):
     return None
 
 
+def _get_user_roles(update):
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    courier = get_courier_by_user_id(user_db_id)
+    admin_local = None
+    try:
+        admin_local = get_admin_by_user_id(user_db_id)
+    except Exception as e:
+        print("ERROR get_admin_by_user_id en menu:", e)
+        admin_local = None
+    return ally, courier, admin_local
+
+
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
     """Muestra el menú principal completo."""
-    reply_markup = get_main_menu_keyboard()
+    ally, courier, admin_local = _get_user_roles(update)
+    has_any_role = bool(ally or courier or admin_local)
+    reply_markup = get_main_menu_keyboard(has_any_role)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -582,7 +606,9 @@ def menu_button_handler(update, context):
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
-        update.message.reply_text(
+        ally, courier, admin_local = _get_user_roles(update)
+        has_any_role = bool(ally or courier or admin_local)
+        msg = (
             "AYUDA\n\n"
             "Comandos disponibles:\n"
             "/nuevo_pedido - Crear un nuevo pedido\n"
@@ -592,6 +618,15 @@ def menu_button_handler(update, context):
             "/cancel - Cancelar proceso actual\n"
             "/menu - Ver menu principal"
         )
+        if not has_any_role:
+            msg += (
+                "\n\n"
+                "REGISTRO:\n"
+                "/soy_aliado - Registrar mi negocio\n"
+                "/soy_repartidor - Registrarme como repartidor\n"
+                "/soy_admin - Registrarme como administrador"
+            )
+        update.message.reply_text(msg)
         return
     elif text == "Menu":
         return start(update, context)
