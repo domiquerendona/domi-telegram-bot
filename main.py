@@ -253,8 +253,10 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     LOCAL_ADMIN_PHONE,
     LOCAL_ADMIN_CITY,
     LOCAL_ADMIN_BARRIO,
+    LOCAL_ADMIN_RESIDENCE_ADDRESS,
+    LOCAL_ADMIN_RESIDENCE_LOCATION,
     LOCAL_ADMIN_ACCEPT,
-) = range(300, 307)
+) = range(300, 309)
 
 
 # =========================
@@ -3137,8 +3139,53 @@ def admin_city(update, context):
 
 def admin_barrio(update, context):
     context.user_data["admin_barrio"] = update.message.text.strip()
+    update.message.reply_text(
+        "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
+    )
+    return LOCAL_ADMIN_RESIDENCE_ADDRESS
 
+
+def admin_residence_address(update, context):
+    address = update.message.text.strip()
+    if len(address) < 6:
+        update.message.reply_text(
+            "La dirección debe tener al menos 6 caracteres. Escríbela de nuevo:"
+        )
+        return LOCAL_ADMIN_RESIDENCE_ADDRESS
+    context.user_data["admin_residence_address"] = address
+    update.message.reply_text(
+        "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps. (Obligatorio)"
+    )
+    return LOCAL_ADMIN_RESIDENCE_LOCATION
+
+
+def admin_residence_location(update, context):
+    lat = None
+    lng = None
+
+    if update.message.location:
+        lat = update.message.location.latitude
+        lng = update.message.location.longitude
+    else:
+        text = (update.message.text or "").strip()
+        coords = extract_lat_lng_from_text(text)
+        if coords:
+            lat, lng = coords
+
+    if lat is None or lng is None:
+        update.message.reply_text(
+            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+        )
+        return LOCAL_ADMIN_RESIDENCE_LOCATION
+
+    context.user_data["admin_residence_lat"] = lat
+    context.user_data["admin_residence_lng"] = lng
+
+    residence_address = (context.user_data.get("admin_residence_address") or "").strip()
     msg = (
+        "Resumen de residencia:\n"
+        f"Dirección: {residence_address}\n"
+        f"Coordenadas: {lat}, {lng}\n\n"
         "Condiciones para Administrador Local:\n"
         "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
         "2) Cada repartidor debe tener recarga mínima de 5000.\n"
@@ -3164,10 +3211,22 @@ def admin_accept(update, context):
     phone = (context.user_data.get("phone") or "").strip()
     city = (context.user_data.get("admin_city") or "").strip()
     barrio = (context.user_data.get("admin_barrio") or "").strip()
-    
+    residence_address = (context.user_data.get("admin_residence_address") or "").strip()
+    residence_lat = context.user_data.get("admin_residence_lat")
+    residence_lng = context.user_data.get("admin_residence_lng")
+
     try:
         admin_id, team_code = create_admin(
-            user_db_id, full_name, phone, city, barrio, team_name, document_number
+            user_db_id,
+            full_name,
+            phone,
+            city,
+            barrio,
+            team_name,
+            document_number,
+            residence_address,
+            residence_lat,
+            residence_lng,
         )
     except ValueError as e:
         update.message.reply_text(str(e))
@@ -3182,6 +3241,8 @@ def admin_accept(update, context):
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
         "Estado: PENDING\n\n"
+        f"Dirección residencia: {residence_address}\n"
+        f"Coordenadas: {residence_lat}, {residence_lng}\n\n"
         f"Tu CÓDIGO DE EQUIPO es: {team_code}\n"
         "Compártelo con los repartidores que quieras vincular a tu equipo.\n\n"
         "Recuerda: para ser aprobado debes registrar 10 repartidores con recarga mínima de 5000 cada uno."
@@ -7453,6 +7514,11 @@ def main():
             LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
             LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
+            LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, admin_residence_address)],
+            LOCAL_ADMIN_RESIDENCE_LOCATION: [
+                MessageHandler(Filters.location, admin_residence_location),
+                MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
+            ],
             LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
         },
         fallbacks=[
