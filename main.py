@@ -2390,8 +2390,6 @@ def pedido_pickup_lista_callback(update, context):
 
 def pedido_pickup_nueva_ubicacion_handler(update, context):
     """Maneja la captura de ubicacion para nueva direccion de recogida."""
-    from services import extract_lat_lng_from_text, expand_short_url
-
     text = update.message.text.strip()
 
     if text.lower() == "omitir":
