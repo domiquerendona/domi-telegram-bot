@@ -483,13 +483,17 @@ def start(update, context):
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
 
-    # Registro (solo si NO tiene ningún rol)
-    if not (ally or courier or admin_local or es_admin_plataforma):
+    # Registro (solo si tiene roles faltantes)
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
+    if missing_cmds:
         comandos.append("")
         comandos.append("Registro:")
-        comandos.append("• /soy_aliado  - Registrar tu negocio")
-        comandos.append("• /soy_repartidor  - Registrarte como repartidor")
-        comandos.append("• /soy_administrador  - Registrarte como administrador")
+        if "/soy_aliado" in missing_cmds:
+            comandos.append("• /soy_aliado  - Registrar tu negocio")
+        if "/soy_repartidor" in missing_cmds:
+            comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+        if "/soy_admin" in missing_cmds:
+            comandos.append("• /soy_admin  - Registrarte como administrador")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
@@ -523,22 +527,21 @@ def menu(update, context):
 
 # ---------- MENÚS PERSISTENTES ----------
 
-def get_main_menu_keyboard(has_any_role: bool):
+def get_main_menu_keyboard(missing_cmds):
     """Retorna el teclado principal para usuarios fuera de flujos."""
-    if not has_any_role:
-        keyboard = [
-            ['/soy_aliado', '/soy_repartidor'],
-            ['/soy_admin'],
-            ['Mi perfil', 'Ayuda'],
-            ['Menu']
-        ]
-        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     keyboard = [
         ['Nuevo pedido', 'Mis pedidos'],
         ['Mi perfil', 'Ayuda'],
         ['Menu']
     ]
+    if missing_cmds:
+        if len(missing_cmds) == 1:
+            register_rows = [missing_cmds]
+        elif len(missing_cmds) == 2:
+            register_rows = [missing_cmds]
+        else:
+            register_rows = [missing_cmds[:2], missing_cmds[2:]]
+        keyboard = register_rows + keyboard
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
@@ -572,11 +575,23 @@ def _get_user_roles(update):
     return ally, courier, admin_local
 
 
+def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma=False):
+    cmds = []
+    if not ally:
+        cmds.append("/soy_aliado")
+    if not courier:
+        cmds.append("/soy_repartidor")
+    if not admin_local and not es_admin_plataforma:
+        cmds.append("/soy_admin")
+    return cmds
+
+
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
     """Muestra el menú principal completo."""
     ally, courier, admin_local = _get_user_roles(update)
-    has_any_role = bool(ally or courier or admin_local)
-    reply_markup = get_main_menu_keyboard(has_any_role)
+    es_admin_plataforma = (update.effective_user.id == ADMIN_USER_ID)
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
+    reply_markup = get_main_menu_keyboard(missing_cmds)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -607,7 +622,7 @@ def menu_button_handler(update, context):
         return mi_perfil(update, context)
     elif text == "Ayuda":
         ally, courier, admin_local = _get_user_roles(update)
-        has_any_role = bool(ally or courier or admin_local)
+        missing_cmds = _get_missing_role_commands(ally, courier, admin_local)
         msg = (
             "AYUDA\n\n"
             "Comandos disponibles:\n"
@@ -618,14 +633,14 @@ def menu_button_handler(update, context):
             "/cancel - Cancelar proceso actual\n"
             "/menu - Ver menu principal"
         )
-        if not has_any_role:
-            msg += (
-                "\n\n"
-                "REGISTRO:\n"
-                "/soy_aliado - Registrar mi negocio\n"
-                "/soy_repartidor - Registrarme como repartidor\n"
-                "/soy_admin - Registrarme como administrador"
-            )
+        if missing_cmds:
+            msg += "\n\nREGISTRO:\n"
+            if "/soy_aliado" in missing_cmds:
+                msg += "/soy_aliado - Registrar mi negocio\n"
+            if "/soy_repartidor" in missing_cmds:
+                msg += "/soy_repartidor - Registrarme como repartidor\n"
+            if "/soy_admin" in missing_cmds:
+                msg += "/soy_admin - Registrarme como administrador"
         update.message.reply_text(msg)
         return
     elif text == "Menu":
