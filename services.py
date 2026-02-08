@@ -4,7 +4,7 @@ from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     get_api_usage_today, increment_api_usage,
     get_recharge_request, update_recharge_status, insert_ledger_entry,
-    get_admin_balance, update_admin_balance,
+    get_admin_balance, update_admin_balance_with_ledger,
     update_courier_link_balance, update_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
@@ -660,7 +660,16 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         admin_balance = get_admin_balance(admin_id)
         if admin_balance < amount:
             return False, f"Saldo insuficiente. Tienes ${admin_balance:,} y se requieren ${amount:,}."
-        update_admin_balance(admin_id, -amount)
+        update_admin_balance_with_ledger(
+            admin_id=admin_id,
+            delta=-amount,
+            kind="RECHARGE",
+            note=f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
+            ref_type="RECHARGE_REQUEST",
+            ref_id=request_id,
+            from_type="ADMIN",
+            from_id=admin_id,
+        )
 
     if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, amount)
@@ -671,19 +680,18 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
 
     update_recharge_status(request_id, "APPROVED", decided_by_admin_id)
 
-    from_type = None if is_platform else "ADMIN"
-    from_id = None if is_platform else admin_id
-    insert_ledger_entry(
-        kind="RECHARGE",
-        from_type=from_type,
-        from_id=from_id,
-        to_type=target_type,
-        to_id=target_id,
-        amount=amount,
-        ref_type="RECHARGE_REQUEST",
-        ref_id=request_id,
-        note=f"Recarga aprobada por admin_id={decided_by_admin_id}"
-    )
+    if is_platform:
+        insert_ledger_entry(
+            kind="RECHARGE",
+            from_type=None,
+            from_id=None,
+            to_type=target_type,
+            to_id=target_id,
+            amount=amount,
+            ref_type="RECHARGE_REQUEST",
+            ref_id=request_id,
+            note=f"Recarga plataforma aprobada por admin_id={decided_by_admin_id}"
+        )
 
     return True, "Recarga aprobada exitosamente."
 
