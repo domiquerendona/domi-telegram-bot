@@ -7208,6 +7208,21 @@ def admin_config_callback(update, context):
             query.edit_message_text("No se encontró el aliado.")
             return
 
+        default_loc = get_default_ally_location(ally_id)
+        if default_loc:
+            loc_lat = default_loc.get("lat")
+            loc_lng = default_loc.get("lng")
+        else:
+            loc_lat = None
+            loc_lng = None
+
+        if loc_lat is not None and loc_lng is not None:
+            loc_text = "{}, {}".format(loc_lat, loc_lng)
+            maps_text = "Maps: https://www.google.com/maps?q={},{}\n".format(loc_lat, loc_lng)
+        else:
+            loc_text = "No disponible"
+            maps_text = ""
+
         texto = (
             "Detalle del aliado:\n\n"
             "ID: {id}\n"
@@ -7217,7 +7232,9 @@ def admin_config_callback(update, context):
             "Dirección: {address}\n"
             "Ciudad: {city}\n"
             "Barrio: {barrio}\n"
-            "Estado: {status}"
+            "Estado: {status}\n"
+            "Ubicación: {loc}\n"
+            "{maps}"
         ).format(
             id=ally[0],
             business_name=ally[2],
@@ -7227,6 +7244,8 @@ def admin_config_callback(update, context):
             city=ally[6],
             barrio=ally[7],
             status=ally[8],
+            loc=loc_text,
+            maps=maps_text,
         )
 
         status = ally[8]
