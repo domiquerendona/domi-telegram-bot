@@ -1286,6 +1286,40 @@ def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING")
     conn.close()
 
 
+def deactivate_other_approved_admin_courier_links(courier_id: int, keep_admin_id: int):
+    """
+    Inactiva vÃ­nculos APPROVED para este courier con otros admins.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_couriers
+        SET status='INACTIVE', updated_at=datetime('now')
+        WHERE courier_id=?
+          AND status='APPROVED'
+          AND admin_id<>?;
+    """, (courier_id, keep_admin_id))
+    conn.commit()
+    conn.close()
+
+
+def deactivate_other_approved_admin_ally_links(ally_id: int, keep_admin_id: int):
+    """
+    Inactiva vÃ­nculos APPROVED para este aliado con otros admins.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE admin_allies
+        SET status='INACTIVE', updated_at=datetime('now')
+        WHERE ally_id=?
+          AND status='APPROVED'
+          AND admin_id<>?;
+    """, (ally_id, keep_admin_id))
+    conn.commit()
+    conn.close()
+
+
 def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PENDING", is_active: int = 1):
     conn = get_connection()
     cur = conn.cursor()

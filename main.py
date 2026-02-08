@@ -52,6 +52,8 @@ from db import (
     get_platform_admin_id,
     upsert_admin_ally_link,
     create_admin_courier_link,
+    deactivate_other_approved_admin_courier_links,
+    deactivate_other_approved_admin_ally_links,
     get_local_admins_count,
 
     # Aliados
@@ -146,6 +148,8 @@ from db import (
     upsert_link_cache,
 
     # Sistema de recargas
+    get_admin_link_for_courier,
+    get_admin_link_for_ally,
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
     get_admin_balance,
@@ -6749,6 +6753,7 @@ def admin_local_callback(update, context):
         courier_id = int(data.split("_")[-1])
         try:
             update_admin_courier_status(admin_id, courier_id, "APPROVED")
+            deactivate_other_approved_admin_courier_links(courier_id, admin_id)
         except Exception as e:
             print("[ERROR] update_admin_courier_status APPROVED:", e)
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
@@ -6833,6 +6838,12 @@ def ally_approval_callback(update, context):
         print(f"[ERROR] ally_approval_callback: {e}")
         query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
         return
+
+    if nuevo_estado == "APPROVED":
+        link = get_admin_link_for_ally(ally_id)
+        if link:
+            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+            deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
 
     ally = get_ally_by_id(ally_id)
     if not ally:
@@ -6939,6 +6950,12 @@ def courier_approval_callback(update, context):
         print(f"[ERROR] update_courier_status: {e}")
         query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
         return
+
+    if nuevo_estado == "APPROVED":
+        link = get_admin_link_for_courier(courier_id)
+        if link:
+            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+            deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
 
     courier = get_courier_by_id(courier_id)
     if not courier:
