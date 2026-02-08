@@ -3433,7 +3433,8 @@ def admin_menu_callback(update, context):
 
         # Datos del admin objetivo
         # get_admin_by_id: id[0], user_id[1], full_name[2], phone[3], city[4], barrio[5],
-        #                  team_name[6], document_number[7], team_code[8], status[9], created_at[10]
+        #                  team_name[6], document_number[7], team_code[8], status[9], created_at[10],
+        #                  residence_address[11], residence_lat[12], residence_lng[13]
         adm_full_name = admin_obj[2] or "-"
         adm_phone = admin_obj[3] or "-"
         adm_city = admin_obj[4] or "-"
@@ -3450,6 +3451,16 @@ def admin_menu_callback(update, context):
         num_couriers = count_admin_couriers(adm_id)
         num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
 
+        residence_address = admin_obj[11] if len(admin_obj) > 11 else None
+        residence_lat = admin_obj[12] if len(admin_obj) > 12 else None
+        residence_lng = admin_obj[13] if len(admin_obj) > 13 else None
+        if residence_lat is not None and residence_lng is not None:
+            residence_location = "{}, {}".format(residence_lat, residence_lng)
+            maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+        else:
+            residence_location = "No disponible"
+            maps_line = ""
+
         texto = (
             "ADMIN ID: {}\n"
             "Nombre: {}\n"
@@ -3459,13 +3470,20 @@ def admin_menu_callback(update, context):
             "Telefono: {}\n"
             "Documento: {}\n"
             "Estado: {}\n"
-            "Tipo: {}\n\n"
+            "Tipo: {}\n"
+            "Dirección residencia: {}\n"
+            "Ubicación residencia: {}\n"
+            "{}\n"
+            "\n"
             "CONTADORES:\n"
             "Mensajeros vinculados: {}\n"
             "Mensajeros con saldo >= 5000: {}"
         ).format(
             adm_id, adm_full_name, adm_team_name, adm_team_code,
             adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            residence_address or "No registrada",
+            residence_location,
+            maps_line,
             num_couriers, num_couriers_balance
         )
 
