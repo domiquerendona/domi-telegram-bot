@@ -1172,6 +1172,93 @@ def get_available_admin_teams():
     return rows
 
 
+def list_approved_admin_teams(include_platform: bool = True):
+    """
+    Devuelve equipos aprobados para vistas de plataforma.
+    Retorna filas con: (id, team_name, team_code, status, balance)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    where_platform = ""
+    if not include_platform:
+        where_platform = "AND a.team_code != 'PLATFORM'"
+    cur.execute(f"""
+        SELECT
+            a.id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            a.status,
+            a.balance
+        FROM admins a
+        WHERE a.status = 'APPROVED'
+          AND a.is_deleted = 0
+          AND a.team_code IS NOT NULL
+          AND TRIM(a.team_code) <> ''
+          {where_platform}
+        ORDER BY a.id ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
+    """
+    Lista vínculos APPROVED admin_couriers con saldo por vínculo.
+    Retorna: (link_id, courier_id, full_name, phone, city, barrio, balance)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            ac.id AS link_id,
+            c.id AS courier_id,
+            c.full_name,
+            c.phone,
+            c.city,
+            c.barrio,
+            ac.balance
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        WHERE ac.admin_id = ?
+          AND ac.status = 'APPROVED'
+        ORDER BY c.full_name ASC
+        LIMIT ? OFFSET ?
+    """, (admin_id, limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
+    """
+    Lista vínculos APPROVED admin_allies con saldo por vínculo.
+    Retorna: (link_id, ally_id, business_name, owner_name, phone, city, barrio, balance)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            aa.id AS link_id,
+            al.id AS ally_id,
+            al.business_name,
+            al.owner_name,
+            al.phone,
+            al.city,
+            al.barrio,
+            aa.balance
+        FROM admin_allies aa
+        JOIN allies al ON al.id = aa.ally_id
+        WHERE aa.admin_id = ?
+          AND aa.status = 'APPROVED'
+        ORDER BY al.business_name ASC
+        LIMIT ? OFFSET ?
+    """, (admin_id, limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING"):
     """
     Crea o actualiza el vínculo admin_allies para este aliado con este admin.

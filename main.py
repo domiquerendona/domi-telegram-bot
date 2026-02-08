@@ -46,6 +46,9 @@ from db import (
     get_setting,
     set_setting,
     get_available_admin_teams,
+    list_approved_admin_teams,
+    list_courier_links_by_admin,
+    list_ally_links_by_admin,
     get_platform_admin_id,
     upsert_admin_ally_link,
     create_admin_courier_link,
@@ -3206,6 +3209,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
+        [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
     ]
 
@@ -3482,6 +3486,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
             [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
             [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
+            [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         ]
 
@@ -3489,6 +3494,323 @@ def admin_menu_callback(update, context):
             texto,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
+
+    # Saldos de todos (submenu principal)
+    if data == "admin_saldos":
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("🚚 Repartidores", callback_data="admin_saldos_couriers")],
+            [InlineKeyboardButton("👤 Aliados", callback_data="admin_saldos_allies")],
+            [InlineKeyboardButton("🧑‍💼 Admins", callback_data="admin_saldos_admins_0")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Saldos de todos.\n¿Qué deseas revisar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: equipos (repartidores)
+    if data == "admin_saldos_couriers":
+        query.answer()
+        teams = list_approved_admin_teams(include_platform=True)
+        if not teams:
+            query.edit_message_text(
+                "No hay equipos aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in teams:
+            admin_id = t[0]
+            team_name = t[1] or "-"
+            team_code = t[2] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_team_couriers_{}_0".format(admin_id)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+        query.edit_message_text(
+            "Equipos aprobados (Repartidores).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: equipos (aliados)
+    if data == "admin_saldos_allies":
+        query.answer()
+        teams = list_approved_admin_teams(include_platform=True)
+        if not teams:
+            query.edit_message_text(
+                "No hay equipos aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in teams:
+            admin_id = t[0]
+            team_name = t[1] or "-"
+            team_code = t[2] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_team_allies_{}_0".format(admin_id)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+        query.edit_message_text(
+            "Equipos aprobados (Aliados).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de admins con paginación
+    if data.startswith("admin_saldos_admins_"):
+        query.answer()
+        try:
+            offset = int(data.replace("admin_saldos_admins_", ""))
+        except Exception:
+            offset = 0
+        teams = list_approved_admin_teams(include_platform=True)
+        page = teams[offset:offset + 20]
+        if not page:
+            query.edit_message_text(
+                "No hay administradores aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in page:
+            admin_id = t[0]
+            team_name = t[1] or "-"
+            team_code = t[2] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_member_admin_{}_{}".format(admin_id, offset)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_admins_{}".format(offset - 20)
+            )])
+        if len(page) == 20 and (offset + 20) < len(teams):
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_admins_{}".format(offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+
+        query.edit_message_text(
+            "Administradores aprobados (Saldos).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de repartidores por admin con paginación
+    if data.startswith("admin_saldos_team_couriers_"):
+        query.answer()
+        parts = data.replace("admin_saldos_team_couriers_", "").split("_")
+        admin_id = int(parts[0]) if parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        links = list_courier_links_by_admin(admin_id, limit=20, offset=offset)
+
+        if not links:
+            query.edit_message_text(
+                "No hay repartidores vinculados a este admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_couriers")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for idx, r in enumerate(links):
+            courier_id = r[1]
+            courier_name = r[2] or "-"
+            balance = r[6] or 0
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} | saldo {}".format(courier_id, courier_name, balance),
+                callback_data="admin_saldos_member_courier_{}_{}_{}".format(admin_id, offset, idx)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset - 20)
+            )])
+        if len(links) == 20:
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_couriers")])
+
+        query.edit_message_text(
+            "Repartidores vinculados (admin ID {}).".format(admin_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de aliados por admin con paginación
+    if data.startswith("admin_saldos_team_allies_"):
+        query.answer()
+        parts = data.replace("admin_saldos_team_allies_", "").split("_")
+        admin_id = int(parts[0]) if parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        links = list_ally_links_by_admin(admin_id, limit=20, offset=offset)
+
+        if not links:
+            query.edit_message_text(
+                "No hay aliados vinculados a este admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_allies")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for idx, r in enumerate(links):
+            ally_id = r[1]
+            business_name = r[2] or "-"
+            balance = r[7] or 0
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} | saldo {}".format(ally_id, business_name, balance),
+                callback_data="admin_saldos_member_ally_{}_{}_{}".format(admin_id, offset, idx)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset - 20)
+            )])
+        if len(links) == 20:
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_allies")])
+
+        query.edit_message_text(
+            "Aliados vinculados (admin ID {}).".format(admin_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: detalle repartidor
+    if data.startswith("admin_saldos_member_courier_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_courier_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+        links = list_courier_links_by_admin(admin_id, limit=20, offset=offset)
+        if idx < 0 or idx >= len(links):
+            query.edit_message_text(
+                "No se pudo cargar el detalle del repartidor.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset))]
+                ])
+            )
+            return
+
+        r = links[idx]
+        courier_id = r[1]
+        courier_name = r[2] or "-"
+        phone = r[3] or "-"
+        city = r[4] or "-"
+        barrio = r[5] or "-"
+        balance = r[6] or 0
+        texto = (
+            "Repartidor ID: {}\n"
+            "Nombre: {}\n"
+            "Telefono: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Saldo por vínculo: {}"
+        ).format(courier_id, courier_name, phone, city, barrio, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset))],
+            [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_couriers")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Saldos de todos: detalle aliado
+    if data.startswith("admin_saldos_member_ally_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_ally_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+        links = list_ally_links_by_admin(admin_id, limit=20, offset=offset)
+        if idx < 0 or idx >= len(links):
+            query.edit_message_text(
+                "No se pudo cargar el detalle del aliado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset))]
+                ])
+            )
+            return
+
+        r = links[idx]
+        ally_id = r[1]
+        business_name = r[2] or "-"
+        owner_name = r[3] or "-"
+        phone = r[4] or "-"
+        city = r[5] or "-"
+        barrio = r[6] or "-"
+        balance = r[7] or 0
+        texto = (
+            "Aliado ID: {}\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Saldo por vínculo: {}"
+        ).format(ally_id, business_name, owner_name, phone, city, barrio, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset))],
+            [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_allies")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Saldos de todos: detalle admin
+    if data.startswith("admin_saldos_member_admin_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_admin_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        admin_obj = get_admin_by_id(admin_id)
+        if not admin_obj:
+            query.edit_message_text(
+                "Admin no encontrado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_admins_{}".format(offset))]
+                ])
+            )
+            return
+
+        adm_full_name = admin_obj[2] or "-"
+        adm_team_name = admin_obj[6] or "-"
+        adm_team_code = admin_obj[8] or "-"
+        adm_status = admin_obj[9] or "-"
+        balance = get_admin_balance(admin_id)
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Estado: {}\n"
+            "Saldo actual: {}"
+        ).format(admin_id, adm_full_name, adm_team_name, adm_team_code, adm_status, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_admins_{}".format(offset))],
+            [InlineKeyboardButton("⬅️ Volver a Saldos", callback_data="admin_saldos")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     # Botones aún no implementados (placeholders)
