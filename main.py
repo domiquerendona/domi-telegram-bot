@@ -5899,9 +5899,13 @@ def recharge_callback(update, context):
 
         if success:
             query.answer("Recarga aprobada.")
-            query.edit_message_text(
-                query.message.text + f"\n\nAPROBADA por admin #{admin_id}"
-            )
+            suffix = f"\n\nAPROBADA por admin #{admin_id}"
+            if query.message.text:
+                query.edit_message_text(query.message.text + suffix)
+            elif query.message.caption:
+                query.edit_message_caption(query.message.caption + suffix)
+            else:
+                query.edit_message_text("Solicitud procesada." + suffix)
         else:
             query.answer(msg, show_alert=True)
 
@@ -5923,9 +5927,13 @@ def recharge_callback(update, context):
 
         if success:
             query.answer("Solicitud rechazada.")
-            query.edit_message_text(
-                query.message.text + f"\n\nRECHAZADA por admin #{admin_id}"
-            )
+            suffix = f"\n\nRECHAZADA por admin #{admin_id}"
+            if query.message.text:
+                query.edit_message_text(query.message.text + suffix)
+            elif query.message.caption:
+                query.edit_message_caption(query.message.caption + suffix)
+            else:
+                query.edit_message_text("Solicitud procesada." + suffix)
         else:
             query.answer(msg, show_alert=True)
 
