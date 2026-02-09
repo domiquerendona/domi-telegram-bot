@@ -19,8 +19,14 @@ from telegram.ext import (
 from fastapi import FastAPI
 
 # Importa el router administrativo
-# Se le asigna un alias para mayor claridad
+# Router de endpoints administrativos
 from web.api.admin import router as admin_router
+# Router de endpoints de usuarios
+from web.api.users import router as users_router
+# Router de endpoints del dashboard
+from web.api.dashboard import router as dashboard_router
+
+
 
 
 # Se crea la instancia principal de la aplicación FastAPI
@@ -31,7 +37,13 @@ app = FastAPI()
 # Se registran las rutas administrativas dentro de la aplicación
 # Esto habilita endpoints como:
 # POST /admin/users/{user_id}/approve
+
+# Registra las rutas de administración
 app.include_router(admin_router)
+# Registra las rutas de usuarios
+app.include_router(users_router)
+# Registra las rutas del dashboard
+app.include_router(dashboard_router)
 
 
 from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
