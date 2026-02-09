@@ -5703,11 +5703,7 @@ def tarifas_set_valor(update, context):
         f"15 productos -> ${test_buy_15:,}"
     )
 
-    if admin or ally or courier:
-        keyboard = [[InlineKeyboardButton("Solicitar cambio", callback_data="perfil_change_start")]]
-        update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        update.message.reply_text(mensaje)
+    update.message.reply_text(mensaje)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -5968,7 +5964,11 @@ def mi_perfil(update, context):
     if ally and status == "APPROVED":
         mensaje += "• /nuevo_pedido - Crear pedido\n"
 
-    update.message.reply_text(mensaje)
+    if admin or ally or courier:
+        keyboard = [[InlineKeyboardButton("Solicitar cambio", callback_data="perfil_change_start")]]
+        update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        update.message.reply_text(mensaje)
 
 
 # ============================================================
