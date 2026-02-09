@@ -1292,6 +1292,25 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
+    # Notificación al Admin de Plataforma
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
     courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
     context.user_data["new_courier_id"] = courier_id
 
@@ -3349,6 +3368,25 @@ def admin_accept(update, context):
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
+
+    # Notificación al Admin de Plataforma
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ADMINISTRADOR LOCAL pendiente:\n\n"
+                "Nombre: {}\n"
+                "Documento: {}\n"
+                "Equipo: {}\n"
+                "Codigo de equipo: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, document_number, team_name, team_code, phone, city, barrio)
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
