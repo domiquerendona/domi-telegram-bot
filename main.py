@@ -168,6 +168,12 @@ from db import (
     toggle_payment_method,
     delete_payment_method,
 )
+from profile_changes import (
+    profile_change_conv,
+    admin_change_requests_callback,
+    admin_change_requests_list,
+    chgreq_reject_reason_handler,
+)
 
 # ============================================================
 # SEPARACIÓN DEV/PROD - Evitar conflicto getUpdates
@@ -3377,6 +3383,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
         [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
         [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
+        [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
@@ -3395,6 +3402,9 @@ def admin_menu_callback(update, context):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
+
+    if data == "admin_change_requests":
+        return admin_change_requests_list(update, context)
 
     # Solo el Admin de Plataforma aprobado puede usar estos botones
     if not user_has_platform_admin(user_id):
@@ -5693,7 +5703,11 @@ def tarifas_set_valor(update, context):
         f"15 productos -> ${test_buy_15:,}"
     )
 
-    update.message.reply_text(mensaje)
+    if admin or ally or courier:
+        keyboard = [[InlineKeyboardButton("Solicitar cambio", callback_data="perfil_change_start")]]
+        update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        update.message.reply_text(mensaje)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -5752,6 +5766,7 @@ def mi_admin(update, context):
         keyboard = [
             [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
         update.message.reply_text(
             header +
@@ -5776,6 +5791,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
     ]
 
     update.message.reply_text(
@@ -7631,6 +7647,8 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
+    dp.add_handler(profile_change_conv)
+    dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
     # Configuracion de tarifas (botones pricing_*)
@@ -7711,6 +7729,7 @@ def main():
         ],
     )
     dp.add_handler(admin_conv)
+    dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command, chgreq_reject_reason_handler))
 
     # -------------------------
     # Handler para botones del menú principal (ReplyKeyboard)

@@ -556,6 +556,32 @@ def init_db():
         );
     """)
 
+    # Tabla: profile_change_requests (solicitudes de cambio de perfil)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS profile_change_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester_user_id INTEGER NOT NULL,
+            target_role TEXT NOT NULL,
+            target_role_id INTEGER NOT NULL,
+            field_name TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            new_lat REAL,
+            new_lng REAL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            team_admin_id INTEGER,
+            team_code TEXT,
+            reviewed_by_user_id INTEGER,
+            reviewed_by_admin_id INTEGER,
+            reviewed_at TEXT,
+            rejection_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pcr_status ON profile_change_requests(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pcr_team_admin ON profile_change_requests(team_admin_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pcr_team_code ON profile_change_requests(team_code)")
+
     # Tabla: admin_allies (relación admin-aliado)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_allies (
@@ -3607,5 +3633,137 @@ def delete_payment_method(method_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM admin_payment_methods WHERE id = ?", (method_id,))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# SOLICITUDES DE CAMBIO DE PERFIL
+# ============================================================
+
+def create_profile_change_request(
+    requester_user_id,
+    target_role,
+    target_role_id,
+    field_name,
+    old_value,
+    new_value,
+    new_lat,
+    new_lng,
+    team_admin_id,
+    team_code,
+):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO profile_change_requests (
+            requester_user_id,
+            target_role,
+            target_role_id,
+            field_name,
+            old_value,
+            new_value,
+            new_lat,
+            new_lng,
+            status,
+            team_admin_id,
+            team_code,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, datetime('now'));
+    """, (
+        requester_user_id,
+        target_role,
+        target_role_id,
+        field_name,
+        old_value,
+        new_value,
+        new_lat,
+        new_lng,
+        team_admin_id,
+        team_code,
+    ))
+    req_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return req_id
+
+
+def has_pending_profile_change_request(requester_user_id, target_role, target_role_id, field_name):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*) AS total
+        FROM profile_change_requests
+        WHERE status = 'PENDING'
+          AND requester_user_id = ?
+          AND target_role = ?
+          AND target_role_id = ?
+          AND field_name = ?
+    """, (requester_user_id, target_role, target_role_id, field_name))
+    row = cur.fetchone()
+    conn.close()
+    return (row["total"] if row else 0) > 0
+
+
+def list_pending_profile_change_requests(is_platform: bool, admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    if is_platform:
+        cur.execute("""
+            SELECT * FROM profile_change_requests
+            WHERE status = 'PENDING'
+            ORDER BY created_at ASC
+        """)
+    else:
+        cur.execute("""
+            SELECT * FROM profile_change_requests
+            WHERE status = 'PENDING'
+              AND team_admin_id = ?
+              AND (team_code IS NULL OR team_code != 'PLATFORM')
+            ORDER BY created_at ASC
+        """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_profile_change_request_by_id(request_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM profile_change_requests WHERE id = ?
+    """, (request_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def mark_profile_change_request_approved(request_id, reviewer_user_id, reviewer_admin_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE profile_change_requests
+        SET status = 'APPROVED',
+            reviewed_by_user_id = ?,
+            reviewed_by_admin_id = ?,
+            reviewed_at = datetime('now')
+        WHERE id = ?
+    """, (reviewer_user_id, reviewer_admin_id, request_id))
+    conn.commit()
+    conn.close()
+
+
+def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_admin_id, reason):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE profile_change_requests
+        SET status = 'REJECTED',
+            reviewed_by_user_id = ?,
+            reviewed_by_admin_id = ?,
+            reviewed_at = datetime('now'),
+            rejection_reason = ?
+        WHERE id = ?
+    """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
     conn.commit()
     conn.close()
