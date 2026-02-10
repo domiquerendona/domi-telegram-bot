@@ -32,6 +32,8 @@ from services import (
     google_place_details,
     approve_recharge_request,
     reject_recharge_request,
+    apply_service_fee,
+    check_service_fee_available,
 )
 from db import (
     init_db,
@@ -2806,6 +2808,41 @@ def pedido_confirmacion_callback(update, context):
             query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
+        chat_id = query.message.chat_id
+
+        admin_link = get_approved_admin_link_for_ally(ally_id)
+        if admin_link:
+            fee_ok, fee_code = check_service_fee_available(
+                target_type="ALLY",
+                target_id=ally_id,
+                admin_id=admin_link["admin_id"],
+            )
+            if not fee_ok:
+                if fee_code == "ADMIN_SIN_SALDO":
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text="Tu administrador no tiene saldo suficiente para operar. "
+                             "Contacta a tu administrador o recarga directamente con plataforma."
+                    )
+                    try:
+                        admin_row = get_admin_by_id(admin_link["admin_id"])
+                        if admin_row:
+                            admin_user = get_user_by_id(admin_row["user_id"])
+                            if admin_user:
+                                context.bot.send_message(
+                                    chat_id=admin_user["telegram_id"],
+                                    text="Tu equipo no puede operar porque no tienes saldo. "
+                                         "Recarga con plataforma para que tu equipo siga generando ganancias."
+                                )
+                    except Exception as e:
+                        print("[WARN] No se pudo notificar al admin:", e)
+                else:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text="No tienes saldo suficiente para este servicio. Recarga para continuar."
+                    )
+                context.user_data.clear()
+                return ConversationHandler.END
 
         # Obtener pickup del selector (o default si no existe)
         pickup_location = context.user_data.get("pickup_location")
@@ -2872,6 +2909,16 @@ def pedido_confirmacion_callback(update, context):
                 quote_source=quote_source,
             )
             context.user_data["order_id"] = order_id
+            if admin_link:
+                fee_ok, fee_msg = apply_service_fee(
+                    target_type="ALLY",
+                    target_id=ally_id,
+                    admin_id=admin_link["admin_id"],
+                    ref_type="ORDER",
+                    ref_id=order_id,
+                )
+                if not fee_ok:
+                    print("[WARN] No se pudo cobrar fee:", fee_msg)
 
             # Incrementar contador de uso del pickup
             if pickup_location_id:
