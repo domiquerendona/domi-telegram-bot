@@ -34,7 +34,7 @@ from services import (
     reject_recharge_request,
     check_service_fee_available,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders
 from db import (
     init_db,
     force_platform_admin,
@@ -99,6 +99,8 @@ from db import (
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
+    set_courier_available_cash,
+    deactivate_courier,
     get_pending_couriers,
     get_pending_couriers_by_admin,
     update_courier_status,
@@ -626,8 +628,7 @@ def menu_button_handler(update, context):
     text = update.message.text.strip()
 
     if text == "Mis pedidos":
-        update.message.reply_text("Funcion 'Mis pedidos' en desarrollo.")
-        return
+        return ally_active_orders(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
@@ -6047,6 +6048,20 @@ def mi_perfil(update, context):
 
     if admin or ally or courier:
         keyboard = [[InlineKeyboardButton("Solicitar cambio", callback_data="perfil_change_start")]]
+        if courier:
+            courier_buttons = []
+            courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
+            if courier_is_active:
+                courier_buttons.append([InlineKeyboardButton(
+                    "Desactivarme",
+                    callback_data="courier_deactivate",
+                )])
+            else:
+                courier_buttons.append([InlineKeyboardButton(
+                    "Activarme (declarar base)",
+                    callback_data="courier_activate",
+                )])
+            keyboard.extend(courier_buttons)
         update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         update.message.reply_text(mensaje)
@@ -7654,6 +7669,86 @@ def terms_callback(update, context):
 
     query.answer("Opción no reconocida.", show_alert=True)
 
+
+def courier_activate_callback(update, context):
+    """Inicia flujo de activación del courier: pide declarar base."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier or courier["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de repartidor activo.")
+        return
+
+    query.edit_message_text(
+        "Para activarte, indica cuanta base (dinero en efectivo) tienes disponible.\n\n"
+        "Escribe el monto en pesos (solo numeros, ej: 50000):"
+    )
+    context.user_data["courier_activating"] = True
+    context.user_data["courier_id_activating"] = courier["id"]
+
+
+def courier_deactivate_callback(update, context):
+    """Desactiva al courier."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier:
+        query.edit_message_text("No se encontro tu perfil.")
+        return
+
+    deactivate_courier(courier["id"])
+    query.edit_message_text("Te has desactivado. No recibiras ofertas de pedidos.")
+
+
+def courier_base_amount_handler(update, context):
+    """Recibe el monto de base declarado por el courier al activarse."""
+    if not context.user_data.get("courier_activating"):
+        return
+
+    text = update.message.text.strip()
+    try:
+        amount = int(text.replace(".", "").replace(",", "").replace("$", ""))
+    except (ValueError, AttributeError):
+        update.message.reply_text("Por favor escribe solo numeros. Ej: 50000")
+        return
+
+    if amount < 0:
+        update.message.reply_text("El monto debe ser positivo.")
+        return
+
+    courier_id = context.user_data.get("courier_id_activating")
+    if not courier_id:
+        update.message.reply_text("Error: sesion expirada. Ve a Mi perfil e intenta de nuevo.")
+        context.user_data.pop("courier_activating", None)
+        context.user_data.pop("courier_id_activating", None)
+        return
+
+    set_courier_available_cash(courier_id, amount)
+
+    context.user_data.pop("courier_activating", None)
+    context.user_data.pop("courier_id_activating", None)
+
+    update.message.reply_text(
+        "Te has activado exitosamente.\n"
+        "Base declarada: ${:,}\n\n"
+        "Ahora recibiras ofertas de pedidos.".format(amount)
+    )
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
@@ -7728,7 +7823,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|pickup|delivered)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|pickup|delivered|release|cancel)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
+    dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(profile_change_conv)
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
@@ -7812,6 +7909,11 @@ def main():
     )
     dp.add_handler(admin_conv)
     dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command, chgreq_reject_reason_handler))
+
+    dp.add_handler(MessageHandler(
+        Filters.text & Filters.regex(r'^\d[\d.,\$]*$') & ~Filters.command,
+        courier_base_amount_handler,
+    ), group=1)
 
     # -------------------------
     # Handler para botones del menú principal (ReplyKeyboard)
