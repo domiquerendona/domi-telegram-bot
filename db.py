@@ -1271,6 +1271,40 @@ def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0)
     return rows
 
 
+def get_eligible_couriers_for_order(admin_id: int):
+    """
+    Retorna couriers APPROVED del equipo con telegram_id, en una sola query.
+    Solo incluye couriers con vínculo APPROVED y courier status APPROVED.
+    Retorna lista de dicts con: courier_id, full_name, telegram_id
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            u.telegram_id
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE ac.admin_id = ?
+          AND ac.status = 'APPROVED'
+          AND c.status = 'APPROVED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
+        ORDER BY c.full_name ASC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "courier_id": row[0],
+            "full_name": row[1],
+            "telegram_id": row[2],
+        }
+        for row in rows
+    ]
+
+
 def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
     """
     Lista vínculos APPROVED admin_allies con saldo por vínculo.

@@ -5,12 +5,11 @@ from db import (
     get_ally_by_id,
     get_ally_location_by_id,
     get_approved_admin_link_for_ally,
-    get_courier_by_id,
     get_courier_by_telegram_id,
     get_default_ally_location,
+    get_eligible_couriers_for_order,
     get_order_by_id,
     get_user_by_id,
-    list_courier_links_by_admin,
     set_order_status,
 )
 
@@ -30,7 +29,11 @@ def publish_order_to_couriers(order_id, ally_id, context):
     if not order:
         return 0
 
-    courier_links = list_courier_links_by_admin(admin_id, limit=100, offset=0)
+    eligible_couriers = get_eligible_couriers_for_order(admin_id)
+    if not eligible_couriers:
+        print("[WARN] No se encontraron couriers elegibles para el pedido {}".format(order_id))
+        return 0
+
     offer_text = _build_offer_text(order)
     reply_markup = InlineKeyboardMarkup([
         [
@@ -40,30 +43,22 @@ def publish_order_to_couriers(order_id, ally_id, context):
     ])
 
     sent_count = 0
-    for link in courier_links:
-        courier_id = link["courier_id"]
+    for courier in eligible_couriers:
         try:
-            courier = get_courier_by_id(courier_id)
-            if not courier or courier["status"] != "APPROVED":
-                continue
-
-            user = get_user_by_id(courier["user_id"])
-            if not user or not user.get("telegram_id"):
+            if not courier.get("telegram_id"):
                 continue
 
             context.bot.send_message(
-                chat_id=user["telegram_id"],
+                chat_id=courier["telegram_id"],
                 text=offer_text,
                 reply_markup=reply_markup,
             )
             sent_count += 1
         except Exception as e:
-            print("[WARN] No se pudo enviar oferta a courier {}: {}".format(courier_id, e))
+            print("[WARN] No se pudo enviar oferta a courier {}: {}".format(courier["courier_id"], e))
 
     if sent_count > 0:
         set_order_status(order_id, "PUBLISHED", "published_at")
-    else:
-        print("[WARN] No se encontraron couriers elegibles para el pedido {}".format(order_id))
 
     return sent_count
 
@@ -196,14 +191,8 @@ def _get_pickup_address(order):
 
 
 def _get_eligible_courier_ids(admin_id):
-    courier_links = list_courier_links_by_admin(admin_id, limit=100, offset=0)
-    courier_ids = set()
-    for link in courier_links:
-        courier_id = link["courier_id"]
-        courier = get_courier_by_id(courier_id)
-        if courier and courier["status"] == "APPROVED":
-            courier_ids.add(courier_id)
-    return courier_ids
+    eligible = get_eligible_couriers_for_order(admin_id)
+    return {courier["courier_id"] for courier in eligible}
 
 
 def _notify_ally_order_accepted(context, order, courier_name):
@@ -228,23 +217,17 @@ def _notify_ally_order_accepted(context, order, courier_name):
 
 
 def _notify_other_couriers_taken(context, order_id, admin_id, accepted_courier_id):
-    courier_links = list_courier_links_by_admin(admin_id, limit=100, offset=0)
-    for link in courier_links:
-        courier_id = link["courier_id"]
-        if courier_id == accepted_courier_id:
+    eligible = get_eligible_couriers_for_order(admin_id)
+    for courier in eligible:
+        if courier["courier_id"] == accepted_courier_id:
             continue
         try:
-            courier = get_courier_by_id(courier_id)
-            if not courier or courier["status"] != "APPROVED":
-                continue
-
-            user = get_user_by_id(courier["user_id"])
-            if not user or not user.get("telegram_id"):
+            if not courier.get("telegram_id"):
                 continue
 
             context.bot.send_message(
-                chat_id=user["telegram_id"],
+                chat_id=courier["telegram_id"],
                 text="La oferta #{} ya fue tomada por otro repartidor.".format(order_id),
             )
         except Exception as e:
-            print("[WARN] No se pudo notificar cierre de oferta a courier {}: {}".format(courier_id, e))
+            print("[WARN] No se pudo notificar cierre de oferta a courier {}: {}".format(courier["courier_id"], e))
