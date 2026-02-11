@@ -206,28 +206,43 @@ def _handle_delivered(update, context, order_id):
         return
 
     courier_id = courier["id"]
-    admin_link = get_approved_admin_link_for_ally(order["ally_id"])
+    ally_id = order["ally_id"]
+    admin_link = get_approved_admin_link_for_ally(ally_id)
     if admin_link:
         admin_id = admin_link["admin_id"]
     else:
         courier_admin_link = get_approved_admin_link_for_courier(courier_id)
         admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
-    fee_charged = False
+    fee_ally_ok = False
+    fee_courier_ok = False
+
     if admin_id:
         from services import apply_service_fee
 
-        fee_ok, fee_msg = apply_service_fee(
+        ally_ok, ally_msg = apply_service_fee(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=admin_id,
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+        if ally_ok:
+            fee_ally_ok = True
+        else:
+            print("[WARN] No se pudo cobrar fee al aliado: {}".format(ally_msg))
+
+        courier_ok, courier_msg = apply_service_fee(
             target_type="COURIER",
             target_id=courier_id,
             admin_id=admin_id,
             ref_type="ORDER",
             ref_id=order_id,
         )
-        if fee_ok:
-            fee_charged = True
+        if courier_ok:
+            fee_courier_ok = True
         else:
-            if fee_msg == "ADMIN_SIN_SALDO":
+            if courier_msg == "ADMIN_SIN_SALDO":
                 try:
                     admin_row = get_admin_by_id(admin_id)
                     if admin_row:
@@ -242,11 +257,16 @@ def _handle_delivered(update, context, order_id):
                             )
                 except Exception as e:
                     print("[WARN] No se pudo notificar al admin: {}".format(e))
-            print("[WARN] No se pudo cobrar fee al courier: {}".format(fee_msg))
+            print("[WARN] No se pudo cobrar fee al courier: {}".format(courier_msg))
 
     set_order_status(order_id, "DELIVERED", "delivered_at")
 
-    if fee_charged:
+    if fee_ally_ok and fee_courier_ok:
+        query.edit_message_text(
+            "Pedido #{} entregado exitosamente.\n\n"
+            "Se descontaron $300 de tu saldo por este servicio.".format(order_id)
+        )
+    elif fee_courier_ok:
         query.edit_message_text(
             "Pedido #{} entregado exitosamente.\n\n"
             "Se descontaron $300 de tu saldo por este servicio.".format(order_id)

@@ -32,7 +32,6 @@ from services import (
     google_place_details,
     approve_recharge_request,
     reject_recharge_request,
-    apply_service_fee,
     check_service_fee_available,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback
@@ -2910,16 +2909,6 @@ def pedido_confirmacion_callback(update, context):
                 quote_source=quote_source,
             )
             context.user_data["order_id"] = order_id
-            if admin_link:
-                fee_ok, fee_msg = apply_service_fee(
-                    target_type="ALLY",
-                    target_id=ally_id,
-                    admin_id=admin_link["admin_id"],
-                    ref_type="ORDER",
-                    ref_id=order_id,
-                )
-                if not fee_ok:
-                    print("[WARN] No se pudo cobrar fee:", fee_msg)
 
             # Publicar pedido a couriers del equipo
             try:
