@@ -2181,7 +2181,7 @@ def assign_order_to_courier(order_id: int, courier_id: int):
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'APPROVED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
         WHERE id = ?;
     """, (courier_id, order_id))
     conn.commit()

@@ -35,6 +35,7 @@ from services import (
     apply_service_fee,
     check_service_fee_available,
 )
+from order_delivery import publish_order_to_couriers, order_courier_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -2919,6 +2920,12 @@ def pedido_confirmacion_callback(update, context):
                 )
                 if not fee_ok:
                     print("[WARN] No se pudo cobrar fee:", fee_msg)
+
+            # Publicar pedido a couriers del equipo
+            try:
+                publish_order_to_couriers(order_id, ally_id, context)
+            except Exception as e:
+                print("[WARN] Error al publicar pedido a couriers:", e)
 
             # Incrementar contador de uso del pickup
             if pickup_location_id:
@@ -7732,6 +7739,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject)_\d+$"))
     dp.add_handler(profile_change_conv)
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
