@@ -649,6 +649,34 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_courier_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            reason TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            UNIQUE(ally_id, courier_id)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_offer_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            offered_at TEXT,
+            responded_at TEXT,
+            response TEXT,
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
+        );
+    """)
+
     # Tabla: courier_ratings (calificaciones)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS courier_ratings (
@@ -793,6 +821,21 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lng REAL")
     if 'quote_source' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
+
+    try:
+        cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN available_cash INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN is_active INTEGER DEFAULT 0;")
+    except Exception:
+        pass
 
     # Bootstrap: insertar términos por defecto para ALLY si no existen
     cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
@@ -1271,19 +1314,231 @@ def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0)
     return rows
 
 
-def get_eligible_couriers_for_order(admin_id: int):
-    """
-    Retorna couriers APPROVED del equipo con telegram_id, en una sola query.
-    Solo incluye couriers con vínculo APPROVED y courier status APPROVED.
-    Retorna lista de dicts con: courier_id, full_name, telegram_id
-    """
+def block_courier_for_ally(ally_id: int, courier_id: int, reason: str = None):
+    """Aliado bloquea/veta a un courier."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT
-            c.id AS courier_id,
-            c.full_name,
-            u.telegram_id
+        INSERT OR IGNORE INTO ally_courier_blocks (ally_id, courier_id, reason)
+        VALUES (?, ?, ?);
+    """, (ally_id, courier_id, reason))
+    conn.commit()
+    conn.close()
+
+
+def unblock_courier_for_ally(ally_id: int, courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ally_courier_blocks WHERE ally_id = ? AND courier_id = ?;",
+                (ally_id, courier_id))
+    conn.commit()
+    conn.close()
+
+
+def get_blocked_courier_ids_for_ally(ally_id: int) -> set:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?;", (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return {row[0] for row in rows}
+
+
+def create_offer_queue(order_id: int, courier_ids: list):
+    """Crea la cola de ofertas para un pedido. courier_ids ya viene ordenado por prioridad."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for position, courier_id in enumerate(courier_ids):
+        cur.execute("""
+            INSERT INTO order_offer_queue (order_id, courier_id, position, status)
+            VALUES (?, ?, ?, 'PENDING');
+        """, (order_id, courier_id, position))
+    conn.commit()
+    conn.close()
+
+
+def get_next_pending_offer(order_id: int):
+    """Devuelve el siguiente courier en cola con status PENDING."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT oq.id, oq.courier_id, oq.position, c.full_name, u.telegram_id
+        FROM order_offer_queue oq
+        JOIN couriers c ON c.id = oq.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE oq.order_id = ? AND oq.status = 'PENDING'
+        ORDER BY oq.position ASC
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "queue_id": row[0],
+        "courier_id": row[1],
+        "position": row[2],
+        "full_name": row[3],
+        "telegram_id": row[4],
+    }
+
+
+def mark_offer_as_offered(queue_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = 'OFFERED', offered_at = datetime('now')
+        WHERE id = ?;
+    """, (queue_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_offer_response(queue_id: int, response: str):
+    """response: 'ACCEPTED', 'REJECTED', o 'EXPIRED'"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = ?, response = ?, responded_at = datetime('now')
+        WHERE id = ?;
+    """, (response, response, queue_id))
+    conn.commit()
+    conn.close()
+
+
+def get_current_offer_for_order(order_id: int):
+    """Devuelve la oferta actualmente en status OFFERED para un pedido."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT oq.id, oq.courier_id, oq.position, u.telegram_id
+        FROM order_offer_queue oq
+        JOIN couriers c ON c.id = oq.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE oq.order_id = ? AND oq.status = 'OFFERED'
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "queue_id": row[0],
+        "courier_id": row[1],
+        "position": row[2],
+        "telegram_id": row[3],
+    }
+
+
+def reset_offer_queue(order_id: int):
+    """Resetea toda la cola a PENDING para reiniciar el ciclo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
+        WHERE order_id = ? AND status IN ('REJECTED', 'EXPIRED');
+    """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_offer_queue(order_id: int):
+    """Elimina la cola de ofertas de un pedido (al cancelar o completar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM order_offer_queue WHERE order_id = ?;", (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_courier_available_cash(courier_id: int, amount: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE couriers SET available_cash = ?, is_active = 1 WHERE id = ?;",
+                (amount, courier_id))
+    conn.commit()
+    conn.close()
+
+
+def deactivate_courier(courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE couriers SET is_active = 0, available_cash = 0 WHERE id = ?;",
+                (courier_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_active_courier_cash(courier_id: int) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT available_cash FROM couriers WHERE id = ?;", (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def get_active_orders_by_ally(ally_id: int):
+    """Devuelve pedidos activos de un aliado (no entregados ni cancelados)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM orders
+        WHERE ally_id = ?
+          AND status NOT IN ('DELIVERED', 'CANCELLED')
+        ORDER BY created_at DESC;
+    """, (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def cancel_order(order_id: int, canceled_by: str):
+    """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET status = 'CANCELLED', canceled_at = datetime('now'), canceled_by = ?
+        WHERE id = ?;
+    """, (canceled_by, order_id))
+    conn.commit()
+    conn.close()
+
+
+def release_order_from_courier(order_id: int):
+    """Courier libera el pedido. Vuelve a PUBLISHED y limpia courier_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET status = 'PUBLISHED', courier_id = NULL, accepted_at = NULL
+        WHERE id = ?;
+    """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
+                                      requires_cash: bool = False,
+                                      cash_required_amount: int = 0):
+    """
+    Devuelve couriers elegibles para un pedido, filtrados por:
+    - Aprobados y activos en el equipo
+    - No eliminados
+    - is_active = 1 (courier se activo y declaro base)
+    - No vetados por el aliado (si ally_id dado)
+    - Con base suficiente (si requires_cash)
+    Ordenados por available_cash DESC (mayor base primero).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
@@ -1291,8 +1546,24 @@ def get_eligible_couriers_for_order(admin_id: int):
           AND ac.status = 'APPROVED'
           AND c.status = 'APPROVED'
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
-        ORDER BY c.full_name ASC
-    """, (admin_id,))
+          AND c.is_active = 1
+    """
+    params = [admin_id]
+
+    if ally_id:
+        query += """
+          AND c.id NOT IN (
+              SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?
+          )
+        """
+        params.append(ally_id)
+
+    if requires_cash and cash_required_amount > 0:
+        query += " AND c.available_cash >= ?"
+        params.append(cash_required_amount)
+
+    query += " ORDER BY c.available_cash DESC;"
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
     return [
@@ -1300,6 +1571,7 @@ def get_eligible_couriers_for_order(admin_id: int):
             "courier_id": row[0],
             "full_name": row[1],
             "telegram_id": row[2],
+            "available_cash": row[3],
         }
         for row in rows
     ]
