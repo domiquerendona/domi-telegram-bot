@@ -2,24 +2,44 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import (
     assign_order_to_courier,
+    cancel_order,
+    create_offer_queue,
+    delete_offer_queue,
+    get_active_orders_by_ally,
     get_admin_by_id,
     get_ally_by_id,
+    get_ally_by_user_id,
     get_ally_location_by_id,
     get_approved_admin_link_for_ally,
     get_approved_admin_link_for_courier,
+    get_courier_by_id,
     get_courier_by_telegram_id,
+    get_current_offer_for_order,
     get_default_ally_location,
     get_eligible_couriers_for_order,
+    get_next_pending_offer,
     get_order_by_id,
+    get_user_by_telegram_id,
     get_user_by_id,
+    mark_offer_as_offered,
+    mark_offer_response,
+    release_order_from_courier,
+    reset_offer_queue,
     set_order_status,
 )
 
 
+OFFER_TIMEOUT_SECONDS = 30
+MAX_CYCLE_SECONDS = 420  # 7 minutos
+
+
 def publish_order_to_couriers(order_id, ally_id, context):
     """
-    Busca couriers elegibles del equipo del aliado y les envia la oferta.
-    Llamada desde main.py despues de crear el pedido.
+    Inicia el ciclo secuencial de ofertas para un pedido.
+    1. Busca couriers elegibles (filtrados por veto, base, activación).
+    2. Crea la cola de ofertas en BD.
+    3. Envía la primera oferta.
+    4. Programa timeout de 30s con JobQueue.
     """
     admin_link = get_approved_admin_link_for_ally(ally_id)
     if not admin_link:
@@ -31,10 +51,47 @@ def publish_order_to_couriers(order_id, ally_id, context):
     if not order:
         return 0
 
-    eligible_couriers = get_eligible_couriers_for_order(admin_id)
-    if not eligible_couriers:
-        print("[WARN] No se encontraron couriers elegibles para el pedido {}".format(order_id))
+    requires_cash = bool(order["requires_cash"])
+    cash_amount = int(order["cash_required_amount"] or 0)
+
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+    )
+    if not eligible:
+        print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
         return 0
+
+    courier_ids = [c["courier_id"] for c in eligible]
+    create_offer_queue(order_id, courier_ids)
+    set_order_status(order_id, "PUBLISHED", "published_at")
+
+    # Guardar timestamp de inicio del ciclo
+    context.bot_data.setdefault("offer_cycles", {})[order_id] = {
+        "started_at": __import__("time").time(),
+        "admin_id": admin_id,
+        "ally_id": ally_id,
+    }
+
+    _send_next_offer(order_id, context)
+    return len(courier_ids)
+
+
+def _send_next_offer(order_id, context):
+    """Envía la oferta al siguiente courier en la cola."""
+    order = get_order_by_id(order_id)
+    if not order or order["status"] not in ("PUBLISHED",):
+        return
+
+    next_offer = get_next_pending_offer(order_id)
+    if not next_offer:
+        # No quedan couriers en la cola, intentar reiniciar ciclo
+        _try_restart_cycle(order_id, context)
+        return
+
+    mark_offer_as_offered(next_offer["queue_id"])
 
     offer_text = _build_offer_text(order)
     reply_markup = InlineKeyboardMarkup([
@@ -44,31 +101,173 @@ def publish_order_to_couriers(order_id, ally_id, context):
         ]
     ])
 
-    sent_count = 0
-    for courier in eligible_couriers:
+    try:
+        msg = context.bot.send_message(
+            chat_id=next_offer["telegram_id"],
+            text=offer_text,
+            reply_markup=reply_markup,
+        )
+        # Guardar message_id para poder editar al expirar
+        context.bot_data.setdefault("offer_messages", {})[order_id] = {
+            "chat_id": next_offer["telegram_id"],
+            "message_id": msg.message_id,
+        }
+    except Exception as e:
+        print("[WARN] No se pudo enviar oferta a courier {}: {}".format(next_offer["courier_id"], e))
+        mark_offer_response(next_offer["queue_id"], "EXPIRED")
+        _send_next_offer(order_id, context)
+        return
+
+    # Programar timeout de 30 segundos
+    context.job_queue.run_once(
+        _offer_timeout_job,
+        OFFER_TIMEOUT_SECONDS,
+        context={"order_id": order_id, "queue_id": next_offer["queue_id"]},
+        name="offer_timeout_{}_{}".format(order_id, next_offer["queue_id"]),
+    )
+
+
+def _offer_timeout_job(context):
+    """Job ejecutado cuando expira el timeout de 30s para un courier."""
+    job_data = context.job.context
+    order_id = job_data["order_id"]
+    queue_id = job_data["queue_id"]
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    current = get_current_offer_for_order(order_id)
+    if not current or current["queue_id"] != queue_id:
+        return
+
+    mark_offer_response(queue_id, "EXPIRED")
+
+    # Editar mensaje del courier para indicar que expiró
+    msg_info = context.bot_data.get("offer_messages", {}).get(order_id)
+    if msg_info:
         try:
-            if not courier.get("telegram_id"):
-                continue
-
-            context.bot.send_message(
-                chat_id=courier["telegram_id"],
-                text=offer_text,
-                reply_markup=reply_markup,
+            context.bot.edit_message_text(
+                chat_id=msg_info["chat_id"],
+                message_id=msg_info["message_id"],
+                text="Oferta #{} expirada. No respondiste a tiempo.".format(order_id),
             )
-            sent_count += 1
-        except Exception as e:
-            print("[WARN] No se pudo enviar oferta a courier {}: {}".format(courier["courier_id"], e))
+        except Exception:
+            pass
 
-    if sent_count > 0:
-        set_order_status(order_id, "PUBLISHED", "published_at")
+    _send_next_offer(order_id, context)
 
-    return sent_count
+
+def _try_restart_cycle(order_id, context):
+    """Reinicia el ciclo si no se superan los 7 minutos. Si se superan, cancela."""
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
+    if not cycle_info:
+        return
+
+    import time
+    elapsed = time.time() - cycle_info["started_at"]
+
+    if elapsed >= MAX_CYCLE_SECONDS:
+        _expire_order(order_id, cycle_info, context)
+        return
+
+    reset_offer_queue(order_id)
+    _send_next_offer(order_id, context)
+
+
+def _expire_order(order_id, cycle_info, context):
+    """Nadie acepto en 7 minutos. Cobra $300 al aliado y cancela."""
+    cancel_order(order_id, "SYSTEM")
+    delete_offer_queue(order_id)
+
+    # Limpiar bot_data
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+    context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
+    ally_id = cycle_info["ally_id"]
+    admin_id = cycle_info["admin_id"]
+
+    # Cobrar $300 al aliado como comisión por gestión
+    try:
+        from services import apply_service_fee
+        fee_ok, fee_msg = apply_service_fee(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=admin_id,
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+        if not fee_ok:
+            print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
+    except Exception as e:
+        print("[WARN] Error al cobrar fee de expiración: {}".format(e))
+
+    # Notificar al aliado
+    try:
+        ally = get_ally_by_id(ally_id)
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user.get("telegram_id"):
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text=(
+                        "Tu pedido #{} fue cancelado porque ningun repartidor "
+                        "lo acepto en 7 minutos.\n\n"
+                        "Se descontaron $300 de tu saldo como comision por la gestion."
+                    ).format(order_id),
+                )
+    except Exception as e:
+        print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
+
+
+def ally_active_orders(update, context):
+    """Muestra pedidos activos del aliado con opcion de cancelar."""
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        update.message.reply_text("No se encontro tu usuario.")
+        return
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        update.message.reply_text("No tienes perfil de aliado.")
+        return
+
+    orders = get_active_orders_by_ally(ally["id"])
+    if not orders:
+        update.message.reply_text("No tienes pedidos activos.")
+        return
+
+    STATUS_LABELS = {
+        "PENDING": "Pendiente",
+        "PUBLISHED": "Buscando repartidor",
+        "ACCEPTED": "Repartidor asignado",
+        "PICKED_UP": "En camino al cliente",
+    }
+
+    for order in orders:
+        status_label = STATUS_LABELS.get(order["status"], order["status"])
+        text = "Pedido #{}\nEstado: {}\nCliente: {}\nDireccion: {}".format(
+            order["id"],
+            status_label,
+            order["customer_name"] or "N/A",
+            order["customer_address"] or "N/A",
+        )
+
+        if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
+            keyboard = [[InlineKeyboardButton(
+                "Cancelar pedido",
+                callback_data="order_cancel_{}".format(order["id"]),
+            )]]
+            update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            update.message.reply_text(text)
 
 
 def order_courier_callback(update, context):
     """
-    Maneja botones de ofertas para couriers.
-    Pattern: ^order_(accept|reject|pickup|delivered)_\\d+$
+    Maneja botones de ofertas y ciclo de vida de pedidos.
+    Pattern: ^order_(accept|reject|pickup|delivered|release|cancel)_\\d+$
     """
     query = update.callback_query
     data = query.data or ""
@@ -86,6 +285,12 @@ def order_courier_callback(update, context):
     if data.startswith("order_delivered_"):
         order_id = int(data.replace("order_delivered_", ""))
         return _handle_delivered(update, context, order_id)
+    if data.startswith("order_release_"):
+        order_id = int(data.replace("order_release_", ""))
+        return _handle_release(update, context, order_id)
+    if data.startswith("order_cancel_"):
+        order_id = int(data.replace("order_cancel_", ""))
+        return _handle_cancel_ally(update, context, order_id)
     return None
 
 
@@ -97,7 +302,7 @@ def _handle_accept(update, context, order_id):
         return
 
     if order["status"] != "PUBLISHED":
-        query.edit_message_text("Esta oferta ya fue tomada por otro repartidor.")
+        query.edit_message_text("Esta oferta ya no esta disponible.")
         return
 
     telegram_id = update.effective_user.id
@@ -106,25 +311,31 @@ def _handle_accept(update, context, order_id):
         query.edit_message_text("No se encontro tu perfil de repartidor.")
         return
 
-    if courier["status"] != "APPROVED":
-        query.edit_message_text("Tu perfil de repartidor no esta activo.")
+    # Verificar que este courier tiene la oferta activa
+    current = get_current_offer_for_order(order_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
-    admin_link = get_approved_admin_link_for_ally(order["ally_id"])
-    if not admin_link:
-        query.edit_message_text("Esta oferta ya no esta disponible.")
-        return
+    # Cancelar el job de timeout
+    jobs = context.job_queue.get_jobs_by_name(
+        "offer_timeout_{}_{}".format(order_id, current["queue_id"])
+    )
+    for job in jobs:
+        job.schedule_removal()
 
-    admin_id = admin_link["admin_id"]
-    eligible_ids = _get_eligible_courier_ids(admin_id)
+    # Marcar oferta como aceptada
+    mark_offer_response(current["queue_id"], "ACCEPTED")
+
+    # Asignar courier al pedido
     courier_id = courier["id"]
-    if courier_id not in eligible_ids:
-        query.edit_message_text("No estas habilitado para aceptar esta oferta.")
-        return
-
     assign_order_to_courier(order_id, courier_id)
     courier_name = courier["full_name"] or "Repartidor"
-    keyboard = [[InlineKeyboardButton("Confirmar recogida", callback_data="order_pickup_{}".format(order_id))]]
+
+    keyboard = [
+        [InlineKeyboardButton("Confirmar recogida", callback_data="order_pickup_{}".format(order_id))],
+        [InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))],
+    ]
 
     query.edit_message_text(
         "Pedido #{} aceptado.\n\n"
@@ -142,13 +353,141 @@ def _handle_accept(update, context, order_id):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
+    # Limpiar bot_data del ciclo de ofertas
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+    context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
     _notify_ally_order_accepted(context, order, courier_name)
-    _notify_other_couriers_taken(context, order_id, admin_id, courier_id)
 
 
 def _handle_reject(update, context, order_id):
     query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        query.edit_message_text("Esta oferta ya no esta disponible.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        query.edit_message_text("Oferta #{} rechazada.".format(order_id))
+        return
+
+    current = get_current_offer_for_order(order_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    # Cancelar el job de timeout
+    jobs = context.job_queue.get_jobs_by_name(
+        "offer_timeout_{}_{}".format(order_id, current["queue_id"])
+    )
+    for job in jobs:
+        job.schedule_removal()
+
+    mark_offer_response(current["queue_id"], "REJECTED")
     query.edit_message_text("Oferta #{} rechazada.".format(order_id))
+
+    # Enviar al siguiente courier
+    _send_next_offer(order_id, context)
+
+
+def _handle_release(update, context, order_id):
+    """Courier libera un pedido aceptado. Vuelve a PUBLISHED y re-inicia ofertas."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para liberar este pedido.")
+        return
+
+    release_order_from_courier(order_id)
+    query.edit_message_text("Pedido #{} liberado. Sera ofrecido a otros repartidores.".format(order_id))
+
+    _notify_ally_order_released(context, order)
+
+    # Re-iniciar ciclo de ofertas
+    ally_id = order["ally_id"]
+    admin_link = get_approved_admin_link_for_ally(ally_id)
+    if admin_link:
+        admin_id = admin_link["admin_id"]
+        requires_cash = bool(order["requires_cash"])
+        cash_amount = int(order["cash_required_amount"] or 0)
+
+        eligible = get_eligible_couriers_for_order(
+            admin_id=admin_id,
+            ally_id=ally_id,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_amount,
+        )
+        if eligible:
+            import time
+            courier_ids = [c["courier_id"] for c in eligible]
+            delete_offer_queue(order_id)
+            create_offer_queue(order_id, courier_ids)
+
+            context.bot_data.setdefault("offer_cycles", {})[order_id] = {
+                "started_at": time.time(),
+                "admin_id": admin_id,
+                "ally_id": ally_id,
+            }
+            _send_next_offer(order_id, context)
+
+
+def _handle_cancel_ally(update, context, order_id):
+    """Aliado cancela un pedido."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] not in ("PENDING", "PUBLISHED", "ACCEPTED"):
+        query.edit_message_text(
+            "No se puede cancelar el pedido #{} en estado actual.".format(order_id)
+        )
+        return
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != order["ally_id"]:
+        query.edit_message_text("No tienes permiso para cancelar este pedido.")
+        return
+
+    had_courier = order["status"] == "ACCEPTED" and order["courier_id"]
+    was_published = order["status"] == "PUBLISHED"
+
+    # Cancelar jobs de timeout si estaba en ciclo de ofertas
+    if was_published:
+        current = get_current_offer_for_order(order_id)
+        if current:
+            jobs = context.job_queue.get_jobs_by_name(
+                "offer_timeout_{}_{}".format(order_id, current["queue_id"])
+            )
+            for job in jobs:
+                job.schedule_removal()
+
+    cancel_order(order_id, "ALLY")
+    delete_offer_queue(order_id)
+
+    # Limpiar bot_data
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+    context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
+    query.edit_message_text("Pedido #{} cancelado exitosamente.".format(order_id))
+
+    if had_courier:
+        _notify_courier_order_cancelled(context, order)
 
 
 def _handle_pickup(update, context, order_id):
@@ -260,6 +599,7 @@ def _handle_delivered(update, context, order_id):
             print("[WARN] No se pudo cobrar fee al courier: {}".format(courier_msg))
 
     set_order_status(order_id, "DELIVERED", "delivered_at")
+    delete_offer_queue(order_id)
 
     if fee_ally_ok and fee_courier_ok:
         query.edit_message_text(
@@ -326,11 +666,6 @@ def _get_pickup_address(order):
     return "No disponible"
 
 
-def _get_eligible_courier_ids(admin_id):
-    eligible = get_eligible_couriers_for_order(admin_id)
-    return {courier["courier_id"] for courier in eligible}
-
-
 def _notify_ally_order_accepted(context, order, courier_name):
     try:
         ally = get_ally_by_id(order["ally_id"])
@@ -386,18 +721,40 @@ def _notify_ally_delivered(context, order):
         print("[WARN] No se pudo notificar entrega al aliado: {}".format(e))
 
 
-def _notify_other_couriers_taken(context, order_id, admin_id, accepted_courier_id):
-    eligible = get_eligible_couriers_for_order(admin_id)
-    for courier in eligible:
-        if courier["courier_id"] == accepted_courier_id:
-            continue
-        try:
-            if not courier.get("telegram_id"):
-                continue
+def _notify_courier_order_cancelled(context, order):
+    """Notifica al courier que el aliado cancelo el pedido."""
+    try:
+        if not order["courier_id"]:
+            return
+        courier = get_courier_by_id(order["courier_id"])
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text="El pedido #{} fue cancelado por el aliado.".format(order["id"]),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar cancelacion al courier: {}".format(e))
 
-            context.bot.send_message(
-                chat_id=courier["telegram_id"],
-                text="La oferta #{} ya fue tomada por otro repartidor.".format(order_id),
-            )
-        except Exception as e:
-            print("[WARN] No se pudo notificar cierre de oferta a courier {}: {}".format(courier["courier_id"], e))
+
+def _notify_ally_order_released(context, order):
+    """Notifica al aliado que el courier libero el pedido."""
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if not ally:
+            return
+        ally_user = get_user_by_id(ally["user_id"])
+        if not ally_user or not ally_user.get("telegram_id"):
+            return
+        context.bot.send_message(
+            chat_id=ally_user["telegram_id"],
+            text=(
+                "El repartidor libero tu pedido #{}. "
+                "Estamos buscando otro repartidor."
+            ).format(order["id"]),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar liberacion al aliado: {}".format(e))
