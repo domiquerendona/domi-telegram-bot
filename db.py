@@ -2968,6 +2968,36 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     conn.close()
     return n
 
+
+def count_admin_allies(admin_id: int):
+    """Cuenta el total de aliados vinculados al admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_allies
+        WHERE admin_id = ?
+    """, (admin_id,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_admin_allies_with_min_balance(admin_id: int, min_balance: int = 5000):
+    """Cuenta aliados del admin con saldo >= min_balance."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_allies
+        WHERE admin_id = ?
+          AND balance >= ?
+    """, (admin_id, min_balance))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
 def get_active_terms_version(role: str):
     conn = get_connection()
     cur = conn.cursor()

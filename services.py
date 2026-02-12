@@ -2,6 +2,7 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
+    count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
     get_recharge_request, update_recharge_status, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
@@ -263,33 +264,52 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
     }
 
 
-def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_balance: int = 5000) -> Tuple[bool, str, int, int]:
+def admin_puede_operar(admin_id: int, min_couriers: int = 5, min_allies: int = 5,
+                        min_balance: int = 5000, min_admin_balance: int = 60000):
     """
-    Regla de negocio: un admin puede operar si:
-    - existe y está APPROVED
-    - tiene al menos `min_couriers` repartidores vinculados
-    - y al menos `min_couriers` con balance >= `min_balance`
+    Regla de negocio: un admin local puede operar si:
+    1. Está APPROVED
+    2. Tiene al menos min_allies aliados con balance >= min_balance
+    3. Tiene al menos min_couriers repartidores con balance >= min_balance
+    4. Su saldo master es >= min_admin_balance
 
     Retorna:
-    (puede_operar, motivo, total_couriers, couriers_ok_balance)
+    (puede_operar, motivo, stats_dict)
+    stats_dict tiene: total_couriers, couriers_ok, total_allies, allies_ok, admin_balance
     """
     status = get_admin_status_by_id(admin_id)
     if not status:
-        return False, "Administrador no encontrado.", 0, 0
+        return False, "Administrador no encontrado.", {}
 
     if status != "APPROVED":
-        return False, f"Estado actual: {status}.", 0, 0
+        return False, "Estado actual: {}.".format(status), {}
 
-    total = count_admin_couriers(admin_id)
-    ok = count_admin_couriers_with_min_balance(admin_id, min_balance=min_balance)
+    total_couriers = count_admin_couriers(admin_id)
+    couriers_ok = count_admin_couriers_with_min_balance(admin_id, min_balance=min_balance)
+    total_allies = count_admin_allies(admin_id)
+    allies_ok = count_admin_allies_with_min_balance(admin_id, min_balance=min_balance)
+    admin_balance = get_admin_balance(admin_id)
 
-    if total < min_couriers:
-        return False, f"No cumple mínimo de repartidores: {total}/{min_couriers}.", total, ok
+    stats = {
+        "total_couriers": total_couriers,
+        "couriers_ok": couriers_ok,
+        "total_allies": total_allies,
+        "allies_ok": allies_ok,
+        "admin_balance": admin_balance,
+    }
 
-    if ok < min_couriers:
-        return False, f"No cumple saldo mínimo en repartidores: {ok}/{min_couriers} (>= {min_balance}).", total, ok
+    problemas = []
+    if allies_ok < min_allies:
+        problemas.append("Aliados con saldo >= ${:,}: {}/{}.".format(min_balance, allies_ok, min_allies))
+    if couriers_ok < min_couriers:
+        problemas.append("Repartidores con saldo >= ${:,}: {}/{}.".format(min_balance, couriers_ok, min_couriers))
+    if admin_balance < min_admin_balance:
+        problemas.append("Saldo master: ${:,} / ${:,} requerido.".format(admin_balance, min_admin_balance))
 
-    return True, "OK", total, ok
+    if problemas:
+        return False, " | ".join(problemas), stats
+
+    return True, "OK", stats
 
 
 def calcular_precio_por_distancia(

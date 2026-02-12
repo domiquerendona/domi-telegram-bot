@@ -5872,15 +5872,32 @@ def mi_admin(update, context):
         return
 
     # FASE 1: Mostrar estado del equipo como información, NO como bloqueo
-    ok, msg, total, okb = admin_puede_operar(admin_id)
+    ok, msg, stats = admin_puede_operar(admin_id)
 
-    # Construir mensaje de estado (sin bloquear)
+    # Construir mensaje de estado
+    total_couriers = stats.get("total_couriers", 0)
+    couriers_ok = stats.get("couriers_ok", 0)
+    total_allies = stats.get("total_allies", 0)
+    allies_ok = stats.get("allies_ok", 0)
+    admin_bal = stats.get("admin_balance", 0)
+
     estado_msg = (
-        f"📊 Estado del equipo:\n"
-        f"• Repartidores vinculados: {total}\n"
-        f"• Con saldo >= 5000: {okb}\n\n"
+        "📊 Estado del equipo:\n"
+        "• Aliados vinculados: {} (con saldo >= $5,000: {})\n"
+        "• Repartidores vinculados: {} (con saldo >= $5,000: {})\n"
+        "• Tu saldo master: ${:,}\n\n"
+        "Requisitos para operar:\n"
+        "• 5 aliados con saldo >= $5,000: {}\n"
+        "• 5 repartidores con saldo >= $5,000: {}\n"
+        "• Saldo master >= $60,000: {}\n\n"
+    ).format(
+        total_allies, allies_ok,
+        total_couriers, couriers_ok,
+        admin_bal,
+        "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
+        "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+        "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
     )
-
     # En FASE 1: panel siempre habilitado
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
@@ -7113,14 +7130,31 @@ def admin_local_callback(update, context):
             return
 
         # FASE 1: Mostrar requisitos como información, NO como bloqueo
-        ok, msg, total, okb = admin_puede_operar(admin_id)
+        ok, msg, stats = admin_puede_operar(admin_id)
+
+        total_couriers = stats.get("total_couriers", 0)
+        couriers_ok = stats.get("couriers_ok", 0)
+        total_allies = stats.get("total_allies", 0)
+        allies_ok = stats.get("allies_ok", 0)
+        admin_bal = stats.get("admin_balance", 0)
 
         estado_msg = (
-            f"📊 Estado del equipo:\n"
-            f"• Repartidores vinculados: {total}\n"
-            f"• Con saldo >= 5000: {okb}\n\n"
+            "📊 Estado del equipo:\n"
+            "• Aliados vinculados: {} (con saldo >= $5,000: {})\n"
+            "• Repartidores vinculados: {} (con saldo >= $5,000: {})\n"
+            "• Tu saldo master: ${:,}\n\n"
+            "Requisitos para operar:\n"
+            "• 5 aliados con saldo >= $5,000: {}\n"
+            "• 5 repartidores con saldo >= $5,000: {}\n"
+            "• Saldo master >= $60,000: {}\n\n"
+        ).format(
+            total_allies, allies_ok,
+            total_couriers, couriers_ok,
+            admin_bal,
+            "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
+            "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+            "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
         )
-
         keyboard = [
             [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
