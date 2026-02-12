@@ -638,7 +638,11 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     platform_admin = get_platform_admin()
     is_platform = platform_admin and platform_admin[0] == admin_id
 
-    if is_platform:
+    if target_type == "ADMIN":
+        # Admin local recargando con plataforma: no necesita vínculo,
+        # se acredita directamente el saldo master del admin
+        pass
+    elif is_platform:
         if target_type == "COURIER":
             ensure_platform_link_for_courier(admin_id, target_id)
         elif target_type == "ALLY":
@@ -672,7 +676,18 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
             from_id=admin_id,
         )
 
-    if target_type == "COURIER":
+    if target_type == "ADMIN":
+        update_admin_balance_with_ledger(
+            admin_id=target_id,
+            delta=amount,
+            kind="RECHARGE",
+            note="Recarga de admin local aprobada por plataforma admin_id={}".format(decided_by_admin_id),
+            ref_type="RECHARGE_REQUEST",
+            ref_id=request_id,
+            from_type="PLATFORM",
+            from_id=admin_id,
+        )
+    elif target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, amount)
     elif target_type == "ALLY":
         update_ally_link_balance(target_id, admin_id, amount)
@@ -681,7 +696,8 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
 
     update_recharge_status(request_id, "APPROVED", decided_by_admin_id)
 
-    if is_platform:
+    if is_platform and target_type != "ADMIN":
+        # Para ADMIN, el ledger ya se registró en update_admin_balance_with_ledger
         insert_ledger_entry(
             kind="RECHARGE",
             from_type=None,

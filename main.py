@@ -351,6 +351,7 @@ TARIFAS_VALOR = 902
 RECARGAR_MONTO = 950
 RECARGAR_ADMIN = 951
 RECARGAR_COMPROBANTE = 952
+RECARGAR_ROL = 953
 
 # =========================
 # Estados para configurar datos de pago
@@ -6199,26 +6200,114 @@ def cmd_recargar(update, context):
 
     courier = get_courier_by_user_id(user_db_id)
     ally = get_ally_by_user_id(user_db_id)
+    admin = get_admin_by_user_id(user_db_id)
 
-    if not courier and not ally:
+    # Determinar si es admin local (no plataforma)
+    admin_local = None
+    if admin:
+        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_full = get_admin_by_id(admin_id)
+        if admin_full:
+            tc = admin_full["team_code"] if isinstance(admin_full, dict) else (admin_full[10] if len(admin_full) > 10 else None)
+            if tc and tc != "PLATFORM":
+                admin_local = admin_full
+
+    roles = []
+    if courier:
+        roles.append(("COURIER", courier["id"], courier["full_name"] or "Repartidor"))
+    if ally:
+        roles.append(("ALLY", ally["id"], ally["business_name"] or "Aliado"))
+    if admin_local:
+        a_id = admin_local["id"] if isinstance(admin_local, dict) else admin_local[0]
+        a_name = admin_local["team_name"] if isinstance(admin_local, dict) else admin_local[8]
+        roles.append(("ADMIN", a_id, a_name or "Admin Local"))
+
+    if not roles:
         update.message.reply_text(
-            "Para solicitar recargas debes ser Repartidor o Aliado.\n"
-            "Usa /soy_repartidor o /soy_aliado para registrarte."
+            "Para solicitar recargas debes ser Repartidor, Aliado o Administrador Local.\n"
+            "Usa /soy_repartidor, /soy_aliado o /soy_admin para registrarte."
         )
         return ConversationHandler.END
 
-    if courier:
-        context.user_data["recargar_target_type"] = "COURIER"
-        context.user_data["recargar_target_id"] = courier["id"]
-        context.user_data["recargar_target_name"] = courier["full_name"]
+    if len(roles) == 1:
+        # Solo un rol: ir directo a monto
+        context.user_data["recargar_target_type"] = roles[0][0]
+        context.user_data["recargar_target_id"] = roles[0][1]
+        context.user_data["recargar_target_name"] = roles[0][2]
+        update.message.reply_text(
+            "Escribe el monto que deseas recargar (solo numeros).\n"
+            "Ejemplo: 10000"
+        )
+        return RECARGAR_MONTO
     else:
-        context.user_data["recargar_target_type"] = "ALLY"
-        context.user_data["recargar_target_id"] = ally["id"]
-        context.user_data["recargar_target_name"] = ally["business_name"]
+        # Múltiples roles: preguntar como qué rol quiere recargar
+        keyboard = []
+        for role_type, role_id, role_name in roles:
+            label_map = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}
+            keyboard.append([InlineKeyboardButton(
+                "{}: {}".format(label_map.get(role_type, role_type), role_name),
+                callback_data="recargar_role_{}_{}".format(role_type, role_id),
+            )])
+        keyboard.append([InlineKeyboardButton("Cancelar", callback_data="recargar_cancel")])
+        update.message.reply_text(
+            "Tienes multiples roles. Como cual deseas recargar?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return RECARGAR_ROL
 
-    update.message.reply_text(
+
+def recargar_rol_callback(update, context):
+    """Callback para seleccionar el rol con el que se quiere recargar."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "recargar_cancel":
+        query.edit_message_text("Solicitud de recarga cancelada.")
+        return ConversationHandler.END
+
+    if not data.startswith("recargar_role_"):
+        return RECARGAR_ROL
+
+    # Parse: recargar_role_{TYPE}_{ID}
+    parts = data.replace("recargar_role_", "").split("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error de formato.")
+        return ConversationHandler.END
+
+    role_type = parts[0]
+    try:
+        role_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return ConversationHandler.END
+
+    if role_type == "COURIER":
+        courier = get_courier_by_user_id(get_user_db_id_from_update(update))
+        role_name = courier["full_name"] if courier else "Repartidor"
+    elif role_type == "ALLY":
+        ally = get_ally_by_user_id(get_user_db_id_from_update(update))
+        role_name = ally["business_name"] if ally else "Aliado"
+    elif role_type == "ADMIN":
+        admin_full = get_admin_by_id(role_id)
+        role_name = admin_full["team_name"] if admin_full and isinstance(admin_full, dict) else "Admin Local"
+        if admin_full and not isinstance(admin_full, dict):
+            role_name = admin_full[8] if len(admin_full) > 8 else "Admin Local"
+    else:
+        query.edit_message_text("Rol no reconocido.")
+        return ConversationHandler.END
+
+    context.user_data["recargar_target_type"] = role_type
+    context.user_data["recargar_target_id"] = role_id
+    context.user_data["recargar_target_name"] = role_name
+
+    query.edit_message_text(
+        "Recargando como: {} ({})\n\n"
         "Escribe el monto que deseas recargar (solo numeros).\n"
-        "Ejemplo: 10000"
+        "Ejemplo: 10000".format(
+            {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}.get(role_type, role_type),
+            role_name,
+        )
     )
     return RECARGAR_MONTO
 
@@ -6246,6 +6335,42 @@ def recargar_monto(update, context):
     target_type = context.user_data["recargar_target_type"]
     target_id = context.user_data["recargar_target_id"]
 
+    # Admin local: siempre recarga con plataforma
+    if target_type == "ADMIN":
+        platform = get_platform_admin()
+        if not platform:
+            update.message.reply_text("No hay administrador de plataforma configurado.")
+            return ConversationHandler.END
+        platform_id = platform[0]
+        context.user_data["recargar_admin_id"] = platform_id
+
+        # Mostrar datos de pago de plataforma directamente
+        payment_info = get_admin_payment_info(platform_id)
+        if payment_info:
+            info_text = "Datos de pago de Plataforma:\n\n"
+            if payment_info.get("bank_name"):
+                info_text += "Banco: {}\n".format(payment_info["bank_name"])
+            if payment_info.get("account_type"):
+                info_text += "Tipo: {}\n".format(payment_info["account_type"])
+            if payment_info.get("account_number"):
+                info_text += "Cuenta: {}\n".format(payment_info["account_number"])
+            if payment_info.get("nequi_number"):
+                info_text += "Nequi: {}\n".format(payment_info["nequi_number"])
+            if payment_info.get("daviplata_number"):
+                info_text += "Daviplata: {}\n".format(payment_info["daviplata_number"])
+            info_text += "\nMonto a pagar: ${:,}\n\n".format(monto)
+            info_text += "Realiza el pago y envia el comprobante (foto)."
+        else:
+            info_text = (
+                "Monto: ${:,}\n\n"
+                "Contacta a Plataforma para obtener los datos de pago.\n"
+                "Envia el comprobante (foto) cuando hayas pagado."
+            ).format(monto)
+
+        update.message.reply_text(info_text)
+        return RECARGAR_COMPROBANTE
+
+    # Courier/Ally: mostrar opciones de admin
     if target_type == "COURIER":
         link = get_approved_admin_link_for_courier(target_id)
     else:
@@ -7914,6 +8039,7 @@ def main():
     recargar_conv = ConversationHandler(
         entry_points=[CommandHandler("recargar", cmd_recargar)],
         states={
+            RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
             RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
             RECARGAR_COMPROBANTE: [MessageHandler(Filters.photo, recargar_comprobante)],
