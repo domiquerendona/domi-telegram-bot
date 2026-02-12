@@ -34,7 +34,7 @@ from services import (
     reject_recharge_request,
     check_service_fee_available,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -3488,6 +3488,14 @@ def admin_menu_callback(update, context):
     if data == "admin_change_requests":
         return admin_change_requests_list(update, context)
 
+    if data.startswith("admin_pedidos_local_"):
+        try:
+            admin_id = int(data.replace("admin_pedidos_local_", ""))
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        return admin_orders_panel(update, context, admin_id, is_platform=False)
+
     # Solo el Admin de Plataforma aprobado puede usar estos botones
     if not user_has_platform_admin(user_id):
         query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
@@ -4096,7 +4104,12 @@ def admin_menu_callback(update, context):
 
     # Botones aún no implementados (placeholders)
     if data == "admin_pedidos":
-        query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_user_id(user_db_id)
+        if admin:
+            admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+            return admin_orders_panel(update, context, admin_id, is_platform=True)
+        query.answer("No se encontro tu perfil de admin.", show_alert=True)
         return
 
     if data == "admin_config":
@@ -5843,6 +5856,7 @@ def mi_admin(update, context):
     if team_code == "PLATFORM":
         keyboard = [
             [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
@@ -5867,6 +5881,7 @@ def mi_admin(update, context):
     # En FASE 1: panel siempre habilitado
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -7828,6 +7843,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(profile_change_conv)
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
+    dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
     # Configuracion de tarifas (botones pricing_*)

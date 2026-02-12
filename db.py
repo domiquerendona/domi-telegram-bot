@@ -2539,6 +2539,64 @@ def get_orders_by_courier(courier_id: int, limit: int = 50):
     return rows
 
 
+def get_orders_by_admin_team(admin_id: int, status_filter: str = None, limit: int = 20):
+    """
+    Devuelve pedidos de aliados vinculados al admin.
+    status_filter: 'ACTIVE' (no DELIVERED/CANCELLED), 'DELIVERED', 'CANCELLED', o None (todos).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT o.* FROM orders o
+        JOIN admin_allies aa ON aa.ally_id = o.ally_id
+        WHERE aa.admin_id = ? AND aa.status = 'APPROVED'
+    """
+    params = [admin_id]
+
+    if status_filter == "ACTIVE":
+        query += " AND o.status NOT IN ('DELIVERED', 'CANCELLED')"
+    elif status_filter == "DELIVERED":
+        query += " AND o.status = 'DELIVERED'"
+    elif status_filter == "CANCELLED":
+        query += " AND o.status = 'CANCELLED'"
+
+    query += " ORDER BY o.created_at DESC LIMIT ?;"
+    params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_orders(status_filter: str = None, limit: int = 20):
+    """
+    Devuelve todos los pedidos del sistema (para admin plataforma).
+    status_filter: 'ACTIVE', 'DELIVERED', 'CANCELLED', o None (todos).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = "SELECT * FROM orders"
+    params = []
+
+    if status_filter == "ACTIVE":
+        query += " WHERE status NOT IN ('DELIVERED', 'CANCELLED')"
+    elif status_filter == "DELIVERED":
+        query += " WHERE status = 'DELIVERED'"
+    elif status_filter == "CANCELLED":
+        query += " WHERE status = 'CANCELLED'"
+
+    query += " ORDER BY created_at DESC LIMIT ?;"
+    params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 # ---------- CALIFICACIONES DEL REPARTIDOR ----------
 
 def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str = None):

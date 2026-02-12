@@ -5,6 +5,7 @@ from db import (
     cancel_order,
     create_offer_queue,
     delete_offer_queue,
+    get_all_orders,
     get_active_orders_by_ally,
     get_admin_by_id,
     get_ally_by_id,
@@ -19,6 +20,7 @@ from db import (
     get_eligible_couriers_for_order,
     get_next_pending_offer,
     get_order_by_id,
+    get_orders_by_admin_team,
     get_user_by_telegram_id,
     get_user_by_id,
     mark_offer_as_offered,
@@ -262,6 +264,280 @@ def ally_active_orders(update, context):
             update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             update.message.reply_text(text)
+
+
+def admin_orders_panel(update, context, admin_id, is_platform=False):
+    """
+    Muestra submenú de pedidos para admin.
+    Llamado desde admin_menu_callback (platform) o mi_admin callbacks (local).
+    """
+    query = update.callback_query
+    query.answer()
+
+    keyboard = [
+        [InlineKeyboardButton("Pedidos activos", callback_data="admpedidos_list_ACTIVE_{}".format(admin_id))],
+        [InlineKeyboardButton("Pedidos entregados", callback_data="admpedidos_list_DELIVERED_{}".format(admin_id))],
+        [InlineKeyboardButton("Pedidos cancelados", callback_data="admpedidos_list_CANCELLED_{}".format(admin_id))],
+        [InlineKeyboardButton("Todos los pedidos", callback_data="admpedidos_list_ALL_{}".format(admin_id))],
+    ]
+
+    query.edit_message_text(
+        "Panel de Pedidos\nSelecciona una categoria:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def admin_orders_callback(update, context):
+    """
+    Maneja callbacks del panel de pedidos admin.
+    Patterns:
+      admpedidos_list_{filter}_{admin_id}
+      admpedidos_detail_{order_id}_{admin_id}
+      admpedidos_cancel_{order_id}_{admin_id}
+    """
+    query = update.callback_query
+    data = query.data or ""
+    query.answer()
+
+    if data.startswith("admpedidos_list_"):
+        return _admin_orders_list(update, context, data)
+    if data.startswith("admpedidos_detail_"):
+        return _admin_order_detail(update, context, data)
+    if data.startswith("admpedidos_cancel_"):
+        return _admin_order_cancel(update, context, data)
+    return None
+
+
+def _admin_orders_list(update, context, data):
+    """Muestra lista de pedidos filtrados."""
+    query = update.callback_query
+    # Parse: admpedidos_list_{filter}_{admin_id}
+    parts = data.replace("admpedidos_list_", "").rsplit("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error: formato de datos invalido.")
+        return
+
+    status_filter = parts[0]
+    try:
+        admin_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error: ID de admin invalido.")
+        return
+
+    from db import get_platform_admin
+    platform_admin = get_platform_admin()
+    is_platform = platform_admin and platform_admin["id"] == admin_id
+
+    if status_filter == "ALL":
+        db_filter = None
+    else:
+        db_filter = status_filter
+
+    if is_platform:
+        orders = get_all_orders(status_filter=db_filter, limit=20)
+    else:
+        orders = get_orders_by_admin_team(admin_id, status_filter=db_filter, limit=20)
+
+    if not orders:
+        query.edit_message_text(
+            "No hay pedidos en esta categoria.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver", callback_data="admpedidos_list_ACTIVE_{}".format(admin_id))],
+            ]),
+        )
+        return
+
+    STATUS_LABELS = {
+        "PENDING": "Pendiente",
+        "PUBLISHED": "Buscando repartidor",
+        "ACCEPTED": "Repartidor asignado",
+        "PICKED_UP": "En camino",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+
+    FILTER_LABELS = {
+        "ACTIVE": "Activos",
+        "DELIVERED": "Entregados",
+        "CANCELLED": "Cancelados",
+        "ALL": "Todos",
+    }
+
+    text = "Pedidos - {}\n\n".format(FILTER_LABELS.get(status_filter, status_filter))
+
+    keyboard = []
+    for order in orders:
+        label = "#{} | {} | {}".format(
+            order["id"],
+            STATUS_LABELS.get(order["status"], order["status"]),
+            order["customer_name"] or "N/A",
+        )
+        keyboard.append([InlineKeyboardButton(
+            label,
+            callback_data="admpedidos_detail_{}_{}".format(order["id"], admin_id),
+        )])
+
+    keyboard.append([InlineKeyboardButton(
+        "Volver al panel de pedidos",
+        callback_data="admin_pedidos" if is_platform else "admin_pedidos_local_{}".format(admin_id),
+    )])
+
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def _admin_order_detail(update, context, data):
+    """Muestra detalle de un pedido con opción de cancelar."""
+    query = update.callback_query
+    # Parse: admpedidos_detail_{order_id}_{admin_id}
+    parts = data.replace("admpedidos_detail_", "").rsplit("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error de formato.")
+        return
+
+    try:
+        order_id = int(parts[0])
+        admin_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return
+
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    STATUS_LABELS = {
+        "PENDING": "Pendiente",
+        "PUBLISHED": "Buscando repartidor",
+        "ACCEPTED": "Repartidor asignado",
+        "PICKED_UP": "En camino al cliente",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+
+    ally = get_ally_by_id(order["ally_id"])
+    ally_name = ally["full_name"] if ally else "N/A"
+
+    courier_name = "Sin asignar"
+    if order["courier_id"]:
+        courier = get_courier_by_id(order["courier_id"])
+        if courier:
+            courier_name = courier["full_name"] or "Repartidor"
+
+    text = (
+        "Pedido #{}\n\n"
+        "Estado: {}\n"
+        "Aliado: {}\n"
+        "Repartidor: {}\n"
+        "Cliente: {}\n"
+        "Telefono: {}\n"
+        "Direccion: {}\n"
+        "Distancia: {:.1f} km\n"
+        "Tarifa: ${:,}\n"
+        "Creado: {}\n"
+    ).format(
+        order["id"],
+        STATUS_LABELS.get(order["status"], order["status"]),
+        ally_name,
+        courier_name,
+        order["customer_name"] or "N/A",
+        order["customer_phone"] or "N/A",
+        order["customer_address"] or "N/A",
+        order["distance_km"] or 0,
+        int(order["total_fee"] or 0),
+        order["created_at"] or "N/A",
+    )
+
+    if order["instructions"]:
+        text += "Instrucciones: {}\n".format(order["instructions"])
+    if order["canceled_at"]:
+        text += "Cancelado: {} por {}\n".format(
+            order["canceled_at"],
+            order.get("canceled_by") or "N/A",
+        )
+
+    keyboard = []
+    if order["status"] not in ("DELIVERED", "CANCELLED"):
+        keyboard.append([InlineKeyboardButton(
+            "Cancelar pedido",
+            callback_data="admpedidos_cancel_{}_{}".format(order_id, admin_id),
+        )])
+    keyboard.append([InlineKeyboardButton(
+        "Volver a la lista",
+        callback_data="admpedidos_list_ACTIVE_{}".format(admin_id),
+    )])
+
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def _admin_order_cancel(update, context, data):
+    """Admin cancela un pedido desde el panel."""
+    query = update.callback_query
+    # Parse: admpedidos_cancel_{order_id}_{admin_id}
+    parts = data.replace("admpedidos_cancel_", "").rsplit("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error de formato.")
+        return
+
+    try:
+        order_id = int(parts[0])
+        admin_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return
+
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] in ("DELIVERED", "CANCELLED"):
+        query.edit_message_text("Este pedido ya esta {} y no se puede cancelar.".format(
+            "entregado" if order["status"] == "DELIVERED" else "cancelado"
+        ))
+        return
+
+    had_courier = order["courier_id"]
+    was_published = order["status"] == "PUBLISHED"
+
+    if was_published:
+        current = get_current_offer_for_order(order_id)
+        if current:
+            jobs = context.job_queue.get_jobs_by_name(
+                "offer_timeout_{}_{}".format(order_id, current["queue_id"])
+            )
+            for job in jobs:
+                job.schedule_removal()
+
+    cancel_order(order_id, "ADMIN")
+    delete_offer_queue(order_id)
+
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+    context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user.get("telegram_id"):
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text="Tu pedido #{} fue cancelado por el administrador.".format(order_id),
+                )
+    except Exception as e:
+        print("[WARN] No se pudo notificar cancelacion al aliado: {}".format(e))
+
+    if had_courier:
+        _notify_courier_order_cancelled(context, order)
+
+    keyboard = [[InlineKeyboardButton(
+        "Volver a pedidos activos",
+        callback_data="admpedidos_list_ACTIVE_{}".format(admin_id),
+    )]]
+    query.edit_message_text(
+        "Pedido #{} cancelado exitosamente.".format(order_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 def order_courier_callback(update, context):
