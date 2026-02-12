@@ -3174,6 +3174,58 @@ def get_approved_admin_link_for_ally(ally_id: int):
     return row
 
 
+def get_all_approved_links_for_courier(courier_id: int):
+    """
+    Devuelve TODOS los vínculos APPROVED de un courier con admins.
+    Retorna lista de Row con: admin_id, team_name, team_code, balance, link_id
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            ac.balance AS balance,
+            ac.id AS link_id
+        FROM admin_couriers ac
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.courier_id = ?
+          AND ac.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY a.team_code ASC;
+    """, (courier_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_approved_links_for_ally(ally_id: int):
+    """
+    Devuelve TODOS los vínculos APPROVED de un aliado con admins.
+    Retorna lista de Row con: admin_id, team_name, team_code, balance, link_id
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            aa.balance AS balance,
+            aa.id AS link_id
+        FROM admin_allies aa
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.ally_id = ?
+          AND aa.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY a.team_code ASC;
+    """, (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 # ============================================================
 # CLIENTES RECURRENTES DE ALIADOS (ally_customers)
 # ============================================================

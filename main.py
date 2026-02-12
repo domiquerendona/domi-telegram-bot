@@ -156,6 +156,8 @@ from db import (
     get_admin_link_for_ally,
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
+    get_all_approved_links_for_courier,
+    get_all_approved_links_for_ally,
     get_admin_balance,
     get_platform_admin,
     create_recharge_request,
@@ -5959,6 +5961,8 @@ def mi_perfil(update, context):
         mensaje += f"   Teléfono: {phone}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_admin}\n\n"
+        admin_balance = get_admin_balance(admin_id)
+        mensaje += f"   Saldo master: ${admin_balance:,}\n\n"
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
@@ -5985,6 +5989,18 @@ def mi_perfil(update, context):
         mensaje += f"   Teléfono: {phone}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
+        ally_links = get_all_approved_links_for_ally(ally_id)
+        if ally_links:
+            for alink in ally_links:
+                alink_team = alink["team_name"] or "-"
+                alink_code = alink["team_code"] or ""
+                alink_balance = alink["balance"] if alink["balance"] else 0
+                if alink_code == "PLATFORM":
+                    alink_label = "Plataforma"
+                else:
+                    alink_label = alink_team
+                mensaje += f"   Saldo ({alink_label}): ${alink_balance:,}\n"
+            mensaje += "\n"
 
     # Repartidor
     courier = get_courier_by_user_id(user_db_id)
@@ -6011,6 +6027,18 @@ def mi_perfil(update, context):
         mensaje += f"   Código interno: {code if code else 'sin asignar'}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
+        courier_links = get_all_approved_links_for_courier(courier_id)
+        if courier_links:
+            for clink in courier_links:
+                clink_team = clink["team_name"] or "-"
+                clink_code = clink["team_code"] or ""
+                clink_balance = clink["balance"] if clink["balance"] else 0
+                if clink_code == "PLATFORM":
+                    clink_label = "Plataforma"
+                else:
+                    clink_label = clink_team
+                mensaje += f"   Saldo ({clink_label}): ${clink_balance:,}\n"
+            mensaje += "\n"
 
     # Si no tiene roles
     if not admin and not ally and not courier:
@@ -6088,54 +6116,73 @@ def mi_perfil(update, context):
 
 def cmd_saldo(update, context):
     """
-    Comando /saldo - Muestra el saldo según el rol del usuario:
-    - Courier: balance del vínculo APPROVED más reciente
-    - Ally: balance del vínculo APPROVED más reciente
-    - Admin: balance del admin (admins.balance)
+    Comando /saldo - Muestra el saldo de TODOS los vínculos del usuario.
+    Courier/Ally: un balance por cada admin con vínculo APPROVED.
+    Admin: balance master del admin.
     """
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    mensaje = ""
+    mensaje = "💰 TUS SALDOS\n\n"
+    tiene_algo = False
 
     admin = get_admin_by_user_id(user_db_id)
     if admin:
         admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
         balance = get_admin_balance(admin_id)
         team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
-        mensaje += f"Admin ({team_name or 'sin nombre'}):\n"
-        mensaje += f"   Saldo disponible: ${balance:,}\n\n"
+        mensaje += "🔧 Admin ({}):\n".format(team_name or "sin nombre")
+        mensaje += "   Saldo master: ${:,}\n\n".format(balance)
+        tiene_algo = True
 
     courier = get_courier_by_user_id(user_db_id)
     if courier:
         courier_id = courier["id"]
-        link = get_approved_admin_link_for_courier(courier_id)
-        if link:
-            balance = link["balance"] if link["balance"] else 0
-            team_name = link["team_name"] or "-"
-            mensaje += f"Repartidor (equipo {team_name}):\n"
-            mensaje += f"   Saldo: ${balance:,}\n\n"
+        links = get_all_approved_links_for_courier(courier_id)
+        if links:
+            mensaje += "🚴 Repartidor:\n"
+            for link in links:
+                team_name = link["team_name"] or "-"
+                team_code = link["team_code"] or ""
+                balance = link["balance"] if link["balance"] else 0
+                if team_code == "PLATFORM":
+                    label = "Plataforma"
+                else:
+                    label = team_name
+                mensaje += "   {} : ${:,}\n".format(label, balance)
+            mensaje += "\n"
+            tiene_algo = True
         else:
-            mensaje += "Repartidor:\n"
-            mensaje += "   Sin vínculo APPROVED con admin.\n"
-            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+            mensaje += "🚴 Repartidor:\n"
+            mensaje += "   Sin vinculo aprobado con admin.\n"
+            mensaje += "   Usa /recargar para solicitar recarga.\n\n"
+            tiene_algo = True
 
     ally = get_ally_by_user_id(user_db_id)
     if ally:
         ally_id = ally["id"]
-        link = get_approved_admin_link_for_ally(ally_id)
-        if link:
-            balance = link["balance"] if link["balance"] else 0
-            team_name = link["team_name"] or "-"
-            mensaje += f"Aliado (equipo {team_name}):\n"
-            mensaje += f"   Saldo: ${balance:,}\n\n"
+        links = get_all_approved_links_for_ally(ally_id)
+        if links:
+            mensaje += "🍕 Aliado:\n"
+            for link in links:
+                team_name = link["team_name"] or "-"
+                team_code = link["team_code"] or ""
+                balance = link["balance"] if link["balance"] else 0
+                if team_code == "PLATFORM":
+                    label = "Plataforma"
+                else:
+                    label = team_name
+                mensaje += "   {} : ${:,}\n".format(label, balance)
+            mensaje += "\n"
+            tiene_algo = True
         else:
-            mensaje += "Aliado:\n"
-            mensaje += "   Sin vínculo APPROVED con admin.\n"
-            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+            mensaje += "🍕 Aliado:\n"
+            mensaje += "   Sin vinculo aprobado con admin.\n"
+            mensaje += "   Usa /recargar para solicitar recarga.\n\n"
+            tiene_algo = True
 
-    if not mensaje:
+    if not tiene_algo:
         mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
 
     update.message.reply_text(mensaje)
