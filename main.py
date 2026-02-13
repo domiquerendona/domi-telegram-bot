@@ -627,25 +627,37 @@ def start(update, context):
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
 
-    # Construir menú según roles del usuario
+    # Construir menú agrupado por rol
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
     comandos = []
 
-    # Comandos principales (para todos)
+    comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
-
-    # Saldo y recargas (para usuarios con rol)
     if ally or courier or admin_local or es_admin_plataforma:
         comandos.append("• /saldo  - Ver tu saldo")
-    if ally or courier:
+
+    comandos.append("")
+    comandos.append("Aliado:")
+    if ally:
         comandos.append("• /recargar  - Solicitar recarga")
+        if ally["status"] == "APPROVED":
+            comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
+            comandos.append("• /clientes  - Agenda de clientes recurrentes")
+        else:
+            comandos.append("• Tu negocio aún no está APPROVED para crear pedidos.")
+    else:
+        comandos.append("• /soy_aliado  - Registrarte como aliado")
 
-    # Nuevo pedido y clientes (solo aliados aprobados)
-    if ally and ally["status"] == "APPROVED":
-        comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
-        comandos.append("• /clientes  - Agenda de clientes recurrentes")
+    comandos.append("")
+    comandos.append("Repartidor:")
+    if courier:
+        comandos.append("• /recargar  - Solicitar recarga")
+    else:
+        comandos.append("• /soy_repartidor  - Registrarte como repartidor")
 
-    # Admin (segun tipo, evitar duplicados)
+    comandos.append("")
+    comandos.append("Administrador:")
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
@@ -657,18 +669,11 @@ def start(update, context):
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
-
-    # Registro (solo si tiene roles faltantes)
-    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
-    if missing_cmds:
-        comandos.append("")
-        comandos.append("Registro:")
-        if "/soy_aliado" in missing_cmds:
-            comandos.append("• /soy_aliado  - Registrar tu negocio")
-        if "/soy_repartidor" in missing_cmds:
-            comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+    else:
         if "/soy_admin" in missing_cmds:
             comandos.append("• /soy_admin  - Registrarte como administrador")
+        else:
+            comandos.append("• No tienes opciones de administrador disponibles.")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
@@ -677,7 +682,7 @@ def start(update, context):
         f"{estado_text}\n\n"
         "Siguiente paso recomendado:\n"
         f"{siguientes_text}\n\n"
-        "Comandos principales:\n"
+        "Menú ordenado por rol:\n"
         + "\n".join(comandos)
         + "\n"
     )
@@ -8270,7 +8275,6 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
-            MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
     )
