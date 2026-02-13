@@ -716,18 +716,19 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
 
     update_recharge_status(request_id, "APPROVED", decided_by_admin_id)
 
-    if is_platform and target_type != "ADMIN":
-        # Para ADMIN, el ledger ya se registró en update_admin_balance_with_ledger
+    # Para COURIER/ALLY, toda acreditacion debe quedar en ledger (plataforma o admin local).
+    # Para ADMIN, ya queda registrado via update_admin_balance_with_ledger.
+    if target_type != "ADMIN":
         insert_ledger_entry(
             kind="RECHARGE",
-            from_type=None,
-            from_id=None,
+            from_type="PLATFORM" if is_platform else "ADMIN",
+            from_id=admin_id,
             to_type=target_type,
             to_id=target_id,
             amount=amount,
             ref_type="RECHARGE_REQUEST",
             ref_id=request_id,
-            note=f"Recarga plataforma aprobada por admin_id={decided_by_admin_id}"
+            note=f"Recarga aprobada por admin_id={decided_by_admin_id}"
         )
 
     return True, "Recarga aprobada exitosamente."
