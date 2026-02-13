@@ -13,6 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+
 # Importa la clase principal de FastAPI
 from fastapi import FastAPI
 
@@ -42,6 +43,21 @@ app.include_router(admin_router)
 app.include_router(users_router)
 # Registra las rutas del dashboard
 app.include_router(dashboard_router)
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+        <head>
+            <title>Domi App</title>
+        </head>
+        <body>
+            <h1>Panel Web Domi 🚀</h1>
+            <p>Backend funcionando correctamente.</p>
+        </body>
+    </html>
+    """
 
 
 from services import admin_puede_operar, calcular_precio_distancia, get_pricing_config
