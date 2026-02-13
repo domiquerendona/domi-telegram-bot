@@ -1,9 +1,7 @@
 import os
 import hashlib
-
+import os
 from dotenv import load_dotenv
-load_dotenv()
-
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -132,28 +130,21 @@ from db import (
 # ============================================================
 # SEPARACIÓN DEV/PROD - Evitar conflicto getUpdates
 # ============================================================
+
+# Cargar .env SIEMPRE primero
+load_dotenv()
 ENV = os.getenv("ENV", "PROD").upper()
 
-# Solo cargar .env en LOCAL (DEV), NUNCA en PROD
 if ENV == "LOCAL":
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        print(f"[ENV] Ambiente: {ENV} - .env cargado")
-    except ImportError:
-        print(f"[ENV] Ambiente: {ENV} - python-dotenv no instalado, usando variables de sistema")
+    print(f"[ENV] Ambiente: {ENV} - .env cargado")
 else:
     print(f"[ENV] Ambiente: {ENV} - usando variables de entorno del sistema (Railway/PROD)")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Plataforma
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
-
-# Constante para equipo de plataforma
-PLATFORM_TEAM_CODE = "PLATFORM"
-
 
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
