@@ -4,7 +4,7 @@ from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
-    get_recharge_request, update_recharge_status, insert_ledger_entry,
+    get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     update_courier_link_balance, update_ally_link_balance,
     get_courier_link_balance, get_ally_link_balance,
@@ -797,7 +797,20 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
-    update_recharge_status(request_id, "REJECTED", decided_by_admin_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE recharge_requests
+            SET status = 'REJECTED', decided_by_admin_id = ?, decided_at = datetime('now')
+            WHERE id = ? AND status = 'PENDING'
+        """, (decided_by_admin_id, request_id))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False, "Solicitud ya procesada."
+        conn.commit()
+    finally:
+        conn.close()
 
     return True, "Solicitud de recarga rechazada."
 
