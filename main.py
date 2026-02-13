@@ -470,7 +470,6 @@ def start(update, context):
     comandos = []
 
     # Comandos principales (para todos)
-    comandos.append("• /menu  - Ver este menú")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
 
