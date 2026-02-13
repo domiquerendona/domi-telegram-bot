@@ -45,6 +45,32 @@ app.include_router(users_router)
 app.include_router(dashboard_router)
 from fastapi.responses import HTMLResponse
 
+# Importa el middleware que permite manejar CORS en FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Lista de orígenes permitidos (frontend autorizado)
+# En este caso, Angular corre en el puerto 4200 en desarrollo
+origins = [
+    "http://localhost:4200",
+]
+
+# Se agrega el middleware CORS a la aplicación
+app.add_middleware(
+    CORSMiddleware,
+
+    # Orígenes que pueden hacer peticiones al backend
+    allow_origins=origins,
+
+    # Permite enviar cookies o credenciales (importante si usas JWT en cookies)
+    allow_credentials=True,
+
+    # Permite todos los métodos HTTP (GET, POST, PUT, DELETE, etc.)
+    allow_methods=["*"],
+
+    # Permite todos los headers en las solicitudes
+    allow_headers=["*"],
+)
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
