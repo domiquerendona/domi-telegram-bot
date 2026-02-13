@@ -6337,7 +6337,8 @@ def cmd_saldo(update, context):
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    mensaje = "💰 TUS SALDOS\n\n"
+    mensaje = "💰 TUS SALDOS\n"
+    mensaje += "(Los saldos de Repartidor/Aliado son por vínculo, no globales)\n\n"
     tiene_algo = False
 
     admin = get_admin_by_user_id(user_db_id)
@@ -6353,17 +6354,27 @@ def cmd_saldo(update, context):
     if courier:
         courier_id = courier["id"]
         links = get_all_approved_links_for_courier(courier_id)
+        current_link = get_approved_admin_link_for_courier(courier_id)
         if links:
             mensaje += "🚴 Repartidor:\n"
-            for link in links:
-                team_name = link["team_name"] or "-"
-                team_code = link["team_code"] or ""
-                balance = link["balance"] if link["balance"] else 0
-                if team_code == "PLATFORM":
-                    label = "Plataforma"
-                else:
-                    label = team_name
-                mensaje += "   {} : ${:,}\n".format(label, balance)
+            current_link_id = None
+            if current_link:
+                team_name = current_link["team_name"] or "-"
+                team_code = current_link["team_code"] or ""
+                balance = current_link["balance"] if current_link["balance"] else 0
+                label = "Plataforma" if team_code == "PLATFORM" else team_name
+                current_link_id = current_link["link_id"]
+                mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
+
+            others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
+            if others:
+                mensaje += "   Otros vínculos APPROVED:\n"
+                for link in others:
+                    team_name = link["team_name"] or "-"
+                    team_code = link["team_code"] or ""
+                    balance = link["balance"] if link["balance"] else 0
+                    label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    mensaje += "   - {} : ${:,}\n".format(label, balance)
             mensaje += "\n"
             tiene_algo = True
         else:
@@ -6376,17 +6387,27 @@ def cmd_saldo(update, context):
     if ally:
         ally_id = ally["id"]
         links = get_all_approved_links_for_ally(ally_id)
+        current_link = get_approved_admin_link_for_ally(ally_id)
         if links:
             mensaje += "🍕 Aliado:\n"
-            for link in links:
-                team_name = link["team_name"] or "-"
-                team_code = link["team_code"] or ""
-                balance = link["balance"] if link["balance"] else 0
-                if team_code == "PLATFORM":
-                    label = "Plataforma"
-                else:
-                    label = team_name
-                mensaje += "   {} : ${:,}\n".format(label, balance)
+            current_link_id = None
+            if current_link:
+                team_name = current_link["team_name"] or "-"
+                team_code = current_link["team_code"] or ""
+                balance = current_link["balance"] if current_link["balance"] else 0
+                label = "Plataforma" if team_code == "PLATFORM" else team_name
+                current_link_id = current_link["link_id"]
+                mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
+
+            others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
+            if others:
+                mensaje += "   Otros vínculos APPROVED:\n"
+                for link in others:
+                    team_name = link["team_name"] or "-"
+                    team_code = link["team_code"] or ""
+                    balance = link["balance"] if link["balance"] else 0
+                    label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    mensaje += "   - {} : ${:,}\n".format(label, balance)
             mensaje += "\n"
             tiene_algo = True
         else:
