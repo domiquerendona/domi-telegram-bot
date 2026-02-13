@@ -1,12 +1,23 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+// Permite definir la configuración global de la aplicación Angular
+import { ApplicationConfig } from '@angular/core';
+
+// Habilita el sistema de rutas en la aplicación
 import { provideRouter } from '@angular/router';
 
-import { routes } from './app.routes';
-import { provideClientHydration, withEventReplay } from '@angular/platform-browser';
+// Habilita el cliente HTTP para consumir APIs externas (backend)
+import { provideHttpClient } from '@angular/common/http';
 
+// Importa las rutas definidas en el archivo app.routes.ts
+import { routes } from './app.routes';
+
+// Configuración principal de la aplicación (Angular Standalone)
 export const appConfig: ApplicationConfig = {
   providers: [
-    provideBrowserGlobalErrorListeners(),
-    provideRouter(routes), provideClientHydration(withEventReplay())
+
+    // Activa el sistema de navegación basado en las rutas definidas
+    provideRouter(routes),
+
+    // Permite usar HttpClient en toda la aplicación
+    provideHttpClient()
   ]
 };
