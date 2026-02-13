@@ -6346,7 +6346,11 @@ def cmd_saldo(update, context):
         admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
         balance = get_admin_balance(admin_id)
         team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
-        mensaje += "🔧 Admin ({}):\n".format(team_name or "sin nombre")
+        team_code = admin["team_code"] if isinstance(admin, dict) else (admin[10] if len(admin) > 10 else "")
+        admin_label = "Plataforma" if team_code == "PLATFORM" else (team_name or "sin nombre")
+        if team_code:
+            admin_label = "{} [{}]".format(admin_label, team_code)
+        mensaje += "🔧 Admin ({}):\n".format(admin_label)
         mensaje += "   Saldo master: ${:,}\n\n".format(balance)
         tiene_algo = True
 
@@ -6363,6 +6367,8 @@ def cmd_saldo(update, context):
                 team_code = current_link["team_code"] or ""
                 balance = current_link["balance"] if current_link["balance"] else 0
                 label = "Plataforma" if team_code == "PLATFORM" else team_name
+                if team_code:
+                    label = "{} [{}]".format(label, team_code)
                 current_link_id = current_link["link_id"]
                 mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
 
@@ -6374,6 +6380,8 @@ def cmd_saldo(update, context):
                     team_code = link["team_code"] or ""
                     balance = link["balance"] if link["balance"] else 0
                     label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    if team_code:
+                        label = "{} [{}]".format(label, team_code)
                     mensaje += "   - {} : ${:,}\n".format(label, balance)
             mensaje += "\n"
             tiene_algo = True
@@ -6396,6 +6404,8 @@ def cmd_saldo(update, context):
                 team_code = current_link["team_code"] or ""
                 balance = current_link["balance"] if current_link["balance"] else 0
                 label = "Plataforma" if team_code == "PLATFORM" else team_name
+                if team_code:
+                    label = "{} [{}]".format(label, team_code)
                 current_link_id = current_link["link_id"]
                 mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
 
@@ -6407,6 +6417,8 @@ def cmd_saldo(update, context):
                     team_code = link["team_code"] or ""
                     balance = link["balance"] if link["balance"] else 0
                     label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    if team_code:
+                        label = "{} [{}]".format(label, team_code)
                     mensaje += "   - {} : ${:,}\n".format(label, balance)
             mensaje += "\n"
             tiene_algo = True
