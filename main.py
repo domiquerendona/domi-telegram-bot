@@ -273,6 +273,167 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
 ) = range(300, 309)
 
 
+FLOW_STATE_ORDER = {
+    "ally": [ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UBICACION],
+    "courier": [
+        COURIER_FULLNAME,
+        COURIER_IDNUMBER,
+        COURIER_PHONE,
+        COURIER_CITY,
+        COURIER_BARRIO,
+        COURIER_RESIDENCE_ADDRESS,
+        COURIER_RESIDENCE_LOCATION,
+        COURIER_PLATE,
+        COURIER_BIKETYPE,
+        COURIER_CONFIRM,
+        COURIER_TEAMCODE,
+    ],
+    "admin": [
+        LOCAL_ADMIN_NAME,
+        LOCAL_ADMIN_DOCUMENT,
+        LOCAL_ADMIN_TEAMNAME,
+        LOCAL_ADMIN_PHONE,
+        LOCAL_ADMIN_CITY,
+        LOCAL_ADMIN_BARRIO,
+        LOCAL_ADMIN_RESIDENCE_ADDRESS,
+        LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_ACCEPT,
+    ],
+}
+
+FLOW_STATE_KEYS = {
+    "ally": {
+        ALLY_NAME: ["business_name"],
+        ALLY_OWNER: ["owner_name"],
+        ALLY_ADDRESS: ["address"],
+        ALLY_CITY: ["city"],
+        ALLY_PHONE: ["ally_phone"],
+        ALLY_BARRIO: ["barrio"],
+        ALLY_UBICACION: ["ally_lat", "ally_lng"],
+    },
+    "courier": {
+        COURIER_FULLNAME: ["full_name"],
+        COURIER_IDNUMBER: ["id_number"],
+        COURIER_PHONE: ["phone"],
+        COURIER_CITY: ["city"],
+        COURIER_BARRIO: ["barrio"],
+        COURIER_RESIDENCE_ADDRESS: ["residence_address"],
+        COURIER_RESIDENCE_LOCATION: ["residence_lat", "residence_lng"],
+        COURIER_PLATE: ["plate"],
+        COURIER_BIKETYPE: ["bike_type"],
+        COURIER_CONFIRM: [],
+        COURIER_TEAMCODE: [],
+    },
+    "admin": {
+        LOCAL_ADMIN_NAME: ["admin_name"],
+        LOCAL_ADMIN_DOCUMENT: ["admin_document"],
+        LOCAL_ADMIN_TEAMNAME: ["admin_team_name"],
+        LOCAL_ADMIN_PHONE: ["phone"],
+        LOCAL_ADMIN_CITY: ["admin_city"],
+        LOCAL_ADMIN_BARRIO: ["admin_barrio"],
+        LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
+        LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
+        LOCAL_ADMIN_ACCEPT: [],
+    },
+}
+
+FLOW_PREVIOUS_STATE = {}
+for _flow, _states in FLOW_STATE_ORDER.items():
+    FLOW_PREVIOUS_STATE[_flow] = {}
+    for _idx, _state in enumerate(_states):
+        FLOW_PREVIOUS_STATE[_flow][_state] = _states[_idx - 1] if _idx > 0 else None
+
+
+def _set_flow_step(context, flow, step):
+    context.user_data["_back_flow"] = flow
+    context.user_data["_back_step"] = step
+
+
+def _clear_flow_data_from_state(context, flow, target_state):
+    states = FLOW_STATE_ORDER.get(flow, [])
+    if target_state not in states:
+        return
+    start_idx = states.index(target_state)
+    for state in states[start_idx:]:
+        for key in FLOW_STATE_KEYS.get(flow, {}).get(state, []):
+            context.user_data.pop(key, None)
+
+
+def _send_back_prompt(update, flow, state):
+    prompts = {
+        "ally": {
+            ALLY_NAME: "Registro de aliado\n\nEscribe el nombre del negocio:",
+            ALLY_OWNER: "Escribe el nombre del dueño o administrador:",
+            ALLY_ADDRESS: "Escribe la dirección del negocio:",
+            ALLY_CITY: "Escribe la ciudad del negocio:",
+            ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
+            ALLY_BARRIO: "Escribe el barrio del negocio:",
+            ALLY_UBICACION: (
+                "Ubicación del negocio (opcional).\n"
+                "Envía pin de Telegram o link de Google Maps/WhatsApp."
+            ),
+        },
+        "courier": {
+            COURIER_FULLNAME: "Registro de repartidor\n\nEscribe tu nombre completo:",
+            COURIER_IDNUMBER: "Escribe tu número de identificación:",
+            COURIER_PHONE: "Escribe tu número de celular:",
+            COURIER_CITY: "Escribe la ciudad donde trabajas:",
+            COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
+            COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
+            COURIER_RESIDENCE_LOCATION: "Ahora envía tu ubicación GPS o un link de Google Maps.",
+            COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
+            COURIER_BIKETYPE: "Escribe el tipo de moto:",
+            COURIER_CONFIRM: "Escribe SI para confirmar tu registro.",
+            COURIER_TEAMCODE: (
+                "Este paso no permite volver atrás porque el registro ya fue creado.\n"
+                "Escribe un código TEAM o NO para finalizar."
+            ),
+        },
+        "admin": {
+            LOCAL_ADMIN_NAME: "Registro de Administrador Local.\nEscribe tu nombre completo:",
+            LOCAL_ADMIN_DOCUMENT: "Escribe tu número de documento:",
+            LOCAL_ADMIN_TEAMNAME: "Escribe el nombre de tu administración (equipo):",
+            LOCAL_ADMIN_PHONE: "Escribe tu número de teléfono:",
+            LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
+            LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
+            LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin) o link de Google Maps.",
+            LOCAL_ADMIN_ACCEPT: "Escribe ACEPTAR para finalizar o volver para corregir.",
+        },
+    }
+    msg = prompts.get(flow, {}).get(state)
+    if msg:
+        update.message.reply_text(msg)
+    else:
+        update.message.reply_text("Escribe el dato solicitado o usa /cancel para salir.")
+
+
+def volver_paso_anterior(update, context):
+    flow = context.user_data.get("_back_flow")
+    current_state = context.user_data.get("_back_step")
+    if not flow or current_state is None:
+        update.message.reply_text("No hay un paso anterior disponible en este flujo.")
+        return ConversationHandler.END
+
+    previous_state = FLOW_PREVIOUS_STATE.get(flow, {}).get(current_state)
+    if previous_state is None:
+        update.message.reply_text("Ya estás en el primer paso. Escribe el dato o usa /cancel.")
+        return current_state
+
+    # En TEAMCODE ya existe registro persistido; permitir volver sería riesgoso.
+    if flow == "courier" and current_state == COURIER_TEAMCODE:
+        update.message.reply_text(
+            "Aquí no se permite volver atrás porque el registro ya se guardó.\n"
+            "Escribe código TEAM o NO para terminar."
+        )
+        return current_state
+
+    _clear_flow_data_from_state(context, flow, previous_state)
+    _set_flow_step(context, flow, previous_state)
+    _send_back_prompt(update, flow, previous_state)
+    return previous_state
+
+
 # =========================
 # Estados para crear un pedido (modificado para cliente recurrente)
 # =========================
@@ -701,6 +862,7 @@ def soy_aliado(update, context):
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "ally", ALLY_NAME)
     return ALLY_NAME
 
 
@@ -713,12 +875,12 @@ def ally_name(update, context):
         )
         return ALLY_NAME
 
-    context.user_data.clear()
     context.user_data["business_name"] = texto
     update.message.reply_text(
         "Escribe el nombre del dueño o administrador:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_OWNER)
     return ALLY_OWNER
 
 
@@ -736,6 +898,7 @@ def ally_owner(update, context):
         "Escribe la dirección del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_ADDRESS)
     return ALLY_ADDRESS
 
 
@@ -746,6 +909,7 @@ def ally_address(update, context):
         "Escribe la ciudad del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_CITY)
     return ALLY_CITY
 
 
@@ -763,6 +927,7 @@ def ally_city(update, context):
         "Escribe el teléfono de contacto del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_PHONE)
     return ALLY_PHONE
 
 
@@ -786,6 +951,7 @@ def ally_phone(update, context):
         "Escribe el barrio del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_BARRIO)
     return ALLY_BARRIO
 
 
@@ -811,6 +977,7 @@ def ally_barrio(update, context):
         "Si no tienes, toca Omitir.",
         reply_markup=reply_markup
     )
+    _set_flow_step(context, "ally", ALLY_UBICACION)
     return ALLY_UBICACION
 
 
@@ -1111,6 +1278,7 @@ def soy_repartidor(update, context):
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "courier", COURIER_FULLNAME)
     return COURIER_FULLNAME
 
 
@@ -1120,6 +1288,7 @@ def courier_fullname(update, context):
         "Escribe tu número de identificación:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_IDNUMBER)
     return COURIER_IDNUMBER
 
 
@@ -1129,6 +1298,7 @@ def courier_idnumber(update, context):
         "Escribe tu número de celular:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_PHONE)
     return COURIER_PHONE
 
 
@@ -1138,6 +1308,7 @@ def courier_phone(update, context):
         "Escribe la ciudad donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_CITY)
     return COURIER_CITY
 
 
@@ -1147,6 +1318,7 @@ def courier_city(update, context):
         "Escribe el barrio o sector principal donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_BARRIO)
     return COURIER_BARRIO
 
 
@@ -1156,6 +1328,7 @@ def courier_barrio(update, context):
         "Escribe tu dirección de residencia:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_RESIDENCE_ADDRESS)
     return COURIER_RESIDENCE_ADDRESS
 
 
@@ -1169,6 +1342,7 @@ def courier_residence_address(update, context):
         "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_RESIDENCE_LOCATION)
     return COURIER_RESIDENCE_LOCATION
 
 
@@ -1196,6 +1370,7 @@ def courier_residence_location(update, context):
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_PLATE)
     return COURIER_PLATE
 
 
@@ -1205,6 +1380,7 @@ def courier_plate(update, context):
         "Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_BIKETYPE)
     return COURIER_BIKETYPE
 
 
@@ -1244,6 +1420,7 @@ def courier_biketype(update, context):
     )
 
     update.message.reply_text(resumen)
+    _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
 
 
@@ -1333,6 +1510,7 @@ def courier_confirm(update, context):
         "Ahora, si deseas unirte a un Administrador Local, escribe el CÓDIGO DE EQUIPO (ej: TEAM1).\n"
         "Si no tienes código, escribe: NO"
     )
+    _set_flow_step(context, "courier", COURIER_TEAMCODE)
     return COURIER_TEAMCODE
 
 
@@ -3236,12 +3414,14 @@ def soy_admin(update, context):
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["admin_update_prompt"] = True
+        _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
         return LOCAL_ADMIN_NAME
 
     update.message.reply_text(
         "Registro de Administrador Local.\nEscribe tu nombre completo:",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
     return LOCAL_ADMIN_NAME
 
 
@@ -3254,6 +3434,7 @@ def admin_name(update, context):
         context.user_data.pop("admin_update_prompt", None)
         if answer == "SI":
             update.message.reply_text("Perfecto. Escribe tu nombre completo:")
+            _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
             return LOCAL_ADMIN_NAME
         update.message.reply_text("Entendido. No se modificó tu registro.")
         context.user_data.clear()
@@ -3265,6 +3446,7 @@ def admin_name(update, context):
         "Escribe tu número de documento (CC o equivalente).\n"
         "Este dato se usa solo para control interno de la plataforma."
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_DOCUMENT)
     return LOCAL_ADMIN_DOCUMENT
 
 
@@ -3281,6 +3463,7 @@ def admin_document(update, context):
         "Ahora escribe el nombre de tu administración (nombre del equipo).\n"
         "Ejemplo: Mensajeros Pereira Centro"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_TEAMNAME)
     return LOCAL_ADMIN_TEAMNAME
 
     
@@ -3293,6 +3476,7 @@ def admin_teamname(update, context):
 
     context.user_data["admin_team_name"] = team_name
     update.message.reply_text("Escribe tu número de teléfono:")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_PHONE)
     return LOCAL_ADMIN_PHONE
     
 
@@ -3305,12 +3489,14 @@ def admin_phone(update, context):
 
     context.user_data["phone"] = phone
     update.message.reply_text("¿En qué ciudad vas a operar como Administrador Local?")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CITY)
     return LOCAL_ADMIN_CITY
 
 
 def admin_city(update, context):
     context.user_data["admin_city"] = update.message.text.strip()
     update.message.reply_text("Escribe tu barrio o zona base de operación:")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_BARRIO)
     return LOCAL_ADMIN_BARRIO
 
 
@@ -3319,6 +3505,7 @@ def admin_barrio(update, context):
     update.message.reply_text(
         "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_ADDRESS)
     return LOCAL_ADMIN_RESIDENCE_ADDRESS
 
 
@@ -3333,6 +3520,7 @@ def admin_residence_address(update, context):
     update.message.reply_text(
         "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps. (Obligatorio)"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_LOCATION)
     return LOCAL_ADMIN_RESIDENCE_LOCATION
 
 
@@ -3370,6 +3558,7 @@ def admin_residence_location(update, context):
         "Escribe ACEPTAR para finalizar el registro o /cancel para salir."
     )
     update.message.reply_text(msg)
+    _set_flow_step(context, "admin", LOCAL_ADMIN_ACCEPT)
     return LOCAL_ADMIN_ACCEPT
 
 
@@ -5481,6 +5670,7 @@ ally_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -5527,6 +5717,7 @@ courier_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -8079,6 +8270,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
     )
