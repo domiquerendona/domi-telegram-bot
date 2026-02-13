@@ -3734,8 +3734,13 @@ def update_admin_balance_with_ledger(
         row = cur.fetchone()
         if not row:
             conn.rollback()
-            conn.close()
             raise ValueError(f"Admin id={admin_id} no existe.")
+        current_balance = row["balance"] if hasattr(row, "keys") else row[0]
+        if current_balance + delta < 0:
+            conn.rollback()
+            raise ValueError(
+                f"Saldo insuficiente en admin id={admin_id}. Balance actual={current_balance}, delta={delta}."
+            )
         cur.execute(
             "UPDATE admins SET balance = balance + ? WHERE id = ?",
             (delta, admin_id),
@@ -3775,7 +3780,14 @@ def update_courier_link_balance(courier_id: int, admin_id: int, delta: int):
     cur.execute("""
         UPDATE admin_couriers SET balance = balance + ?, updated_at = datetime('now')
         WHERE courier_id = ? AND admin_id = ?
-    """, (delta, courier_id, admin_id))
+          AND balance + ? >= 0
+    """, (delta, courier_id, admin_id, delta))
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise ValueError(
+            f"No se pudo actualizar saldo de vínculo courier-admin (courier_id={courier_id}, admin_id={admin_id}, delta={delta})."
+        )
     conn.commit()
     conn.close()
 
@@ -3800,7 +3812,14 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
     cur.execute("""
         UPDATE admin_allies SET balance = balance + ?, updated_at = datetime('now')
         WHERE ally_id = ? AND admin_id = ?
-    """, (delta, ally_id, admin_id))
+          AND balance + ? >= 0
+    """, (delta, ally_id, admin_id, delta))
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise ValueError(
+            f"No se pudo actualizar saldo de vínculo ally-admin (ally_id={ally_id}, admin_id={admin_id}, delta={delta})."
+        )
     conn.commit()
     conn.close()
 
