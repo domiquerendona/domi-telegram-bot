@@ -6361,6 +6361,7 @@ def cmd_saldo(update, context):
         current_link = get_approved_admin_link_for_courier(courier_id)
         if links:
             mensaje += "🚴 Repartidor:\n"
+            last_move_by_link = {l["link_id"]: l["last_movement_at"] for l in links}
             current_link_id = None
             if current_link:
                 team_name = current_link["team_name"] or "-"
@@ -6370,7 +6371,8 @@ def cmd_saldo(update, context):
                 if team_code:
                     label = "{} [{}]".format(label, team_code)
                 current_link_id = current_link["link_id"]
-                mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
+                last_move = last_move_by_link.get(current_link_id) or "-"
+                mensaje += "   Mi admin actual: {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
 
             others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
             if others:
@@ -6382,7 +6384,8 @@ def cmd_saldo(update, context):
                     label = "Plataforma" if team_code == "PLATFORM" else team_name
                     if team_code:
                         label = "{} [{}]".format(label, team_code)
-                    mensaje += "   - {} : ${:,}\n".format(label, balance)
+                    last_move = link["last_movement_at"] or "-"
+                    mensaje += "   - {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
             mensaje += "\n"
             tiene_algo = True
         else:
@@ -6398,6 +6401,7 @@ def cmd_saldo(update, context):
         current_link = get_approved_admin_link_for_ally(ally_id)
         if links:
             mensaje += "🍕 Aliado:\n"
+            last_move_by_link = {l["link_id"]: l["last_movement_at"] for l in links}
             current_link_id = None
             if current_link:
                 team_name = current_link["team_name"] or "-"
@@ -6407,7 +6411,8 @@ def cmd_saldo(update, context):
                 if team_code:
                     label = "{} [{}]".format(label, team_code)
                 current_link_id = current_link["link_id"]
-                mensaje += "   Mi admin actual: {} : ${:,}\n".format(label, balance)
+                last_move = last_move_by_link.get(current_link_id) or "-"
+                mensaje += "   Mi admin actual: {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
 
             others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
             if others:
@@ -6419,7 +6424,8 @@ def cmd_saldo(update, context):
                     label = "Plataforma" if team_code == "PLATFORM" else team_name
                     if team_code:
                         label = "{} [{}]".format(label, team_code)
-                    mensaje += "   - {} : ${:,}\n".format(label, balance)
+                    last_move = link["last_movement_at"] or "-"
+                    mensaje += "   - {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
             mensaje += "\n"
             tiene_algo = True
         else:
