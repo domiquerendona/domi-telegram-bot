@@ -6888,6 +6888,24 @@ def cmd_recargas_pendientes(update, context):
         update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
 
 
+def _get_owned_recharge_request_or_error(request_id: int, actor_admin_id: int, actor_telegram_id: int):
+    """
+    Capa reusable de ownership para callbacks de recarga.
+    Retorna: (req_dict | None, error_msg | None)
+    """
+    req = get_recharge_request(request_id)
+    if not req:
+        return None, "Solicitud no encontrada."
+
+    if req["admin_id"] == actor_admin_id:
+        return req, None
+
+    if user_has_platform_admin(actor_telegram_id):
+        return req, None
+
+    return None, "Esta solicitud no te corresponde."
+
+
 def recharge_proof_callback(update, context):
     """
     Callback para ver comprobante.
@@ -6915,16 +6933,10 @@ def recharge_proof_callback(update, context):
         return
 
     request_id = int(data.replace("recharge_proof_", ""))
-    req = get_recharge_request(request_id)
-    if not req:
-        query.answer("Solicitud no encontrada.", show_alert=True)
+    req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+    if ownership_error:
+        query.answer(ownership_error, show_alert=True)
         return
-
-    if req["admin_id"] != admin_id:
-        is_platform = user_has_platform_admin(user_tg.id)
-        if not is_platform:
-            query.answer("Esta solicitud no te corresponde.", show_alert=True)
-            return
 
     proof_file_id = req["proof_file_id"]
     if not proof_file_id:
@@ -6968,17 +6980,10 @@ def recharge_callback(update, context):
 
     if data.startswith("recharge_approve_"):
         request_id = int(data.replace("recharge_approve_", ""))
-        req = get_recharge_request(request_id)
-
-        if not req:
-            query.answer("Solicitud no encontrada.", show_alert=True)
+        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        if ownership_error:
+            query.answer(ownership_error, show_alert=True)
             return
-
-        if req["admin_id"] != admin_id:
-            is_platform = user_has_platform_admin(user_tg.id)
-            if not is_platform:
-                query.answer("Esta solicitud no te corresponde.", show_alert=True)
-                return
 
         success, msg = approve_recharge_request(request_id, admin_id)
 
@@ -6996,17 +7001,10 @@ def recharge_callback(update, context):
 
     elif data.startswith("recharge_reject_"):
         request_id = int(data.replace("recharge_reject_", ""))
-        req = get_recharge_request(request_id)
-
-        if not req:
-            query.answer("Solicitud no encontrada.", show_alert=True)
+        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        if ownership_error:
+            query.answer(ownership_error, show_alert=True)
             return
-
-        if req["admin_id"] != admin_id:
-            is_platform = user_has_platform_admin(user_tg.id)
-            if not is_platform:
-                query.answer("Esta solicitud no te corresponde.", show_alert=True)
-                return
 
         success, msg = reject_recharge_request(request_id, admin_id)
 
