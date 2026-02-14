@@ -188,6 +188,20 @@ def get_connection():
     return conn
 
 
+STANDARD_ROLE_STATUSES = {"PENDING", "APPROVED", "REJECTED", "INACTIVE"}
+
+
+def normalize_role_status(status: str) -> str:
+    """
+    Normaliza y valida estados estándar de roles.
+    Estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
+    """
+    normalized = (status or "").strip().upper()
+    if normalized not in STANDARD_ROLE_STATUSES:
+        raise ValueError(f"Estado inválido: {status}. Use uno de: {', '.join(sorted(STANDARD_ROLE_STATUSES))}.")
+    return normalized
+
+
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
@@ -1669,6 +1683,7 @@ def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING")
     Por defecto queda PENDING hasta aprobación.
     Solo usa estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
     """
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1725,6 +1740,7 @@ def deactivate_other_approved_admin_ally_links(ally_id: int, keep_admin_id: int)
 
 
 def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PENDING", is_active: int = 1):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1975,6 +1991,7 @@ def get_all_admins():
     return rows
 
 def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -2000,6 +2017,7 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
     conn.close()
 
 def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -2025,6 +2043,7 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
     conn.close()
 
 def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -2190,6 +2209,7 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
 
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -2765,6 +2785,7 @@ def get_courier_by_id(courier_id: int):
 
 def update_courier_status(courier_id: int, new_status: str):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -2843,6 +2864,7 @@ def delete_ally(ally_id: int) -> None:
 
 
 def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2855,6 +2877,7 @@ def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio
 
 
 def update_courier(courier_id, full_name, phone, bike_type, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2947,6 +2970,7 @@ def get_pending_admins():
 
 
 def update_admin_status(user_id: int, new_status: str):
+    new_status = normalize_role_status(new_status)
     conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -3103,6 +3127,7 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
     conn.close()
 
 def update_admin_courier_status(admin_id, courier_id, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -3979,6 +4004,7 @@ def list_pending_recharges_for_admin(admin_id: int):
 
 def update_recharge_status(request_id: int, status: str, decided_by_admin_id: int):
     """Actualiza el status de una solicitud (APPROVED/REJECTED)."""
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
