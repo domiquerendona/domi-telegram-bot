@@ -188,6 +188,20 @@ def get_connection():
     return conn
 
 
+STANDARD_ROLE_STATUSES = {"PENDING", "APPROVED", "REJECTED", "INACTIVE"}
+
+
+def normalize_role_status(status: str) -> str:
+    """
+    Normaliza y valida estados estándar de roles.
+    Estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
+    """
+    normalized = (status or "").strip().upper()
+    if normalized not in STANDARD_ROLE_STATUSES:
+        raise ValueError(f"Estado inválido: {status}. Use uno de: {', '.join(sorted(STANDARD_ROLE_STATUSES))}.")
+    return normalized
+
+
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
@@ -214,6 +228,7 @@ def init_db():
             phone TEXT NOT NULL,
             city TEXT NOT NULL,
             barrio TEXT NOT NULL,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             status TEXT NOT NULL DEFAULT 'PENDING',
             created_at TEXT DEFAULT (datetime('now')),
             is_deleted INTEGER NOT NULL DEFAULT 0,
@@ -589,7 +604,7 @@ def init_db():
             admin_id INTEGER NOT NULL,
             ally_id INTEGER NOT NULL,
             status TEXT DEFAULT 'PENDING',
-            balance INTEGER DEFAULT 0,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(admin_id, ally_id),
@@ -605,7 +620,7 @@ def init_db():
             admin_id INTEGER NOT NULL,
             courier_id INTEGER NOT NULL,
             status TEXT DEFAULT 'PENDING',
-            balance INTEGER DEFAULT 0,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(admin_id, courier_id),
@@ -646,6 +661,34 @@ def init_db():
             FOREIGN KEY (ally_id) REFERENCES allies(id),
             FOREIGN KEY (courier_id) REFERENCES couriers(id),
             FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_courier_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            reason TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            UNIQUE(ally_id, courier_id)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_offer_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            offered_at TEXT,
+            responded_at TEXT,
+            response TEXT,
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id)
         );
     """)
 
@@ -794,6 +837,21 @@ def init_db():
     if 'quote_source' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
 
+    try:
+        cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN available_cash INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN is_active INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+
     # Bootstrap: insertar términos por defecto para ALLY si no existen
     cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
     if not cur.fetchone():
@@ -814,6 +872,62 @@ def init_db():
     admins_cols = [r[1] for r in cur.fetchall()]
     if "balance" not in admins_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN balance INTEGER DEFAULT 0")
+
+    # Guardas no-negativos para DB existente (SQLite no permite agregar CHECK facil post-creacion)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admins_balance_non_negative_insert
+        BEFORE INSERT ON admins
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admins.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admins_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admins
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admins.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_couriers_balance_non_negative_insert
+        BEFORE INSERT ON admin_couriers
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_couriers.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_couriers_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admin_couriers
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_couriers.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_allies_balance_non_negative_insert
+        BEFORE INSERT ON admin_allies
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_allies.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_allies_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admin_allies
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_allies.balance cannot be negative');
+        END;
+    """)
 
     # Tabla: recharge_requests (solicitudes de recarga)
     cur.execute("""
@@ -1271,6 +1385,269 @@ def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0)
     return rows
 
 
+def block_courier_for_ally(ally_id: int, courier_id: int, reason: str = None):
+    """Aliado bloquea/veta a un courier."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO ally_courier_blocks (ally_id, courier_id, reason)
+        VALUES (?, ?, ?);
+    """, (ally_id, courier_id, reason))
+    conn.commit()
+    conn.close()
+
+
+def unblock_courier_for_ally(ally_id: int, courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ally_courier_blocks WHERE ally_id = ? AND courier_id = ?;",
+                (ally_id, courier_id))
+    conn.commit()
+    conn.close()
+
+
+def get_blocked_courier_ids_for_ally(ally_id: int) -> set:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?;", (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return {row[0] for row in rows}
+
+
+def create_offer_queue(order_id: int, courier_ids: list):
+    """Crea la cola de ofertas para un pedido. courier_ids ya viene ordenado por prioridad."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for position, courier_id in enumerate(courier_ids):
+        cur.execute("""
+            INSERT INTO order_offer_queue (order_id, courier_id, position, status)
+            VALUES (?, ?, ?, 'PENDING');
+        """, (order_id, courier_id, position))
+    conn.commit()
+    conn.close()
+
+
+def get_next_pending_offer(order_id: int):
+    """Devuelve el siguiente courier en cola con status PENDING."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT oq.id, oq.courier_id, oq.position, c.full_name, u.telegram_id
+        FROM order_offer_queue oq
+        JOIN couriers c ON c.id = oq.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE oq.order_id = ? AND oq.status = 'PENDING'
+        ORDER BY oq.position ASC
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "queue_id": row[0],
+        "courier_id": row[1],
+        "position": row[2],
+        "full_name": row[3],
+        "telegram_id": row[4],
+    }
+
+
+def mark_offer_as_offered(queue_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = 'OFFERED', offered_at = datetime('now')
+        WHERE id = ?;
+    """, (queue_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_offer_response(queue_id: int, response: str):
+    """response: 'ACCEPTED', 'REJECTED', o 'EXPIRED'"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = ?, response = ?, responded_at = datetime('now')
+        WHERE id = ?;
+    """, (response, response, queue_id))
+    conn.commit()
+    conn.close()
+
+
+def get_current_offer_for_order(order_id: int):
+    """Devuelve la oferta actualmente en status OFFERED para un pedido."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT oq.id, oq.courier_id, oq.position, u.telegram_id
+        FROM order_offer_queue oq
+        JOIN couriers c ON c.id = oq.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE oq.order_id = ? AND oq.status = 'OFFERED'
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "queue_id": row[0],
+        "courier_id": row[1],
+        "position": row[2],
+        "telegram_id": row[3],
+    }
+
+
+def reset_offer_queue(order_id: int):
+    """Resetea toda la cola a PENDING para reiniciar el ciclo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_offer_queue
+        SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
+        WHERE order_id = ? AND status IN ('REJECTED', 'EXPIRED');
+    """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_offer_queue(order_id: int):
+    """Elimina la cola de ofertas de un pedido (al cancelar o completar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM order_offer_queue WHERE order_id = ?;", (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_courier_available_cash(courier_id: int, amount: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE couriers SET available_cash = ?, is_active = 1 WHERE id = ?;",
+                (amount, courier_id))
+    conn.commit()
+    conn.close()
+
+
+def deactivate_courier(courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE couriers SET is_active = 0, available_cash = 0 WHERE id = ?;",
+                (courier_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_active_courier_cash(courier_id: int) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT available_cash FROM couriers WHERE id = ?;", (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def get_active_orders_by_ally(ally_id: int):
+    """Devuelve pedidos activos de un aliado (no entregados ni cancelados)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM orders
+        WHERE ally_id = ?
+          AND status NOT IN ('DELIVERED', 'CANCELLED')
+        ORDER BY created_at DESC;
+    """, (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def cancel_order(order_id: int, canceled_by: str):
+    """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET status = 'CANCELLED', canceled_at = datetime('now'), canceled_by = ?
+        WHERE id = ?;
+    """, (canceled_by, order_id))
+    conn.commit()
+    conn.close()
+
+
+def release_order_from_courier(order_id: int):
+    """Courier libera el pedido. Vuelve a PUBLISHED y limpia courier_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders
+        SET status = 'PUBLISHED', courier_id = NULL, accepted_at = NULL
+        WHERE id = ?;
+    """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
+                                      requires_cash: bool = False,
+                                      cash_required_amount: int = 0):
+    """
+    Devuelve couriers elegibles para un pedido, filtrados por:
+    - Aprobados y activos en el equipo
+    - No eliminados
+    - is_active = 1 (courier se activo y declaro base)
+    - No vetados por el aliado (si ally_id dado)
+    - Con base suficiente (si requires_cash)
+    Ordenados por available_cash DESC (mayor base primero).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE ac.admin_id = ?
+          AND ac.status = 'APPROVED'
+          AND c.status = 'APPROVED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
+          AND c.is_active = 1
+    """
+    params = [admin_id]
+
+    if ally_id:
+        query += """
+          AND c.id NOT IN (
+              SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?
+          )
+        """
+        params.append(ally_id)
+
+    if requires_cash and cash_required_amount > 0:
+        query += " AND c.available_cash >= ?"
+        params.append(cash_required_amount)
+
+    query += " ORDER BY c.available_cash DESC;"
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "courier_id": row[0],
+            "full_name": row[1],
+            "telegram_id": row[2],
+            "available_cash": row[3],
+        }
+        for row in rows
+    ]
+
+
 def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
     """
     Lista vínculos APPROVED admin_allies con saldo por vínculo.
@@ -1306,6 +1683,7 @@ def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING")
     Por defecto queda PENDING hasta aprobación.
     Solo usa estados válidos: PENDING, APPROVED, REJECTED, INACTIVE.
     """
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1362,6 +1740,7 @@ def deactivate_other_approved_admin_ally_links(ally_id: int, keep_admin_id: int)
 
 
 def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PENDING", is_active: int = 1):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1612,6 +1991,7 @@ def get_all_admins():
     return rows
 
 def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1637,6 +2017,7 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
     conn.close()
 
 def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1662,6 +2043,7 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
     conn.close()
 
 def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1827,6 +2209,7 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
 
 def update_ally_status(ally_id: int, status: str):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -2181,7 +2564,7 @@ def assign_order_to_courier(order_id: int, courier_id: int):
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'APPROVED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
         WHERE id = ?;
     """, (courier_id, order_id))
     conn.commit()
@@ -2228,6 +2611,64 @@ def get_orders_by_courier(courier_id: int, limit: int = 50):
         ORDER BY id DESC
         LIMIT ?;
     """, (courier_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_orders_by_admin_team(admin_id: int, status_filter: str = None, limit: int = 20):
+    """
+    Devuelve pedidos de aliados vinculados al admin.
+    status_filter: 'ACTIVE' (no DELIVERED/CANCELLED), 'DELIVERED', 'CANCELLED', o None (todos).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT o.* FROM orders o
+        JOIN admin_allies aa ON aa.ally_id = o.ally_id
+        WHERE aa.admin_id = ? AND aa.status = 'APPROVED'
+    """
+    params = [admin_id]
+
+    if status_filter == "ACTIVE":
+        query += " AND o.status NOT IN ('DELIVERED', 'CANCELLED')"
+    elif status_filter == "DELIVERED":
+        query += " AND o.status = 'DELIVERED'"
+    elif status_filter == "CANCELLED":
+        query += " AND o.status = 'CANCELLED'"
+
+    query += " ORDER BY o.created_at DESC LIMIT ?;"
+    params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_orders(status_filter: str = None, limit: int = 20):
+    """
+    Devuelve todos los pedidos del sistema (para admin plataforma).
+    status_filter: 'ACTIVE', 'DELIVERED', 'CANCELLED', o None (todos).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = "SELECT * FROM orders"
+    params = []
+
+    if status_filter == "ACTIVE":
+        query += " WHERE status NOT IN ('DELIVERED', 'CANCELLED')"
+    elif status_filter == "DELIVERED":
+        query += " WHERE status = 'DELIVERED'"
+    elif status_filter == "CANCELLED":
+        query += " WHERE status = 'CANCELLED'"
+
+    query += " ORDER BY created_at DESC LIMIT ?;"
+    params.append(limit)
+
+    cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -2344,6 +2785,7 @@ def get_courier_by_id(courier_id: int):
 
 def update_courier_status(courier_id: int, new_status: str):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
+    new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -2422,6 +2864,7 @@ def delete_ally(ally_id: int) -> None:
 
 
 def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2434,6 +2877,7 @@ def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio
 
 
 def update_courier(courier_id, full_name, phone, bike_type, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2526,6 +2970,7 @@ def get_pending_admins():
 
 
 def update_admin_status(user_id: int, new_status: str):
+    new_status = normalize_role_status(new_status)
     conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2604,6 +3049,36 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     conn.close()
     return n
 
+
+def count_admin_allies(admin_id: int):
+    """Cuenta el total de aliados vinculados al admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_allies
+        WHERE admin_id = ?
+    """, (admin_id,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def count_admin_allies_with_min_balance(admin_id: int, min_balance: int = 5000):
+    """Cuenta aliados del admin con saldo >= min_balance."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM admin_allies
+        WHERE admin_id = ?
+          AND balance >= ?
+    """, (admin_id, min_balance))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
 def get_active_terms_version(role: str):
     conn = get_connection()
     cur = conn.cursor()
@@ -2652,6 +3127,7 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
     conn.close()
 
 def update_admin_courier_status(admin_id, courier_id, status):
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2808,6 +3284,60 @@ def get_approved_admin_link_for_ally(ally_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
+
+def get_all_approved_links_for_courier(courier_id: int):
+    """
+    Devuelve TODOS los vínculos APPROVED de un courier con admins.
+    Retorna lista de Row con: admin_id, team_name, team_code, balance, link_id, last_movement_at
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            ac.balance AS balance,
+            ac.id AS link_id,
+            ac.updated_at AS last_movement_at
+        FROM admin_couriers ac
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.courier_id = ?
+          AND ac.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY a.team_code ASC;
+    """, (courier_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_approved_links_for_ally(ally_id: int):
+    """
+    Devuelve TODOS los vínculos APPROVED de un aliado con admins.
+    Retorna lista de Row con: admin_id, team_name, team_code, balance, link_id, last_movement_at
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            a.id AS admin_id,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code AS team_code,
+            aa.balance AS balance,
+            aa.id AS link_id,
+            aa.updated_at AS last_movement_at
+        FROM admin_allies aa
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.ally_id = ?
+          AND aa.status = 'APPROVED'
+          AND a.is_deleted = 0
+        ORDER BY a.team_code ASC;
+    """, (ally_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 # ============================================================
@@ -3286,8 +3816,13 @@ def update_admin_balance_with_ledger(
         row = cur.fetchone()
         if not row:
             conn.rollback()
-            conn.close()
             raise ValueError(f"Admin id={admin_id} no existe.")
+        current_balance = row["balance"] if hasattr(row, "keys") else row[0]
+        if current_balance + delta < 0:
+            conn.rollback()
+            raise ValueError(
+                f"Saldo insuficiente en admin id={admin_id}. Balance actual={current_balance}, delta={delta}."
+            )
         cur.execute(
             "UPDATE admins SET balance = balance + ? WHERE id = ?",
             (delta, admin_id),
@@ -3327,7 +3862,14 @@ def update_courier_link_balance(courier_id: int, admin_id: int, delta: int):
     cur.execute("""
         UPDATE admin_couriers SET balance = balance + ?, updated_at = datetime('now')
         WHERE courier_id = ? AND admin_id = ?
-    """, (delta, courier_id, admin_id))
+          AND balance + ? >= 0
+    """, (delta, courier_id, admin_id, delta))
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise ValueError(
+            f"No se pudo actualizar saldo de vínculo courier-admin (courier_id={courier_id}, admin_id={admin_id}, delta={delta})."
+        )
     conn.commit()
     conn.close()
 
@@ -3352,7 +3894,14 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
     cur.execute("""
         UPDATE admin_allies SET balance = balance + ?, updated_at = datetime('now')
         WHERE ally_id = ? AND admin_id = ?
-    """, (delta, ally_id, admin_id))
+          AND balance + ? >= 0
+    """, (delta, ally_id, admin_id, delta))
+    if cur.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        raise ValueError(
+            f"No se pudo actualizar saldo de vínculo ally-admin (ally_id={ally_id}, admin_id={admin_id}, delta={delta})."
+        )
     conn.commit()
     conn.close()
 
@@ -3398,7 +3947,7 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
 
 
 def get_recharge_request(request_id: int):
-    """Obtiene una solicitud de recarga por ID."""
+    """Obtiene una solicitud de recarga por ID (dict homogéneo)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -3409,7 +3958,25 @@ def get_recharge_request(request_id: int):
     """, (request_id,))
     row = cur.fetchone()
     conn.close()
-    return row
+    if not row:
+        return None
+    if hasattr(row, "keys"):
+        return {k: row[k] for k in row.keys()}
+    return {
+        "id": row[0],
+        "target_type": row[1],
+        "target_id": row[2],
+        "admin_id": row[3],
+        "amount": row[4],
+        "status": row[5],
+        "requested_by_user_id": row[6],
+        "decided_by_admin_id": row[7],
+        "method": row[8],
+        "note": row[9],
+        "created_at": row[10],
+        "decided_at": row[11],
+        "proof_file_id": row[12],
+    }
 
 
 def list_pending_recharges_for_admin(admin_id: int):
@@ -3437,6 +4004,7 @@ def list_pending_recharges_for_admin(admin_id: int):
 
 def update_recharge_status(request_id: int, status: str, decided_by_admin_id: int):
     """Actualiza el status de una solicitud (APPROVED/REJECTED)."""
+    status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""

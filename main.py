@@ -32,7 +32,9 @@ from services import (
     google_place_details,
     approve_recharge_request,
     reject_recharge_request,
+    check_service_fee_available,
 )
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -97,6 +99,8 @@ from db import (
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
+    set_courier_available_cash,
+    deactivate_courier,
     get_pending_couriers,
     get_pending_couriers_by_admin,
     update_courier_status,
@@ -152,6 +156,8 @@ from db import (
     get_admin_link_for_ally,
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
+    get_all_approved_links_for_courier,
+    get_all_approved_links_for_ally,
     get_admin_balance,
     get_platform_admin,
     create_recharge_request,
@@ -267,6 +273,167 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
 ) = range(300, 309)
 
 
+FLOW_STATE_ORDER = {
+    "ally": [ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UBICACION],
+    "courier": [
+        COURIER_FULLNAME,
+        COURIER_IDNUMBER,
+        COURIER_PHONE,
+        COURIER_CITY,
+        COURIER_BARRIO,
+        COURIER_RESIDENCE_ADDRESS,
+        COURIER_RESIDENCE_LOCATION,
+        COURIER_PLATE,
+        COURIER_BIKETYPE,
+        COURIER_CONFIRM,
+        COURIER_TEAMCODE,
+    ],
+    "admin": [
+        LOCAL_ADMIN_NAME,
+        LOCAL_ADMIN_DOCUMENT,
+        LOCAL_ADMIN_TEAMNAME,
+        LOCAL_ADMIN_PHONE,
+        LOCAL_ADMIN_CITY,
+        LOCAL_ADMIN_BARRIO,
+        LOCAL_ADMIN_RESIDENCE_ADDRESS,
+        LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_ACCEPT,
+    ],
+}
+
+FLOW_STATE_KEYS = {
+    "ally": {
+        ALLY_NAME: ["business_name"],
+        ALLY_OWNER: ["owner_name"],
+        ALLY_ADDRESS: ["address"],
+        ALLY_CITY: ["city"],
+        ALLY_PHONE: ["ally_phone"],
+        ALLY_BARRIO: ["barrio"],
+        ALLY_UBICACION: ["ally_lat", "ally_lng"],
+    },
+    "courier": {
+        COURIER_FULLNAME: ["full_name"],
+        COURIER_IDNUMBER: ["id_number"],
+        COURIER_PHONE: ["phone"],
+        COURIER_CITY: ["city"],
+        COURIER_BARRIO: ["barrio"],
+        COURIER_RESIDENCE_ADDRESS: ["residence_address"],
+        COURIER_RESIDENCE_LOCATION: ["residence_lat", "residence_lng"],
+        COURIER_PLATE: ["plate"],
+        COURIER_BIKETYPE: ["bike_type"],
+        COURIER_CONFIRM: [],
+        COURIER_TEAMCODE: [],
+    },
+    "admin": {
+        LOCAL_ADMIN_NAME: ["admin_name"],
+        LOCAL_ADMIN_DOCUMENT: ["admin_document"],
+        LOCAL_ADMIN_TEAMNAME: ["admin_team_name"],
+        LOCAL_ADMIN_PHONE: ["phone"],
+        LOCAL_ADMIN_CITY: ["admin_city"],
+        LOCAL_ADMIN_BARRIO: ["admin_barrio"],
+        LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
+        LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
+        LOCAL_ADMIN_ACCEPT: [],
+    },
+}
+
+FLOW_PREVIOUS_STATE = {}
+for _flow, _states in FLOW_STATE_ORDER.items():
+    FLOW_PREVIOUS_STATE[_flow] = {}
+    for _idx, _state in enumerate(_states):
+        FLOW_PREVIOUS_STATE[_flow][_state] = _states[_idx - 1] if _idx > 0 else None
+
+
+def _set_flow_step(context, flow, step):
+    context.user_data["_back_flow"] = flow
+    context.user_data["_back_step"] = step
+
+
+def _clear_flow_data_from_state(context, flow, target_state):
+    states = FLOW_STATE_ORDER.get(flow, [])
+    if target_state not in states:
+        return
+    start_idx = states.index(target_state)
+    for state in states[start_idx:]:
+        for key in FLOW_STATE_KEYS.get(flow, {}).get(state, []):
+            context.user_data.pop(key, None)
+
+
+def _send_back_prompt(update, flow, state):
+    prompts = {
+        "ally": {
+            ALLY_NAME: "Registro de aliado\n\nEscribe el nombre del negocio:",
+            ALLY_OWNER: "Escribe el nombre del dueño o administrador:",
+            ALLY_ADDRESS: "Escribe la dirección del negocio:",
+            ALLY_CITY: "Escribe la ciudad del negocio:",
+            ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
+            ALLY_BARRIO: "Escribe el barrio del negocio:",
+            ALLY_UBICACION: (
+                "Ubicación del negocio (opcional).\n"
+                "Envía pin de Telegram o link de Google Maps/WhatsApp."
+            ),
+        },
+        "courier": {
+            COURIER_FULLNAME: "Registro de repartidor\n\nEscribe tu nombre completo:",
+            COURIER_IDNUMBER: "Escribe tu número de identificación:",
+            COURIER_PHONE: "Escribe tu número de celular:",
+            COURIER_CITY: "Escribe la ciudad donde trabajas:",
+            COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
+            COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
+            COURIER_RESIDENCE_LOCATION: "Ahora envía tu ubicación GPS o un link de Google Maps.",
+            COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
+            COURIER_BIKETYPE: "Escribe el tipo de moto:",
+            COURIER_CONFIRM: "Escribe SI para confirmar tu registro.",
+            COURIER_TEAMCODE: (
+                "Este paso no permite volver atrás porque el registro ya fue creado.\n"
+                "Escribe un código TEAM o NO para finalizar."
+            ),
+        },
+        "admin": {
+            LOCAL_ADMIN_NAME: "Registro de Administrador Local.\nEscribe tu nombre completo:",
+            LOCAL_ADMIN_DOCUMENT: "Escribe tu número de documento:",
+            LOCAL_ADMIN_TEAMNAME: "Escribe el nombre de tu administración (equipo):",
+            LOCAL_ADMIN_PHONE: "Escribe tu número de teléfono:",
+            LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
+            LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
+            LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin) o link de Google Maps.",
+            LOCAL_ADMIN_ACCEPT: "Escribe ACEPTAR para finalizar o volver para corregir.",
+        },
+    }
+    msg = prompts.get(flow, {}).get(state)
+    if msg:
+        update.message.reply_text(msg)
+    else:
+        update.message.reply_text("Escribe el dato solicitado o usa /cancel para salir.")
+
+
+def volver_paso_anterior(update, context):
+    flow = context.user_data.get("_back_flow")
+    current_state = context.user_data.get("_back_step")
+    if not flow or current_state is None:
+        update.message.reply_text("No hay un paso anterior disponible en este flujo.")
+        return ConversationHandler.END
+
+    previous_state = FLOW_PREVIOUS_STATE.get(flow, {}).get(current_state)
+    if previous_state is None:
+        update.message.reply_text("Ya estás en el primer paso. Escribe el dato o usa /cancel.")
+        return current_state
+
+    # En TEAMCODE ya existe registro persistido; permitir volver sería riesgoso.
+    if flow == "courier" and current_state == COURIER_TEAMCODE:
+        update.message.reply_text(
+            "Aquí no se permite volver atrás porque el registro ya se guardó.\n"
+            "Escribe código TEAM o NO para terminar."
+        )
+        return current_state
+
+    _clear_flow_data_from_state(context, flow, previous_state)
+    _set_flow_step(context, flow, previous_state)
+    _send_back_prompt(update, flow, previous_state)
+    return previous_state
+
+
 # =========================
 # Estados para crear un pedido (modificado para cliente recurrente)
 # =========================
@@ -345,6 +512,7 @@ TARIFAS_VALOR = 902
 RECARGAR_MONTO = 950
 RECARGAR_ADMIN = 951
 RECARGAR_COMPROBANTE = 952
+RECARGAR_ROL = 953
 
 # =========================
 # Estados para configurar datos de pago
@@ -459,26 +627,37 @@ def start(update, context):
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
 
-    # Construir menú según roles del usuario
+    # Construir menú agrupado por rol
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
     comandos = []
 
-    # Comandos principales (para todos)
-    comandos.append("• /menu  - Ver este menú")
+    comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
     comandos.append("• /cotizar  - Cotizar por distancia")
-
-    # Saldo y recargas (para usuarios con rol)
     if ally or courier or admin_local or es_admin_plataforma:
         comandos.append("• /saldo  - Ver tu saldo")
-    if ally or courier:
+
+    comandos.append("")
+    comandos.append("Aliado:")
+    if ally:
         comandos.append("• /recargar  - Solicitar recarga")
+        if ally["status"] == "APPROVED":
+            comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
+            comandos.append("• /clientes  - Agenda de clientes recurrentes")
+        else:
+            comandos.append("• Tu negocio aún no está APPROVED para crear pedidos.")
+    else:
+        comandos.append("• /soy_aliado  - Registrarte como aliado")
 
-    # Nuevo pedido y clientes (solo aliados aprobados)
-    if ally and ally["status"] == "APPROVED":
-        comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
-        comandos.append("• /clientes  - Agenda de clientes recurrentes")
+    comandos.append("")
+    comandos.append("Repartidor:")
+    if courier:
+        comandos.append("• /recargar  - Solicitar recarga")
+    else:
+        comandos.append("• /soy_repartidor  - Registrarte como repartidor")
 
-    # Admin (segun tipo, evitar duplicados)
+    comandos.append("")
+    comandos.append("Administrador:")
     if es_admin_plataforma:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
@@ -490,18 +669,11 @@ def start(update, context):
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
-
-    # Registro (solo si tiene roles faltantes)
-    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
-    if missing_cmds:
-        comandos.append("")
-        comandos.append("Registro:")
-        if "/soy_aliado" in missing_cmds:
-            comandos.append("• /soy_aliado  - Registrar tu negocio")
-        if "/soy_repartidor" in missing_cmds:
-            comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+    else:
         if "/soy_admin" in missing_cmds:
             comandos.append("• /soy_admin  - Registrarte como administrador")
+        else:
+            comandos.append("• No tienes opciones de administrador disponibles.")
 
     mensaje = (
         "🐢 Bienvenido a Domiquerendona 🐢\n\n"
@@ -510,7 +682,7 @@ def start(update, context):
         f"{estado_text}\n\n"
         "Siguiente paso recomendado:\n"
         f"{siguientes_text}\n\n"
-        "Comandos principales:\n"
+        "Menú ordenado por rol:\n"
         + "\n".join(comandos)
         + "\n"
     )
@@ -624,8 +796,7 @@ def menu_button_handler(update, context):
     text = update.message.text.strip()
 
     if text == "Mis pedidos":
-        update.message.reply_text("Funcion 'Mis pedidos' en desarrollo.")
-        return
+        return ally_active_orders(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
@@ -653,6 +824,11 @@ def menu_button_handler(update, context):
         return
     elif text == "Menu":
         return start(update, context)
+
+
+def saludo_menu_handler(update, context):
+    """Muestra menu principal cuando el usuario saluda fuera de comandos."""
+    show_main_menu(update, context, "Hola. Te muestro el menu principal:")
 
 
 # ----- REGISTRO DE ALIADO -----
@@ -696,6 +872,7 @@ def soy_aliado(update, context):
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "ally", ALLY_NAME)
     return ALLY_NAME
 
 
@@ -708,12 +885,12 @@ def ally_name(update, context):
         )
         return ALLY_NAME
 
-    context.user_data.clear()
     context.user_data["business_name"] = texto
     update.message.reply_text(
         "Escribe el nombre del dueño o administrador:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_OWNER)
     return ALLY_OWNER
 
 
@@ -731,6 +908,7 @@ def ally_owner(update, context):
         "Escribe la dirección del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_ADDRESS)
     return ALLY_ADDRESS
 
 
@@ -741,6 +919,7 @@ def ally_address(update, context):
         "Escribe la ciudad del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_CITY)
     return ALLY_CITY
 
 
@@ -758,6 +937,7 @@ def ally_city(update, context):
         "Escribe el teléfono de contacto del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_PHONE)
     return ALLY_PHONE
 
 
@@ -781,6 +961,7 @@ def ally_phone(update, context):
         "Escribe el barrio del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "ally", ALLY_BARRIO)
     return ALLY_BARRIO
 
 
@@ -806,6 +987,7 @@ def ally_barrio(update, context):
         "Si no tienes, toca Omitir.",
         reply_markup=reply_markup
     )
+    _set_flow_step(context, "ally", ALLY_UBICACION)
     return ALLY_UBICACION
 
 
@@ -1106,6 +1288,7 @@ def soy_repartidor(update, context):
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "courier", COURIER_FULLNAME)
     return COURIER_FULLNAME
 
 
@@ -1115,6 +1298,7 @@ def courier_fullname(update, context):
         "Escribe tu número de identificación:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_IDNUMBER)
     return COURIER_IDNUMBER
 
 
@@ -1124,6 +1308,7 @@ def courier_idnumber(update, context):
         "Escribe tu número de celular:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_PHONE)
     return COURIER_PHONE
 
 
@@ -1133,6 +1318,7 @@ def courier_phone(update, context):
         "Escribe la ciudad donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_CITY)
     return COURIER_CITY
 
 
@@ -1142,6 +1328,7 @@ def courier_city(update, context):
         "Escribe el barrio o sector principal donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_BARRIO)
     return COURIER_BARRIO
 
 
@@ -1151,6 +1338,7 @@ def courier_barrio(update, context):
         "Escribe tu dirección de residencia:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_RESIDENCE_ADDRESS)
     return COURIER_RESIDENCE_ADDRESS
 
 
@@ -1164,6 +1352,7 @@ def courier_residence_address(update, context):
         "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_RESIDENCE_LOCATION)
     return COURIER_RESIDENCE_LOCATION
 
 
@@ -1191,6 +1380,7 @@ def courier_residence_location(update, context):
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_PLATE)
     return COURIER_PLATE
 
 
@@ -1200,6 +1390,7 @@ def courier_plate(update, context):
         "Escribe el tipo de moto (Ejemplo: Bóxer 100, FZ, scooter, bicicleta, etc.):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
+    _set_flow_step(context, "courier", COURIER_BIKETYPE)
     return COURIER_BIKETYPE
 
 
@@ -1239,6 +1430,7 @@ def courier_biketype(update, context):
     )
 
     update.message.reply_text(resumen)
+    _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
 
 
@@ -1292,6 +1484,25 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
+    # Notificación al Admin de Plataforma
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
     courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
     context.user_data["new_courier_id"] = courier_id
 
@@ -1309,6 +1520,7 @@ def courier_confirm(update, context):
         "Ahora, si deseas unirte a un Administrador Local, escribe el CÓDIGO DE EQUIPO (ej: TEAM1).\n"
         "Si no tienes código, escribe: NO"
     )
+    _set_flow_step(context, "courier", COURIER_TEAMCODE)
     return COURIER_TEAMCODE
 
 
@@ -2787,6 +2999,41 @@ def pedido_confirmacion_callback(update, context):
             query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
+        chat_id = query.message.chat_id
+
+        admin_link = get_approved_admin_link_for_ally(ally_id)
+        if admin_link:
+            fee_ok, fee_code = check_service_fee_available(
+                target_type="ALLY",
+                target_id=ally_id,
+                admin_id=admin_link["admin_id"],
+            )
+            if not fee_ok:
+                if fee_code == "ADMIN_SIN_SALDO":
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text="Tu administrador no tiene saldo suficiente para operar. "
+                             "Contacta a tu administrador o recarga directamente con plataforma."
+                    )
+                    try:
+                        admin_row = get_admin_by_id(admin_link["admin_id"])
+                        if admin_row:
+                            admin_user = get_user_by_id(admin_row["user_id"])
+                            if admin_user:
+                                context.bot.send_message(
+                                    chat_id=admin_user["telegram_id"],
+                                    text="Tu equipo no puede operar porque no tienes saldo. "
+                                         "Recarga con plataforma para que tu equipo siga generando ganancias."
+                                )
+                    except Exception as e:
+                        print("[WARN] No se pudo notificar al admin:", e)
+                else:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text="No tienes saldo suficiente para este servicio. Recarga para continuar."
+                    )
+                context.user_data.clear()
+                return ConversationHandler.END
 
         # Obtener pickup del selector (o default si no existe)
         pickup_location = context.user_data.get("pickup_location")
@@ -2853,6 +3100,12 @@ def pedido_confirmacion_callback(update, context):
                 quote_source=quote_source,
             )
             context.user_data["order_id"] = order_id
+
+            # Publicar pedido a couriers del equipo
+            try:
+                publish_order_to_couriers(order_id, ally_id, context)
+            except Exception as e:
+                print("[WARN] Error al publicar pedido a couriers:", e)
 
             # Incrementar contador de uso del pickup
             if pickup_location_id:
@@ -3171,12 +3424,14 @@ def soy_admin(update, context):
             reply_markup=ReplyKeyboardRemove()
         )
         context.user_data["admin_update_prompt"] = True
+        _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
         return LOCAL_ADMIN_NAME
 
     update.message.reply_text(
         "Registro de Administrador Local.\nEscribe tu nombre completo:",
         reply_markup=ReplyKeyboardRemove()
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
     return LOCAL_ADMIN_NAME
 
 
@@ -3189,6 +3444,7 @@ def admin_name(update, context):
         context.user_data.pop("admin_update_prompt", None)
         if answer == "SI":
             update.message.reply_text("Perfecto. Escribe tu nombre completo:")
+            _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
             return LOCAL_ADMIN_NAME
         update.message.reply_text("Entendido. No se modificó tu registro.")
         context.user_data.clear()
@@ -3200,6 +3456,7 @@ def admin_name(update, context):
         "Escribe tu número de documento (CC o equivalente).\n"
         "Este dato se usa solo para control interno de la plataforma."
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_DOCUMENT)
     return LOCAL_ADMIN_DOCUMENT
 
 
@@ -3216,6 +3473,7 @@ def admin_document(update, context):
         "Ahora escribe el nombre de tu administración (nombre del equipo).\n"
         "Ejemplo: Mensajeros Pereira Centro"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_TEAMNAME)
     return LOCAL_ADMIN_TEAMNAME
 
     
@@ -3228,6 +3486,7 @@ def admin_teamname(update, context):
 
     context.user_data["admin_team_name"] = team_name
     update.message.reply_text("Escribe tu número de teléfono:")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_PHONE)
     return LOCAL_ADMIN_PHONE
     
 
@@ -3240,12 +3499,14 @@ def admin_phone(update, context):
 
     context.user_data["phone"] = phone
     update.message.reply_text("¿En qué ciudad vas a operar como Administrador Local?")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CITY)
     return LOCAL_ADMIN_CITY
 
 
 def admin_city(update, context):
     context.user_data["admin_city"] = update.message.text.strip()
     update.message.reply_text("Escribe tu barrio o zona base de operación:")
+    _set_flow_step(context, "admin", LOCAL_ADMIN_BARRIO)
     return LOCAL_ADMIN_BARRIO
 
 
@@ -3254,6 +3515,7 @@ def admin_barrio(update, context):
     update.message.reply_text(
         "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_ADDRESS)
     return LOCAL_ADMIN_RESIDENCE_ADDRESS
 
 
@@ -3268,6 +3530,7 @@ def admin_residence_address(update, context):
     update.message.reply_text(
         "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps. (Obligatorio)"
     )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_LOCATION)
     return LOCAL_ADMIN_RESIDENCE_LOCATION
 
 
@@ -3305,6 +3568,7 @@ def admin_residence_location(update, context):
         "Escribe ACEPTAR para finalizar el registro o /cancel para salir."
     )
     update.message.reply_text(msg)
+    _set_flow_step(context, "admin", LOCAL_ADMIN_ACCEPT)
     return LOCAL_ADMIN_ACCEPT
 
 
@@ -3349,6 +3613,25 @@ def admin_accept(update, context):
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
+
+    # Notificación al Admin de Plataforma
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ADMINISTRADOR LOCAL pendiente:\n\n"
+                "Nombre: {}\n"
+                "Documento: {}\n"
+                "Equipo: {}\n"
+                "Codigo de equipo: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, document_number, team_name, team_code, phone, city, barrio)
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"
@@ -3405,6 +3688,14 @@ def admin_menu_callback(update, context):
 
     if data == "admin_change_requests":
         return admin_change_requests_list(update, context)
+
+    if data.startswith("admin_pedidos_local_"):
+        try:
+            admin_id = int(data.replace("admin_pedidos_local_", ""))
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        return admin_orders_panel(update, context, admin_id, is_platform=False)
 
     # Solo el Admin de Plataforma aprobado puede usar estos botones
     if not user_has_platform_admin(user_id):
@@ -4014,7 +4305,12 @@ def admin_menu_callback(update, context):
 
     # Botones aún no implementados (placeholders)
     if data == "admin_pedidos":
-        query.answer("La sección de pedidos de la Plataforma aún no está implementada.")
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_user_id(user_db_id)
+        if admin:
+            admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+            return admin_orders_panel(update, context, admin_id, is_platform=True)
+        query.answer("No se encontro tu perfil de admin.", show_alert=True)
         return
 
     if data == "admin_config":
@@ -5384,6 +5680,7 @@ ally_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -5430,6 +5727,7 @@ courier_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
+        MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -5761,6 +6059,7 @@ def mi_admin(update, context):
     if team_code == "PLATFORM":
         keyboard = [
             [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
@@ -5773,18 +6072,36 @@ def mi_admin(update, context):
         return
 
     # FASE 1: Mostrar estado del equipo como información, NO como bloqueo
-    ok, msg, total, okb = admin_puede_operar(admin_id)
+    ok, msg, stats = admin_puede_operar(admin_id)
 
-    # Construir mensaje de estado (sin bloquear)
+    # Construir mensaje de estado
+    total_couriers = stats.get("total_couriers", 0)
+    couriers_ok = stats.get("couriers_ok", 0)
+    total_allies = stats.get("total_allies", 0)
+    allies_ok = stats.get("allies_ok", 0)
+    admin_bal = stats.get("admin_balance", 0)
+
     estado_msg = (
-        f"📊 Estado del equipo:\n"
-        f"• Repartidores vinculados: {total}\n"
-        f"• Con saldo >= 5000: {okb}\n\n"
+        "📊 Estado del equipo:\n"
+        "• Aliados vinculados: {} (con saldo >= $5,000: {})\n"
+        "• Repartidores vinculados: {} (con saldo >= $5,000: {})\n"
+        "• Tu saldo master: ${:,}\n\n"
+        "Requisitos para operar:\n"
+        "• 5 aliados con saldo >= $5,000: {}\n"
+        "• 5 repartidores con saldo >= $5,000: {}\n"
+        "• Saldo master >= $60,000: {}\n\n"
+    ).format(
+        total_allies, allies_ok,
+        total_couriers, couriers_ok,
+        admin_bal,
+        "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
+        "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+        "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
     )
-
     # En FASE 1: panel siempre habilitado
     keyboard = [
         [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -5862,6 +6179,8 @@ def mi_perfil(update, context):
         mensaje += f"   Teléfono: {phone}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_admin}\n\n"
+        admin_balance = get_admin_balance(admin_id)
+        mensaje += f"   Saldo master: ${admin_balance:,}\n\n"
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
@@ -5888,6 +6207,18 @@ def mi_perfil(update, context):
         mensaje += f"   Teléfono: {phone}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
+        ally_links = get_all_approved_links_for_ally(ally_id)
+        if ally_links:
+            for alink in ally_links:
+                alink_team = alink["team_name"] or "-"
+                alink_code = alink["team_code"] or ""
+                alink_balance = alink["balance"] if alink["balance"] else 0
+                if alink_code == "PLATFORM":
+                    alink_label = "Plataforma"
+                else:
+                    alink_label = alink_team
+                mensaje += f"   Saldo ({alink_label}): ${alink_balance:,}\n"
+            mensaje += "\n"
 
     # Repartidor
     courier = get_courier_by_user_id(user_db_id)
@@ -5914,6 +6245,18 @@ def mi_perfil(update, context):
         mensaje += f"   Código interno: {code if code else 'sin asignar'}\n"
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_info}\n\n"
+        courier_links = get_all_approved_links_for_courier(courier_id)
+        if courier_links:
+            for clink in courier_links:
+                clink_team = clink["team_name"] or "-"
+                clink_code = clink["team_code"] or ""
+                clink_balance = clink["balance"] if clink["balance"] else 0
+                if clink_code == "PLATFORM":
+                    clink_label = "Plataforma"
+                else:
+                    clink_label = clink_team
+                mensaje += f"   Saldo ({clink_label}): ${clink_balance:,}\n"
+            mensaje += "\n"
 
     # Si no tiene roles
     if not admin and not ally and not courier:
@@ -5966,6 +6309,20 @@ def mi_perfil(update, context):
 
     if admin or ally or courier:
         keyboard = [[InlineKeyboardButton("Solicitar cambio", callback_data="perfil_change_start")]]
+        if courier:
+            courier_buttons = []
+            courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
+            if courier_is_active:
+                courier_buttons.append([InlineKeyboardButton(
+                    "Desactivarme",
+                    callback_data="courier_deactivate",
+                )])
+            else:
+                courier_buttons.append([InlineKeyboardButton(
+                    "Activarme (declarar base)",
+                    callback_data="courier_activate",
+                )])
+            keyboard.extend(courier_buttons)
         update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         update.message.reply_text(mensaje)
@@ -5977,54 +6334,112 @@ def mi_perfil(update, context):
 
 def cmd_saldo(update, context):
     """
-    Comando /saldo - Muestra el saldo según el rol del usuario:
-    - Courier: balance del vínculo APPROVED más reciente
-    - Ally: balance del vínculo APPROVED más reciente
-    - Admin: balance del admin (admins.balance)
+    Comando /saldo - Muestra el saldo de TODOS los vínculos del usuario.
+    Courier/Ally: un balance por cada admin con vínculo APPROVED.
+    Admin: balance master del admin.
     """
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     user_db_id = user_row["id"]
 
-    mensaje = ""
+    mensaje = "💰 TUS SALDOS\n"
+    mensaje += "(Los saldos de Repartidor/Aliado son por vínculo, no globales)\n\n"
+    tiene_algo = False
 
     admin = get_admin_by_user_id(user_db_id)
     if admin:
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_id = admin["id"]
         balance = get_admin_balance(admin_id)
-        team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
-        mensaje += f"Admin ({team_name or 'sin nombre'}):\n"
-        mensaje += f"   Saldo disponible: ${balance:,}\n\n"
+        team_name = admin["team_name"]
+        team_code = admin["team_code"]
+        admin_label = "Plataforma" if team_code == "PLATFORM" else (team_name or "sin nombre")
+        if team_code:
+            admin_label = "{} [{}]".format(admin_label, team_code)
+        mensaje += "🔧 Admin ({}):\n".format(admin_label)
+        mensaje += "   Saldo master: ${:,}\n\n".format(balance)
+        tiene_algo = True
 
     courier = get_courier_by_user_id(user_db_id)
     if courier:
         courier_id = courier["id"]
-        link = get_approved_admin_link_for_courier(courier_id)
-        if link:
-            balance = link["balance"] if link["balance"] else 0
-            team_name = link["team_name"] or "-"
-            mensaje += f"Repartidor (equipo {team_name}):\n"
-            mensaje += f"   Saldo: ${balance:,}\n\n"
+        links = get_all_approved_links_for_courier(courier_id)
+        current_link = get_approved_admin_link_for_courier(courier_id)
+        if links:
+            mensaje += "🚴 Repartidor:\n"
+            last_move_by_link = {l["link_id"]: l["last_movement_at"] for l in links}
+            current_link_id = None
+            if current_link:
+                team_name = current_link["team_name"] or "-"
+                team_code = current_link["team_code"] or ""
+                balance = current_link["balance"] if current_link["balance"] else 0
+                label = "Plataforma" if team_code == "PLATFORM" else team_name
+                if team_code:
+                    label = "{} [{}]".format(label, team_code)
+                current_link_id = current_link["link_id"]
+                last_move = last_move_by_link.get(current_link_id) or "-"
+                mensaje += "   Mi admin actual: {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
+
+            others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
+            if others:
+                mensaje += "   Otros vínculos APPROVED:\n"
+                for link in others:
+                    team_name = link["team_name"] or "-"
+                    team_code = link["team_code"] or ""
+                    balance = link["balance"] if link["balance"] else 0
+                    label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    if team_code:
+                        label = "{} [{}]".format(label, team_code)
+                    last_move = link["last_movement_at"] or "-"
+                    mensaje += "   - {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
+            mensaje += "\n"
+            tiene_algo = True
         else:
-            mensaje += "Repartidor:\n"
-            mensaje += "   Sin vínculo APPROVED con admin.\n"
-            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+            mensaje += "🚴 Repartidor:\n"
+            mensaje += "   Sin vinculo aprobado con admin.\n"
+            mensaje += "   Usa /recargar para solicitar recarga.\n\n"
+            tiene_algo = True
 
     ally = get_ally_by_user_id(user_db_id)
     if ally:
         ally_id = ally["id"]
-        link = get_approved_admin_link_for_ally(ally_id)
-        if link:
-            balance = link["balance"] if link["balance"] else 0
-            team_name = link["team_name"] or "-"
-            mensaje += f"Aliado (equipo {team_name}):\n"
-            mensaje += f"   Saldo: ${balance:,}\n\n"
-        else:
-            mensaje += "Aliado:\n"
-            mensaje += "   Sin vínculo APPROVED con admin.\n"
-            mensaje += "   Usa /recargar para solicitar con Plataforma.\n\n"
+        links = get_all_approved_links_for_ally(ally_id)
+        current_link = get_approved_admin_link_for_ally(ally_id)
+        if links:
+            mensaje += "🍕 Aliado:\n"
+            last_move_by_link = {l["link_id"]: l["last_movement_at"] for l in links}
+            current_link_id = None
+            if current_link:
+                team_name = current_link["team_name"] or "-"
+                team_code = current_link["team_code"] or ""
+                balance = current_link["balance"] if current_link["balance"] else 0
+                label = "Plataforma" if team_code == "PLATFORM" else team_name
+                if team_code:
+                    label = "{} [{}]".format(label, team_code)
+                current_link_id = current_link["link_id"]
+                last_move = last_move_by_link.get(current_link_id) or "-"
+                mensaje += "   Mi admin actual: {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
 
-    if not mensaje:
+            others = [l for l in links if not current_link_id or l["link_id"] != current_link_id]
+            if others:
+                mensaje += "   Otros vínculos APPROVED:\n"
+                for link in others:
+                    team_name = link["team_name"] or "-"
+                    team_code = link["team_code"] or ""
+                    balance = link["balance"] if link["balance"] else 0
+                    label = "Plataforma" if team_code == "PLATFORM" else team_name
+                    if team_code:
+                        label = "{} [{}]".format(label, team_code)
+                    last_move = link["last_movement_at"] or "-"
+                    mensaje += "   - {} : ${:,} | Último movimiento: {}\n".format(label, balance, last_move)
+            mensaje += "\n"
+            tiene_algo = True
+        else:
+            mensaje += "🍕 Aliado:\n"
+            mensaje += "   Sin vinculo aprobado con admin.\n"
+            mensaje += "   Usa /recargar para solicitar recarga.\n\n"
+            tiene_algo = True
+
+    if not tiene_algo:
         mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
 
     update.message.reply_text(mensaje)
@@ -6041,26 +6456,112 @@ def cmd_recargar(update, context):
 
     courier = get_courier_by_user_id(user_db_id)
     ally = get_ally_by_user_id(user_db_id)
+    admin = get_admin_by_user_id(user_db_id)
 
-    if not courier and not ally:
+    # Determinar si es admin local (no plataforma)
+    admin_local = None
+    if admin:
+        admin_id = admin["id"]
+        admin_full = get_admin_by_id(admin_id)
+        if admin_full:
+            tc = admin_full["team_code"]
+            if tc and tc != "PLATFORM":
+                admin_local = admin_full
+
+    roles = []
+    if courier:
+        roles.append(("COURIER", courier["id"], courier["full_name"] or "Repartidor"))
+    if ally:
+        roles.append(("ALLY", ally["id"], ally["business_name"] or "Aliado"))
+    if admin_local:
+        a_id = admin_local["id"]
+        a_name = admin_local["team_name"]
+        roles.append(("ADMIN", a_id, a_name or "Admin Local"))
+
+    if not roles:
         update.message.reply_text(
-            "Para solicitar recargas debes ser Repartidor o Aliado.\n"
-            "Usa /soy_repartidor o /soy_aliado para registrarte."
+            "Para solicitar recargas debes ser Repartidor, Aliado o Administrador Local.\n"
+            "Usa /soy_repartidor, /soy_aliado o /soy_admin para registrarte."
         )
         return ConversationHandler.END
 
-    if courier:
-        context.user_data["recargar_target_type"] = "COURIER"
-        context.user_data["recargar_target_id"] = courier["id"]
-        context.user_data["recargar_target_name"] = courier["full_name"]
+    if len(roles) == 1:
+        # Solo un rol: ir directo a monto
+        context.user_data["recargar_target_type"] = roles[0][0]
+        context.user_data["recargar_target_id"] = roles[0][1]
+        context.user_data["recargar_target_name"] = roles[0][2]
+        update.message.reply_text(
+            "Escribe el monto que deseas recargar (solo numeros).\n"
+            "Ejemplo: 10000"
+        )
+        return RECARGAR_MONTO
     else:
-        context.user_data["recargar_target_type"] = "ALLY"
-        context.user_data["recargar_target_id"] = ally["id"]
-        context.user_data["recargar_target_name"] = ally["business_name"]
+        # Múltiples roles: preguntar como qué rol quiere recargar
+        keyboard = []
+        for role_type, role_id, role_name in roles:
+            label_map = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}
+            keyboard.append([InlineKeyboardButton(
+                "{}: {}".format(label_map.get(role_type, role_type), role_name),
+                callback_data="recargar_role_{}_{}".format(role_type, role_id),
+            )])
+        keyboard.append([InlineKeyboardButton("Cancelar", callback_data="recargar_cancel")])
+        update.message.reply_text(
+            "Tienes multiples roles. Como cual deseas recargar?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return RECARGAR_ROL
 
-    update.message.reply_text(
+
+def recargar_rol_callback(update, context):
+    """Callback para seleccionar el rol con el que se quiere recargar."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "recargar_cancel":
+        query.edit_message_text("Solicitud de recarga cancelada.")
+        return ConversationHandler.END
+
+    if not data.startswith("recargar_role_"):
+        return RECARGAR_ROL
+
+    # Parse: recargar_role_{TYPE}_{ID}
+    parts = data.replace("recargar_role_", "").split("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error de formato.")
+        return ConversationHandler.END
+
+    role_type = parts[0]
+    try:
+        role_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return ConversationHandler.END
+
+    if role_type == "COURIER":
+        courier = get_courier_by_user_id(get_user_db_id_from_update(update))
+        role_name = courier["full_name"] if courier else "Repartidor"
+    elif role_type == "ALLY":
+        ally = get_ally_by_user_id(get_user_db_id_from_update(update))
+        role_name = ally["business_name"] if ally else "Aliado"
+    elif role_type == "ADMIN":
+        admin_full = get_admin_by_id(role_id)
+        role_name = admin_full["team_name"] if admin_full else "Admin Local"
+    else:
+        query.edit_message_text("Rol no reconocido.")
+        return ConversationHandler.END
+
+    context.user_data["recargar_target_type"] = role_type
+    context.user_data["recargar_target_id"] = role_id
+    context.user_data["recargar_target_name"] = role_name
+
+    query.edit_message_text(
+        "Recargando como: {} ({})\n\n"
         "Escribe el monto que deseas recargar (solo numeros).\n"
-        "Ejemplo: 10000"
+        "Ejemplo: 10000".format(
+            {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}.get(role_type, role_type),
+            role_name,
+        )
     )
     return RECARGAR_MONTO
 
@@ -6088,6 +6589,42 @@ def recargar_monto(update, context):
     target_type = context.user_data["recargar_target_type"]
     target_id = context.user_data["recargar_target_id"]
 
+    # Admin local: siempre recarga con plataforma
+    if target_type == "ADMIN":
+        platform = get_platform_admin()
+        if not platform:
+            update.message.reply_text("No hay administrador de plataforma configurado.")
+            return ConversationHandler.END
+        platform_id = platform["id"]
+        context.user_data["recargar_admin_id"] = platform_id
+
+        # Mostrar datos de pago de plataforma directamente
+        payment_info = get_admin_payment_info(platform_id)
+        if payment_info:
+            info_text = "Datos de pago de Plataforma:\n\n"
+            if payment_info.get("bank_name"):
+                info_text += "Banco: {}\n".format(payment_info["bank_name"])
+            if payment_info.get("account_type"):
+                info_text += "Tipo: {}\n".format(payment_info["account_type"])
+            if payment_info.get("account_number"):
+                info_text += "Cuenta: {}\n".format(payment_info["account_number"])
+            if payment_info.get("nequi_number"):
+                info_text += "Nequi: {}\n".format(payment_info["nequi_number"])
+            if payment_info.get("daviplata_number"):
+                info_text += "Daviplata: {}\n".format(payment_info["daviplata_number"])
+            info_text += "\nMonto a pagar: ${:,}\n\n".format(monto)
+            info_text += "Realiza el pago y envia el comprobante (foto)."
+        else:
+            info_text = (
+                "Monto: ${:,}\n\n"
+                "Contacta a Plataforma para obtener los datos de pago.\n"
+                "Envia el comprobante (foto) cuando hayas pagado."
+            ).format(monto)
+
+        update.message.reply_text(info_text)
+        return RECARGAR_COMPROBANTE
+
+    # Courier/Ally: mostrar opciones de admin
     if target_type == "COURIER":
         link = get_approved_admin_link_for_courier(target_id)
     else:
@@ -6106,8 +6643,8 @@ def recargar_monto(update, context):
 
     platform = get_platform_admin()
     if platform:
-        platform_id = platform[0]
-        platform_name = platform[3] or platform[2] or "Plataforma"
+        platform_id = platform["id"]
+        platform_name = platform["team_name"] or platform["full_name"] or "Plataforma"
         if not link or link["admin_id"] != platform_id:
             buttons.append([InlineKeyboardButton(
                 f"Plataforma: {platform_name}",
@@ -6153,7 +6690,7 @@ def recargar_admin_callback(update, context):
         return ConversationHandler.END
 
     platform_admin = get_platform_admin()
-    platform_admin_id = platform_admin[0] if platform_admin else None
+    platform_admin_id = platform_admin["id"] if platform_admin else None
 
     mi_admin_id = None
     if target_type == "COURIER":
@@ -6175,7 +6712,7 @@ def recargar_admin_callback(update, context):
     # Obtener cuentas de pago activas del admin
     methods = list_payment_methods(admin_id, only_active=True)
     admin_row = get_admin_by_id(admin_id)
-    admin_name = admin_row[2] if admin_row else "Admin"
+    admin_name = admin_row["full_name"] if admin_row else "Admin"
 
     if methods:
         pago_texto = f"Datos para el pago:\n\n"
@@ -6253,7 +6790,7 @@ def recargar_comprobante(update, context):
     try:
         admin_row = get_admin_by_id(admin_id)
         if admin_row:
-            admin_user_id = admin_row[1]
+            admin_user_id = admin_row["user_id"]
             admin_user = get_user_by_id(admin_user_id)
             if admin_user:
                 admin_telegram_id = admin_user["telegram_id"]
@@ -6293,6 +6830,15 @@ def recargar_comprobante(update, context):
     return ConversationHandler.END
 
 
+def recargar_comprobante_texto(update, context):
+    """Evita silencio cuando el flujo espera foto y el usuario envia texto."""
+    update.message.reply_text(
+        "Aun falta el comprobante.\n"
+        "Envia una FOTO del comprobante o escribe Cancelar."
+    )
+    return RECARGAR_COMPROBANTE
+
+
 def cmd_recargas_pendientes(update, context):
     """
     Comando /recargas_pendientes - Lista las solicitudes PENDING para el admin.
@@ -6307,8 +6853,8 @@ def cmd_recargas_pendientes(update, context):
         update.message.reply_text("Este comando es solo para administradores.")
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
 
     if admin_status != "APPROVED":
         update.message.reply_text("Tu cuenta de admin no esta aprobada.")
@@ -6321,15 +6867,15 @@ def cmd_recargas_pendientes(update, context):
         return
 
     for req in pendientes:
-        req_id = req[0]
-        target_type = req[1]
-        target_id = req[2]
-        amount = req[3]
-        method = req[4] or "-"
-        note = req[5] or "-"
-        created_at = req[6] or "-"
-        target_name = req[7] or "Desconocido"
-        proof_file_id = req[8] if len(req) > 8 else None
+        req_id = req["id"]
+        target_type = req["target_type"]
+        target_id = req["target_id"]
+        amount = req["amount"]
+        method = req["method"] or "-"
+        note = req["note"] or "-"
+        created_at = req["created_at"] or "-"
+        target_name = req["target_name"] or "Desconocido"
+        proof_file_id = req["proof_file_id"]
 
         tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
 
@@ -6354,6 +6900,24 @@ def cmd_recargas_pendientes(update, context):
         update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
 
 
+def _get_owned_recharge_request_or_error(request_id: int, actor_admin_id: int, actor_telegram_id: int):
+    """
+    Capa reusable de ownership para callbacks de recarga.
+    Retorna: (req_dict | None, error_msg | None)
+    """
+    req = get_recharge_request(request_id)
+    if not req:
+        return None, "Solicitud no encontrada."
+
+    if req["admin_id"] == actor_admin_id:
+        return req, None
+
+    if user_has_platform_admin(actor_telegram_id):
+        return req, None
+
+    return None, "Esta solicitud no te corresponde."
+
+
 def recharge_proof_callback(update, context):
     """
     Callback para ver comprobante.
@@ -6371,8 +6935,8 @@ def recharge_proof_callback(update, context):
         query.answer("No autorizado.", show_alert=True)
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
@@ -6381,18 +6945,12 @@ def recharge_proof_callback(update, context):
         return
 
     request_id = int(data.replace("recharge_proof_", ""))
-    req = get_recharge_request(request_id)
-    if not req:
-        query.answer("Solicitud no encontrada.", show_alert=True)
+    req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+    if ownership_error:
+        query.answer(ownership_error, show_alert=True)
         return
 
-    if req[3] != admin_id:
-        is_platform = user_has_platform_admin(user_tg.id)
-        if not is_platform:
-            query.answer("Esta solicitud no te corresponde.", show_alert=True)
-            return
-
-    proof_file_id = req[12]
+    proof_file_id = req["proof_file_id"]
     if not proof_file_id:
         query.answer("Sin comprobante.", show_alert=True)
         return
@@ -6426,25 +6984,18 @@ def recharge_callback(update, context):
         query.answer("No autorizado.", show_alert=True)
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
 
     if data.startswith("recharge_approve_"):
         request_id = int(data.replace("recharge_approve_", ""))
-        req = get_recharge_request(request_id)
-
-        if not req:
-            query.answer("Solicitud no encontrada.", show_alert=True)
+        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        if ownership_error:
+            query.answer(ownership_error, show_alert=True)
             return
-
-        if req[3] != admin_id:
-            is_platform = user_has_platform_admin(user_tg.id)
-            if not is_platform:
-                query.answer("Esta solicitud no te corresponde.", show_alert=True)
-                return
 
         success, msg = approve_recharge_request(request_id, admin_id)
 
@@ -6462,17 +7013,10 @@ def recharge_callback(update, context):
 
     elif data.startswith("recharge_reject_"):
         request_id = int(data.replace("recharge_reject_", ""))
-        req = get_recharge_request(request_id)
-
-        if not req:
-            query.answer("Solicitud no encontrada.", show_alert=True)
+        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        if ownership_error:
+            query.answer(ownership_error, show_alert=True)
             return
-
-        if req[3] != admin_id:
-            is_platform = user_has_platform_admin(user_tg.id)
-            if not is_platform:
-                query.answer("Esta solicitud no te corresponde.", show_alert=True)
-                return
 
         success, msg = reject_recharge_request(request_id, admin_id)
 
@@ -6830,14 +7374,31 @@ def admin_local_callback(update, context):
             return
 
         # FASE 1: Mostrar requisitos como información, NO como bloqueo
-        ok, msg, total, okb = admin_puede_operar(admin_id)
+        ok, msg, stats = admin_puede_operar(admin_id)
+
+        total_couriers = stats.get("total_couriers", 0)
+        couriers_ok = stats.get("couriers_ok", 0)
+        total_allies = stats.get("total_allies", 0)
+        allies_ok = stats.get("allies_ok", 0)
+        admin_bal = stats.get("admin_balance", 0)
 
         estado_msg = (
-            f"📊 Estado del equipo:\n"
-            f"• Repartidores vinculados: {total}\n"
-            f"• Con saldo >= 5000: {okb}\n\n"
+            "📊 Estado del equipo:\n"
+            "• Aliados vinculados: {} (con saldo >= $5,000: {})\n"
+            "• Repartidores vinculados: {} (con saldo >= $5,000: {})\n"
+            "• Tu saldo master: ${:,}\n\n"
+            "Requisitos para operar:\n"
+            "• 5 aliados con saldo >= $5,000: {}\n"
+            "• 5 repartidores con saldo >= $5,000: {}\n"
+            "• Saldo master >= $60,000: {}\n\n"
+        ).format(
+            total_allies, allies_ok,
+            total_couriers, couriers_ok,
+            admin_bal,
+            "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
+            "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+            "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
         )
-
         keyboard = [
             [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -7573,6 +8134,86 @@ def terms_callback(update, context):
 
     query.answer("Opción no reconocida.", show_alert=True)
 
+
+def courier_activate_callback(update, context):
+    """Inicia flujo de activación del courier: pide declarar base."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier or courier["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de repartidor activo.")
+        return
+
+    query.edit_message_text(
+        "Para activarte, indica cuanta base (dinero en efectivo) tienes disponible.\n\n"
+        "Escribe el monto en pesos (solo numeros, ej: 50000):"
+    )
+    context.user_data["courier_activating"] = True
+    context.user_data["courier_id_activating"] = courier["id"]
+
+
+def courier_deactivate_callback(update, context):
+    """Desactiva al courier."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier:
+        query.edit_message_text("No se encontro tu perfil.")
+        return
+
+    deactivate_courier(courier["id"])
+    query.edit_message_text("Te has desactivado. No recibiras ofertas de pedidos.")
+
+
+def courier_base_amount_handler(update, context):
+    """Recibe el monto de base declarado por el courier al activarse."""
+    if not context.user_data.get("courier_activating"):
+        return
+
+    text = update.message.text.strip()
+    try:
+        amount = int(text.replace(".", "").replace(",", "").replace("$", ""))
+    except (ValueError, AttributeError):
+        update.message.reply_text("Por favor escribe solo numeros. Ej: 50000")
+        return
+
+    if amount < 0:
+        update.message.reply_text("El monto debe ser positivo.")
+        return
+
+    courier_id = context.user_data.get("courier_id_activating")
+    if not courier_id:
+        update.message.reply_text("Error: sesion expirada. Ve a Mi perfil e intenta de nuevo.")
+        context.user_data.pop("courier_activating", None)
+        context.user_data.pop("courier_id_activating", None)
+        return
+
+    set_courier_available_cash(courier_id, amount)
+
+    context.user_data.pop("courier_activating", None)
+    context.user_data.pop("courier_id_activating", None)
+
+    update.message.reply_text(
+        "Te has activado exitosamente.\n"
+        "Base declarada: ${:,}\n\n"
+        "Ahora recibiras ofertas de pedidos.".format(amount)
+    )
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
@@ -7647,8 +8288,11 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(profile_change_conv)
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|pickup|delivered|release|cancel)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
+    dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
+    dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
     # Configuracion de tarifas (botones pricing_*)
@@ -7672,16 +8316,23 @@ def main():
     recargar_conv = ConversationHandler(
         entry_points=[CommandHandler("recargar", cmd_recargar)],
         states={
+            RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
             RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
-            RECARGAR_COMPROBANTE: [MessageHandler(Filters.photo, recargar_comprobante)],
+            RECARGAR_COMPROBANTE: [
+                MessageHandler(Filters.photo, recargar_comprobante),
+                MessageHandler(Filters.text & ~Filters.command, recargar_comprobante_texto),
+            ],
         },
         fallbacks=[
+            CommandHandler("recargar", cmd_recargar),
             CommandHandler("cancel", cancel_conversacion),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
+        allow_reentry=True,
     )
     dp.add_handler(recargar_conv)
+    dp.add_handler(profile_change_conv)
 
     # ConversationHandler para /configurar_pagos
     configurar_pagos_conv = ConversationHandler(
@@ -7731,12 +8382,23 @@ def main():
     dp.add_handler(admin_conv)
     dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command, chgreq_reject_reason_handler))
 
+    dp.add_handler(MessageHandler(
+        Filters.text & Filters.regex(r'^\d[\d.,\$]*$') & ~Filters.command,
+        courier_base_amount_handler,
+    ), group=1)
+
     # -------------------------
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
         Filters.regex(r'^(Mis pedidos|Mi perfil|Ayuda|Menu)$'),
         menu_button_handler
+    ))
+
+    # Handler de saludo para onboarding (sin comandos)
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'(?i)^\s*(hola|buenas|buenos dias|buen dia|hello|hi)\s*$') & ~Filters.command,
+        saludo_menu_handler
     ))
 
     # Handler global para "Cancelar" y "Volver al menu" (fuera de conversaciones)

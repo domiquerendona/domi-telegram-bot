@@ -2,13 +2,16 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
+    count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
-    get_recharge_request, update_recharge_status, insert_ledger_entry,
+    get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     update_courier_link_balance, update_ally_link_balance,
+    get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
-    ensure_platform_link_for_courier, ensure_platform_link_for_ally
+    ensure_platform_link_for_courier, ensure_platform_link_for_ally,
+    get_connection
 )
 import math
 import re
@@ -262,33 +265,52 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
     }
 
 
-def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_balance: int = 5000) -> Tuple[bool, str, int, int]:
+def admin_puede_operar(admin_id: int, min_couriers: int = 5, min_allies: int = 5,
+                        min_balance: int = 5000, min_admin_balance: int = 60000):
     """
-    Regla de negocio: un admin puede operar si:
-    - existe y está APPROVED
-    - tiene al menos `min_couriers` repartidores vinculados
-    - y al menos `min_couriers` con balance >= `min_balance`
+    Regla de negocio: un admin local puede operar si:
+    1. Está APPROVED
+    2. Tiene al menos min_allies aliados con balance >= min_balance
+    3. Tiene al menos min_couriers repartidores con balance >= min_balance
+    4. Su saldo master es >= min_admin_balance
 
     Retorna:
-    (puede_operar, motivo, total_couriers, couriers_ok_balance)
+    (puede_operar, motivo, stats_dict)
+    stats_dict tiene: total_couriers, couriers_ok, total_allies, allies_ok, admin_balance
     """
     status = get_admin_status_by_id(admin_id)
     if not status:
-        return False, "Administrador no encontrado.", 0, 0
+        return False, "Administrador no encontrado.", {}
 
     if status != "APPROVED":
-        return False, f"Estado actual: {status}.", 0, 0
+        return False, "Estado actual: {}.".format(status), {}
 
-    total = count_admin_couriers(admin_id)
-    ok = count_admin_couriers_with_min_balance(admin_id, min_balance=min_balance)
+    total_couriers = count_admin_couriers(admin_id)
+    couriers_ok = count_admin_couriers_with_min_balance(admin_id, min_balance=min_balance)
+    total_allies = count_admin_allies(admin_id)
+    allies_ok = count_admin_allies_with_min_balance(admin_id, min_balance=min_balance)
+    admin_balance = get_admin_balance(admin_id)
 
-    if total < min_couriers:
-        return False, f"No cumple mínimo de repartidores: {total}/{min_couriers}.", total, ok
+    stats = {
+        "total_couriers": total_couriers,
+        "couriers_ok": couriers_ok,
+        "total_allies": total_allies,
+        "allies_ok": allies_ok,
+        "admin_balance": admin_balance,
+    }
 
-    if ok < min_couriers:
-        return False, f"No cumple saldo mínimo en repartidores: {ok}/{min_couriers} (>= {min_balance}).", total, ok
+    problemas = []
+    if allies_ok < min_allies:
+        problemas.append("Aliados con saldo >= ${:,}: {}/{}.".format(min_balance, allies_ok, min_allies))
+    if couriers_ok < min_couriers:
+        problemas.append("Repartidores con saldo >= ${:,}: {}/{}.".format(min_balance, couriers_ok, min_couriers))
+    if admin_balance < min_admin_balance:
+        problemas.append("Saldo master: ${:,} / ${:,} requerido.".format(admin_balance, min_admin_balance))
 
-    return True, "OK", total, ok
+    if problemas:
+        return False, " | ".join(problemas), stats
+
+    return True, "OK", stats
 
 
 def calcular_precio_por_distancia(
@@ -629,15 +651,23 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     if not req:
         return False, "Solicitud no encontrada."
 
-    req_id, target_type, target_id, admin_id, amount, status = req[:6]
+    target_type = req["target_type"]
+    target_id = req["target_id"]
+    admin_id = req["admin_id"]
+    amount = req["amount"]
+    status = req["status"]
 
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
     platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin[0] == admin_id
+    is_platform = bool(platform_admin and platform_admin["id"] == admin_id)
 
-    if is_platform:
+    if target_type == "ADMIN":
+        # Admin local recargando con plataforma: no necesita vínculo,
+        # se acredita directamente el saldo master del admin
+        pass
+    elif is_platform:
         if target_type == "COURIER":
             ensure_platform_link_for_courier(admin_id, target_id)
         elif target_type == "ALLY":
@@ -656,42 +686,102 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         else:
             return False, f"Tipo de destino desconocido: {target_type}"
 
-    if not is_platform:
-        admin_balance = get_admin_balance(admin_id)
-        if admin_balance < amount:
-            return False, f"Saldo insuficiente. Tienes ${admin_balance:,} y se requieren ${amount:,}."
-        update_admin_balance_with_ledger(
-            admin_id=admin_id,
-            delta=-amount,
-            kind="RECHARGE",
-            note=f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
-            ref_type="RECHARGE_REQUEST",
-            ref_id=request_id,
-            from_type="ADMIN",
-            from_id=admin_id,
-        )
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN IMMEDIATE")
 
-    if target_type == "COURIER":
-        update_courier_link_balance(target_id, admin_id, amount)
-    elif target_type == "ALLY":
-        update_ally_link_balance(target_id, admin_id, amount)
-    else:
-        return False, f"Tipo de destino desconocido: {target_type}"
+        if not is_platform:
+            cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
+            row = cur.fetchone()
+            current_admin_balance = row["balance"] if row else 0
+            if current_admin_balance < amount:
+                conn.rollback()
+                return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
 
-    update_recharge_status(request_id, "APPROVED", decided_by_admin_id)
+            cur.execute(
+                "UPDATE admins SET balance = balance - ? WHERE id = ?",
+                (amount, admin_id),
+            )
+            cur.execute("""
+                INSERT INTO ledger
+                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "RECHARGE", "ADMIN", admin_id, "ADMIN", admin_id, amount,
+                "RECHARGE_REQUEST", request_id,
+                f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
+            ))
 
-    if is_platform:
-        insert_ledger_entry(
-            kind="RECHARGE",
-            from_type=None,
-            from_id=None,
-            to_type=target_type,
-            to_id=target_id,
-            amount=amount,
-            ref_type="RECHARGE_REQUEST",
-            ref_id=request_id,
-            note=f"Recarga plataforma aprobada por admin_id={decided_by_admin_id}"
-        )
+        if target_type == "ADMIN":
+            cur.execute(
+                "UPDATE admins SET balance = balance + ? WHERE id = ?",
+                (amount, target_id),
+            )
+            cur.execute("""
+                INSERT INTO ledger
+                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "RECHARGE", "PLATFORM", admin_id, "ADMIN", target_id, amount,
+                "RECHARGE_REQUEST", request_id,
+                f"Recarga de admin local aprobada por plataforma admin_id={decided_by_admin_id}",
+            ))
+        elif target_type == "COURIER":
+            cur.execute("""
+                UPDATE admin_couriers
+                SET balance = balance + ?, updated_at = datetime('now')
+                WHERE courier_id = ? AND admin_id = ? AND status = 'APPROVED'
+            """, (amount, target_id, admin_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+            cur.execute("""
+                INSERT INTO ledger
+                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "COURIER", target_id, amount,
+                "RECHARGE_REQUEST", request_id,
+                f"Recarga aprobada por admin_id={decided_by_admin_id}",
+            ))
+        elif target_type == "ALLY":
+            cur.execute("""
+                UPDATE admin_allies
+                SET balance = balance + ?, updated_at = datetime('now')
+                WHERE ally_id = ? AND admin_id = ? AND status = 'APPROVED'
+            """, (amount, target_id, admin_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+            cur.execute("""
+                INSERT INTO ledger
+                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "ALLY", target_id, amount,
+                "RECHARGE_REQUEST", request_id,
+                f"Recarga aprobada por admin_id={decided_by_admin_id}",
+            ))
+        else:
+            conn.rollback()
+            return False, f"Tipo de destino desconocido: {target_type}"
+
+        cur.execute("""
+            UPDATE recharge_requests
+            SET status = 'APPROVED', decided_by_admin_id = ?, decided_at = datetime('now')
+            WHERE id = ? AND status = 'PENDING'
+        """, (decided_by_admin_id, request_id))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False, "Solicitud ya procesada."
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     return True, "Recarga aprobada exitosamente."
 
@@ -707,38 +797,61 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
     if not req:
         return False, "Solicitud no encontrada."
 
-    status = req[5]
+    status = req["status"]
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
-    update_recharge_status(request_id, "REJECTED", decided_by_admin_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE recharge_requests
+            SET status = 'REJECTED', decided_by_admin_id = ?, decided_at = datetime('now')
+            WHERE id = ? AND status = 'PENDING'
+        """, (decided_by_admin_id, request_id))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False, "Solicitud ya procesada."
+        conn.commit()
+    finally:
+        conn.close()
 
     return True, "Solicitud de recarga rechazada."
 
 
-def apply_fixed_fee_300(target_type: str, target_id: int, admin_id: int, ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
+def apply_service_fee(target_type: str, target_id: int, admin_id: int,
+                      ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
     """
-    Helper para cobrar tarifa fija de $300 por pedido (uso futuro).
-    Descuenta del balance del vínculo target-admin.
-
+    Cobra tarifa de $300 por servicio al courier/aliado.
+    - Si admin es PLATFORM: 300 van a plataforma.
+    - Si admin es local: 300 del miembro + 100 del admin (comision plataforma).
     Retorna: (success, message)
     """
     fee = 300
+    platform_commission = 100
+
+    platform_admin = get_platform_admin()
+    is_platform = platform_admin and platform_admin["id"] == admin_id
 
     if target_type == "COURIER":
-        from db import get_courier_link_balance
         balance = get_courier_link_balance(target_id, admin_id)
-        if balance < fee:
-            return False, f"Saldo insuficiente. Balance: ${balance:,}, requerido: ${fee:,}."
+    elif target_type == "ALLY":
+        balance = get_ally_link_balance(target_id, admin_id)
+    else:
+        return False, "Tipo de destino desconocido: {}".format(target_type)
+
+    if balance < fee:
+        return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, fee)
+
+    if not is_platform:
+        admin_balance = get_admin_balance(admin_id)
+        if admin_balance < platform_commission:
+            return False, "ADMIN_SIN_SALDO"
+
+    if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, -fee)
     elif target_type == "ALLY":
-        from db import get_ally_link_balance
-        balance = get_ally_link_balance(target_id, admin_id)
-        if balance < fee:
-            return False, f"Saldo insuficiente. Balance: ${balance:,}, requerido: ${fee:,}."
         update_ally_link_balance(target_id, admin_id, -fee)
-    else:
-        return False, f"Tipo de destino desconocido: {target_type}"
 
     insert_ledger_entry(
         kind="FEE",
@@ -749,8 +862,54 @@ def apply_fixed_fee_300(target_type: str, target_id: int, admin_id: int, ref_typ
         amount=fee,
         ref_type=ref_type,
         ref_id=ref_id,
-        note="Tarifa fija por pedido"
+        note="Tarifa de servicio"
     )
 
-    return True, f"Tarifa de ${fee:,} aplicada."
+    if not is_platform:
+        update_admin_balance_with_ledger(
+            admin_id=admin_id,
+            delta=-platform_commission,
+            kind="PLATFORM_FEE",
+            note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type="ADMIN",
+            from_id=admin_id,
+        )
+
+    return True, "Tarifa de ${:,} aplicada.".format(fee)
+
+
+def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
+    """
+    Verifica si hay saldo suficiente para cobrar el fee, sin cobrar.
+    Retorna: (can_operate, error_code)
+    error_code: 'OK', 'MEMBER_SIN_SALDO', 'ADMIN_SIN_SALDO'
+    """
+    fee = 300
+    platform_commission = 100
+
+    platform_admin = get_platform_admin()
+    is_platform = platform_admin and platform_admin["id"] == admin_id
+
+    if target_type == "COURIER":
+        balance = get_courier_link_balance(target_id, admin_id)
+    elif target_type == "ALLY":
+        balance = get_ally_link_balance(target_id, admin_id)
+    else:
+        return False, "UNKNOWN_TYPE"
+
+    if balance < fee:
+        return False, "MEMBER_SIN_SALDO"
+
+    if not is_platform:
+        admin_balance = get_admin_balance(admin_id)
+        if admin_balance < platform_commission:
+            return False, "ADMIN_SIN_SALDO"
+
+    return True, "OK"
+
+
+# TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
+# Usar apply_service_fee(target_type="COURIER", target_id=courier_id, admin_id=admin_id, ref_type="ORDER", ref_id=order_id)
 
