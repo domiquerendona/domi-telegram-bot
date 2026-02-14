@@ -661,7 +661,7 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         return False, f"Solicitud ya procesada (status: {status})."
 
     platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin[0] == admin_id
+    is_platform = bool(platform_admin and platform_admin["id"] == admin_id)
 
     if target_type == "ADMIN":
         # Admin local recargando con plataforma: no necesita vínculo,
@@ -694,7 +694,7 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         if not is_platform:
             cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
             row = cur.fetchone()
-            current_admin_balance = row["balance"] if row and hasattr(row, "keys") else (row[0] if row else 0)
+            current_admin_balance = row["balance"] if row else 0
             if current_admin_balance < amount:
                 conn.rollback()
                 return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."

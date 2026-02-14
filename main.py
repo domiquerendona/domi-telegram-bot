@@ -6343,10 +6343,10 @@ def cmd_saldo(update, context):
 
     admin = get_admin_by_user_id(user_db_id)
     if admin:
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_id = admin["id"]
         balance = get_admin_balance(admin_id)
-        team_name = admin["team_name"] if isinstance(admin, dict) else admin[8]
-        team_code = admin["team_code"] if isinstance(admin, dict) else (admin[10] if len(admin) > 10 else "")
+        team_name = admin["team_name"]
+        team_code = admin["team_code"]
         admin_label = "Plataforma" if team_code == "PLATFORM" else (team_name or "sin nombre")
         if team_code:
             admin_label = "{} [{}]".format(admin_label, team_code)
@@ -6456,10 +6456,10 @@ def cmd_recargar(update, context):
     # Determinar si es admin local (no plataforma)
     admin_local = None
     if admin:
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_id = admin["id"]
         admin_full = get_admin_by_id(admin_id)
         if admin_full:
-            tc = admin_full["team_code"] if isinstance(admin_full, dict) else (admin_full[10] if len(admin_full) > 10 else None)
+            tc = admin_full["team_code"]
             if tc and tc != "PLATFORM":
                 admin_local = admin_full
 
@@ -6469,8 +6469,8 @@ def cmd_recargar(update, context):
     if ally:
         roles.append(("ALLY", ally["id"], ally["business_name"] or "Aliado"))
     if admin_local:
-        a_id = admin_local["id"] if isinstance(admin_local, dict) else admin_local[0]
-        a_name = admin_local["team_name"] if isinstance(admin_local, dict) else admin_local[8]
+        a_id = admin_local["id"]
+        a_name = admin_local["team_name"]
         roles.append(("ADMIN", a_id, a_name or "Admin Local"))
 
     if not roles:
@@ -6541,9 +6541,7 @@ def recargar_rol_callback(update, context):
         role_name = ally["business_name"] if ally else "Aliado"
     elif role_type == "ADMIN":
         admin_full = get_admin_by_id(role_id)
-        role_name = admin_full["team_name"] if admin_full and isinstance(admin_full, dict) else "Admin Local"
-        if admin_full and not isinstance(admin_full, dict):
-            role_name = admin_full[8] if len(admin_full) > 8 else "Admin Local"
+        role_name = admin_full["team_name"] if admin_full else "Admin Local"
     else:
         query.edit_message_text("Rol no reconocido.")
         return ConversationHandler.END
@@ -6592,7 +6590,7 @@ def recargar_monto(update, context):
         if not platform:
             update.message.reply_text("No hay administrador de plataforma configurado.")
             return ConversationHandler.END
-        platform_id = platform[0]
+        platform_id = platform["id"]
         context.user_data["recargar_admin_id"] = platform_id
 
         # Mostrar datos de pago de plataforma directamente
@@ -6640,8 +6638,8 @@ def recargar_monto(update, context):
 
     platform = get_platform_admin()
     if platform:
-        platform_id = platform[0]
-        platform_name = platform[3] or platform[2] or "Plataforma"
+        platform_id = platform["id"]
+        platform_name = platform["team_name"] or platform["full_name"] or "Plataforma"
         if not link or link["admin_id"] != platform_id:
             buttons.append([InlineKeyboardButton(
                 f"Plataforma: {platform_name}",
@@ -6687,7 +6685,7 @@ def recargar_admin_callback(update, context):
         return ConversationHandler.END
 
     platform_admin = get_platform_admin()
-    platform_admin_id = platform_admin[0] if platform_admin else None
+    platform_admin_id = platform_admin["id"] if platform_admin else None
 
     mi_admin_id = None
     if target_type == "COURIER":
@@ -6709,7 +6707,7 @@ def recargar_admin_callback(update, context):
     # Obtener cuentas de pago activas del admin
     methods = list_payment_methods(admin_id, only_active=True)
     admin_row = get_admin_by_id(admin_id)
-    admin_name = admin_row[2] if admin_row else "Admin"
+    admin_name = admin_row["full_name"] if admin_row else "Admin"
 
     if methods:
         pago_texto = f"Datos para el pago:\n\n"
@@ -6787,7 +6785,7 @@ def recargar_comprobante(update, context):
     try:
         admin_row = get_admin_by_id(admin_id)
         if admin_row:
-            admin_user_id = admin_row[1]
+            admin_user_id = admin_row["user_id"]
             admin_user = get_user_by_id(admin_user_id)
             if admin_user:
                 admin_telegram_id = admin_user["telegram_id"]
@@ -6841,8 +6839,8 @@ def cmd_recargas_pendientes(update, context):
         update.message.reply_text("Este comando es solo para administradores.")
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
 
     if admin_status != "APPROVED":
         update.message.reply_text("Tu cuenta de admin no esta aprobada.")
@@ -6855,15 +6853,15 @@ def cmd_recargas_pendientes(update, context):
         return
 
     for req in pendientes:
-        req_id = req[0]
-        target_type = req[1]
-        target_id = req[2]
-        amount = req[3]
-        method = req[4] or "-"
-        note = req[5] or "-"
-        created_at = req[6] or "-"
-        target_name = req[7] or "Desconocido"
-        proof_file_id = req[8] if len(req) > 8 else None
+        req_id = req["id"]
+        target_type = req["target_type"]
+        target_id = req["target_id"]
+        amount = req["amount"]
+        method = req["method"] or "-"
+        note = req["note"] or "-"
+        created_at = req["created_at"] or "-"
+        target_name = req["target_name"] or "Desconocido"
+        proof_file_id = req["proof_file_id"]
 
         tipo_label = "Repartidor" if target_type == "COURIER" else "Aliado"
 
@@ -6923,8 +6921,8 @@ def recharge_proof_callback(update, context):
         query.answer("No autorizado.", show_alert=True)
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
@@ -6972,8 +6970,8 @@ def recharge_callback(update, context):
         query.answer("No autorizado.", show_alert=True)
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-    admin_status = admin["status"] if isinstance(admin, dict) else admin[6]
+    admin_id = admin["id"]
+    admin_status = admin["status"]
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
