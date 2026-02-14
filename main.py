@@ -8277,7 +8277,6 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|pickup|delivered|release|cancel)_\d+$"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
-    dp.add_handler(profile_change_conv)
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
@@ -8314,6 +8313,7 @@ def main():
         ],
     )
     dp.add_handler(recargar_conv)
+    dp.add_handler(profile_change_conv)
 
     # ConversationHandler para /configurar_pagos
     configurar_pagos_conv = ConversationHandler(
