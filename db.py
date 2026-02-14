@@ -214,6 +214,7 @@ def init_db():
             phone TEXT NOT NULL,
             city TEXT NOT NULL,
             barrio TEXT NOT NULL,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             status TEXT NOT NULL DEFAULT 'PENDING',
             created_at TEXT DEFAULT (datetime('now')),
             is_deleted INTEGER NOT NULL DEFAULT 0,
@@ -589,7 +590,7 @@ def init_db():
             admin_id INTEGER NOT NULL,
             ally_id INTEGER NOT NULL,
             status TEXT DEFAULT 'PENDING',
-            balance INTEGER DEFAULT 0,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(admin_id, ally_id),
@@ -605,7 +606,7 @@ def init_db():
             admin_id INTEGER NOT NULL,
             courier_id INTEGER NOT NULL,
             status TEXT DEFAULT 'PENDING',
-            balance INTEGER DEFAULT 0,
+            balance INTEGER DEFAULT 0 CHECK(balance >= 0),
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(admin_id, courier_id),
@@ -857,6 +858,62 @@ def init_db():
     admins_cols = [r[1] for r in cur.fetchall()]
     if "balance" not in admins_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN balance INTEGER DEFAULT 0")
+
+    # Guardas no-negativos para DB existente (SQLite no permite agregar CHECK facil post-creacion)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admins_balance_non_negative_insert
+        BEFORE INSERT ON admins
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admins.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admins_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admins
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admins.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_couriers_balance_non_negative_insert
+        BEFORE INSERT ON admin_couriers
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_couriers.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_couriers_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admin_couriers
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_couriers.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_allies_balance_non_negative_insert
+        BEFORE INSERT ON admin_allies
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_allies.balance cannot be negative');
+        END;
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_admin_allies_balance_non_negative_update
+        BEFORE UPDATE OF balance ON admin_allies
+        FOR EACH ROW
+        WHEN COALESCE(NEW.balance, 0) < 0
+        BEGIN
+            SELECT RAISE(ABORT, 'admin_allies.balance cannot be negative');
+        END;
+    """)
 
     # Tabla: recharge_requests (solicitudes de recarga)
     cur.execute("""
