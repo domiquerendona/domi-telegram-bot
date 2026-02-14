@@ -6920,13 +6920,13 @@ def recharge_proof_callback(update, context):
         query.answer("Solicitud no encontrada.", show_alert=True)
         return
 
-    if req[3] != admin_id:
+    if req["admin_id"] != admin_id:
         is_platform = user_has_platform_admin(user_tg.id)
         if not is_platform:
             query.answer("Esta solicitud no te corresponde.", show_alert=True)
             return
 
-    proof_file_id = req[12]
+    proof_file_id = req["proof_file_id"]
     if not proof_file_id:
         query.answer("Sin comprobante.", show_alert=True)
         return
@@ -6974,7 +6974,7 @@ def recharge_callback(update, context):
             query.answer("Solicitud no encontrada.", show_alert=True)
             return
 
-        if req[3] != admin_id:
+        if req["admin_id"] != admin_id:
             is_platform = user_has_platform_admin(user_tg.id)
             if not is_platform:
                 query.answer("Esta solicitud no te corresponde.", show_alert=True)
@@ -7002,7 +7002,7 @@ def recharge_callback(update, context):
             query.answer("Solicitud no encontrada.", show_alert=True)
             return
 
-        if req[3] != admin_id:
+        if req["admin_id"] != admin_id:
             is_platform = user_has_platform_admin(user_tg.id)
             if not is_platform:
                 query.answer("Esta solicitud no te corresponde.", show_alert=True)

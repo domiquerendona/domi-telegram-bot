@@ -126,7 +126,7 @@ class RechargeIdempotencyTests(unittest.TestCase):
         self.assertEqual(1, len(failures))
 
         req = db.get_recharge_request(request_id)
-        self.assertEqual("APPROVED", req[5])
+        self.assertEqual("APPROVED", req["status"])
 
         courier_balance = db.get_courier_link_balance(self.courier_id, self.local_admin_id)
         self.assertEqual(12000, courier_balance)
@@ -161,7 +161,7 @@ class RechargeIdempotencyTests(unittest.TestCase):
         self.assertEqual(1, len(failures))
 
         req = db.get_recharge_request(request_id)
-        self.assertEqual("REJECTED", req[5])
+        self.assertEqual("REJECTED", req["status"])
 
         courier_balance = db.get_courier_link_balance(self.courier_id, self.local_admin_id)
         self.assertEqual(0, courier_balance)
@@ -180,7 +180,7 @@ class RechargeIdempotencyTests(unittest.TestCase):
         self.assertEqual(1, len(failures))
 
         req = db.get_recharge_request(request_id)
-        final_status = req[5]
+        final_status = req["status"]
         self.assertIn(final_status, ("APPROVED", "REJECTED"))
 
         courier_balance = db.get_courier_link_balance(self.courier_id, self.local_admin_id)

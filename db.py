@@ -3865,7 +3865,7 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
 
 
 def get_recharge_request(request_id: int):
-    """Obtiene una solicitud de recarga por ID."""
+    """Obtiene una solicitud de recarga por ID (dict homogéneo)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -3876,7 +3876,25 @@ def get_recharge_request(request_id: int):
     """, (request_id,))
     row = cur.fetchone()
     conn.close()
-    return row
+    if not row:
+        return None
+    if hasattr(row, "keys"):
+        return {k: row[k] for k in row.keys()}
+    return {
+        "id": row[0],
+        "target_type": row[1],
+        "target_id": row[2],
+        "admin_id": row[3],
+        "amount": row[4],
+        "status": row[5],
+        "requested_by_user_id": row[6],
+        "decided_by_admin_id": row[7],
+        "method": row[8],
+        "note": row[9],
+        "created_at": row[10],
+        "decided_at": row[11],
+        "proof_file_id": row[12],
+    }
 
 
 def list_pending_recharges_for_admin(admin_id: int):

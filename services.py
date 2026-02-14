@@ -651,7 +651,11 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     if not req:
         return False, "Solicitud no encontrada."
 
-    req_id, target_type, target_id, admin_id, amount, status = req[:6]
+    target_type = req["target_type"]
+    target_id = req["target_id"]
+    admin_id = req["admin_id"]
+    amount = req["amount"]
+    status = req["status"]
 
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
@@ -793,7 +797,7 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
     if not req:
         return False, "Solicitud no encontrada."
 
-    status = req[5]
+    status = req["status"]
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
