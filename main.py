@@ -826,6 +826,11 @@ def menu_button_handler(update, context):
         return start(update, context)
 
 
+def saludo_menu_handler(update, context):
+    """Muestra menu principal cuando el usuario saluda fuera de comandos."""
+    show_main_menu(update, context, "Hola. Te muestro el menu principal:")
+
+
 # ----- REGISTRO DE ALIADO -----
 
 def soy_aliado(update, context):
@@ -8388,6 +8393,12 @@ def main():
     dp.add_handler(MessageHandler(
         Filters.regex(r'^(Mis pedidos|Mi perfil|Ayuda|Menu)$'),
         menu_button_handler
+    ))
+
+    # Handler de saludo para onboarding (sin comandos)
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'(?i)^\s*(hola|buenas|buenos dias|buen dia|hello|hi)\s*$') & ~Filters.command,
+        saludo_menu_handler
     ))
 
     # Handler global para "Cancelar" y "Volver al menu" (fuera de conversaciones)
