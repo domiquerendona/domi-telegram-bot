@@ -6825,6 +6825,15 @@ def recargar_comprobante(update, context):
     return ConversationHandler.END
 
 
+def recargar_comprobante_texto(update, context):
+    """Evita silencio cuando el flujo espera foto y el usuario envia texto."""
+    update.message.reply_text(
+        "Aun falta el comprobante.\n"
+        "Envia una FOTO del comprobante o escribe Cancelar."
+    )
+    return RECARGAR_COMPROBANTE
+
+
 def cmd_recargas_pendientes(update, context):
     """
     Comando /recargas_pendientes - Lista las solicitudes PENDING para el admin.
@@ -8305,12 +8314,17 @@ def main():
             RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
             RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
-            RECARGAR_COMPROBANTE: [MessageHandler(Filters.photo, recargar_comprobante)],
+            RECARGAR_COMPROBANTE: [
+                MessageHandler(Filters.photo, recargar_comprobante),
+                MessageHandler(Filters.text & ~Filters.command, recargar_comprobante_texto),
+            ],
         },
         fallbacks=[
+            CommandHandler("recargar", cmd_recargar),
             CommandHandler("cancel", cancel_conversacion),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
+        allow_reentry=True,
     )
     dp.add_handler(recargar_conv)
     dp.add_handler(profile_change_conv)
