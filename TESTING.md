@@ -1184,3 +1184,36 @@ Firma: [Nombre]
 ---
 
 **FIN DE GUÍA DE TESTING**
+
+## ANEXO: REPORTE SMOKE TEST FASE 1 (2026-02-14)
+
+### Alcance ejecutado en esta rama
+
+- Branch: `feature/admin-pending-residence`
+- Objetivo: validar hardening de Fase 1 en flujo de recargas/saldo y validacion de estados.
+
+### Comandos ejecutados
+
+```bash
+python -m unittest tests/test_recharge_idempotency.py tests/test_status_validation.py
+python -m py_compile main.py services.py db.py
+```
+
+### Resultados
+
+- `unittest`: `Ran 7 tests in 2.203s` -> `OK`
+- `py_compile`: OK (sin errores)
+
+### Cobertura funcional validada por pruebas
+
+- Idempotencia y concurrencia en aprobar/rechazar recargas.
+- Carrera approve vs reject: solo una decision gana.
+- Validacion centralizada de estados:
+  - normalizacion de entradas validas (mayusculas/minusculas/espacios),
+  - rechazo de estados invalidos,
+  - proteccion de escritura en `update_recharge_status` ante estado invalido.
+
+### Limite conocido de este smoke
+
+- No sustituye prueba manual en Telegram UI (botones, mensajes y callbacks reales en chat).
+- El flujo de negocio critico queda validado tecnicamente por pruebas automatizadas locales.
