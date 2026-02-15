@@ -317,6 +317,20 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS map_distance_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_key TEXT NOT NULL,
+            destination_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            distance_km REAL NOT NULL,
+            provider TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(origin_key, destination_key, mode)
+        );
+    """)
+
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
     # ============================================================
@@ -3687,6 +3701,42 @@ def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = Non
           provider = COALESCE(excluded.provider, map_link_cache.provider),
           place_id = COALESCE(excluded.place_id, map_link_cache.place_id)
     """, (raw_link, expanded_link, lat, lng, formatted_address, provider, place_id))
+    conn.commit()
+    conn.close()
+
+
+def get_distance_cache(origin_key: str, destination_key: str, mode: str):
+    """Busca distancia cacheada por origen/destino y modo. Retorna dict o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT distance_km, provider
+        FROM map_distance_cache
+        WHERE origin_key = ? AND destination_key = ? AND mode = ?
+        LIMIT 1
+    """, (origin_key, destination_key, mode))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "distance_km": row[0],
+        "provider": row[1],
+    }
+
+
+def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, distance_km: float, provider: str):
+    """Inserta/actualiza distancia cacheada por origen/destino y modo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO map_distance_cache (origin_key, destination_key, mode, distance_km, provider, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(origin_key, destination_key, mode) DO UPDATE SET
+          distance_km = excluded.distance_km,
+          provider = COALESCE(excluded.provider, map_distance_cache.provider),
+          updated_at = datetime('now')
+    """, (origin_key, destination_key, mode, distance_km, provider))
     conn.commit()
     conn.close()
 

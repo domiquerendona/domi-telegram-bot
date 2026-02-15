@@ -4,6 +4,7 @@ from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
+    get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     update_courier_link_balance, update_ally_link_balance,
@@ -19,6 +20,43 @@ import os
 # Límite diario de llamadas a Google (configurable)
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
+
+
+def _distance_factor() -> float:
+    """Factor de correccion urbana para Haversine (configurable)."""
+    raw = get_setting("pricing_local_distance_factor", str(DEFAULT_LOCAL_DISTANCE_FACTOR))
+    try:
+        val = float(raw)
+    except Exception:
+        return DEFAULT_LOCAL_DISTANCE_FACTOR
+    if val < 1.0:
+        return 1.0
+    if val > 2.0:
+        return 2.0
+    return val
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Distancia Haversine en km entre dos coordenadas."""
+    r = 6371.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def _coords_cache_key(lat: float, lng: float) -> str:
+    return f"{round(lat, 5)},{round(lng, 5)}"
+
+
+def _text_cache_key(text: str, city_hint: str) -> str:
+    city = (city_hint or "").strip().lower()
+    t = (text or "").strip().lower()
+    return f"{city}|{t}"
 
 
 # ---------- GOOGLE API HELPERS ----------
@@ -222,7 +260,7 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-
+        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -240,27 +278,48 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
     Returns:
         dict con: success, distance_km, price, quote_source, config
     """
-    distance_km = get_distance_from_api_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+    config = get_pricing_config()
 
-    if distance_km is None:
+    # 1) Capa local gratis: Haversine + factor configurable
+    local_distance = round(_haversine_km(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng) * _distance_factor(), 2)
+
+    # 2) Cache de distancia por par de coordenadas
+    origin_key = _coords_cache_key(pickup_lat, pickup_lng)
+    destination_key = _coords_cache_key(dropoff_lat, dropoff_lng)
+    cached = get_distance_cache(origin_key, destination_key, mode="coords")
+    if cached and cached.get("distance_km") is not None:
+        distance_km = float(cached["distance_km"])
+        price = calcular_precio_distancia(distance_km, config)
         return {
-            "success": False,
-            "distance_km": None,
-            "price": None,
-            "config": None,
-            "quote_source": None,
-            "error": "API no disponible o fallo",
+            "success": True,
+            "distance_km": distance_km,
+            "price": price,
+            "config": config,
+            "quote_source": "coords_cache",
         }
 
-    config = get_pricing_config()
-    price = calcular_precio_distancia(distance_km, config)
+    # 3) API paga como ultimo recurso (si hay cuota diaria)
+    if can_call_google_today():
+        api_distance = get_distance_from_api_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+        if api_distance is not None:
+            upsert_distance_cache(origin_key, destination_key, mode="coords", distance_km=api_distance, provider="google_distance_matrix")
+            price = calcular_precio_distancia(api_distance, config)
+            return {
+                "success": True,
+                "distance_km": api_distance,
+                "price": price,
+                "config": config,
+                "quote_source": "coords_api",
+            }
 
+    # 4) Fusible/fallback: continuar con estimacion local sin romper flujo
+    price = calcular_precio_distancia(local_distance, config)
     return {
         "success": True,
-        "distance_km": distance_km,
+        "distance_km": local_distance,
         "price": price,
         "config": config,
-        "quote_source": "coords",
+        "quote_source": "coords_local",
     }
 
 
@@ -590,7 +649,7 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-
+        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -610,26 +669,63 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         dict con: distance_km, price, config, success, quote_source
         Si la API falla, distance_km y price seran None
     """
-    distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
+    config = get_pricing_config()
 
-    if distance_km is None:
+    # 1) Capa local gratis si el texto trae coordenadas
+    pickup_coords = extract_lat_lng_from_text(pickup_text)
+    dropoff_coords = extract_lat_lng_from_text(dropoff_text)
+    if pickup_coords and dropoff_coords:
+        coords_quote = quote_order_by_coords(
+            pickup_coords[0], pickup_coords[1],
+            dropoff_coords[0], dropoff_coords[1]
+        )
+        if coords_quote.get("success"):
+            return {
+                "distance_km": coords_quote["distance_km"],
+                "price": coords_quote["price"],
+                "config": coords_quote["config"],
+                "success": True,
+                "quote_source": "text_via_" + str(coords_quote.get("quote_source")),
+            }
+
+    # 2) Cache por par de direcciones
+    origin_key = _text_cache_key(pickup_text, city_hint)
+    destination_key = _text_cache_key(dropoff_text, city_hint)
+    cached = get_distance_cache(origin_key, destination_key, mode="text")
+    if cached and cached.get("distance_km") is not None:
+        distance_km = float(cached["distance_km"])
+        price = calcular_precio_distancia(distance_km, config)
         return {
-            "distance_km": None,
-            "price": None,
-            "config": None,
-            "success": False,
-            "quote_source": None,
+            "distance_km": distance_km,
+            "price": price,
+            "config": config,
+            "success": True,
+            "quote_source": "text_cache",
         }
 
-    config = get_pricing_config()
-    price = calcular_precio_distancia(distance_km, config)
+    # 3) API paga como ultimo recurso (si hay cuota diaria)
+    if can_call_google_today():
+        distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
+        if distance_km is not None:
+            upsert_distance_cache(origin_key, destination_key, mode="text", distance_km=distance_km, provider="google_distance_matrix")
+            price = calcular_precio_distancia(distance_km, config)
+            return {
+                "distance_km": distance_km,
+                "price": price,
+                "config": config,
+                "success": True,
+                "quote_source": "text_api",
+            }
 
+    # 4) Fusible/fallback local para no romper flujo sin cuota/API
+    fallback_distance = float(config["base_distance_km"])
+    price = calcular_precio_distancia(fallback_distance, config)
     return {
-        "distance_km": distance_km,
+        "distance_km": fallback_distance,
         "price": price,
         "config": config,
         "success": True,
-        "quote_source": "text",
+        "quote_source": "text_fallback_local",
     }
 
 
