@@ -191,6 +191,65 @@ si **no existe vínculo APPROVED** con ese admin.
 
 ---
 
+## X. Cotizador y uso de APIs (CRÍTICO: control de costos)
+
+### Objetivo
+- Mantener calidad de cotización sin depender de APIs pagas en cada consulta.
+- Prioridad: 1) Gratis (cálculo local) 2) Caché 3) API paga (solo cuando sea necesario).
+
+### Modos de cotización (regla obligatoria)
+- El sistema de cotización debe soportar 2 modos:
+  1) Modo simple (distancia manual en km) — NO usa APIs.
+  2) Modo por ubicaciones (recogida/entrega por GPS o link) — usa cálculo local si hay coordenadas.
+
+### Regla de ubicación por defecto (Aliados)
+- Si el usuario es Aliado:
+  - Por defecto: usar su dirección registrada (pickup) para cotizar.
+  - Debe existir opción explícita: “Otra ubicación de recogida”.
+- Si NO es Aliado:
+  - Siempre pedir pickup.
+
+### Prohibiciones (anti-costos)
+- PROHIBIDO llamar APIs pagas (Google u otras) para:
+  - cotizaciones “rápidas” si ya hay lat/lng disponibles.
+  - recalcular lo mismo repetidamente sin caché.
+- PROHIBIDO introducir un proveedor nuevo (Maps/Geocoding/Routing) sin autorización explícita.
+
+### Estrategia obligatoria en 3 capas
+1) Capa local (gratis):
+   - Si pickup y dropoff tienen lat/lng: usar Haversine (o equivalente local).
+   - Aplicar factor de corrección configurable (ej. 1.2–1.4) si se requiere aproximación urbana.
+2) Caché (obligatorio):
+   - Antes de cualquier API paga, consultar caché.
+   - Toda resolución de link/dirección → coordenadas debe quedar cacheada.
+   - Toda distancia calculada por API (si se usa) debe cachearse por par de puntos.
+3) API paga (último recurso):
+   - Solo cuando:
+     - Falten coordenadas y no haya caché,
+     - O el pedido esté en fase de confirmación final (no en “exploración”),
+     - Y la cuota diaria lo permita.
+   - Registrar uso en contador diario.
+
+### Límite diario y “fusible”
+- Debe existir un límite diario configurable para llamadas pagas.
+- Al superar el límite:
+  - NO fallar el flujo.
+  - Degradar a cálculo local (Haversine + factor) y continuar.
+
+### Evidencia y medición (obligatorio)
+- Todo cambio que toque cotización/APIs debe incluir:
+  - Dónde se cachea (función + tabla),
+  - Cuándo se dispara API paga (condición exacta),
+  - Qué fallback se usa cuando no hay cuota.
+- Reportar al final:
+  - cantidad de llamadas pagas evitadas (estimación basada en flujo),
+  - escenarios cubiertos (GPS→GPS, link→GPS, texto→GPS, sin cuota).
+
+### UX mínima (no romper flujo)
+- No romper el /cotizar actual.
+- El modo nuevo debe entrar por selección explícita (botones o opción clara).
+- PROHIBIDO usar Markdown/parse_mode en mensajes del bot.
+
 ## 10. Veracidad técnica y evidencia (OBLIGATORIA)
 
 - Separar SIEMPRE entre:
