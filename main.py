@@ -7286,7 +7286,7 @@ def pagos_callback(update, context):
             query.edit_message_text("No tienes cuentas para gestionar.")
             return PAGO_MENU
 
-        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar:\n"
 
         buttons = []
         for m in methods:
@@ -7330,7 +7330,7 @@ def pagos_callback(update, context):
         else:
             buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
 
-        buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+        buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_delete_{method_id}")])
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
@@ -7366,7 +7366,7 @@ def pagos_callback(update, context):
             else:
                 buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
 
-            buttons.append([InlineKeyboardButton("Eliminar", callback_data=f"pagos_delete_{method_id}")])
+            buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_delete_{method_id}")])
             buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_gestionar")])
 
             query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
@@ -7375,7 +7375,7 @@ def pagos_callback(update, context):
     if data.startswith("pagos_delete_"):
         method_id = int(data.replace("pagos_delete_", ""))
         delete_payment_method(method_id)
-        query.answer("Cuenta eliminada.")
+        query.answer("Cuenta desactivada.")
 
         # Volver a gestionar
         methods = list_payment_methods(admin_id, only_active=False)
@@ -7383,7 +7383,7 @@ def pagos_callback(update, context):
         if not methods:
             return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
 
-        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar o eliminar:\n"
+        texto = "Tus cuentas de pago:\n\nToca una para activar/desactivar:\n"
 
         buttons = []
         for m in methods:

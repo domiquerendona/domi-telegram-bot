@@ -4247,10 +4247,14 @@ def toggle_payment_method(method_id: int, is_active: int):
 
 
 def delete_payment_method(method_id: int):
-    """Elimina un metodo de pago permanentemente."""
+    """Desactiva un metodo de pago (sin borrado fisico)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM admin_payment_methods WHERE id = ?", (method_id,))
+    cur.execute("""
+        UPDATE admin_payment_methods
+        SET is_active = 0
+        WHERE id = ?
+    """, (method_id,))
     conn.commit()
     conn.close()
 
