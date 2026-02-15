@@ -346,6 +346,14 @@ def reference_validation_callback(update, context):
         maps_line = ""
         if lat is not None and lng is not None:
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(lat, lng)
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
 
         text = (
             "Referencia #{}\n"
