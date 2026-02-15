@@ -60,13 +60,14 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     cash_amount = int(order["cash_required_amount"] or 0)
 
     # Obtener coordenadas del pickup para asignacion inteligente por cercania
-    p_lat = order.get("pickup_lat") if isinstance(order, dict) else None
-    p_lng = order.get("pickup_lng") if isinstance(order, dict) else None
-    if p_lat is None and order.get("pickup_location_id"):
+    p_lat = order["pickup_lat"] if "pickup_lat" in order.keys() else None
+    p_lng = order["pickup_lng"] if "pickup_lng" in order.keys() else None
+    pickup_location_id = order["pickup_location_id"] if "pickup_location_id" in order.keys() else None
+    if p_lat is None and pickup_location_id:
         loc = get_ally_location_by_id(order["pickup_location_id"])
         if loc:
-            p_lat = loc.get("lat") if isinstance(loc, dict) else None
-            p_lng = loc.get("lng") if isinstance(loc, dict) else None
+            p_lat = loc["lat"] if "lat" in loc.keys() else None
+            p_lng = loc["lng"] if "lng" in loc.keys() else None
 
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
