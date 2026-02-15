@@ -11,7 +11,9 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
-    get_connection
+    ensure_platform_link_for_courier, ensure_platform_link_for_ally,
+    get_connection,
+    get_distance_cache, upsert_distance_cache,
 )
 import math
 import re
@@ -57,6 +59,23 @@ def _text_cache_key(text: str, city_hint: str) -> str:
     city = (city_hint or "").strip().lower()
     t = (text or "").strip().lower()
     return f"{city}|{t}"
+
+
+# ---------- HAVERSINE (DISTANCIA LOCAL GRATIS) ----------
+
+def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Wrapper publico de _haversine_km. Retorna distancia en linea recta en km."""
+    return round(_haversine_km(lat1, lng1, lat2, lng2), 2)
+
+
+def haversine_road_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    Distancia estimada por carretera urbana = Haversine * factor de correccion configurable.
+    Factor por defecto 1.30 (calles urbanas tipicas agregan ~30% sobre linea recta).
+    Configurable via BD (pricing_local_distance_factor) o env (LOCAL_DISTANCE_FACTOR).
+    """
+    straight = _haversine_km(lat1, lng1, lat2, lng2)
+    return round(straight * _distance_factor(), 2)
 
 
 # ---------- GOOGLE API HELPERS ----------
@@ -267,59 +286,81 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
         return None
 
 
+def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> dict:
+    """
+    Estrategia en 3 capas para calcular distancia de forma economica:
+
+    Capa 1 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
+    Capa 2 - Haversine: calculo local gratuito (distancia * factor urbano).
+    Capa 3 - Google API: solo si hay cuota disponible (costoso).
+
+    Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
+    """
+    origin_key = _coords_cache_key(lat1, lng1)
+    destination_key = _coords_cache_key(lat2, lng2)
+
+    # --- CAPA 1: Cache ---
+    cached = get_distance_cache(origin_key, destination_key, mode="coords")
+    if cached and cached.get("distance_km") is not None:
+        return {
+            "distance_km": float(cached["distance_km"]),
+            "source": f"cache({cached.get('provider', 'unknown')})",
+            "used_api": False,
+        }
+
+    # --- CAPA 2: Haversine (siempre disponible, gratis) ---
+    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+
+    # --- CAPA 3: Google API (solo si hay cuota) ---
+    if can_call_google_today() and GOOGLE_MAPS_API_KEY:
+        google_dist = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
+        if google_dist is not None:
+            upsert_distance_cache(origin_key, destination_key, mode="coords",
+                                  distance_km=google_dist, provider="google_distance_matrix")
+            return {
+                "distance_km": google_dist,
+                "source": "google",
+                "used_api": True,
+            }
+
+    # Fallback: usar Haversine y cachear
+    upsert_distance_cache(origin_key, destination_key, mode="coords",
+                          distance_km=haversine_dist, provider="haversine")
+    return {
+        "distance_km": haversine_dist,
+        "source": "haversine",
+        "used_api": False,
+    }
+
+
 def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
     """
-    Calcula cotización usando coordenadas (más preciso que texto).
+    Calcula cotizacion usando coordenadas con estrategia economica en 3 capas:
+    1. Cache de distancias previas
+    2. Haversine local (gratis)
+    3. Google API (solo si hay cuota)
 
     Args:
         pickup_lat, pickup_lng: Coordenadas de recogida
         dropoff_lat, dropoff_lng: Coordenadas de entrega
 
     Returns:
-        dict con: success, distance_km, price, quote_source, config
+        dict con: success, distance_km, price, quote_source, config, distance_source
     """
+    result = get_smart_distance(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+    distance_km = result["distance_km"]
+
     config = get_pricing_config()
+    price = calcular_precio_distancia(distance_km, config)
 
-    # 1) Capa local gratis: Haversine + factor configurable
-    local_distance = round(_haversine_km(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng) * _distance_factor(), 2)
-
-    # 2) Cache de distancia por par de coordenadas
-    origin_key = _coords_cache_key(pickup_lat, pickup_lng)
-    destination_key = _coords_cache_key(dropoff_lat, dropoff_lng)
-    cached = get_distance_cache(origin_key, destination_key, mode="coords")
-    if cached and cached.get("distance_km") is not None:
-        distance_km = float(cached["distance_km"])
-        price = calcular_precio_distancia(distance_km, config)
-        return {
-            "success": True,
-            "distance_km": distance_km,
-            "price": price,
-            "config": config,
-            "quote_source": "coords_cache",
-        }
-
-    # 3) API paga como ultimo recurso (si hay cuota diaria)
-    if can_call_google_today():
-        api_distance = get_distance_from_api_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-        if api_distance is not None:
-            upsert_distance_cache(origin_key, destination_key, mode="coords", distance_km=api_distance, provider="google_distance_matrix")
-            price = calcular_precio_distancia(api_distance, config)
-            return {
-                "success": True,
-                "distance_km": api_distance,
-                "price": price,
-                "config": config,
-                "quote_source": "coords_api",
-            }
-
-    # 4) Fusible/fallback: continuar con estimacion local sin romper flujo
-    price = calcular_precio_distancia(local_distance, config)
     return {
         "success": True,
-        "distance_km": local_distance,
+        "distance_km": distance_km,
         "price": price,
         "config": config,
-        "quote_source": "coords_local",
+        "quote_source": "coords",
+        "distance_source": result["source"],
+        "used_api": result["used_api"],
     }
 
 
@@ -727,6 +768,58 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         "success": True,
         "quote_source": "text_fallback_local",
     }
+
+
+# ---------- RESOLVER UBICACION INTELIGENTE ----------
+
+def resolve_location(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Intenta extraer lat/lng de cualquier entrada del usuario:
+    1. Coordenadas directas (4.81,-75.69)
+    2. Link de Google Maps (corto o largo)
+    3. Geocoding con Google API (solo si hay cuota)
+
+    Retorna dict {lat, lng, method} o None.
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+
+    # 1. Intentar extraer coords directamente
+    coords = extract_lat_lng_from_text(text)
+    if coords:
+        return {"lat": coords[0], "lng": coords[1], "method": "coords"}
+
+    # 2. Si es link corto, expandir primero
+    expanded = expand_short_url(text)
+    if expanded:
+        coords = extract_lat_lng_from_text(expanded)
+        if coords:
+            return {"lat": coords[0], "lng": coords[1], "method": "link"}
+
+        # Intentar extraer place_id del link expandido
+        place_id = extract_place_id_from_url(expanded)
+        if place_id and can_call_google_today():
+            details = google_place_details(place_id)
+            if details and details.get("lat") and details.get("lng"):
+                return {"lat": details["lat"], "lng": details["lng"], "method": "places_api"}
+
+    # 3. Si es link largo de Google Maps
+    if "google" in text.lower() or "maps" in text.lower() or "goo.gl" in text.lower():
+        place_id = extract_place_id_from_url(text)
+        if place_id and can_call_google_today():
+            details = google_place_details(place_id)
+            if details and details.get("lat") and details.get("lng"):
+                return {"lat": details["lat"], "lng": details["lng"], "method": "places_api"}
+
+    # 4. Geocoding por texto (ultimo recurso, cuesta API)
+    if can_call_google_today():
+        geo = google_geocode_forward(text)
+        if geo and geo.get("lat") and geo.get("lng"):
+            return {"lat": geo["lat"], "lng": geo["lng"], "method": "geocode"}
+
+    return None
 
 
 # ============================================================

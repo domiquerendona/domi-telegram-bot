@@ -33,6 +33,9 @@ from services import (
     approve_recharge_request,
     reject_recharge_request,
     check_service_fee_available,
+    haversine_road_km,
+    resolve_location,
+    get_smart_distance,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -504,6 +507,9 @@ def volver_paso_anterior(update, context):
 # Estados para cotizador interno
 # =========================
 COTIZAR_DISTANCIA = 901
+COTIZAR_MODO = 903
+COTIZAR_RECOGIDA = 904
+COTIZAR_ENTREGA = 905
 
 
 # =========================
@@ -2286,7 +2292,12 @@ def mostrar_error_cotizacion(query_or_update, context, mensaje, edit=False):
 
 
 def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
-    """Calcula distancia via API (preferente por coords) y muestra resumen."""
+    """
+    Calcula distancia con estrategia economica en 3 capas y muestra resumen.
+    Capa 1: Cache de distancias previas (gratis)
+    Capa 2: Haversine local (gratis, siempre disponible)
+    Capa 3: Google API (solo si hay cuota)
+    """
     ally_id = context.user_data.get("ally_id")
     customer_address = context.user_data.get("customer_address", "")
     customer_city = context.user_data.get("customer_city", "")
@@ -2322,12 +2333,12 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     context.user_data["pickup_lat"] = pickup_lat
     context.user_data["pickup_lng"] = pickup_lng
 
-    # Intentar cotizar por coordenadas (más preciso)
+    # Intentar cotizar por coordenadas (usa estrategia en 3 capas: cache -> haversine -> google)
     cotizacion = None
     if pickup_lat and pickup_lng and dropoff_lat and dropoff_lng:
         cotizacion = quote_order_by_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
 
-    # Si no hay coords o falló, usar texto como fallback
+    # Si no hay coords, usar texto como fallback (requiere Google API)
     if not cotizacion or not cotizacion.get("success"):
         # Determinar ciudad efectiva
         effective_city = pickup_city or "Pereira"
@@ -2349,8 +2360,8 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
         city_hint = f"{effective_city}, Colombia"
         cotizacion = quote_order_by_addresses(origin, destination, city_hint)
 
-    # Verificar si la API fallo
-    if not cotizacion["success"]:
+    # Verificar si fallo
+    if not cotizacion.get("success"):
         return mostrar_error_cotizacion(
             query_or_update, context,
             "No se pudo calcular la distancia automaticamente.\n\n"
@@ -2371,6 +2382,7 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
 
     context.user_data["quote_price"] = base_price + buy_surcharge
     context.user_data["quote_source"] = cotizacion.get("quote_source", "text")
+    context.user_data["distance_source"] = cotizacion.get("distance_source", "")
 
     # Mostrar resumen con botones de confirmacion
     keyboard = [
@@ -2380,8 +2392,15 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
 
-    # Agregar nota sobre precisión
-    if context.user_data.get("quote_source") == "coords":
+    # Agregar nota sobre precision y fuente de distancia
+    dist_source = cotizacion.get("distance_source", "")
+    if "google" in dist_source:
+        resumen += "\n(Distancia por ruta - Google Maps)"
+    elif "haversine" in dist_source:
+        resumen += "\n(Distancia estimada - calculo local)"
+    elif "cache" in dist_source:
+        resumen += "\n(Distancia desde cache)"
+    elif context.user_data.get("quote_source") == "coords":
         resumen += "\n(Cotizacion precisa por ubicacion)"
     else:
         resumen += "\n(Cotizacion estimada por direccion)"
@@ -4617,11 +4636,46 @@ def volver_menu_global(update, context):
 # ----- COTIZADOR INTERNO -----
 
 def cotizar_start(update, context):
+    context.user_data.pop("cotizar_pickup", None)
+    context.user_data.pop("cotizar_dropoff", None)
+    keyboard = [
+        [InlineKeyboardButton("Por distancia (km)", callback_data="cotizar_modo_km")],
+        [InlineKeyboardButton("Por ubicaciones", callback_data="cotizar_modo_ubi")],
+    ]
     update.message.reply_text(
         "COTIZADOR\n\n"
-        "Enviame la distancia en km (ej: 5.9)."
+        "Como quieres cotizar?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return COTIZAR_DISTANCIA
+    return COTIZAR_MODO
+
+
+def cotizar_modo_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    modo = query.data
+
+    if modo == "cotizar_modo_km":
+        query.edit_message_text(
+            "COTIZADOR POR DISTANCIA\n\n"
+            "Enviame la distancia en km (ej: 5.9)."
+        )
+        return COTIZAR_DISTANCIA
+
+    elif modo == "cotizar_modo_ubi":
+        query.edit_message_text(
+            "COTIZADOR POR UBICACIONES\n\n"
+            "Enviame el punto de RECOGIDA.\n"
+            "Puedes enviar:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Una direccion de texto"
+        )
+        return COTIZAR_RECOGIDA
+
+    return ConversationHandler.END
+
 
 def cotizar_distancia(update, context):
     texto = (update.message.text or "").strip().replace(",", ".")
@@ -4635,13 +4689,122 @@ def cotizar_distancia(update, context):
         update.message.reply_text("La distancia debe ser mayor a 0. Ej: 3.1")
         return COTIZAR_DISTANCIA
 
-    precio = calcular_precio_distancia(distancia)
+    config = get_pricing_config()
+    precio = calcular_precio_distancia(distancia, config)
 
     update.message.reply_text(
+        f"COTIZACION\n\n"
         f"Distancia: {distancia:.1f} km\n"
-        f"Precio: ${precio:,}".replace(",", ".")
+        f"Precio: ${precio:,}\n\n".replace(",", ".")
+        + _formato_tabla_tarifas(config)
     )
     return ConversationHandler.END
+
+
+def _formato_tabla_tarifas(config):
+    """Genera tabla de tarifas para mostrar en cotizaciones."""
+    return (
+        "Tarifas vigentes:\n"
+        f"  0-2 km: ${config['precio_0_2km']:,}\n"
+        f"  2-3 km: ${config['precio_2_3km']:,}\n"
+        f"  3-{config['umbral_km_largo']:.0f} km: +${config['precio_km_extra_normal']:,}/km\n"
+        f"  >{config['umbral_km_largo']:.0f} km: +${config['precio_km_extra_largo']:,}/km"
+    ).replace(",", ".")
+
+
+def _cotizar_resolver_ubicacion(update, context):
+    """Resuelve ubicacion desde texto o PIN de Telegram. Retorna dict o None."""
+    # PIN de Telegram
+    if update.message.location:
+        loc = update.message.location
+        return {"lat": loc.latitude, "lng": loc.longitude, "method": "gps"}
+
+    texto = (update.message.text or "").strip()
+    if not texto:
+        return None
+
+    return resolve_location(texto)
+
+
+def cotizar_recogida(update, context):
+    loc = _cotizar_resolver_ubicacion(update, context)
+    if not loc:
+        update.message.reply_text(
+            "No pude obtener la ubicacion.\n"
+            "Intenta con un PIN, link de Google Maps, o coordenadas."
+        )
+        return COTIZAR_RECOGIDA
+
+    context.user_data["cotizar_pickup"] = loc
+    update.message.reply_text(
+        "Recogida registrada.\n\n"
+        "Ahora enviame el punto de ENTREGA.\n"
+        "Puedes enviar:\n"
+        "- Un PIN de ubicacion de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Una direccion de texto"
+    )
+    return COTIZAR_ENTREGA
+
+
+def cotizar_recogida_location(update, context):
+    """Handler para PIN de Telegram en recogida."""
+    return cotizar_recogida(update, context)
+
+
+def cotizar_entrega(update, context):
+    loc = _cotizar_resolver_ubicacion(update, context)
+    if not loc:
+        update.message.reply_text(
+            "No pude obtener la ubicacion.\n"
+            "Intenta con un PIN, link de Google Maps, o coordenadas."
+        )
+        return COTIZAR_ENTREGA
+
+    context.user_data["cotizar_dropoff"] = loc
+    pickup = context.user_data.get("cotizar_pickup")
+
+    if not pickup:
+        update.message.reply_text("Error: no se encontro el punto de recogida. Usa /cotizar de nuevo.")
+        return ConversationHandler.END
+
+    # Calcular distancia con estrategia inteligente
+    result = get_smart_distance(
+        pickup["lat"], pickup["lng"],
+        loc["lat"], loc["lng"]
+    )
+
+    distance_km = result["distance_km"]
+    config = get_pricing_config()
+    precio = calcular_precio_distancia(distance_km, config)
+
+    # Indicar fuente de distancia
+    source = result["source"]
+    if "google" in source:
+        nota_fuente = "Distancia por ruta (Google Maps)"
+    elif "haversine" in source:
+        nota_fuente = "Distancia estimada (calculo local)"
+    else:
+        nota_fuente = f"Distancia desde cache ({source})"
+
+    update.message.reply_text(
+        f"COTIZACION\n\n"
+        f"Distancia: {distance_km:.1f} km\n"
+        f"Precio: ${precio:,}\n\n".replace(",", ".")
+        + f"{nota_fuente}\n\n"
+        + _formato_tabla_tarifas(config)
+    )
+
+    # Limpiar datos
+    context.user_data.pop("cotizar_pickup", None)
+    context.user_data.pop("cotizar_dropoff", None)
+    return ConversationHandler.END
+
+
+def cotizar_entrega_location(update, context):
+    """Handler para PIN de Telegram en entrega."""
+    return cotizar_entrega(update, context)
 
 
 def courier_pick_admin_callback(update, context):
@@ -6010,7 +6173,20 @@ nuevo_pedido_conv = ConversationHandler(
 cotizar_conv = ConversationHandler(
     entry_points=[CommandHandler("cotizar", cotizar_start)],
     states={
-        COTIZAR_DISTANCIA: [MessageHandler(Filters.text & ~Filters.command, cotizar_distancia)]
+        COTIZAR_MODO: [
+            CallbackQueryHandler(cotizar_modo_callback, pattern=r"^cotizar_modo_"),
+        ],
+        COTIZAR_DISTANCIA: [
+            MessageHandler(Filters.text & ~Filters.command, cotizar_distancia),
+        ],
+        COTIZAR_RECOGIDA: [
+            MessageHandler(Filters.location, cotizar_recogida_location),
+            MessageHandler(Filters.text & ~Filters.command, cotizar_recogida),
+        ],
+        COTIZAR_ENTREGA: [
+            MessageHandler(Filters.location, cotizar_entrega_location),
+            MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
+        ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
