@@ -33,7 +33,6 @@ from services import (
     approve_recharge_request,
     reject_recharge_request,
     check_service_fee_available,
-    haversine_road_km,
     resolve_location,
     get_smart_distance,
 )

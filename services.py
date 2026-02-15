@@ -11,9 +11,7 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
-    ensure_platform_link_for_courier, ensure_platform_link_for_ally,
     get_connection,
-    get_distance_cache, upsert_distance_cache,
 )
 import math
 import re
@@ -290,8 +288,8 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
     """
     Estrategia en 3 capas para calcular distancia de forma economica:
 
-    Capa 1 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
-    Capa 2 - Haversine: calculo local gratuito (distancia * factor urbano).
+    Capa 1 - Haversine: calculo local gratuito (distancia * factor urbano).
+    Capa 2 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
     Capa 3 - Google API: solo si hay cuota disponible (costoso).
 
     Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
@@ -299,7 +297,15 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
 
-    # --- CAPA 1: Cache ---
+    # --- CAPA 1: Haversine (primera opcion, gratis) ---
+    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+    local_result = {
+        "distance_km": haversine_dist,
+        "source": "haversine",
+        "used_api": False,
+    }
+
+    # --- CAPA 2: Cache ---
     cached = get_distance_cache(origin_key, destination_key, mode="coords")
     if cached and cached.get("distance_km") is not None:
         return {
@@ -308,11 +314,14 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
             "used_api": False,
         }
 
-    # --- CAPA 2: Haversine (siempre disponible, gratis) ---
-    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+    # Si no hay cache, guardamos resultado local para siguientes consultas.
+    upsert_distance_cache(origin_key, destination_key, mode="coords",
+                          distance_km=haversine_dist, provider="haversine")
 
     # --- CAPA 3: Google API (solo si hay cuota) ---
-    if can_call_google_today() and GOOGLE_MAPS_API_KEY:
+    # En cotizacion por coords casi nunca es necesario, pero se mantiene como ultimo recurso
+    # cuando no hay un valor local util.
+    if haversine_dist <= 0 and can_call_google_today() and GOOGLE_MAPS_API_KEY:
         google_dist = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
         if google_dist is not None:
             upsert_distance_cache(origin_key, destination_key, mode="coords",
@@ -323,14 +332,8 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
                 "used_api": True,
             }
 
-    # Fallback: usar Haversine y cachear
-    upsert_distance_cache(origin_key, destination_key, mode="coords",
-                          distance_km=haversine_dist, provider="haversine")
-    return {
-        "distance_km": haversine_dist,
-        "source": "haversine",
-        "used_api": False,
-    }
+    # Fusible/fallback: continuar con estimacion local.
+    return local_result
 
 
 def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
