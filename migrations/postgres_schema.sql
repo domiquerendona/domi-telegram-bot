@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS couriers (
     rejected_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
+    live_lat REAL,
+    live_lng REAL,
+    live_location_active INTEGER DEFAULT 0,
+    live_location_updated_at TIMESTAMP,
+    availability_status TEXT DEFAULT 'OFFLINE',
     created_at TIMESTAMP DEFAULT NOW()
 );
 

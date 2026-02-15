@@ -101,8 +101,12 @@ from db import (
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
+    get_courier_by_telegram_id,
     set_courier_available_cash,
     deactivate_courier,
+    update_courier_live_location,
+    set_courier_availability,
+    expire_stale_live_locations,
     get_pending_couriers,
     get_pending_couriers_by_admin,
     update_courier_status,
@@ -7014,6 +7018,20 @@ def mi_perfil(update, context):
         else:
             mensaje += f"{get_status_icon(courier_status)}Repartidor: No activo\n"
 
+        # Mostrar estado de disponibilidad (live location)
+        courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
+        if courier_is_active and courier_status == "APPROVED":
+            avail = courier.get("availability_status", "OFFLINE") if isinstance(courier, dict) else "OFFLINE"
+            avail_icons = {"ONLINE": "🟢", "PAUSADO": "🟡", "OFFLINE": "🔴"}
+            avail_icon = avail_icons.get(avail, "⚪")
+            mensaje += f"   Disponibilidad: {avail_icon} {avail}\n"
+            if avail == "ONLINE":
+                mensaje += "   (Compartiendo ubicacion en vivo)\n"
+            elif avail == "PAUSADO":
+                mensaje += "   (Ubicacion en vivo detenida - comparte para volver a ONLINE)\n"
+            else:
+                mensaje += "   (Comparte tu ubicacion en vivo para estar ONLINE)\n"
+
     mensaje += "\n"
 
     # ===== ACCIONES RÁPIDAS =====
@@ -8854,6 +8872,74 @@ def terms_callback(update, context):
     query.answer("Opción no reconocida.", show_alert=True)
 
 
+def courier_live_location_handler(update, context):
+    """
+    Maneja ubicaciones en vivo compartidas por repartidores.
+    - Live location nueva: courier pasa a ONLINE y se guarda lat/lng.
+    - Live location update (edited_message): se actualiza lat/lng.
+    - Ubicacion estatica (pin): se ignora para este flujo.
+    """
+    # Determinar si es mensaje nuevo o editado
+    message = update.edited_message or update.message
+    if not message or not message.location:
+        return
+
+    telegram_id = update.effective_user.id
+
+    # Solo procesar si es repartidor aprobado y activo
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return
+    if courier["status"] != "APPROVED":
+        return
+
+    location = message.location
+    lat = location.latitude
+    lng = location.longitude
+
+    # Detectar si es live location (tiene live_period)
+    live_period = getattr(location, 'live_period', None)
+
+    if live_period or update.edited_message:
+        # Es live location (nueva o update) -> actualizar y marcar ONLINE
+        update_courier_live_location(courier["id"], lat, lng)
+
+        # Solo notificar la primera vez (cuando pasa a ONLINE)
+        was_online = courier.get("availability_status") == "ONLINE"
+        if not was_online and update.message and live_period:
+            try:
+                context.bot.send_message(
+                    chat_id=telegram_id,
+                    text="Tu ubicacion en vivo esta activa. Estas ONLINE y recibiras ofertas cercanas."
+                )
+            except Exception:
+                pass
+    # Si es ubicacion estatica (pin sin live_period), no hacemos nada
+
+
+def courier_live_location_expired_check(context):
+    """
+    Job periodico: revisa couriers ONLINE cuya ubicacion
+    no se actualiza hace mas de 2 minutos y los pasa a PAUSADO.
+    """
+    expired_ids = expire_stale_live_locations(timeout_seconds=120)
+    for cid in expired_ids:
+        try:
+            courier = get_courier_by_id(cid)
+            if courier:
+                from db import get_user_by_id
+                user = get_user_by_id(courier["user_id"])
+                if user:
+                    tg_id = user["telegram_id"]
+                    context.bot.send_message(
+                        chat_id=tg_id,
+                        text="Tu ubicacion en vivo expiro. Estas PAUSADO.\n"
+                             "Comparte tu ubicacion en vivo para volver a ONLINE."
+                    )
+        except Exception as e:
+            print(f"[WARN] No se pudo notificar expiracion a courier {cid}: {e}")
+
+
 def courier_activate_callback(update, context):
     """Inicia flujo de activación del courier: pide declarar base."""
     query = update.callback_query
@@ -8929,7 +9015,9 @@ def courier_base_amount_handler(update, context):
     update.message.reply_text(
         "Te has activado exitosamente.\n"
         "Base declarada: ${:,}\n\n"
-        "Ahora recibiras ofertas de pedidos.".format(amount)
+        "Ahora recibiras ofertas de pedidos.\n\n"
+        "Comparte tu ubicacion en vivo para estar ONLINE "
+        "y recibir ofertas mas cercanas.".format(amount)
     )
 
 
@@ -9019,6 +9107,26 @@ def main():
     # Configuracion de tarifas (botones pricing_*)
     dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
 
+    # -------------------------
+    # Live location handler para repartidores (ONLINE/PAUSADO)
+    # -------------------------
+    # Mensajes nuevos con ubicacion (incluye live location inicial)
+    dp.add_handler(MessageHandler(Filters.location, courier_live_location_handler), group=2)
+    # Mensajes editados (actualizaciones de live location en tiempo real)
+    dp.add_handler(MessageHandler(
+        Filters.location,
+        courier_live_location_handler,
+        edited_updates=True,
+        message_updates=False,
+    ), group=3)
+
+    # Job periodico: expirar live locations cada 60 segundos
+    updater.job_queue.run_repeating(
+        courier_live_location_expired_check,
+        interval=60,
+        first=60,
+        name="expire_live_locations",
+    )
 
     # -------------------------
     # Conversaciones completas

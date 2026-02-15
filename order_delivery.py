@@ -59,11 +59,22 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     requires_cash = bool(order["requires_cash"])
     cash_amount = int(order["cash_required_amount"] or 0)
 
+    # Obtener coordenadas del pickup para asignacion inteligente por cercania
+    p_lat = order.get("pickup_lat") if isinstance(order, dict) else None
+    p_lng = order.get("pickup_lng") if isinstance(order, dict) else None
+    if p_lat is None and order.get("pickup_location_id"):
+        loc = get_ally_location_by_id(order["pickup_location_id"])
+        if loc:
+            p_lat = loc.get("lat") if isinstance(loc, dict) else None
+            p_lng = loc.get("lng") if isinstance(loc, dict) else None
+
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
         requires_cash=requires_cash,
         cash_required_amount=cash_amount,
+        pickup_lat=p_lat,
+        pickup_lng=p_lng,
     )
     if not eligible:
         print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
