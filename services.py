@@ -10,7 +10,6 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
-    ensure_platform_link_for_courier, ensure_platform_link_for_ally,
     get_connection
 )
 import math
@@ -667,24 +666,16 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         # Admin local recargando con plataforma: no necesita vínculo,
         # se acredita directamente el saldo master del admin
         pass
-    elif is_platform:
-        if target_type == "COURIER":
-            ensure_platform_link_for_courier(admin_id, target_id)
-        elif target_type == "ALLY":
-            ensure_platform_link_for_ally(admin_id, target_id)
-        else:
-            return False, f"Tipo de destino desconocido: {target_type}"
+    elif target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+        if not link or link["admin_id"] != admin_id:
+            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+    elif target_type == "ALLY":
+        link = get_approved_admin_link_for_ally(target_id)
+        if not link or link["admin_id"] != admin_id:
+            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
     else:
-        if target_type == "COURIER":
-            link = get_approved_admin_link_for_courier(target_id)
-            if not link or link["admin_id"] != admin_id:
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-        elif target_type == "ALLY":
-            link = get_approved_admin_link_for_ally(target_id)
-            if not link or link["admin_id"] != admin_id:
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-        else:
-            return False, f"Tipo de destino desconocido: {target_type}"
+        return False, f"Tipo de destino desconocido: {target_type}"
 
     conn = get_connection()
     cur = conn.cursor()
