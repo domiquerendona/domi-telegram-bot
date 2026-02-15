@@ -3394,11 +3394,14 @@ def pedido_confirmacion_callback(update, context):
         chat_id = query.message.chat_id
 
         admin_link = get_approved_admin_link_for_ally(ally_id)
+        admin_id_for_publish = None
+
         if admin_link:
+            admin_id_for_publish = admin_link["admin_id"]
             fee_ok, fee_code = check_service_fee_available(
                 target_type="ALLY",
                 target_id=ally_id,
-                admin_id=admin_link["admin_id"],
+                admin_id=admin_id_for_publish,
             )
             if not fee_ok:
                 if fee_code == "ADMIN_SIN_SALDO":
@@ -3427,15 +3430,31 @@ def pedido_confirmacion_callback(update, context):
                 context.user_data.clear()
                 return ConversationHandler.END
         else:
-            context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    "No tienes un administrador APPROVED vinculado.\n"
-                    "No se puede crear ni publicar el pedido hasta tener un vinculo aprobado."
-                ),
-            )
-            context.user_data.clear()
-            return ConversationHandler.END
+            if user_has_platform_admin(query.from_user.id):
+                platform_admin = get_platform_admin()
+                if platform_admin:
+                    admin_id_for_publish = platform_admin["id"]
+                    print("[INFO] Platform bypass aplicado: aliado sin link APPROVED, pedido publicado con admin plataforma.")
+                else:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "No se encontro Admin Plataforma activo para continuar.\n"
+                            "Contacta soporte de plataforma."
+                        ),
+                    )
+                    context.user_data.clear()
+                    return ConversationHandler.END
+            else:
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "No tienes un administrador APPROVED vinculado.\n"
+                        "No se puede crear ni publicar el pedido hasta tener un vinculo aprobado."
+                    ),
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
 
         # Obtener pickup del selector (o default si no existe)
         pickup_location = context.user_data.get("pickup_location")
@@ -3505,7 +3524,7 @@ def pedido_confirmacion_callback(update, context):
 
             # Publicar pedido a couriers del equipo
             try:
-                publish_order_to_couriers(order_id, ally_id, context)
+                publish_order_to_couriers(order_id, ally_id, context, admin_id_override=admin_id_for_publish)
             except Exception as e:
                 print("[WARN] Error al publicar pedido a couriers:", e)
 

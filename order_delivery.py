@@ -35,7 +35,7 @@ OFFER_TIMEOUT_SECONDS = 30
 MAX_CYCLE_SECONDS = 420  # 7 minutos
 
 
-def publish_order_to_couriers(order_id, ally_id, context):
+def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
     1. Busca couriers elegibles (filtrados por veto, base, activación).
@@ -43,12 +43,15 @@ def publish_order_to_couriers(order_id, ally_id, context):
     3. Envía la primera oferta.
     4. Programa timeout de 30s con JobQueue.
     """
-    admin_link = get_approved_admin_link_for_ally(ally_id)
-    if not admin_link:
-        print("[WARN] Aliado sin admin aprobado, no se puede publicar pedido")
-        return 0
-
-    admin_id = admin_link["admin_id"]
+    admin_id = None
+    if admin_id_override is not None:
+        admin_id = int(admin_id_override)
+    else:
+        admin_link = get_approved_admin_link_for_ally(ally_id)
+        if not admin_link:
+            print("[WARN] Aliado sin admin aprobado, no se puede publicar pedido")
+            return 0
+        admin_id = admin_link["admin_id"]
     order = get_order_by_id(order_id)
     if not order:
         return 0
