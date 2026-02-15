@@ -191,22 +191,45 @@ si **no existe vínculo APPROVED** con ese admin.
 
 ---
 
-## 10. Regla de decisiones y veredictos (OBLIGATORIA)
+## 10. Veracidad técnica y evidencia (OBLIGATORIA)
 
-Antes de emitir **cualquier veredicto técnico**, el agente DEBE:
-
-1. Preguntar primero.
-2. Esperar confirmación explícita del usuario.
-3. Solo después:
- - dar veredicto,
- - proponer solución,
- - cerrar decisión.
-
-PROHIBIDO cerrar decisiones por iniciativa propia.
+- Separar SIEMPRE entre:
+  - IMPLEMENTADO (existe en el código actual)
+  - DISEÑO FUTURO (idea/plan aún no implementado)
+- PROHIBIDO afirmar que algo “existe” si no se puede señalar evidencia objetiva.
+  - Para decir IMPLEMENTADO, el agente debe indicar: archivo + función/bloque
+    (ej: `main.py: soy_repartidor()`, `services.py: quote_order_by_coords()`).
+  - Si no hay evidencia, debe marcarlo como: PROPUESTA / FUTURO.
+- No mezclar decisiones de diseño guardadas (p.ej. live location para ONLINE)
+  como si estuvieran ya en producción.
+- Si se está verificando una afirmación previa:
+  - el agente debe contrastar con el código y declarar el veredicto
+    (CORRECTO / PARCIAL / INCORRECTO) con evidencia.
 
 ---
 
-## 11. Estilo de colaboración
+## 11. Regla de decisiones y veredictos (OBLIGATORIA)
+
+Antes de proponer **cambios** (refactors, migraciones, nuevos flujos o reglas),
+el agente DEBE:
+
+1. Exponer opciones concretas.
+2. Preguntar primero.
+3. Esperar confirmación explícita del usuario.
+4. Solo después:
+ - proponer plan final,
+ - ejecutar cambios,
+ - cerrar decisión.
+
+NOTA: Esta regla aplica a **decisiones de cambio**.  
+Para **verificación técnica** (auditoría / comprobación), el agente puede dar veredicto
+directamente, siempre cumpliendo la sección 10 (evidencia).
+
+PROHIBIDO cerrar decisiones de cambio por iniciativa propia.
+
+---
+
+## 12. Estilo de colaboración
 
 - Priorizar estabilidad sobre velocidad.
 - Preguntar antes de decidir.
