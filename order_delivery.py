@@ -26,6 +26,9 @@ from db import (
     mark_offer_as_offered,
     mark_offer_response,
     release_order_from_courier,
+    get_order_pickup_confirmation,
+    upsert_order_pickup_confirmation,
+    review_order_pickup_confirmation,
     reset_offer_queue,
     set_order_status,
 )
@@ -558,11 +561,20 @@ def _admin_order_cancel(update, context, data):
 def order_courier_callback(update, context):
     """
     Maneja botones de ofertas y ciclo de vida de pedidos.
-    Pattern: ^order_(accept|reject|pickup|delivered|release|cancel)_\\d+$
+    Patterns:
+    - ^order_(accept|reject|pickup|delivered|release|cancel)_\\d+$
+    - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
     data = query.data or ""
     query.answer()
+
+    if data.startswith("order_pickupconfirm_approve_"):
+        order_id = int(data.replace("order_pickupconfirm_approve_", ""))
+        return _handle_pickup_confirmation_by_ally(update, context, order_id, approve=True)
+    if data.startswith("order_pickupconfirm_reject_"):
+        order_id = int(data.replace("order_pickupconfirm_reject_", ""))
+        return _handle_pickup_confirmation_by_ally(update, context, order_id, approve=False)
 
     if data.startswith("order_accept_"):
         order_id = int(data.replace("order_accept_", ""))
@@ -816,36 +828,55 @@ def _handle_pickup(update, context, order_id):
         query.edit_message_text("No tienes permiso para confirmar este pedido.")
         return
 
-    set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
+    upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
+    courier_name = courier["full_name"] or "Repartidor"
+    _notify_ally_pickup(context, order, courier_name)
 
-    dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
-    keyboard = []
-    keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
-    keyboard.append([InlineKeyboardButton("Marcar como entregado", callback_data="order_delivered_{}".format(order_id))])
+    keyboard = [[InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))]]
     query.edit_message_text(
-        "Pedido #{} - Recogida confirmada.\n\n"
-        "Entrega en: {}\n"
-        "Cliente: {}\n"
-        "Telefono cliente: {}\n\n"
-        "Dirigete al punto de entrega. Cuando entregues, toca el boton.".format(
-            order_id,
-            order["customer_address"] or "No disponible",
-            order["customer_name"] or "No disponible",
-            order["customer_phone"] or "No disponible",
-        ),
+        "Pedido #{} - Solicitud enviada.\n\n"
+        "El aliado debe confirmar la entrega del pedido en recogida.\n"
+        "Cuando confirme, te enviaremos la ruta al punto de entrega.".format(order_id),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    if dropoff_lat is not None and dropoff_lng is not None:
-        try:
-            context.bot.send_location(
-                chat_id=query.message.chat_id,
-                latitude=float(dropoff_lat),
-                longitude=float(dropoff_lng),
-            )
-        except Exception:
-            pass
+    return
 
-    _notify_ally_pickup(context, order)
+
+def _handle_pickup_confirmation_by_ally(update, context, order_id, approve):
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != order["ally_id"]:
+        query.edit_message_text("No tienes permiso para confirmar esta recogida.")
+        return
+
+    confirmation = get_order_pickup_confirmation(order_id)
+    if not confirmation:
+        query.edit_message_text("No hay solicitud de recogida pendiente para este pedido.")
+        return
+    if confirmation["status"] != "PENDING":
+        query.edit_message_text("Esta solicitud ya fue revisada.")
+        return
+
+    new_status = "APPROVED" if approve else "REJECTED"
+    if not review_order_pickup_confirmation(order_id, new_status, ally["id"]):
+        query.edit_message_text("No se pudo actualizar la confirmacion. Intenta de nuevo.")
+        return
+
+    if approve:
+        set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
+        query.edit_message_text("Recogida confirmada. El repartidor fue notificado para continuar a entrega.")
+        _notify_courier_pickup_approved(context, order)
+    else:
+        query.edit_message_text("Recogida rechazada. El repartidor fue notificado.")
+        _notify_courier_pickup_rejected(context, order)
+    return
 
 
 def _handle_delivered(update, context, order_id):
@@ -1062,21 +1093,102 @@ def _notify_ally_order_accepted(context, order, courier_name):
         print("[WARN] No se pudo notificar al aliado: {}".format(e))
 
 
-def _notify_ally_pickup(context, order):
-    """Notifica al aliado que el repartidor recogio el pedido."""
+def _notify_ally_pickup(context, order, courier_name):
+    """Solicita confirmacion al aliado antes de habilitar la entrega al repartidor."""
     try:
         ally = get_ally_by_id(order["ally_id"])
         if not ally:
-            return
+            return False
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
-            return
+            return False
+        keyboard = [
+            [InlineKeyboardButton("Confirmar entrega al repartidor", callback_data="order_pickupconfirm_approve_{}".format(order["id"]))],
+            [InlineKeyboardButton("Reportar problema", callback_data="order_pickupconfirm_reject_{}".format(order["id"]))],
+        ]
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
-            text="El repartidor recogio tu pedido #{}. Esta en camino al cliente.".format(order["id"]),
+            text=(
+                "Seguridad de recogida - Pedido #{}\n\n"
+                "El repartidor {} indica que recibio el pedido.\n"
+                "Confirma para habilitar la ruta de entrega."
+            ).format(order["id"], courier_name),
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return True
     except Exception as e:
         print("[WARN] No se pudo notificar pickup al aliado: {}".format(e))
+        return False
+
+
+def _notify_courier_pickup_approved(context, order):
+    """Envia al courier la entrega cuando el aliado confirma la recogida."""
+    try:
+        if not order["courier_id"]:
+            return
+        courier = get_courier_by_id(order["courier_id"])
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+
+        dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
+        keyboard = []
+        keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
+        keyboard.append([InlineKeyboardButton("Marcar como entregado", callback_data="order_delivered_{}".format(order["id"]))])
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=(
+                "Recogida confirmada por el aliado - Pedido #{}\n\n"
+                "Entrega en: {}\n"
+                "Cliente: {}\n"
+                "Telefono cliente: {}\n\n"
+                "Dirigete al punto de entrega."
+            ).format(
+                order["id"],
+                order["customer_address"] or "No disponible",
+                order["customer_name"] or "No disponible",
+                order["customer_phone"] or "No disponible",
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        if dropoff_lat is not None and dropoff_lng is not None:
+            context.bot.send_location(
+                chat_id=courier_user["telegram_id"],
+                latitude=float(dropoff_lat),
+                longitude=float(dropoff_lng),
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar confirmacion de recogida al courier: {}".format(e))
+
+
+def _notify_courier_pickup_rejected(context, order):
+    """Notifica al courier que el aliado rechazo la confirmacion de recogida."""
+    try:
+        if not order["courier_id"]:
+            return
+        courier = get_courier_by_id(order["courier_id"])
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+
+        keyboard = [
+            [InlineKeyboardButton("Solicitar confirmacion nuevamente", callback_data="order_pickup_{}".format(order["id"]))],
+            [InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order["id"]))],
+        ]
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=(
+                "El aliado rechazo la confirmacion de recogida del pedido #{}.\n"
+                "Verifica en el punto de recogida y vuelve a solicitar confirmacion."
+            ).format(order["id"]),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar rechazo de recogida al courier: {}".format(e))
 
 
 def _notify_ally_delivered(context, order):

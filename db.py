@@ -758,6 +758,24 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_pickup_confirmations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL UNIQUE,
+            courier_id INTEGER NOT NULL,
+            ally_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            requested_at TEXT DEFAULT (datetime('now')),
+            reviewed_at TEXT,
+            reviewed_by_ally_id INTEGER,
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_pickup_confirmations_status ON order_pickup_confirmations(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_pickup_confirmations_ally ON order_pickup_confirmations(ally_id)")
+
     # Tabla: courier_ratings (calificaciones)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS courier_ratings (
@@ -1617,6 +1635,60 @@ def delete_offer_queue(order_id: int):
     cur.execute("DELETE FROM order_offer_queue WHERE order_id = ?;", (order_id,))
     conn.commit()
     conn.close()
+
+
+def upsert_order_pickup_confirmation(order_id: int, courier_id: int, ally_id: int, status: str = "PENDING"):
+    status = normalize_role_status(status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO order_pickup_confirmations (
+            order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
+        )
+        VALUES (?, ?, ?, ?, datetime('now'), NULL, NULL)
+        ON CONFLICT(order_id)
+        DO UPDATE SET
+            courier_id=excluded.courier_id,
+            ally_id=excluded.ally_id,
+            status=excluded.status,
+            requested_at=datetime('now'),
+            reviewed_at=NULL,
+            reviewed_by_ally_id=NULL;
+    """, (order_id, courier_id, ally_id, status))
+    conn.commit()
+    conn.close()
+
+
+def get_order_pickup_confirmation(order_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
+        FROM order_pickup_confirmations
+        WHERE order_id = ?
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def review_order_pickup_confirmation(order_id: int, new_status: str, reviewed_by_ally_id: int):
+    new_status = normalize_role_status(new_status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_pickup_confirmations
+        SET status = ?,
+            reviewed_by_ally_id = ?,
+            reviewed_at = datetime('now')
+        WHERE order_id = ?
+          AND status = 'PENDING';
+    """, (new_status, reviewed_by_ally_id, order_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
 
 
 def set_courier_available_cash(courier_id: int, amount: int):

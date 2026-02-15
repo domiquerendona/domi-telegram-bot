@@ -196,6 +196,17 @@ CREATE TABLE IF NOT EXISTS courier_ratings (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS order_pickup_confirmations (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL UNIQUE,
+    courier_id BIGINT NOT NULL,
+    ally_id BIGINT NOT NULL,
+    status TEXT DEFAULT 'PENDING',
+    requested_at TIMESTAMP DEFAULT NOW(),
+    reviewed_at TIMESTAMP,
+    reviewed_by_ally_id BIGINT
+);
+
 -- ============================================================
 -- F) TABLAS DE TÉRMINOS Y CONDICIONES
 -- ============================================================
