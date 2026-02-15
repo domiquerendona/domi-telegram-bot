@@ -7021,10 +7021,15 @@ def mi_perfil(update, context):
         # Mostrar estado de disponibilidad (live location)
         courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
         if courier_is_active and courier_status == "APPROVED":
-            avail = courier.get("availability_status", "OFFLINE") if isinstance(courier, dict) else "OFFLINE"
-            avail_icons = {"ONLINE": "🟢", "PAUSADO": "🟡", "OFFLINE": "🔴"}
-            avail_icon = avail_icons.get(avail, "⚪")
-            mensaje += f"   Disponibilidad: {avail_icon} {avail}\n"
+            avail_status = courier.get("availability_status", "INACTIVE") if isinstance(courier, dict) else "INACTIVE"
+            live_active = int(courier.get("live_location_active", 0) or 0) == 1 if isinstance(courier, dict) else False
+            if avail_status == "APPROVED" and live_active:
+                avail = "ONLINE"
+            elif avail_status == "APPROVED":
+                avail = "PAUSADO"
+            else:
+                avail = "OFFLINE"
+            mensaje += f"   Disponibilidad: {avail}\n"
             if avail == "ONLINE":
                 mensaje += "   (Compartiendo ubicacion en vivo)\n"
             elif avail == "PAUSADO":
@@ -8904,8 +8909,11 @@ def courier_live_location_handler(update, context):
         # Es live location (nueva o update) -> actualizar y marcar ONLINE
         update_courier_live_location(courier["id"], lat, lng)
 
-        # Solo notificar la primera vez (cuando pasa a ONLINE)
-        was_online = courier.get("availability_status") == "ONLINE"
+        # Solo notificar la primera vez (cuando pasa a ONLINE visible)
+        was_online = (
+            courier.get("availability_status") == "APPROVED"
+            and int(courier.get("live_location_active", 0) or 0) == 1
+        )
         if not was_online and update.message and live_period:
             try:
                 context.bot.send_message(

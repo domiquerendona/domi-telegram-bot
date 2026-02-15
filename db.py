@@ -936,7 +936,13 @@ def init_db():
     except Exception:
         pass
     try:
-        cur.execute("ALTER TABLE couriers ADD COLUMN availability_status TEXT DEFAULT 'OFFLINE';")
+        cur.execute("ALTER TABLE couriers ADD COLUMN availability_status TEXT DEFAULT 'INACTIVE';")
+    except Exception:
+        pass
+    # Normalizacion: availability_status debe usar estados estandar.
+    try:
+        cur.execute("UPDATE couriers SET availability_status = 'APPROVED' WHERE availability_status = 'ONLINE';")
+        cur.execute("UPDATE couriers SET availability_status = 'INACTIVE' WHERE availability_status IN ('PAUSADO', 'OFFLINE') OR availability_status IS NULL;")
     except Exception:
         pass
 
@@ -1627,43 +1633,39 @@ def deactivate_courier(courier_id: int):
     cur = conn.cursor()
     cur.execute(
         "UPDATE couriers SET is_active = 0, available_cash = 0, "
-        "availability_status = 'OFFLINE', live_location_active = 0 WHERE id = ?;",
+        "availability_status = 'INACTIVE', live_location_active = 0 WHERE id = ?;",
         (courier_id,))
     conn.commit()
     conn.close()
 
 
 def update_courier_live_location(courier_id: int, lat: float, lng: float):
-    """Actualiza la ubicacion en vivo del courier y lo marca ONLINE."""
+    """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         "UPDATE couriers SET live_lat = ?, live_lng = ?, "
         "live_location_active = 1, live_location_updated_at = datetime('now'), "
-        "availability_status = 'ONLINE' WHERE id = ?;",
+        "availability_status = 'APPROVED' WHERE id = ?;",
         (lat, lng, courier_id))
     conn.commit()
     conn.close()
 
 
 def set_courier_availability(courier_id: int, status: str):
-    """Cambia availability_status: ONLINE, PAUSADO, OFFLINE."""
+    """Cambia availability_status usando estados estandar (APPROVED/INACTIVE)."""
     conn = get_connection()
     cur = conn.cursor()
-    if status == 'PAUSADO':
+    normalized = normalize_role_status(status)
+    if normalized == 'INACTIVE':
         cur.execute(
-            "UPDATE couriers SET availability_status = 'PAUSADO', "
-            "live_location_active = 0 WHERE id = ?;",
-            (courier_id,))
-    elif status == 'OFFLINE':
-        cur.execute(
-            "UPDATE couriers SET availability_status = 'OFFLINE', "
+            "UPDATE couriers SET availability_status = 'INACTIVE', "
             "live_location_active = 0 WHERE id = ?;",
             (courier_id,))
     else:
         cur.execute(
             "UPDATE couriers SET availability_status = ? WHERE id = ?;",
-            (status, courier_id))
+            (normalized, courier_id))
     conn.commit()
     conn.close()
 
@@ -1677,13 +1679,12 @@ def get_courier_availability(courier_id: int) -> str:
     conn.close()
     if row:
         return row["availability_status"] if isinstance(row, dict) else row[0]
-    return "OFFLINE"
+    return "INACTIVE"
 
 
 def expire_stale_live_locations(timeout_seconds: int = 120):
     """
-    Marca como PAUSADO a couriers cuyo live_location_updated_at
-    tiene mas de timeout_seconds sin actualizar y siguen ONLINE.
+    Marca como INACTIVE a couriers con live_location vencida.
     Retorna la lista de courier_ids afectados.
     """
     conn = get_connection()
@@ -1692,7 +1693,7 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
     # Primero obtener los que van a expirar
     cur.execute("""
         SELECT id FROM couriers
-        WHERE availability_status = 'ONLINE'
+        WHERE availability_status = 'APPROVED'
           AND live_location_active = 1
           AND live_location_updated_at < datetime('now', ? || ' seconds')
     """, ('-' + str(timeout_seconds),))
@@ -1701,8 +1702,8 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
     if expired:
         cur.execute("""
             UPDATE couriers
-            SET availability_status = 'PAUSADO', live_location_active = 0
-            WHERE availability_status = 'ONLINE'
+            SET availability_status = 'INACTIVE', live_location_active = 0
+            WHERE availability_status = 'APPROVED'
               AND live_location_active = 1
               AND live_location_updated_at < datetime('now', ? || ' seconds')
         """, ('-' + str(timeout_seconds),))
@@ -1776,9 +1777,9 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     - Con base suficiente (si requires_cash)
 
     Ordenamiento inteligente:
-    1. ONLINE primero (compartiendo ubicacion en vivo), ordenados por distancia al pickup
-    2. PAUSADO segundo (dejaron de compartir), por distancia al pickup con ultima ubicacion conocida
-    3. Resto por available_cash DESC (fallback)
+    1. APPROVED + live_location_active=1 primero, por distancia al pickup
+    2. APPROVED + live_location_active=0 segundo, por distancia
+    3. INACTIVE al final por available_cash DESC (fallback)
 
     Si no hay pickup_lat/lng, usa el orden por available_cash DESC como antes.
     """
@@ -1787,7 +1788,7 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
 
     query = """
         SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash,
-               c.availability_status, c.live_lat, c.live_lng,
+               c.availability_status, c.live_lat, c.live_lng, c.live_location_active,
                c.residence_lat, c.residence_lng
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
@@ -1825,7 +1826,8 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
                 "full_name": row["full_name"],
                 "telegram_id": row["telegram_id"],
                 "available_cash": row["available_cash"],
-                "availability_status": row.get("availability_status", "OFFLINE"),
+                "availability_status": row.get("availability_status", "INACTIVE"),
+                "live_location_active": row.get("live_location_active", 0),
                 "live_lat": row.get("live_lat"),
                 "live_lng": row.get("live_lng"),
                 "residence_lat": row.get("residence_lat"),
@@ -1837,11 +1839,12 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
                 "full_name": row[1],
                 "telegram_id": row[2],
                 "available_cash": row[3],
-                "availability_status": row[4] if len(row) > 4 else "OFFLINE",
+                "availability_status": row[4] if len(row) > 4 else "INACTIVE",
                 "live_lat": row[5] if len(row) > 5 else None,
                 "live_lng": row[6] if len(row) > 6 else None,
-                "residence_lat": row[7] if len(row) > 7 else None,
-                "residence_lng": row[8] if len(row) > 8 else None,
+                "live_location_active": row[7] if len(row) > 7 else 0,
+                "residence_lat": row[8] if len(row) > 8 else None,
+                "residence_lng": row[9] if len(row) > 9 else None,
             }
         result.append(item)
 
@@ -1858,20 +1861,25 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
             return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
         def _sort_key(c):
-            status = c.get("availability_status", "OFFLINE")
-            # Prioridad: ONLINE=0, PAUSADO=1, OFFLINE=2
-            priority = {"ONLINE": 0, "PAUSADO": 1}.get(status, 2)
+            status = c.get("availability_status", "INACTIVE")
+            is_live = int(c.get("live_location_active") or 0) == 1
+            if status == "APPROVED" and is_live:
+                priority = 0
+            elif status == "APPROVED":
+                priority = 1
+            else:
+                priority = 2
 
             # Mejor ubicacion disponible: live > residence
             clat = c.get("live_lat") or c.get("residence_lat")
             clng = c.get("live_lng") or c.get("residence_lng")
 
-            if clat and clng:
+            if clat is not None and clng is not None:
                 dist = _haversine(pickup_lat, pickup_lng, clat, clng)
             else:
                 dist = 9999  # Sin ubicacion, al final
 
-            return (priority, dist)
+            return (priority, dist, -int(c.get("available_cash") or 0))
 
         result.sort(key=_sort_key)
 
@@ -3265,7 +3273,28 @@ def get_courier_by_id(courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT *
+        SELECT
+            id,                -- 0
+            user_id,           -- 1
+            full_name,         -- 2
+            id_number,         -- 3
+            phone,             -- 4
+            city,              -- 5
+            barrio,            -- 6
+            plate,             -- 7
+            bike_type,         -- 8
+            code,              -- 9
+            status,            -- 10
+            residence_address, -- 11
+            residence_lat,     -- 12
+            residence_lng,     -- 13
+            is_active,         -- 14
+            available_cash,    -- 15
+            live_lat,          -- 16
+            live_lng,          -- 17
+            live_location_active, -- 18
+            live_location_updated_at, -- 19
+            COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
         FROM couriers
         WHERE id = ?;
     """, (courier_id,))

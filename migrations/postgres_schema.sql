@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS couriers (
     live_lng REAL,
     live_location_active INTEGER DEFAULT 0,
     live_location_updated_at TIMESTAMP,
-    availability_status TEXT DEFAULT 'OFFLINE',
+    availability_status TEXT DEFAULT 'INACTIVE',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
