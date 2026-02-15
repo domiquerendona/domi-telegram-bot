@@ -173,6 +173,12 @@ from db import (
     list_payment_methods,
     toggle_payment_method,
     deactivate_payment_method,
+    list_reference_alias_candidates,
+    get_reference_alias_candidate_by_id,
+    review_reference_alias_candidate,
+    get_admin_reference_validator_permission,
+    set_admin_reference_validator_permission,
+    can_admin_validate_references,
 )
 from profile_changes import (
     profile_change_conv,
@@ -231,6 +237,169 @@ def es_admin_plataforma(telegram_id: int) -> bool:
         status = admin["status"] if "status" in admin.keys() else None
 
     return team_code == "PLATFORM" and status == "APPROVED"
+
+
+def _get_reference_reviewer(telegram_id: int):
+    """
+    Retorna contexto de revisor de referencias.
+    - Admin Plataforma: siempre habilitado.
+    - Admin Local: requiere status APPROVED y permiso APPROVED.
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return {"ok": False, "message": "No se encontro tu usuario.", "admin_id": None, "is_platform": False}
+
+    admin = get_admin_by_user_id(user["id"])
+    if not admin:
+        return {"ok": False, "message": "No tienes perfil de administrador.", "admin_id": None, "is_platform": False}
+
+    admin_id = admin["id"]
+    admin_status = admin["status"]
+    team_code = admin["team_code"]
+    is_platform = bool(team_code == "PLATFORM" and admin_status == "APPROVED")
+
+    if is_platform:
+        return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": True}
+
+    if admin_status != "APPROVED":
+        return {"ok": False, "message": "Tu admin debe estar APPROVED para validar referencias.", "admin_id": admin_id, "is_platform": False}
+
+    if not can_admin_validate_references(admin_id):
+        return {"ok": False, "message": "No tienes permiso para validar referencias.", "admin_id": admin_id, "is_platform": False}
+
+    return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": False}
+
+
+def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
+    rows = list_reference_alias_candidates(status="PENDING", limit=10, offset=offset)
+
+    if not rows:
+        text = "No hay referencias pendientes por validar."
+        keyboard = [[InlineKeyboardButton("Actualizar", callback_data="ref_list_0")]]
+    else:
+        text = "Referencias pendientes.\nToca una para revisar:"
+        keyboard = []
+        for row in rows:
+            snippet = (row["raw_text"] or "")[:35]
+            label = "#{} {} ({})".format(row["id"], snippet, row["seen_count"])
+            keyboard.append([InlineKeyboardButton(label, callback_data="ref_view_{}".format(row["id"]))])
+
+        nav = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton("Anterior", callback_data="ref_list_{}".format(max(0, offset - 10))))
+        if len(rows) == 10:
+            nav.append(InlineKeyboardButton("Siguiente", callback_data="ref_list_{}".format(offset + 10)))
+        if nav:
+            keyboard.append(nav)
+        keyboard.append([InlineKeyboardButton("Actualizar", callback_data="ref_list_{}".format(offset))])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if edit:
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        query_or_update.message.reply_text(text, reply_markup=reply_markup)
+
+
+def cmd_referencias(update, context):
+    reviewer = _get_reference_reviewer(update.effective_user.id)
+    if not reviewer["ok"]:
+        update.message.reply_text(reviewer["message"])
+        return
+    _render_reference_candidates(update, offset=0, edit=False)
+
+
+def reference_validation_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    reviewer = _get_reference_reviewer(query.from_user.id)
+    if not reviewer["ok"]:
+        query.answer(reviewer["message"], show_alert=True)
+        return
+
+    if data.startswith("ref_list_"):
+        query.answer()
+        try:
+            offset = int(data.replace("ref_list_", ""))
+        except Exception:
+            offset = 0
+        _render_reference_candidates(query, offset=max(0, offset), edit=True)
+        return
+
+    if data.startswith("ref_view_"):
+        query.answer()
+        try:
+            candidate_id = int(data.replace("ref_view_", ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        row = get_reference_alias_candidate_by_id(candidate_id)
+        if not row:
+            query.edit_message_text(
+                "Referencia no encontrada.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="ref_list_0")]])
+            )
+            return
+
+        lat = row["suggested_lat"]
+        lng = row["suggested_lng"]
+        maps_line = ""
+        if lat is not None and lng is not None:
+            maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(lat, lng)
+
+        text = (
+            "Referencia #{}\n"
+            "Texto: {}\n"
+            "Normalizado: {}\n"
+            "Veces vista: {}\n"
+            "Fuente: {}\n"
+            "Coords sugeridas: {}, {}\n"
+            "{}"
+            "Estado: {}"
+        ).format(
+            row["id"],
+            row["raw_text"] or "-",
+            row["normalized_text"] or "-",
+            row["seen_count"] or 0,
+            row["source"] or "-",
+            lat if lat is not None else "-",
+            lng if lng is not None else "-",
+            maps_line,
+            row["status"] or "-",
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data="ref_approve_{}".format(row["id"])),
+                InlineKeyboardButton("Rechazar", callback_data="ref_reject_{}".format(row["id"])),
+            ],
+            [InlineKeyboardButton("Volver", callback_data="ref_list_0")],
+        ]
+        query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("ref_approve_") or data.startswith("ref_reject_"):
+        query.answer()
+        approve = data.startswith("ref_approve_")
+        prefix = "ref_approve_" if approve else "ref_reject_"
+        try:
+            candidate_id = int(data.replace(prefix, ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        new_status = "APPROVED" if approve else "REJECTED"
+        ok, msg = review_reference_alias_candidate(
+            candidate_id,
+            new_status,
+            reviewed_by_admin_id=reviewer["admin_id"],
+            note="review_by_tg:{}".format(query.from_user.id),
+        )
+        keyboard = [[InlineKeyboardButton("Volver a pendientes", callback_data="ref_list_0")]]
+        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    query.answer("Opcion no reconocida.", show_alert=True)
 
 
 # =========================
@@ -3870,6 +4039,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+        [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
     ]
 
@@ -3911,6 +4081,11 @@ def admin_menu_callback(update, context):
     if data == "admin_repartidores_pendientes":
         query.answer()
         repartidores_pendientes(update, context)
+        return
+
+    if data == "admin_ref_candidates":
+        query.answer()
+        _render_reference_candidates(query, offset=0, edit=True)
         return
 
     # Botón: Gestionar administradores (submenú)
@@ -4008,6 +4183,8 @@ def admin_menu_callback(update, context):
         # Contadores
         num_couriers = count_admin_couriers(adm_id)
         num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+        perm = get_admin_reference_validator_permission(adm_id)
+        perm_status = perm["status"] if perm else "INACTIVE"
 
         residence_address = admin_obj[11] if len(admin_obj) > 11 else None
         residence_lat = admin_obj[12] if len(admin_obj) > 12 else None
@@ -4044,6 +4221,7 @@ def admin_menu_callback(update, context):
             maps_line,
             num_couriers, num_couriers_balance
         )
+        texto += "\nPermiso validar referencias: {}".format(perm_status)
 
         keyboard = []
 
@@ -4060,6 +4238,10 @@ def admin_menu_callback(update, context):
                 ])
             if adm_status == "APPROVED":
                 keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+                if perm_status == "APPROVED":
+                    keyboard.append([InlineKeyboardButton("Quitar permiso validar referencias", callback_data="admin_refperm_{}_INACTIVE".format(adm_id))])
+                else:
+                    keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
             if adm_status == "INACTIVE":
                 keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
             # REJECTED: sin botones de accion (estado terminal)
@@ -4071,6 +4253,56 @@ def admin_menu_callback(update, context):
         return
 
     # Cambiar status de un admin (solo Admin Plataforma)
+    if data.startswith("admin_refperm_"):
+        payload = data.replace("admin_refperm_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+
+        try:
+            adm_id = int(parts[0])
+        except Exception:
+            query.answer("Admin invalido", show_alert=True)
+            return
+
+        new_status = parts[1]
+        if new_status not in ("APPROVED", "INACTIVE"):
+            query.answer("Estado no valido", show_alert=True)
+            return
+
+        target = get_admin_by_id(adm_id)
+        if not target:
+            query.answer("Admin no encontrado", show_alert=True)
+            return
+        if target[8] == "PLATFORM":
+            query.answer("No aplica para Admin Plataforma", show_alert=True)
+            return
+        if new_status == "APPROVED" and target[9] != "APPROVED":
+            query.answer("Solo admins locales APPROVED pueden recibir este permiso.", show_alert=True)
+            return
+
+        actor_user = get_user_by_telegram_id(query.from_user.id)
+        actor_admin = get_admin_by_user_id(actor_user["id"]) if actor_user else None
+        if not actor_admin:
+            query.answer("No se encontro tu perfil admin.", show_alert=True)
+            return
+
+        set_admin_reference_validator_permission(
+            adm_id,
+            new_status,
+            granted_by_admin_id=actor_admin["id"],
+        )
+        action_text = "otorgado" if new_status == "APPROVED" else "revocado"
+        query.edit_message_text(
+            "Permiso de validacion de referencias {} para admin {}.".format(action_text, adm_id),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+            ])
+        )
+        return
+
     if data.startswith("admin_set_status_"):
         # Formato: admin_set_status_{id}_{STATUS}
         parts = data.replace("admin_set_status_", "").rsplit("_", 1)
@@ -4121,6 +4353,8 @@ def admin_menu_callback(update, context):
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
         num_couriers = count_admin_couriers(adm_id)
         num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+        perm = get_admin_reference_validator_permission(adm_id)
+        perm_status = perm["status"] if perm else "INACTIVE"
 
         texto = (
             "ADMIN ID: {}\n"
@@ -4141,6 +4375,7 @@ def admin_menu_callback(update, context):
             adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
             num_couriers, num_couriers_balance, nuevo_status
         )
+        texto += "\nPermiso validar referencias: {}".format(perm_status)
 
         keyboard = []
         # El admin objetivo no es PLATFORM, mostrar botones segun nuevo status
@@ -4151,6 +4386,10 @@ def admin_menu_callback(update, context):
             ])
         if adm_status == "APPROVED":
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+            if perm_status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("Quitar permiso validar referencias", callback_data="admin_refperm_{}_INACTIVE".format(adm_id))])
+            else:
+                keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
         if adm_status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
         # REJECTED: sin botones de accion (estado terminal)
@@ -4176,6 +4415,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
             [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+            [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         ]
 
@@ -8593,6 +8833,7 @@ def main():
 
     # Panel de Plataforma
     dp.add_handler(CommandHandler("admin", admin_menu))
+    dp.add_handler(CommandHandler("referencias", cmd_referencias))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
@@ -8616,6 +8857,7 @@ def main():
 
     # Configuraciones (botones config_*)
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_"))
+    dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
     # Aprobación / rechazo Aliados (botones ally_approve_ID / ally_reject_ID o similar)
     # Ajusta el patrón si tu callback_data exacto difiere

@@ -13,6 +13,7 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
+    upsert_reference_alias_candidate,
     get_connection,
 )
 import math
@@ -870,6 +871,7 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     text = text.strip()
+    is_url_like = "http" in text.lower()
 
     # 1. Intentar extraer coords directamente
     coords = extract_lat_lng_from_text(text)
@@ -904,11 +906,25 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         return local_ref
 
     # 5. Geocoding por texto (ultimo recurso, cuesta API)
-    if can_call_google_today():
+    normalized_text = _normalize_reference_key(text)
+    if can_call_google_today() and not is_url_like:
         geo = google_geocode_forward(text)
         if geo and geo.get("lat") and geo.get("lng"):
+            upsert_reference_alias_candidate(
+                raw_text=text,
+                normalized_text=normalized_text,
+                suggested_lat=geo["lat"],
+                suggested_lng=geo["lng"],
+                source="geocode",
+            )
             return {"lat": geo["lat"], "lng": geo["lng"], "method": "geocode"}
 
+    if not is_url_like:
+        upsert_reference_alias_candidate(
+            raw_text=text,
+            normalized_text=normalized_text,
+            source="unresolved",
+        )
     return None
 
 

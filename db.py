@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import re
+import json
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -580,6 +581,43 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
     """)
+
+    # Tabla: reference_alias_candidates (cola de referencias para validacion humana)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reference_alias_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_text TEXT NOT NULL,
+            normalized_text TEXT NOT NULL UNIQUE,
+            suggested_lat REAL,
+            suggested_lng REAL,
+            source TEXT,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT DEFAULT (datetime('now')),
+            last_seen_at TEXT DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            reviewed_by_admin_id INTEGER,
+            reviewed_at TEXT,
+            review_note TEXT,
+            FOREIGN KEY (reviewed_by_admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_alias_candidates_status ON reference_alias_candidates(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_alias_candidates_last_seen ON reference_alias_candidates(last_seen_at)")
+
+    # Tabla: permisos para validar referencias (delegables por Admin Plataforma)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_reference_validator_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'INACTIVE',
+            granted_by_admin_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (granted_by_admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_validator_perm_status ON admin_reference_validator_permissions(status)")
 
     # Tabla: ally_locations (direcciones de recogida)
     cur.execute("""
@@ -1813,6 +1851,191 @@ def ensure_pricing_defaults():
         existing = get_setting(k)
         if existing is None:
             set_setting(k, v)
+
+
+# ---------- REFERENCIAS LOCALES (CATALOGO + VALIDACION) ----------
+
+def _normalize_reference_text(text: str) -> str:
+    value = (text or "").strip().lower()
+    value = re.sub(r"[^\w\s]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def upsert_reference_alias_candidate(raw_text: str, normalized_text: str, suggested_lat=None,
+                                     suggested_lng=None, source: str = None):
+    """
+    Registra o incrementa un candidato de referencia local.
+    No elimina registros; solo actualiza contador y ultima vez visto.
+    """
+    if not raw_text:
+        return
+
+    normalized = _normalize_reference_text(normalized_text or raw_text)
+    if not normalized:
+        return
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO reference_alias_candidates
+            (raw_text, normalized_text, suggested_lat, suggested_lng, source, status)
+        VALUES (?, ?, ?, ?, ?, 'PENDING')
+        ON CONFLICT(normalized_text) DO UPDATE SET
+            raw_text = excluded.raw_text,
+            suggested_lat = COALESCE(reference_alias_candidates.suggested_lat, excluded.suggested_lat),
+            suggested_lng = COALESCE(reference_alias_candidates.suggested_lng, excluded.suggested_lng),
+            source = COALESCE(excluded.source, reference_alias_candidates.source),
+            seen_count = reference_alias_candidates.seen_count + 1,
+            last_seen_at = datetime('now'),
+            status = CASE
+                WHEN reference_alias_candidates.status = 'REJECTED' THEN 'REJECTED'
+                ELSE reference_alias_candidates.status
+            END
+    """, (raw_text.strip(), normalized, suggested_lat, suggested_lng, source))
+    conn.commit()
+    conn.close()
+
+
+def list_reference_alias_candidates(status: str = "PENDING", limit: int = 20, offset: int = 0):
+    wanted = normalize_role_status(status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
+            seen_count, first_seen_at, last_seen_at, status
+        FROM reference_alias_candidates
+        WHERE status = ?
+        ORDER BY last_seen_at DESC, id DESC
+        LIMIT ? OFFSET ?
+    """, (wanted, int(limit), int(offset)))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_reference_alias_candidate_by_id(candidate_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
+            seen_count, first_seen_at, last_seen_at, status,
+            reviewed_by_admin_id, reviewed_at, review_note
+        FROM reference_alias_candidates
+        WHERE id = ?
+        LIMIT 1
+    """, (candidate_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def _upsert_location_reference_alias(alias_text: str, lat: float, lng: float, label: str = ""):
+    raw = get_setting("location_reference_aliases_json", "")
+    aliases = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                aliases = parsed
+        except Exception:
+            aliases = {}
+
+    key = _normalize_reference_text(alias_text)
+    if not key:
+        return
+
+    aliases[key] = {"lat": float(lat), "lng": float(lng), "label": (label or alias_text or "").strip()}
+    set_setting("location_reference_aliases_json", json.dumps(aliases, ensure_ascii=True))
+
+
+def review_reference_alias_candidate(candidate_id: int, new_status: str, reviewed_by_admin_id: int,
+                                     note: str = None):
+    status = normalize_role_status(new_status)
+    if status not in {"APPROVED", "REJECTED", "INACTIVE"}:
+        raise ValueError("Estado invalido para revision de referencia.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, raw_text, normalized_text, suggested_lat, suggested_lng, status
+        FROM reference_alias_candidates
+        WHERE id = ?
+        LIMIT 1
+    """, (candidate_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False, "Referencia no encontrada."
+
+    if row["status"] == "APPROVED":
+        conn.close()
+        return False, "La referencia ya estaba APPROVED."
+
+    if status == "APPROVED":
+        lat = row["suggested_lat"]
+        lng = row["suggested_lng"]
+        if lat is None or lng is None:
+            conn.close()
+            return False, "No se puede aprobar sin coordenadas sugeridas."
+
+    conn.close()
+
+    if status == "APPROVED":
+        _upsert_location_reference_alias(row["normalized_text"], float(lat), float(lng), row["raw_text"])
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE reference_alias_candidates
+        SET status = ?, reviewed_by_admin_id = ?, reviewed_at = datetime('now'), review_note = ?
+        WHERE id = ?
+    """, (status, reviewed_by_admin_id, (note or "").strip() or None, candidate_id))
+    conn.commit()
+    conn.close()
+    return True, "Referencia actualizada a {}.".format(status)
+
+
+def get_admin_reference_validator_permission(admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, admin_id, status, granted_by_admin_id, created_at, updated_at
+        FROM admin_reference_validator_permissions
+        WHERE admin_id = ?
+        LIMIT 1
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_admin_reference_validator_permission(admin_id: int, new_status: str, granted_by_admin_id: int):
+    status = normalize_role_status(new_status)
+    if status not in {"APPROVED", "INACTIVE"}:
+        raise ValueError("Estado invalido para permiso de validador.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO admin_reference_validator_permissions
+            (admin_id, status, granted_by_admin_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(admin_id) DO UPDATE SET
+            status = excluded.status,
+            granted_by_admin_id = excluded.granted_by_admin_id,
+            updated_at = datetime('now')
+    """, (admin_id, status, granted_by_admin_id))
+    conn.commit()
+    conn.close()
+
+
+def can_admin_validate_references(admin_id: int) -> bool:
+    perm = get_admin_reference_validator_permission(admin_id)
+    return bool(perm and perm["status"] == "APPROVED")
 
 
 # ---------- ALIADOS ----------
