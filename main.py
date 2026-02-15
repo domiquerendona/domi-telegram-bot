@@ -4694,21 +4694,9 @@ def cotizar_distancia(update, context):
     update.message.reply_text(
         f"COTIZACION\n\n"
         f"Distancia: {distancia:.1f} km\n"
-        f"Precio: ${precio:,}\n\n".replace(",", ".")
-        + _formato_tabla_tarifas(config)
+        f"Precio: ${precio:,}".replace(",", ".")
     )
     return ConversationHandler.END
-
-
-def _formato_tabla_tarifas(config):
-    """Genera tabla de tarifas para mostrar en cotizaciones."""
-    return (
-        "Tarifas vigentes:\n"
-        f"  0-2 km: ${config['precio_0_2km']:,}\n"
-        f"  2-3 km: ${config['precio_2_3km']:,}\n"
-        f"  3-{config['umbral_km_largo']:.0f} km: +${config['precio_km_extra_normal']:,}/km\n"
-        f"  >{config['umbral_km_largo']:.0f} km: +${config['precio_km_extra_largo']:,}/km"
-    ).replace(",", ".")
 
 
 def _cotizar_resolver_ubicacion(update, context):
@@ -4791,8 +4779,7 @@ def cotizar_entrega(update, context):
         f"COTIZACION\n\n"
         f"Distancia: {distance_km:.1f} km\n"
         f"Precio: ${precio:,}\n\n".replace(",", ".")
-        + f"{nota_fuente}\n\n"
-        + _formato_tabla_tarifas(config)
+        + f"{nota_fuente}"
     )
 
     # Limpiar datos
