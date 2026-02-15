@@ -974,11 +974,21 @@ def menu(update, context):
 
 # ---------- MENÚS PERSISTENTES ----------
 
+def _row_value(row, key, default=None):
+    """Lee un campo desde dict/sqlite3.Row de forma segura."""
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
 def _get_courier_toggle_button_label(courier):
     """Retorna el texto del boton de estado para repartidor APPROVED."""
-    if not courier or courier.get("status") != "APPROVED":
+    if not courier or _row_value(courier, "status") != "APPROVED":
         return None
-    courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
+    courier_is_active = _row_value(courier, "is_active", 0)
     if courier_is_active:
         return "Pausar repartidor"
     return "Activar repartidor"
@@ -7038,8 +7048,8 @@ def mi_perfil(update, context):
         # Mostrar estado de disponibilidad (live location)
         courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
         if courier_is_active and courier_status == "APPROVED":
-            avail_status = courier.get("availability_status", "INACTIVE") if isinstance(courier, dict) else "INACTIVE"
-            live_active = int(courier.get("live_location_active", 0) or 0) == 1 if isinstance(courier, dict) else False
+            avail_status = _row_value(courier, "availability_status", "INACTIVE")
+            live_active = int(_row_value(courier, "live_location_active", 0) or 0) == 1
             if avail_status == "APPROVED" and live_active:
                 avail = "ONLINE"
             elif avail_status == "APPROVED":
@@ -8928,8 +8938,8 @@ def courier_live_location_handler(update, context):
 
         # Solo notificar la primera vez (cuando pasa a ONLINE visible)
         was_online = (
-            courier.get("availability_status") == "APPROVED"
-            and int(courier.get("live_location_active", 0) or 0) == 1
+            _row_value(courier, "availability_status") == "APPROVED"
+            and int(_row_value(courier, "live_location_active", 0) or 0) == 1
         )
         if not was_online and update.message and live_period:
             try:
