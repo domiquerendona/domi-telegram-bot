@@ -974,13 +974,26 @@ def menu(update, context):
 
 # ---------- MENÚS PERSISTENTES ----------
 
-def get_main_menu_keyboard(missing_cmds):
+def _get_courier_toggle_button_label(courier):
+    """Retorna el texto del boton de estado para repartidor APPROVED."""
+    if not courier or courier.get("status") != "APPROVED":
+        return None
+    courier_is_active = courier["is_active"] if "is_active" in courier.keys() else 0
+    if courier_is_active:
+        return "Pausar repartidor"
+    return "Activar repartidor"
+
+
+def get_main_menu_keyboard(missing_cmds, courier=None):
     """Retorna el teclado principal para usuarios fuera de flujos."""
     keyboard = [
         ['Nuevo pedido', 'Mis pedidos'],
         ['Mi perfil', 'Ayuda'],
         ['Menu']
     ]
+    courier_toggle = _get_courier_toggle_button_label(courier)
+    if courier_toggle:
+        keyboard.insert(2, [courier_toggle])
     if missing_cmds:
         if len(missing_cmds) == 1:
             register_rows = [missing_cmds]
@@ -1038,7 +1051,7 @@ def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:
     ally, courier, admin_local = _get_user_roles(update)
     es_admin_plataforma = (update.effective_user.id == ADMIN_USER_ID)
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
-    reply_markup = get_main_menu_keyboard(missing_cmds)
+    reply_markup = get_main_menu_keyboard(missing_cmds, courier)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -1062,7 +1075,11 @@ def menu_button_handler(update, context):
     """Maneja los botones del menú principal (ReplyKeyboard)."""
     text = update.message.text.strip()
 
-    if text == "Mis pedidos":
+    if text == "Activar repartidor":
+        return courier_activate_from_message(update, context)
+    elif text == "Pausar repartidor":
+        return courier_deactivate_from_message(update, context)
+    elif text == "Mis pedidos":
         return ally_active_orders(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
@@ -8948,23 +8965,20 @@ def courier_live_location_expired_check(context):
             print(f"[WARN] No se pudo notificar expiracion a courier {cid}: {e}")
 
 
-def courier_activate_callback(update, context):
-    """Inicia flujo de activación del courier: pide declarar base."""
-    query = update.callback_query
-    query.answer()
-
+def _courier_activate_common(update, context, reply_func):
+    """Inicia flujo de activacion del courier: pide declarar base."""
     telegram_id = update.effective_user.id
     user = get_user_by_telegram_id(telegram_id)
     if not user:
-        query.edit_message_text("No se encontro tu usuario.")
+        reply_func("No se encontro tu usuario.")
         return
 
     courier = get_courier_by_user_id(user["id"])
     if not courier or courier["status"] != "APPROVED":
-        query.edit_message_text("No tienes perfil de repartidor activo.")
+        reply_func("No tienes perfil de repartidor activo.")
         return
 
-    query.edit_message_text(
+    reply_func(
         "Para activarte, indica cuanta base (dinero en efectivo) tienes disponible.\n\n"
         "Escribe el monto en pesos (solo numeros, ej: 50000):"
     )
@@ -8972,24 +8986,45 @@ def courier_activate_callback(update, context):
     context.user_data["courier_id_activating"] = courier["id"]
 
 
-def courier_deactivate_callback(update, context):
+def _courier_deactivate_common(update, context, reply_func):
     """Desactiva al courier."""
-    query = update.callback_query
-    query.answer()
-
     telegram_id = update.effective_user.id
     user = get_user_by_telegram_id(telegram_id)
     if not user:
-        query.edit_message_text("No se encontro tu usuario.")
+        reply_func("No se encontro tu usuario.")
         return
 
     courier = get_courier_by_user_id(user["id"])
     if not courier:
-        query.edit_message_text("No se encontro tu perfil.")
+        reply_func("No se encontro tu perfil.")
         return
 
     deactivate_courier(courier["id"])
-    query.edit_message_text("Te has desactivado. No recibiras ofertas de pedidos.")
+    reply_func("Te has desactivado. No recibiras ofertas de pedidos.")
+
+
+def courier_activate_from_message(update, context):
+    """Activa flujo desde boton del teclado principal."""
+    return _courier_activate_common(update, context, update.message.reply_text)
+
+
+def courier_deactivate_from_message(update, context):
+    """Desactiva desde boton del teclado principal."""
+    return _courier_deactivate_common(update, context, update.message.reply_text)
+
+
+def courier_activate_callback(update, context):
+    """Inicia flujo de activacion del courier desde callback."""
+    query = update.callback_query
+    query.answer()
+    return _courier_activate_common(update, context, query.edit_message_text)
+
+
+def courier_deactivate_callback(update, context):
+    """Desactiva al courier desde callback."""
+    query = update.callback_query
+    query.answer()
+    return _courier_deactivate_common(update, context, query.edit_message_text)
 
 
 def courier_base_amount_handler(update, context):
@@ -9231,7 +9266,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mis pedidos|Mi perfil|Ayuda|Menu)$'),
+        Filters.regex(r'^(Activar repartidor|Pausar repartidor|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
         menu_button_handler
     ))
 
