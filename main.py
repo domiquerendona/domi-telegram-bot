@@ -2933,6 +2933,8 @@ def pedido_pickup_callback(update, context):
         return ConversationHandler.END
 
     ally_id = ally["id"]
+    if data != "pickup_select_fixbasecoords":
+        context.user_data.pop("pickup_fix_default_loc_id", None)
 
     if data == "pickup_select_base":
         # Usar direccion base del aliado
@@ -2943,6 +2945,21 @@ def pedido_pickup_callback(update, context):
                 "Puedes agregar una nueva o contactar soporte."
             )
             return mostrar_selector_pickup(query, context, edit=False)
+
+        default_lat = default_loc.get("lat")
+        default_lng = default_loc.get("lng")
+        if default_lat is None or default_lng is None:
+            keyboard = [
+                [InlineKeyboardButton("Enviar PIN ahora", callback_data="pickup_select_fixbasecoords")],
+                [InlineKeyboardButton("Elegir otra recogida", callback_data="pickup_select_lista")],
+                [InlineKeyboardButton("Nueva direccion", callback_data="pickup_select_nueva")],
+            ]
+            query.edit_message_text(
+                "Tu direccion principal no tiene coordenadas.\n"
+                "Para continuar, debes enviar un PIN de ubicacion de recogida.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return PEDIDO_PICKUP_SELECTOR
 
         # Guardar pickup en user_data
         context.user_data["pickup_location"] = default_loc
@@ -2967,6 +2984,22 @@ def pedido_pickup_callback(update, context):
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
             "Tambien puedes escribir 'omitir' para ingresar solo texto."
+        )
+        return PEDIDO_PICKUP_NUEVA_UBICACION
+
+    elif data == "pickup_select_fixbasecoords":
+        default_loc = get_default_ally_location(ally_id)
+        if not default_loc:
+            query.edit_message_text(
+                "No se encontro tu direccion principal.\n"
+                "Elige otra direccion de recogida."
+            )
+            return mostrar_selector_pickup(query, context, edit=False)
+
+        context.user_data["pickup_fix_default_loc_id"] = default_loc["id"]
+        query.edit_message_text(
+            "Envia un PIN de ubicacion de Telegram, link de Google Maps o coordenadas (lat,lng)\n"
+            "para actualizar la direccion principal y continuar."
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
@@ -3141,8 +3174,15 @@ def pedido_pickup_lista_callback(update, context):
 def pedido_pickup_nueva_ubicacion_handler(update, context):
     """Maneja la captura de ubicacion para nueva direccion de recogida."""
     text = update.message.text.strip()
+    fixing_default = bool(context.user_data.get("pickup_fix_default_loc_id"))
 
     if text.lower() == "omitir":
+        if fixing_default:
+            update.message.reply_text(
+                "No puedes omitir la ubicacion de la direccion principal.\n"
+                "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
+            )
+            return PEDIDO_PICKUP_NUEVA_UBICACION
         context.user_data["new_pickup_lat"] = None
         context.user_data["new_pickup_lng"] = None
         update.message.reply_text(
@@ -3163,6 +3203,31 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
     coords = extract_lat_lng_from_text(expanded)
     if coords:
         lat, lng = coords
+        if fixing_default:
+            ally = context.user_data.get("ally")
+            location_id = context.user_data.get("pickup_fix_default_loc_id")
+            if not ally or not location_id:
+                update.message.reply_text("No se pudo actualizar la direccion principal. Intenta /nuevo_pedido de nuevo.")
+                return ConversationHandler.END
+
+            update_ally_location_coords(location_id, lat, lng)
+            context.user_data.pop("pickup_fix_default_loc_id", None)
+
+            default_loc = get_default_ally_location(ally["id"])
+            if not default_loc:
+                update.message.reply_text("No se pudo cargar la direccion principal actualizada.")
+                return ConversationHandler.END
+
+            context.user_data["pickup_location"] = default_loc
+            context.user_data["pickup_label"] = default_loc.get("label") or "Base"
+            context.user_data["pickup_address"] = default_loc.get("address", "")
+            context.user_data["pickup_city"] = default_loc.get("city", "")
+            context.user_data["pickup_lat"] = default_loc.get("lat")
+            context.user_data["pickup_lng"] = default_loc.get("lng")
+
+            update.message.reply_text("Ubicacion principal actualizada. Continuamos con el pedido.")
+            return continuar_despues_pickup(update, context, edit=False)
+
         context.user_data["new_pickup_lat"] = lat
         context.user_data["new_pickup_lng"] = lng
         update.message.reply_text(
@@ -3194,6 +3259,13 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
             reply_markup=reply_markup
         )
     else:
+        if fixing_default:
+            update.message.reply_text(
+                "No se pudo extraer ubicacion valida.\n"
+                "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
+            )
+            return PEDIDO_PICKUP_NUEVA_UBICACION
+
         update.message.reply_text(
             "No se pudo extraer ubicacion del texto.\n\n"
             "Escribe los detalles de la direccion de recogida:\n"
@@ -3206,6 +3278,33 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
 def pedido_pickup_nueva_ubicacion_location_handler(update, context):
     """Maneja ubicacion nativa de Telegram (PIN) para nueva direccion de recogida en pedido."""
     loc = update.message.location
+    fixing_default = bool(context.user_data.get("pickup_fix_default_loc_id"))
+
+    if fixing_default:
+        ally = context.user_data.get("ally")
+        location_id = context.user_data.get("pickup_fix_default_loc_id")
+        if not ally or not location_id:
+            update.message.reply_text("No se pudo actualizar la direccion principal. Intenta /nuevo_pedido de nuevo.")
+            return ConversationHandler.END
+
+        update_ally_location_coords(location_id, loc.latitude, loc.longitude)
+        context.user_data.pop("pickup_fix_default_loc_id", None)
+
+        default_loc = get_default_ally_location(ally["id"])
+        if not default_loc:
+            update.message.reply_text("No se pudo cargar la direccion principal actualizada.")
+            return ConversationHandler.END
+
+        context.user_data["pickup_location"] = default_loc
+        context.user_data["pickup_label"] = default_loc.get("label") or "Base"
+        context.user_data["pickup_address"] = default_loc.get("address", "")
+        context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_lat"] = default_loc.get("lat")
+        context.user_data["pickup_lng"] = default_loc.get("lng")
+
+        update.message.reply_text("Ubicacion principal actualizada. Continuamos con el pedido.")
+        return continuar_despues_pickup(update, context, edit=False)
+
     context.user_data["new_pickup_lat"] = loc.latitude
     context.user_data["new_pickup_lng"] = loc.longitude
     update.message.reply_text(
