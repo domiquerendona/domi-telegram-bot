@@ -4246,7 +4246,7 @@ def toggle_payment_method(method_id: int, is_active: int):
     conn.close()
 
 
-def delete_payment_method(method_id: int):
+def deactivate_payment_method(method_id: int):
     """Desactiva un metodo de pago (sin borrado fisico)."""
     conn = get_connection()
     cur = conn.cursor()

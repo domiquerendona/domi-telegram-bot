@@ -172,7 +172,7 @@ from db import (
     get_payment_method_by_id,
     list_payment_methods,
     toggle_payment_method,
-    delete_payment_method,
+    deactivate_payment_method,
 )
 from profile_changes import (
     profile_change_conv,
@@ -7374,7 +7374,7 @@ def pagos_callback(update, context):
 
     if data.startswith("pagos_delete_"):
         method_id = int(data.replace("pagos_delete_", ""))
-        delete_payment_method(method_id)
+        deactivate_payment_method(method_id)
         query.answer("Cuenta desactivada.")
 
         # Volver a gestionar
