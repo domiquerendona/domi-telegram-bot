@@ -3426,6 +3426,16 @@ def pedido_confirmacion_callback(update, context):
                     )
                 context.user_data.clear()
                 return ConversationHandler.END
+        else:
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "No tienes un administrador APPROVED vinculado.\n"
+                    "No se puede crear ni publicar el pedido hasta tener un vinculo aprobado."
+                ),
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
 
         # Obtener pickup del selector (o default si no existe)
         pickup_location = context.user_data.get("pickup_location")
