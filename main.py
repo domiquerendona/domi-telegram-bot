@@ -866,6 +866,14 @@ def soy_aliado(update, context):
             )
             return ConversationHandler.END
 
+        if status != "INACTIVE":
+            update.message.reply_text(
+                f"No puedes iniciar un nuevo registro con estado {status}.\n"
+                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
     update.message.reply_text(
         "Registro de aliado\n\n"
         "Escribe el nombre del negocio:"
@@ -1313,6 +1321,14 @@ def soy_repartidor(update, context):
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
                 "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        if status != "INACTIVE":
+            update.message.reply_text(
+                f"No puedes iniciar un nuevo registro con estado {status}.\n"
+                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
@@ -3498,6 +3514,14 @@ def soy_admin(update, context):
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
                 "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        if status != "INACTIVE":
+            update.message.reply_text(
+                f"No puedes iniciar un nuevo registro con estado {status}.\n"
+                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END

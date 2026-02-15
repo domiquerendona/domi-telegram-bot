@@ -331,6 +331,20 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS status_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            reason TEXT,
+            source TEXT,
+            changed_by TEXT DEFAULT 'UNKNOWN',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
     # ============================================================
@@ -2008,6 +2022,9 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM admins WHERE id = ? AND is_deleted = 0", (admin_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2027,6 +2044,18 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
             WHERE id = ? AND is_deleted = 0;
         """, (new_status, admin_id))
 
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="ADMIN",
+            entity_id=admin_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_admin_status_by_id",
+        )
+
     conn.commit()
     conn.close()
 
@@ -2034,6 +2063,9 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM couriers WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (courier_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2053,6 +2085,18 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
             WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, courier_id))
 
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="COURIER",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_courier_status_by_id",
+        )
+
     conn.commit()
     conn.close()
 
@@ -2060,6 +2104,9 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM allies WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (ally_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2078,6 +2125,18 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
             SET status = ?
             WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, ally_id))
+
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="ALLY",
+            entity_id=ally_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_ally_status_by_id",
+        )
 
     conn.commit()
     conn.close()
@@ -2226,6 +2285,9 @@ def update_ally_status(ally_id: int, status: str):
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM allies WHERE id = ?", (ally_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
     cur.execute(
         """
         UPDATE allies
@@ -2234,6 +2296,15 @@ def update_ally_status(ally_id: int, status: str):
         """,
         (status, ally_id),
     )
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="ALLY",
+            entity_id=ally_id,
+            old_status=old_status,
+            new_status=status,
+            source="update_ally_status",
+        )
     conn.commit()
     conn.close()
 
@@ -2802,10 +2873,22 @@ def update_courier_status(courier_id: int, new_status: str):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM couriers WHERE id = ?", (courier_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
     cur.execute(
         "UPDATE couriers SET status = ? WHERE id = ?;",
         (new_status, courier_id),
     )
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="COURIER",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=new_status,
+            source="update_courier_status",
+        )
     conn.commit()
     conn.close()
 
@@ -3144,10 +3227,28 @@ def update_admin_courier_status(admin_id, courier_id, status):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
+        SELECT status
+        FROM admin_couriers
+        WHERE admin_id = ? AND courier_id = ?
+        LIMIT 1
+    """, (admin_id, courier_id))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
+    cur.execute("""
         UPDATE admin_couriers
         SET status = ?, updated_at = datetime('now')
         WHERE admin_id = ? AND courier_id = ?
     """, (status, admin_id, courier_id))
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="ADMIN_COURIER_LINK",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=status,
+            reason=f"admin_id={admin_id}",
+            source="update_admin_courier_status",
+        )
     conn.commit()
     conn.close()
 
@@ -3755,33 +3856,6 @@ def get_api_usage_today(api_name: str) -> int:
     return row[0] if row else 0
 
 
-def ensure_platform_link_for_courier(platform_admin_id: int, courier_id: int):
-    """Crea o asegura vÃ­nculo APPROVED admin-courier para PLATAFORMA."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, status FROM admin_couriers
-        WHERE admin_id = ? AND courier_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (platform_admin_id, courier_id))
-    row = cur.fetchone()
-    if row:
-        link_id, status = row
-        if status != "APPROVED":
-            cur.execute("""
-                UPDATE admin_couriers
-                SET status = 'APPROVED', updated_at = datetime('now')
-                WHERE id = ?
-            """, (link_id,))
-    else:
-        cur.execute("""
-            INSERT INTO admin_couriers
-                (admin_id, courier_id, status, balance, created_at, updated_at)
-            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
-        """, (platform_admin_id, courier_id))
-    conn.commit()
-    conn.close()
 
 
 def increment_api_usage(api_name: str):
@@ -3812,33 +3886,6 @@ def get_admin_balance(admin_id: int) -> int:
     return row[0] if row else 0
 
 
-def ensure_platform_link_for_ally(platform_admin_id: int, ally_id: int):
-    """Crea o asegura vÃ­nculo APPROVED admin-ally para PLATAFORMA."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, status FROM admin_allies
-        WHERE admin_id = ? AND ally_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (platform_admin_id, ally_id))
-    row = cur.fetchone()
-    if row:
-        link_id, status = row
-        if status != "APPROVED":
-            cur.execute("""
-                UPDATE admin_allies
-                SET status = 'APPROVED', updated_at = datetime('now')
-                WHERE id = ?
-            """, (link_id,))
-    else:
-        cur.execute("""
-            INSERT INTO admin_allies
-                (admin_id, ally_id, status, balance, created_at, updated_at)
-            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
-        """, (platform_admin_id, ally_id))
-    conn.commit()
-    conn.close()
 
 
 def update_admin_balance_with_ledger(
@@ -4388,3 +4435,5 @@ def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_
     """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
     conn.commit()
     conn.close()
+
+
