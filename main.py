@@ -175,6 +175,7 @@ from db import (
     deactivate_payment_method,
     list_reference_alias_candidates,
     get_reference_alias_candidate_by_id,
+    set_reference_alias_candidate_coords,
     review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
@@ -383,7 +384,34 @@ def reference_validation_callback(update, context):
             ],
             [InlineKeyboardButton("Volver", callback_data="ref_list_0")],
         ]
+        if lat is None or lng is None:
+            keyboard.insert(1, [InlineKeyboardButton("Asignar ubicacion", callback_data="ref_setloc_{}".format(row["id"]))])
         query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("ref_setloc_"):
+        query.answer()
+        try:
+            candidate_id = int(data.replace("ref_setloc_", ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        row = get_reference_alias_candidate_by_id(candidate_id)
+        if not row:
+            query.edit_message_text(
+                "Referencia no encontrada.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="ref_list_0")]])
+            )
+            return
+
+        context.user_data["ref_assign_candidate_id"] = candidate_id
+        query.edit_message_text(
+            "Envia un PIN de ubicacion de Telegram para esta referencia.\n\n"
+            "Referencia: {}\n"
+            "Luego te mostrare los botones para aprobar o rechazar.".format(row["raw_text"] or "-"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data="ref_view_{}".format(candidate_id))]])
+        )
         return
 
     if data.startswith("ref_approve_") or data.startswith("ref_reject_"):
@@ -408,6 +436,54 @@ def reference_validation_callback(update, context):
         return
 
     query.answer("Opcion no reconocida.", show_alert=True)
+
+
+def reference_assign_location_handler(update, context):
+    """
+    Recibe un PIN de Telegram para completar coordenadas de una referencia candidata.
+    """
+    candidate_id = context.user_data.get("ref_assign_candidate_id")
+    if not candidate_id:
+        return
+
+    reviewer = _get_reference_reviewer(update.effective_user.id)
+    if not reviewer["ok"]:
+        update.message.reply_text(reviewer["message"])
+        context.user_data.pop("ref_assign_candidate_id", None)
+        return
+
+    if not update.message or not update.message.location:
+        update.message.reply_text("Envia un PIN de ubicacion de Telegram para continuar.")
+        return
+
+    row = get_reference_alias_candidate_by_id(candidate_id)
+    if not row:
+        update.message.reply_text("Referencia no encontrada. Usa /referencias nuevamente.")
+        context.user_data.pop("ref_assign_candidate_id", None)
+        return
+
+    lat = update.message.location.latitude
+    lng = update.message.location.longitude
+    ok = set_reference_alias_candidate_coords(candidate_id, lat, lng, source="manual_pin")
+    context.user_data.pop("ref_assign_candidate_id", None)
+
+    if not ok:
+        update.message.reply_text("No se pudo guardar la ubicacion. Intenta de nuevo con /referencias.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Aprobar", callback_data="ref_approve_{}".format(candidate_id)),
+            InlineKeyboardButton("Rechazar", callback_data="ref_reject_{}".format(candidate_id)),
+        ],
+        [InlineKeyboardButton("Ver referencia", callback_data="ref_view_{}".format(candidate_id))],
+        [InlineKeyboardButton("Volver a pendientes", callback_data="ref_list_0")],
+    ]
+    update.message.reply_text(
+        "Ubicacion guardada para la referencia.\n"
+        "Ahora puedes aprobarla o rechazarla.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 # =========================
@@ -8982,6 +9058,7 @@ def main():
         Filters.text & Filters.regex(r'^\d[\d.,\$]*$') & ~Filters.command,
         courier_base_amount_handler,
     ), group=1)
+    dp.add_handler(MessageHandler(Filters.location, reference_assign_location_handler), group=1)
 
     # -------------------------
     # Handler para botones del menú principal (ReplyKeyboard)

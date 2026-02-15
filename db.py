@@ -1932,6 +1932,28 @@ def get_reference_alias_candidate_by_id(candidate_id: int):
     return row
 
 
+def set_reference_alias_candidate_coords(candidate_id: int, lat: float, lng: float,
+                                         source: str = "manual_pin") -> bool:
+    """
+    Asigna coordenadas manuales a una referencia candidata.
+    Mantiene el estado actual; solo actualiza coordenadas/fuente y timestamps.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE reference_alias_candidates
+        SET suggested_lat = ?,
+            suggested_lng = ?,
+            source = COALESCE(?, source),
+            last_seen_at = datetime('now')
+        WHERE id = ?
+    """, (float(lat), float(lng), source, int(candidate_id)))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
 def _upsert_location_reference_alias(alias_text: str, lat: float, lng: float, label: str = ""):
     raw = get_setting("location_reference_aliases_json", "")
     aliases = {}
