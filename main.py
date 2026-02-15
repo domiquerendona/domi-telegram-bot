@@ -2302,9 +2302,7 @@ def pedido_instrucciones_text(update, context):
 def get_tipo_servicio_keyboard():
     """Retorna InlineKeyboardMarkup con opciones de tipo de servicio."""
     keyboard = [
-        [InlineKeyboardButton("Entrega rapida (30-45 min)", callback_data="pedido_tipo_entrega_rapida")],
-        [InlineKeyboardButton("Domicilio", callback_data="pedido_tipo_domicilio")],
-        [InlineKeyboardButton("Mensajeria", callback_data="pedido_tipo_mensajeria")],
+        [InlineKeyboardButton("Entrega", callback_data="pedido_tipo_entrega")],
         [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
         [InlineKeyboardButton("🛒 Compras", callback_data="pedido_tipo_compras")],
     ]
@@ -2345,9 +2343,11 @@ def pedido_tipo_servicio_callback(update, context):
 
     # Mapeo de callbacks a texto legible
     tipos_map = {
-        "pedido_tipo_entrega_rapida": "Entrega rapida (30-45 min)",
-        "pedido_tipo_domicilio": "Domicilio",
-        "pedido_tipo_mensajeria": "Mensajeria",
+        "pedido_tipo_entrega": "Entrega",
+        # Compatibilidad con mensajes viejos en chats ya abiertos
+        "pedido_tipo_entrega_rapida": "Entrega",
+        "pedido_tipo_domicilio": "Entrega",
+        "pedido_tipo_mensajeria": "Entrega",
         "pedido_tipo_recogida": "Recogida en tienda",
         "pedido_tipo_compras": "Compras",
     }
