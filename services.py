@@ -1,5 +1,7 @@
 from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
+import json
+import unicodedata
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
@@ -57,6 +59,86 @@ def _text_cache_key(text: str, city_hint: str) -> str:
     city = (city_hint or "").strip().lower()
     t = (text or "").strip().lower()
     return f"{city}|{t}"
+
+
+def _normalize_reference_key(value: str) -> str:
+    """Normaliza texto para matching de aliases locales."""
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower().strip()
+    normalized = re.sub(r"[^\w\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def _parse_local_alias_point(raw_value: Any) -> Optional[Dict[str, Any]]:
+    """Convierte un alias configurado en dict canonico {lat, lng, label}."""
+    if isinstance(raw_value, dict):
+        try:
+            lat = float(raw_value.get("lat"))
+            lng = float(raw_value.get("lng"))
+        except Exception:
+            return None
+        label = str(raw_value.get("label") or raw_value.get("address") or "").strip()
+        return {"lat": lat, "lng": lng, "label": label}
+
+    if isinstance(raw_value, (list, tuple)) and len(raw_value) >= 2:
+        try:
+            lat = float(raw_value[0])
+            lng = float(raw_value[1])
+        except Exception:
+            return None
+        return {"lat": lat, "lng": lng, "label": ""}
+
+    return None
+
+
+def _resolve_local_reference(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca referencias locales de barrio/conjunto/punto desde settings.
+    Formato esperado en `location_reference_aliases_json`:
+    {
+      "alfonso lopez": {"lat": 4.81, "lng": -75.69, "label": "Barrio Alfonso Lopez"},
+      "terminal": [4.816, -75.69]
+    }
+    """
+    normalized_text = _normalize_reference_key(text)
+    if not normalized_text:
+        return None
+
+    raw = get_setting("location_reference_aliases_json", "")
+    if not raw:
+        return None
+
+    try:
+        aliases = json.loads(raw)
+    except Exception:
+        return None
+
+    if not isinstance(aliases, dict):
+        return None
+
+    normalized_aliases = {}
+    for alias, point in aliases.items():
+        key = _normalize_reference_key(str(alias))
+        parsed_point = _parse_local_alias_point(point)
+        if key and parsed_point:
+            normalized_aliases[key] = parsed_point
+
+    if not normalized_aliases:
+        return None
+
+    if normalized_text in normalized_aliases:
+        point = normalized_aliases[normalized_text]
+        return {"lat": point["lat"], "lng": point["lng"], "method": "local_alias", "label": point["label"]}
+
+    candidates = [k for k in normalized_aliases if k in normalized_text or normalized_text in k]
+    if not candidates:
+        return None
+    best = max(candidates, key=len)
+    point = normalized_aliases[best]
+    return {"lat": point["lat"], "lng": point["lng"], "method": "local_alias", "label": point["label"]}
 
 
 # ---------- HAVERSINE (DISTANCIA LOCAL GRATIS) ----------
@@ -816,7 +898,12 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
             if details and details.get("lat") and details.get("lng"):
                 return {"lat": details["lat"], "lng": details["lng"], "method": "places_api"}
 
-    # 4. Geocoding por texto (ultimo recurso, cuesta API)
+    # 4. Referencias locales (gratis): barrio/conjunto/punto configurado.
+    local_ref = _resolve_local_reference(text)
+    if local_ref:
+        return local_ref
+
+    # 5. Geocoding por texto (ultimo recurso, cuesta API)
     if can_call_google_today():
         geo = google_geocode_forward(text)
         if geo and geo.get("lat") and geo.get("lng"):
