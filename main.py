@@ -3558,7 +3558,7 @@ def construir_preview_oferta(order_id, service_type, pickup_text, customer_addre
     """Construye el preview de la oferta que vera el repartidor."""
     preview = (
         "PREVIEW: ASI VERA EL REPARTIDOR LA OFERTA\n"
-        "=" * 35 + "\n\n"
+        + ("=" * 35) + "\n\n"
         "OFERTA DISPONIBLE\n\n"
         f"Servicio: {service_type}\n"
         f"Recoge en: {pickup_text}\n"
