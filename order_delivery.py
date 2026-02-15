@@ -623,10 +623,11 @@ def _handle_accept(update, context, order_id):
     assign_order_to_courier(order_id, courier_id)
     courier_name = courier["full_name"] or "Repartidor"
 
-    keyboard = [
-        [InlineKeyboardButton("Confirmar recogida", callback_data="order_pickup_{}".format(order_id))],
-        [InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))],
-    ]
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+    keyboard = []
+    keyboard.extend(_build_navigation_rows(pickup_lat, pickup_lng))
+    keyboard.append([InlineKeyboardButton("Confirmar recogida", callback_data="order_pickup_{}".format(order_id))])
+    keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
 
     query.edit_message_text(
         "Pedido #{} aceptado.\n\n"
@@ -643,6 +644,15 @@ def _handle_accept(update, context, order_id):
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+    if pickup_lat is not None and pickup_lng is not None:
+        try:
+            context.bot.send_location(
+                chat_id=query.message.chat_id,
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+        except Exception:
+            pass
 
     # Limpiar bot_data del ciclo de ofertas
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
@@ -808,7 +818,10 @@ def _handle_pickup(update, context, order_id):
 
     set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
 
-    keyboard = [[InlineKeyboardButton("Marcar como entregado", callback_data="order_delivered_{}".format(order_id))]]
+    dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
+    keyboard = []
+    keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
+    keyboard.append([InlineKeyboardButton("Marcar como entregado", callback_data="order_delivered_{}".format(order_id))])
     query.edit_message_text(
         "Pedido #{} - Recogida confirmada.\n\n"
         "Entrega en: {}\n"
@@ -822,6 +835,15 @@ def _handle_pickup(update, context, order_id):
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+    if dropoff_lat is not None and dropoff_lng is not None:
+        try:
+            context.bot.send_location(
+                chat_id=query.message.chat_id,
+                latitude=float(dropoff_lat),
+                longitude=float(dropoff_lng),
+            )
+        except Exception:
+            pass
 
     _notify_ally_pickup(context, order)
 
@@ -951,18 +973,72 @@ def _build_offer_text(order):
 
 def _get_pickup_address(order):
     """Obtiene direccion de recogida usando pickup_location_id o default del aliado."""
-    pickup_location_id = order["pickup_location_id"]
-    ally_id = order["ally_id"]
+    pickup_location_id = _row_value(order, "pickup_location_id")
+    ally_id = _row_value(order, "ally_id")
 
     if pickup_location_id and ally_id:
         location = get_ally_location_by_id(pickup_location_id, ally_id)
         if location:
-            return location.get("address") or "No disponible"
+            return _row_value(location, "address", "No disponible") or "No disponible"
 
     default_loc = get_default_ally_location(ally_id)
     if default_loc:
-        return default_loc.get("address", "No disponible")
+        return _row_value(default_loc, "address", "No disponible")
     return "No disponible"
+
+
+def _row_value(row, key, default=None):
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _get_pickup_coords(order):
+    lat = _row_value(order, "pickup_lat")
+    lng = _row_value(order, "pickup_lng")
+    if lat is not None and lng is not None:
+        return lat, lng
+
+    pickup_location_id = _row_value(order, "pickup_location_id")
+    ally_id = _row_value(order, "ally_id")
+    if pickup_location_id and ally_id:
+        location = get_ally_location_by_id(pickup_location_id, ally_id)
+        if location:
+            lat = _row_value(location, "lat")
+            lng = _row_value(location, "lng")
+            if lat is not None and lng is not None:
+                return lat, lng
+
+    default_loc = get_default_ally_location(ally_id)
+    if default_loc:
+        lat = _row_value(default_loc, "lat")
+        lng = _row_value(default_loc, "lng")
+        if lat is not None and lng is not None:
+            return lat, lng
+    return None, None
+
+
+def _get_dropoff_coords(order):
+    lat = _row_value(order, "dropoff_lat")
+    lng = _row_value(order, "dropoff_lng")
+    if lat is None or lng is None:
+        return None, None
+    return lat, lng
+
+
+def _build_navigation_rows(lat, lng):
+    if lat is None or lng is None:
+        return []
+    destination = "{},{}".format(float(lat), float(lng))
+    gmaps_url = "https://www.google.com/maps/dir/?api=1&destination={}&travelmode=driving".format(destination)
+    waze_url = "https://waze.com/ul?ll={}&navigate=yes".format(destination)
+    return [
+        [InlineKeyboardButton("Abrir en Google Maps", url=gmaps_url)],
+        [InlineKeyboardButton("Abrir en Waze", url=waze_url)],
+    ]
 
 
 def _notify_ally_order_accepted(context, order, courier_name):
