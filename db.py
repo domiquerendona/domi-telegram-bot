@@ -2018,7 +2018,8 @@ def get_all_admins():
     conn.close()
     return rows
 
-def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None,
+                              rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
@@ -2054,12 +2055,14 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
             new_status=new_status,
             reason=reason,
             source="update_admin_status_by_id",
+            changed_by=changed_by,
         )
 
     conn.commit()
     conn.close()
 
-def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None,
+                                rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
@@ -2095,12 +2098,14 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
             new_status=new_status,
             reason=reason,
             source="update_courier_status_by_id",
+            changed_by=changed_by,
         )
 
     conn.commit()
     conn.close()
 
-def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None,
+                             rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
@@ -2136,6 +2141,7 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
             new_status=new_status,
             reason=reason,
             source="update_ally_status_by_id",
+            changed_by=changed_by,
         )
 
     conn.commit()
@@ -2280,7 +2286,7 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
     conn.close()
     
 
-def update_ally_status(ally_id: int, status: str):
+def update_ally_status(ally_id: int, status: str, changed_by: str = None):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
     status = normalize_role_status(status)
     conn = get_connection()
@@ -2304,6 +2310,7 @@ def update_ally_status(ally_id: int, status: str):
             old_status=old_status,
             new_status=status,
             source="update_ally_status",
+            changed_by=changed_by,
         )
     conn.commit()
     conn.close()
@@ -2868,7 +2875,7 @@ def get_courier_by_id(courier_id: int):
     conn.close()
     return row
 
-def update_courier_status(courier_id: int, new_status: str):
+def update_courier_status(courier_id: int, new_status: str, changed_by: str = None):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
     new_status = normalize_role_status(new_status)
     conn = get_connection()
@@ -2888,6 +2895,7 @@ def update_courier_status(courier_id: int, new_status: str):
             old_status=old_status,
             new_status=new_status,
             source="update_courier_status",
+            changed_by=changed_by,
         )
     conn.commit()
     conn.close()
@@ -3222,7 +3230,7 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
     conn.commit()
     conn.close()
 
-def update_admin_courier_status(admin_id, courier_id, status):
+def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = None):
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
@@ -3248,6 +3256,7 @@ def update_admin_courier_status(admin_id, courier_id, status):
             new_status=status,
             reason=f"admin_id={admin_id}",
             source="update_admin_courier_status",
+            changed_by=changed_by,
         )
     conn.commit()
     conn.close()

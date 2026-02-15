@@ -4086,7 +4086,7 @@ def admin_menu_callback(update, context):
             return
 
         # Aplicar cambio
-        update_admin_status_by_id(adm_id, nuevo_status)
+        update_admin_status_by_id(adm_id, nuevo_status, changed_by=f"tg:{update.effective_user.id}")
         query.answer("Estado actualizado a {}".format(nuevo_status))
 
         # Recargar el detalle
@@ -4527,7 +4527,7 @@ def admin_menu_callback(update, context):
         query.answer()
         admin_id = int(data.split("_")[-1])
 
-        update_admin_status_by_id(admin_id, "APPROVED")
+        update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
 
         # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
         try:
@@ -4566,7 +4566,7 @@ def admin_menu_callback(update, context):
         query.answer()
         admin_id = int(data.split("_")[-1])
 
-        update_admin_status_by_id(admin_id, "REJECTED")
+        update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
 
         query.edit_message_text(
             "❌ Administrador rechazado.",
@@ -4866,7 +4866,7 @@ def admin_aprobar_rechazar_callback(update, context):
 
     if accion == "aprobar":
         try:
-            update_admin_status_by_id(admin_id, "APPROVED")
+            update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_status_by_id APPROVED:", e)
             query.edit_message_text("Error aprobando administrador. Revisa logs.")
@@ -4877,7 +4877,7 @@ def admin_aprobar_rechazar_callback(update, context):
 
     if accion == "rechazar":
         try:
-            update_admin_status_by_id(admin_id, "REJECTED")
+            update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_status_by_id REJECTED:", e)
             query.edit_message_text("Error rechazando administrador. Revisa logs.")
@@ -7737,7 +7737,7 @@ def admin_local_callback(update, context):
     if data.startswith("local_courier_approve_"):
         courier_id = int(data.split("_")[-1])
         try:
-            update_admin_courier_status(admin_id, courier_id, "APPROVED")
+            update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
             deactivate_other_approved_admin_courier_links(courier_id, admin_id)
         except Exception as e:
             print("[ERROR] update_admin_courier_status APPROVED:", e)
@@ -7755,7 +7755,7 @@ def admin_local_callback(update, context):
     if data.startswith("local_courier_reject_"):
         courier_id = int(data.split("_")[-1])
         try:
-            update_admin_courier_status(admin_id, courier_id, "REJECTED")
+            update_admin_courier_status(admin_id, courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_courier_status REJECTED:", e)
             query.edit_message_text("Error rechazando repartidor. Revisa logs.")
@@ -7772,7 +7772,7 @@ def admin_local_callback(update, context):
     if data.startswith("local_courier_block_"):
         courier_id = int(data.split("_")[-1])
         try:
-            update_admin_courier_status(admin_id, courier_id, "INACTIVE")
+            update_admin_courier_status(admin_id, courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_courier_status INACTIVE:", e)
             query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
@@ -7818,7 +7818,7 @@ def ally_approval_callback(update, context):
     nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
 
     try:
-        update_ally_status(ally_id, nuevo_estado)
+        update_ally_status(ally_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
     except Exception as e:
         print(f"[ERROR] ally_approval_callback: {e}")
         query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
@@ -7930,7 +7930,7 @@ def courier_approval_callback(update, context):
 
     # Actualizar estado global del courier
     try:
-        update_courier_status(courier_id, nuevo_estado)
+        update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
     except Exception as e:
         print(f"[ERROR] update_courier_status: {e}")
         query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
@@ -8201,42 +8201,42 @@ def admin_config_callback(update, context):
 
     if data.startswith("config_ally_disable_"):
         ally_id = int(data.split("_")[-1])
-        update_ally_status_by_id(ally_id, "INACTIVE")
+        update_ally_status_by_id(ally_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
-        update_ally_status_by_id(ally_id, "APPROVED")
+        update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_ally_reject_"):
         ally_id = int(data.split("_")[-1])
-        update_ally_status_by_id(ally_id, "REJECTED")
+        update_ally_status_by_id(ally_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_disable_"):
         courier_id = int(data.split("_")[-1])
-        update_courier_status_by_id(courier_id, "INACTIVE")
+        update_courier_status_by_id(courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_enable_"):
         courier_id = int(data.split("_")[-1])
-        update_courier_status_by_id(courier_id, "APPROVED")
+        update_courier_status_by_id(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("config_courier_reject_"):
         courier_id = int(data.split("_")[-1])
-        update_courier_status_by_id(courier_id, "REJECTED")
+        update_courier_status_by_id(courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
