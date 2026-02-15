@@ -84,6 +84,7 @@ from db import (
     count_admin_couriers_with_min_balance,
     get_admin_by_team_code,
     update_admin_courier_status,
+    upsert_admin_courier_link,
 
     # Direcciones aliados
     create_ally_location,
@@ -5207,9 +5208,38 @@ def courier_pick_admin_callback(update, context):
     # courier_id que acabamos de crear (guardado en courier_confirm)
     courier_id = context.user_data.get("new_courier_id")
 
-    # Opción: no elegir admin
+    # Opción legacy: no elegir admin -> asignar por defecto a Plataforma
     if data == "courier_pick_admin_none":
-        query.edit_message_text("Perfecto. Quedaste registrado sin equipo por ahora.")
+        if not courier_id:
+            query.edit_message_text(
+                "No encontré tu registro reciente para vincular a un equipo.\n"
+                "Intenta /soy_repartidor de nuevo."
+            )
+            context.user_data.clear()
+            return
+
+        platform_admin = get_platform_admin()
+        if not platform_admin:
+            query.edit_message_text(
+                "No existe equipo de Plataforma para vincularte.\n"
+                "Contacta al administrador."
+            )
+            context.user_data.clear()
+            return
+
+        platform_admin_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+        try:
+            create_admin_courier_link(platform_admin_id, courier_id)
+        except Exception as e:
+            print("[ERROR] create_admin_courier_link PLATFORM:", e)
+            query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+            context.user_data.clear()
+            return
+
+        query.edit_message_text(
+            "Perfecto. Quedaste vinculado al equipo de Plataforma.\n"
+            "Tu vínculo quedó en estado PENDING hasta aprobación."
+        )
         context.user_data.clear()
         return
 
@@ -8524,10 +8554,18 @@ def courier_approval_callback(update, context):
         return
 
     if nuevo_estado == "APPROVED":
-        link = get_admin_link_for_courier(courier_id)
-        if link:
-            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+        try:
+            link = get_admin_link_for_courier(courier_id)
+            if link:
+                keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+            else:
+                keep_admin_id = get_platform_admin_id()
+                create_admin_courier_link(keep_admin_id, courier_id)
+
+            upsert_admin_courier_link(keep_admin_id, courier_id, "APPROVED", 1)
             deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
+        except Exception as e:
+            print(f"[ERROR] asegurar vínculo APPROVED de courier {courier_id}: {e}")
 
     courier = get_courier_by_id(courier_id)
     if not courier:

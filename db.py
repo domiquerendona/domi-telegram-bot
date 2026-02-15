@@ -1981,15 +1981,31 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(admin_id, courier_id)
-        DO UPDATE SET
-            status=excluded.status,
-            is_active=excluded.is_active,
-            updated_at=datetime('now')
-    """, (admin_id, courier_id, status, is_active))
+    has_is_active = DB_ENGINE == "postgres"
+    if DB_ENGINE != "postgres":
+        cur.execute("PRAGMA table_info(admin_couriers)")
+        cols = {row["name"] for row in cur.fetchall()}
+        has_is_active = "is_active" in cols
+
+    if has_is_active:
+        cur.execute("""
+            INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(admin_id, courier_id)
+            DO UPDATE SET
+                status=excluded.status,
+                is_active=excluded.is_active,
+                updated_at=datetime('now')
+        """, (admin_id, courier_id, status, is_active))
+    else:
+        cur.execute("""
+            INSERT INTO admin_couriers (admin_id, courier_id, status, created_at, updated_at)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(admin_id, courier_id)
+            DO UPDATE SET
+                status=excluded.status,
+                updated_at=datetime('now')
+        """, (admin_id, courier_id, status))
     conn.commit()
     conn.close()
 
@@ -2695,10 +2711,22 @@ def get_couriers_by_admin_and_status(admin_id, status):
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-        VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
-    """, (admin_id, courier_id))
+    has_is_active = DB_ENGINE == "postgres"
+    if DB_ENGINE != "postgres":
+        cur.execute("PRAGMA table_info(admin_couriers)")
+        cols = {row["name"] for row in cur.fetchall()}
+        has_is_active = "is_active" in cols
+
+    if has_is_active:
+        cur.execute("""
+            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
+            VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
+        """, (admin_id, courier_id))
+    else:
+        cur.execute("""
+            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
+            VALUES (?, ?, 'PENDING', 0, datetime('now'))
+        """, (admin_id, courier_id))
     conn.commit()
     conn.close()
     
