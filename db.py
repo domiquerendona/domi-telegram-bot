@@ -2902,7 +2902,6 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
     conn.commit()
     conn.close()
 
-import sqlite3
 from datetime import datetime
 
 def create_admin(

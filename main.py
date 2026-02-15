@@ -152,8 +152,6 @@ from db import (
     upsert_link_cache,
 
     # Sistema de recargas
-    get_admin_link_for_courier,
-    get_admin_link_for_ally,
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
     get_all_approved_links_for_courier,
@@ -5735,10 +5733,10 @@ agenda_conv = ConversationHandler(
     entry_points=[CommandHandler("agenda", agenda_cmd)],
     states={
         DIRECCIONES_MENU: [
-            CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_"),
+            CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_(pickups|clientes|cerrar|volver)$"),
         ],
         DIRECCIONES_PICKUPS: [
-            CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_")
+            CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_(volver|pickups_nueva)$")
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
@@ -5764,7 +5762,7 @@ clientes_conv = ConversationHandler(
     entry_points=[CommandHandler("clientes", clientes_cmd)],
     states={
         CLIENTES_MENU: [
-            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_")
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
@@ -5785,7 +5783,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
-            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_")
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
@@ -5901,14 +5899,14 @@ nuevo_pedido_conv = ConversationHandler(
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
-            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_")
+            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_(cliente_recurrente|cliente_nuevo|repetir_ultimo|buscar_cliente|sel_cust_\d+)$")
         ],
         PEDIDO_BUSCAR_CLIENTE: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_buscar_cliente)
         ],
         PEDIDO_SELECCIONAR_DIRECCION: [
-            CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^pedido_")
+            CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^(pedido_(nueva_dir|sel_addr_\d+)|guardar_dir_cliente_(si|no))$")
         ],
         PEDIDO_INSTRUCCIONES_EXTRA: [
             CallbackQueryHandler(pedido_instrucciones_callback, pattern=r"^pedido_instr_"),
@@ -5961,10 +5959,10 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
         ],
         PEDIDO_REQUIERE_BASE: [
-            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_")
+            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$")
         ],
         PEDIDO_VALOR_BASE: [
-            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_"),
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
         ],
