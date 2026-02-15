@@ -234,13 +234,24 @@ def es_admin_plataforma(telegram_id: int) -> bool:
 
 
 # =========================
-# Estados del registro de aliados
+# Estados del registro de aliados (flujo unificado)
 # =========================
-ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UBICACION, ALLY_TEAM = range(8)
+(
+    ALLY_NAME,
+    ALLY_OWNER,
+    ALLY_DOCUMENT,
+    ALLY_PHONE,
+    ALLY_CITY,
+    ALLY_BARRIO,
+    ALLY_ADDRESS,
+    ALLY_UBICACION,
+    ALLY_CONFIRM,
+    ALLY_TEAM,
+) = range(10)
 
 
 # =========================
-# Estados para registro de repartidores
+# Estados para registro de repartidores (flujo unificado)
 # =========================
 (
     COURIER_FULLNAME,
@@ -253,12 +264,12 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     COURIER_PLATE,
     COURIER_BIKETYPE,
     COURIER_CONFIRM,
-    COURIER_TEAMCODE,
-) = range(5, 16)
+    COURIER_TEAM,
+) = range(100, 111)
 
 
 # =========================
-# Estados para registro de administrador local
+# Estados para registro de administrador local (flujo unificado)
 # =========================
 (
     LOCAL_ADMIN_NAME,
@@ -269,35 +280,26 @@ ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UB
     LOCAL_ADMIN_BARRIO,
     LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
-    LOCAL_ADMIN_ACCEPT,
+    LOCAL_ADMIN_CONFIRM,
 ) = range(300, 309)
 
 
 FLOW_STATE_ORDER = {
-    "ally": [ALLY_NAME, ALLY_OWNER, ALLY_ADDRESS, ALLY_CITY, ALLY_PHONE, ALLY_BARRIO, ALLY_UBICACION],
+    "ally": [
+        ALLY_NAME, ALLY_OWNER, ALLY_DOCUMENT, ALLY_PHONE,
+        ALLY_CITY, ALLY_BARRIO, ALLY_ADDRESS, ALLY_UBICACION, ALLY_CONFIRM,
+    ],
     "courier": [
-        COURIER_FULLNAME,
-        COURIER_IDNUMBER,
-        COURIER_PHONE,
-        COURIER_CITY,
-        COURIER_BARRIO,
-        COURIER_RESIDENCE_ADDRESS,
-        COURIER_RESIDENCE_LOCATION,
-        COURIER_PLATE,
-        COURIER_BIKETYPE,
+        COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE,
+        COURIER_CITY, COURIER_BARRIO, COURIER_RESIDENCE_ADDRESS,
+        COURIER_RESIDENCE_LOCATION, COURIER_PLATE, COURIER_BIKETYPE,
         COURIER_CONFIRM,
-        COURIER_TEAMCODE,
     ],
     "admin": [
-        LOCAL_ADMIN_NAME,
-        LOCAL_ADMIN_DOCUMENT,
-        LOCAL_ADMIN_TEAMNAME,
-        LOCAL_ADMIN_PHONE,
-        LOCAL_ADMIN_CITY,
-        LOCAL_ADMIN_BARRIO,
-        LOCAL_ADMIN_RESIDENCE_ADDRESS,
-        LOCAL_ADMIN_RESIDENCE_LOCATION,
-        LOCAL_ADMIN_ACCEPT,
+        LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
+        LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
+        LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_CONFIRM,
     ],
 }
 
@@ -305,11 +307,13 @@ FLOW_STATE_KEYS = {
     "ally": {
         ALLY_NAME: ["business_name"],
         ALLY_OWNER: ["owner_name"],
-        ALLY_ADDRESS: ["address"],
-        ALLY_CITY: ["city"],
+        ALLY_DOCUMENT: ["ally_document"],
         ALLY_PHONE: ["ally_phone"],
+        ALLY_CITY: ["city"],
         ALLY_BARRIO: ["barrio"],
+        ALLY_ADDRESS: ["address"],
         ALLY_UBICACION: ["ally_lat", "ally_lng"],
+        ALLY_CONFIRM: [],
     },
     "courier": {
         COURIER_FULLNAME: ["full_name"],
@@ -322,7 +326,6 @@ FLOW_STATE_KEYS = {
         COURIER_PLATE: ["plate"],
         COURIER_BIKETYPE: ["bike_type"],
         COURIER_CONFIRM: [],
-        COURIER_TEAMCODE: [],
     },
     "admin": {
         LOCAL_ADMIN_NAME: ["admin_name"],
@@ -333,7 +336,7 @@ FLOW_STATE_KEYS = {
         LOCAL_ADMIN_BARRIO: ["admin_barrio"],
         LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
         LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
-        LOCAL_ADMIN_ACCEPT: [],
+        LOCAL_ADMIN_CONFIRM: [],
     },
 }
 
@@ -364,14 +367,15 @@ def _send_back_prompt(update, flow, state):
         "ally": {
             ALLY_NAME: "Registro de aliado\n\nEscribe el nombre del negocio:",
             ALLY_OWNER: "Escribe el nombre del dueño o administrador:",
-            ALLY_ADDRESS: "Escribe la dirección del negocio:",
-            ALLY_CITY: "Escribe la ciudad del negocio:",
+            ALLY_DOCUMENT: "Escribe el número de cédula del dueño o representante:",
             ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
+            ALLY_CITY: "Escribe la ciudad del negocio:",
             ALLY_BARRIO: "Escribe el barrio del negocio:",
+            ALLY_ADDRESS: "Escribe la dirección del negocio:",
             ALLY_UBICACION: (
-                "Ubicación del negocio (opcional).\n"
-                "Envía pin de Telegram o link de Google Maps/WhatsApp."
+                "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
             ),
+            ALLY_CONFIRM: "Escribe SI para confirmar tu registro.",
         },
         "courier": {
             COURIER_FULLNAME: "Registro de repartidor\n\nEscribe tu nombre completo:",
@@ -380,14 +384,10 @@ def _send_back_prompt(update, flow, state):
             COURIER_CITY: "Escribe la ciudad donde trabajas:",
             COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
             COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            COURIER_RESIDENCE_LOCATION: "Ahora envía tu ubicación GPS o un link de Google Maps.",
+            COURIER_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
             COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
             COURIER_BIKETYPE: "Escribe el tipo de moto:",
             COURIER_CONFIRM: "Escribe SI para confirmar tu registro.",
-            COURIER_TEAMCODE: (
-                "Este paso no permite volver atrás porque el registro ya fue creado.\n"
-                "Escribe un código TEAM o NO para finalizar."
-            ),
         },
         "admin": {
             LOCAL_ADMIN_NAME: "Registro de Administrador Local.\nEscribe tu nombre completo:",
@@ -397,8 +397,8 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
             LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin) o link de Google Maps.",
-            LOCAL_ADMIN_ACCEPT: "Escribe ACEPTAR para finalizar o volver para corregir.",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_CONFIRM: "Escribe ACEPTAR para finalizar o volver para corregir.",
         },
     }
     msg = prompts.get(flow, {}).get(state)
@@ -420,11 +420,18 @@ def volver_paso_anterior(update, context):
         update.message.reply_text("Ya estás en el primer paso. Escribe el dato o usa /cancel.")
         return current_state
 
-    # En TEAMCODE ya existe registro persistido; permitir volver sería riesgoso.
-    if flow == "courier" and current_state == COURIER_TEAMCODE:
+    # En TEAM ya existe registro persistido; permitir volver sería riesgoso.
+    if flow == "courier" and current_state == COURIER_TEAM:
         update.message.reply_text(
             "Aquí no se permite volver atrás porque el registro ya se guardó.\n"
-            "Escribe código TEAM o NO para terminar."
+            "Selecciona un equipo para terminar."
+        )
+        return current_state
+
+    if flow == "ally" and current_state == ALLY_TEAM:
+        update.message.reply_text(
+            "Aquí no se permite volver atrás porque el registro ya se guardó.\n"
+            "Selecciona un equipo para terminar."
         )
         return current_state
 
@@ -831,7 +838,7 @@ def saludo_menu_handler(update, context):
     show_main_menu(update, context, "Hola. Te muestro el menu principal:")
 
 
-# ----- REGISTRO DE ALIADO -----
+# ----- REGISTRO DE ALIADO (flujo unificado) -----
 
 def soy_aliado(update, context):
     user_db_id = get_user_db_id_from_update(update)
@@ -843,10 +850,8 @@ def soy_aliado(update, context):
         status = existing["status"] if isinstance(existing, dict) else existing[8]
         ally_id = existing["id"] if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type usando función específica
         rejection_type = get_ally_rejection_type_by_id(ally_id)
 
-        # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
             msg = (
                 "Ya tienes un registro de aliado en revisión (PENDING). Espera aprobación o usa /menu."
@@ -856,15 +861,12 @@ def soy_aliado(update, context):
             update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
-        # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
                 "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-
-        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
 
     update.message.reply_text(
         "Registro de aliado\n\n"
@@ -905,16 +907,43 @@ def ally_owner(update, context):
 
     context.user_data["owner_name"] = texto
     update.message.reply_text(
-        "Escribe la dirección del negocio:"
+        "Escribe el número de cédula del dueño o representante:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
-    _set_flow_step(context, "ally", ALLY_ADDRESS)
-    return ALLY_ADDRESS
+    _set_flow_step(context, "ally", ALLY_DOCUMENT)
+    return ALLY_DOCUMENT
 
 
-def ally_address(update, context):
-    texto = update.message.text.strip()
-    context.user_data["address"] = texto
+def ally_document(update, context):
+    doc = update.message.text.strip()
+    if len(doc) < 5:
+        update.message.reply_text(
+            "El número de documento parece muy corto. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return ALLY_DOCUMENT
+
+    context.user_data["ally_document"] = doc
+    update.message.reply_text(
+        "Escribe el teléfono de contacto del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
+    _set_flow_step(context, "ally", ALLY_PHONE)
+    return ALLY_PHONE
+
+
+def ally_phone(update, context):
+    phone = (update.message.text or "").strip()
+
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return ALLY_PHONE
+
+    context.user_data["ally_phone"] = phone
     update.message.reply_text(
         "Escribe la ciudad del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -934,30 +963,6 @@ def ally_city(update, context):
 
     context.user_data["city"] = texto
     update.message.reply_text(
-        "Escribe el teléfono de contacto del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_PHONE)
-    return ALLY_PHONE
-
-
-def ally_phone(update, context):
-    phone = (update.message.text or "").strip()
-
-    # Validación mínima: que tenga al menos 7 dígitos
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_PHONE
-
-    # Guardamos en el contexto con el mismo término que acordamos: ally_phone
-    context.user_data["ally_phone"] = phone
-
-    # Siguiente paso
-    update.message.reply_text(
         "Escribe el barrio del negocio:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
@@ -975,17 +980,27 @@ def ally_barrio(update, context):
         return ALLY_BARRIO
 
     context.user_data["barrio"] = text
-
-    # Preguntar por ubicación (opcional)
-    keyboard = [[InlineKeyboardButton("Omitir ubicacion", callback_data="ally_ubicacion_skip")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
-        "UBICACION DEL NEGOCIO (opcional)\n\n"
-        "Envia la ubicacion (PIN de Telegram), "
-        "pega el enlace (Google Maps/WhatsApp) "
-        "o escribe coordenadas (lat,lng).\n\n"
-        "Si no tienes, toca Omitir.",
-        reply_markup=reply_markup
+        "Escribe la dirección del negocio:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
+    _set_flow_step(context, "ally", ALLY_ADDRESS)
+    return ALLY_ADDRESS
+
+
+def ally_address(update, context):
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "La dirección no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return ALLY_ADDRESS
+
+    context.user_data["address"] = texto
+    update.message.reply_text(
+        "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "ally", ALLY_UBICACION)
     return ALLY_UBICACION
@@ -995,54 +1010,85 @@ def ally_ubicacion_handler(update, context):
     """Maneja texto de ubicación del aliado (link o coords)."""
     texto = update.message.text.strip()
 
-    # Intentar extraer coordenadas
     coords = extract_lat_lng_from_text(texto)
     if coords:
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
-        update.message.reply_text("Ubicacion guardada. Continuando registro...")
+        update.message.reply_text("Ubicación guardada.")
     else:
         update.message.reply_text(
-            "No se pudo extraer la ubicacion del texto.\n"
-            "Continuando sin ubicacion exacta..."
+            "No se pudo extraer la ubicación del texto.\n"
+            "Envía un pin de Telegram o pega un link de Google Maps."
         )
+        return ALLY_UBICACION
 
-    return finalizar_registro_ally(update, context)
+    return _show_ally_confirm(update, context)
 
 
 def ally_ubicacion_location_handler(update, context):
-    """Maneja ubicacion nativa de Telegram (PIN) para registro de aliado."""
+    """Maneja ubicación nativa de Telegram (PIN) para registro de aliado."""
     loc = update.message.location
     context.user_data["ally_lat"] = loc.latitude
     context.user_data["ally_lng"] = loc.longitude
-    update.message.reply_text("Ubicacion guardada. Continuando registro...")
-    return finalizar_registro_ally(update, context)
+    update.message.reply_text("Ubicación guardada.")
+    return _show_ally_confirm(update, context)
 
 
-def ally_ubicacion_skip_callback(update, context):
-    """Omite la ubicación del aliado."""
-    query = update.callback_query
-    query.answer()
-    query.edit_message_text("Continuando sin ubicacion exacta...")
-    return finalizar_registro_ally(query, context, from_callback=True)
-
-
-def finalizar_registro_ally(update_or_query, context, from_callback=False):
-    """Finaliza el registro del aliado creando en BD."""
-    if from_callback:
-        user_tg = update_or_query.message.chat
-        chat_id = update_or_query.message.chat_id
+def _show_ally_confirm(update, context):
+    """Muestra resumen de datos del aliado y pide confirmación."""
+    business_name = context.user_data.get("business_name", "")
+    owner_name = context.user_data.get("owner_name", "")
+    ally_document = context.user_data.get("ally_document", "")
+    phone = context.user_data.get("ally_phone", "")
+    city = context.user_data.get("city", "")
+    barrio = context.user_data.get("barrio", "")
+    address = context.user_data.get("address", "")
+    ally_lat = context.user_data.get("ally_lat")
+    ally_lng = context.user_data.get("ally_lng")
+    if ally_lat is not None and ally_lng is not None:
+        ubicacion = f"{ally_lat}, {ally_lng}"
     else:
-        user_tg = update_or_query.effective_user
-        chat_id = update_or_query.message.chat_id
+        ubicacion = "No disponible"
 
-    user_row = get_user_by_telegram_id(user_tg.id if hasattr(user_tg, 'id') else chat_id)
-    if not user_row:
-        user_row = ensure_user(user_tg.id if hasattr(user_tg, 'id') else chat_id, None)
-    user_db_id = user_row["id"]
+    resumen = (
+        "Verifica tus datos de aliado:\n\n"
+        f"Negocio: {business_name}\n"
+        f"Dueño: {owner_name}\n"
+        f"Cédula: {ally_document}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
+        f"Dirección: {address}\n"
+        f"Ubicación: {ubicacion}\n\n"
+        "Si todo está bien escribe: SI\n"
+        "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_aliado"
+    )
+    update.message.reply_text(resumen)
+    _set_flow_step(context, "ally", ALLY_CONFIRM)
+    return ALLY_CONFIRM
+
+
+def ally_confirm(update, context):
+    """Confirma y guarda el registro del aliado en BD."""
+    confirm_text = update.message.text.strip().upper()
+    user = update.effective_user
+
+    if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
+        update.message.reply_text(
+            "Registro cancelado.\n\n"
+            "Si deseas intentarlo de nuevo, usa /soy_aliado."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        db_user = ensure_user(user.id, user.username)
+    user_db_id = db_user["id"]
 
     business_name = context.user_data.get("business_name", "").strip()
     owner_name = context.user_data.get("owner_name", "").strip()
+    ally_document = context.user_data.get("ally_document", "").strip()
     address = context.user_data.get("address", "").strip()
     city = context.user_data.get("city", "").strip()
     phone = context.user_data.get("ally_phone", "").strip()
@@ -1059,6 +1105,7 @@ def finalizar_registro_ally(update_or_query, context, from_callback=False):
             city=city,
             barrio=barrio,
             phone=phone,
+            document_number=ally_document,
         )
 
         context.user_data["ally_id"] = ally_id
@@ -1073,11 +1120,9 @@ def finalizar_registro_ally(update_or_query, context, from_callback=False):
             is_default=True,
         )
 
-        # Guardar coords si existen
         if ally_lat and ally_lng and location_id:
             update_ally_location_coords(location_id, ally_lat, ally_lng)
 
-        # Notificación al Admin de Plataforma (opcional)
         try:
             context.bot.send_message(
                 chat_id=ADMIN_USER_ID,
@@ -1085,6 +1130,7 @@ def finalizar_registro_ally(update_or_query, context, from_callback=False):
                     "Nuevo registro de ALIADO pendiente:\n\n"
                     f"Negocio: {business_name}\n"
                     f"Dueño: {owner_name}\n"
+                    f"Cédula: {ally_document}\n"
                     f"Teléfono: {phone}\n"
                     f"Ciudad: {city}\n"
                     f"Barrio: {barrio}\n\n"
@@ -1094,14 +1140,11 @@ def finalizar_registro_ally(update_or_query, context, from_callback=False):
         except Exception as e:
             print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-        return show_ally_team_selection(update_or_query, context, from_callback)
+        return show_ally_team_selection(update, context, from_callback=False)
 
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
-        if from_callback:
-            context.bot.send_message(chat_id=chat_id, text="Error técnico al guardar tu registro. Intenta más tarde.")
-        else:
-            update_or_query.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
+        update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -1247,22 +1290,19 @@ def ally_team_callback(update, context):
 
 
 
-# ----- REGISTRO DE REPARTIDOR -----
+# ----- REGISTRO DE REPARTIDOR (flujo unificado) -----
 
 def soy_repartidor(update, context):
     user_db_id = get_user_db_id_from_update(update)
     context.user_data.clear()
 
-    # Validación anti-duplicados
     existing = get_courier_by_user_id(user_db_id)
     if existing:
         status = existing["status"] if isinstance(existing, dict) else existing[11]
         courier_id = existing["id"] if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type usando función específica
         rejection_type = get_courier_rejection_type_by_id(courier_id)
 
-        # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
             msg = (
                 "Ya tienes un registro de repartidor en revisión (PENDING). Espera aprobación o usa /menu."
@@ -1272,15 +1312,12 @@ def soy_repartidor(update, context):
             update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
-        # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
                 "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-
-        # Permitir si INACTIVE o REJECTED CORRECTABLE/NULL (continuar)
 
     update.message.reply_text(
         "Registro de repartidor\n\n"
@@ -1293,7 +1330,14 @@ def soy_repartidor(update, context):
 
 
 def courier_fullname(update, context):
-    context.user_data["full_name"] = update.message.text.strip()
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "El nombre no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return COURIER_FULLNAME
+    context.user_data["full_name"] = texto
     update.message.reply_text(
         "Escribe tu número de identificación:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -1303,7 +1347,14 @@ def courier_fullname(update, context):
 
 
 def courier_idnumber(update, context):
-    context.user_data["id_number"] = update.message.text.strip()
+    doc = update.message.text.strip()
+    if len(doc) < 5:
+        update.message.reply_text(
+            "El número de documento parece muy corto. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return COURIER_IDNUMBER
+    context.user_data["id_number"] = doc
     update.message.reply_text(
         "Escribe tu número de celular:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -1313,7 +1364,15 @@ def courier_idnumber(update, context):
 
 
 def courier_phone(update, context):
-    context.user_data["phone"] = update.message.text.strip()
+    phone = (update.message.text or "").strip()
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return COURIER_PHONE
+    context.user_data["phone"] = phone
     update.message.reply_text(
         "Escribe la ciudad donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -1323,7 +1382,14 @@ def courier_phone(update, context):
 
 
 def courier_city(update, context):
-    context.user_data["city"] = update.message.text.strip()
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "La ciudad no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return COURIER_CITY
+    context.user_data["city"] = texto
     update.message.reply_text(
         "Escribe el barrio o sector principal donde trabajas:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -1333,7 +1399,14 @@ def courier_city(update, context):
 
 
 def courier_barrio(update, context):
-    context.user_data["barrio"] = update.message.text.strip()
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "El barrio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return COURIER_BARRIO
+    context.user_data["barrio"] = texto
     update.message.reply_text(
         "Escribe tu dirección de residencia:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -1345,11 +1418,14 @@ def courier_barrio(update, context):
 def courier_residence_address(update, context):
     address = update.message.text.strip()
     if not address:
-        update.message.reply_text("La dirección no puede estar vacía. Escríbela de nuevo:")
+        update.message.reply_text(
+            "La dirección no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return COURIER_RESIDENCE_ADDRESS
     context.user_data["residence_address"] = address
     update.message.reply_text(
-        "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+        "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "courier", COURIER_RESIDENCE_LOCATION)
@@ -1377,6 +1453,7 @@ def courier_residence_location(update, context):
     context.user_data["residence_lat"] = lat
     context.user_data["residence_lng"] = lng
     update.message.reply_text(
+        "Ubicación guardada.\n\n"
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
@@ -1404,8 +1481,7 @@ def courier_biketype(update, context):
     barrio = context.user_data.get("barrio", "")
     plate = context.user_data.get("plate", "")
     bike_type = context.user_data.get("bike_type", "")
-    residence_address = context.user_data.get("residence_address", "")
-    residence_address_display = residence_address or "No registrada"
+    residence_address = context.user_data.get("residence_address", "") or "No registrada"
     residence_lat = context.user_data.get("residence_lat")
     residence_lng = context.user_data.get("residence_lng")
     if residence_lat is not None and residence_lng is not None:
@@ -1420,13 +1496,12 @@ def courier_biketype(update, context):
         f"Teléfono: {phone}\n"
         f"Ciudad: {city}\n"
         f"Barrio: {barrio}\n"
-        f"Dirección residencia: {residence_address_display}\n"
+        f"Dirección residencia: {residence_address}\n"
         f"Ubicación residencia: {residence_location}\n"
         f"Placa: {plate}\n"
         f"Tipo de moto: {bike_type}\n\n"
         "Si todo está bien escribe: SI\n"
-        "Si quieres corregir, usa /cancel y vuelve a /soy_repartidor"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_repartidor"
     )
 
     update.message.reply_text(resumen)
@@ -1484,7 +1559,6 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Notificación al Admin de Plataforma
     try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -1516,30 +1590,71 @@ def courier_confirm(update, context):
         f"Placa: {plate}\n"
         f"Tipo de moto: {bike_type}\n"
         f"Código interno: {code}\n\n"
-        "Tu estado es: PENDING.\n\n"
-        "Ahora, si deseas unirte a un Administrador Local, escribe el CÓDIGO DE EQUIPO (ej: TEAM1).\n"
-        "Si no tienes código, escribe: NO"
+        "Tu estado es: PENDING."
     )
-    _set_flow_step(context, "courier", COURIER_TEAMCODE)
-    return COURIER_TEAMCODE
+
+    return show_courier_team_selection(update, context)
 
 
-def courier_teamcode(update, context):
-    text = update.message.text.strip().upper()
-
+def show_courier_team_selection(update, context):
+    """Muestra lista de equipos (admins) con botones para el repartidor."""
     courier_id = context.user_data.get("new_courier_id")
     if not courier_id:
-        update.message.reply_text("Error: no se encontró tu registro reciente. Intenta /soy_repartidor de nuevo.")
+        update.message.reply_text("Error técnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
-    if text in ("NO", "N", "NO.", "N.", "NINGUNO", ""):
-        # FASE 1: Asignar a Admin de Plataforma por defecto
+    teams = get_available_admin_teams()
+    keyboard = []
+
+    if teams:
+        for row in teams:
+            admin_id = row[0]
+            team_name = row[1]
+            team_code = row[2]
+            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+
+            label = f"{team_name} ({team_code})"
+            if admin_status == 'PENDING':
+                label += " [Pendiente]"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"courier_team:{team_code}")])
+
+    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="courier_team:NONE")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(
+        "¿A qué equipo (Administrador) quieres pertenecer?\n"
+        "Si eliges Ninguno, quedas por defecto con el Admin de Plataforma.",
+        reply_markup=reply_markup
+    )
+
+    return COURIER_TEAM
+
+
+def courier_team_callback(update, context):
+    """Maneja la selección de equipo del repartidor (botones)."""
+    query = update.callback_query
+    data = (query.data or "").strip()
+    query.answer()
+
+    if not data.startswith("courier_team:"):
+        return COURIER_TEAM
+
+    courier_id = context.user_data.get("new_courier_id")
+    if not courier_id:
+        query.edit_message_text("Error técnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    selected = data.split("courier_team:", 1)[1].strip()
+
+    if selected.upper() == "NONE":
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
-            update.message.reply_text(
+            query.edit_message_text(
                 "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
-                "Crea/asegura ese admin en la tabla admins con team_code='PLATFORM', luego intenta de nuevo."
+                "Contacta al administrador."
             )
             context.user_data.clear()
             return ConversationHandler.END
@@ -1548,46 +1663,38 @@ def courier_teamcode(update, context):
 
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
-            print(f"[DEBUG] courier_teamcode: vínculo creado courier_id={courier_id}, admin_id={platform_admin_id}, team=PLATFORM")
         except Exception as e:
-            print(f"[ERROR] courier_teamcode: create_admin_courier_link falló: {e}")
-            update.message.reply_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
+            print(f"[ERROR] courier_team_callback: create_admin_courier_link falló: {e}")
+            query.edit_message_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
 
-        update.message.reply_text(
-            "Perfecto. Quedas registrado en el equipo de PLATAFORMA.\n\n"
-            "Cuando tengas un código TEAM, podrás pedir cambio más adelante."
+        query.edit_message_text(
+            "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
+            "Tu vínculo quedó en estado PENDING hasta aprobación."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    team_code = text
-
-    admin = get_admin_by_team_code(team_code)
-    if not admin:
-        update.message.reply_text(
-            "No encontré un Administrador Local con ese código.\n\n"
-            "Verifica el código e inténtalo de nuevo.\n"
-            "O escribe NO para finalizar."
+    admin_row = get_admin_by_team_code(selected)
+    if not admin_row:
+        query.edit_message_text(
+            "Ese código de equipo no existe o no está disponible.\n"
+            "Vuelve a intentar /soy_repartidor."
         )
-        return COURIER_TEAMCODE
+        context.user_data.clear()
+        return ConversationHandler.END
 
-    # get_admin_by_team_code retorna:
-    # (admin_id, user_id, full_name, status, team_name, team_code, telegram_id)
-    admin_id = admin[0]
-    admin_user_db_id = admin[1]  # users.id (NO telegram_id)
-    admin_name = admin[2]
-    admin_status = admin[3]
-    admin_team = admin[4]
-    admin_team_code = admin[5]
-    admin_telegram_id = admin[6]  # telegram_id REAL para notificaciones
+    admin_id = admin_row[0]
+    admin_team = admin_row[4]
+    admin_team_code = admin_row[5]
+    admin_telegram_id = admin_row[6]
 
     try:
         create_admin_courier_link(admin_id, courier_id)
     except Exception as e:
         print("[ERROR] create_admin_courier_link:", e)
-        update.message.reply_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -1595,7 +1702,7 @@ def courier_teamcode(update, context):
         context.bot.send_message(
             chat_id=admin_telegram_id,
             text=(
-                "📥 Nueva solicitud de repartidor para tu equipo.\n\n"
+                "Nueva solicitud de repartidor para tu equipo.\n\n"
                 f"Repartidor ID: {courier_id}\n"
                 f"Equipo: {admin_team}\n"
                 f"Código: {admin_team_code}\n\n"
@@ -1605,11 +1712,11 @@ def courier_teamcode(update, context):
     except Exception as e:
         print("[WARN] No se pudo notificar al admin local:", e)
 
-    update.message.reply_text(
-        "Listo. Tu solicitud para unirte al equipo fue enviada.\n\n"
-        "Quedas PENDIENTE de aprobación por el Administrador Local."
+    query.edit_message_text(
+        "Listo. Elegiste el equipo:\n"
+        f"{admin_team} ({admin_team_code})\n\n"
+        "Tu vínculo quedó en estado PENDING hasta aprobación."
     )
-
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -3371,9 +3478,7 @@ def repartidores_pendientes(update, context):
 
         
 def soy_admin(update, context):
-    # ID interno users.id (NO telegram_id)
     user_db_id = get_user_db_id_from_update(update)
-
     context.user_data.clear()
 
     existing = get_admin_by_user_id(user_db_id)
@@ -3381,10 +3486,8 @@ def soy_admin(update, context):
         status = existing.get("status") if isinstance(existing, dict) else existing[7]
         admin_id = existing.get("id") if isinstance(existing, dict) else existing[0]
 
-        # Obtener rejection_type usando función específica
         rejection_type = get_admin_rejection_type_by_id(admin_id)
 
-        # Bloquear si PENDING o APPROVED
         if status in ("PENDING", "APPROVED"):
             msg = (
                 "Ya tienes un registro de administrador en revisión (PENDING). Espera aprobación o usa /menu."
@@ -3394,7 +3497,6 @@ def soy_admin(update, context):
             update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
-        # Bloquear si REJECTED + BLOCKED
         if status == "REJECTED" and rejection_type == "BLOCKED":
             update.message.reply_text(
                 "Tu registro anterior fue rechazado y bloqueado. Si crees que es un error, contacta al administrador de plataforma.",
@@ -3402,7 +3504,6 @@ def soy_admin(update, context):
             )
             return ConversationHandler.END
 
-        # Permitir actualizar si INACTIVE o REJECTED CORRECTABLE/NULL
         team_name = existing.get("team_name") if isinstance(existing, dict) else (existing[9] if len(existing) > 9 and existing[9] else existing[3])
         doc = existing.get("document_number") if isinstance(existing, dict) else (existing[10] if len(existing) > 10 and existing[10] else "No registrado")
         full_name = existing.get("full_name") if isinstance(existing, dict) else existing[3]
@@ -3428,7 +3529,9 @@ def soy_admin(update, context):
         return LOCAL_ADMIN_NAME
 
     update.message.reply_text(
-        "Registro de Administrador Local.\nEscribe tu nombre completo:",
+        "Registro de Administrador Local.\n\n"
+        "Escribe tu nombre completo:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
         reply_markup=ReplyKeyboardRemove()
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
@@ -3438,23 +3541,31 @@ def soy_admin(update, context):
 def admin_name(update, context):
     text = update.message.text.strip()
 
-    # Si veníamos del prompt de actualización
     if context.user_data.get("admin_update_prompt"):
         answer = text.upper()
         context.user_data.pop("admin_update_prompt", None)
         if answer == "SI":
-            update.message.reply_text("Perfecto. Escribe tu nombre completo:")
+            update.message.reply_text(
+                "Perfecto. Escribe tu nombre completo:"
+                "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+            )
             _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
             return LOCAL_ADMIN_NAME
         update.message.reply_text("Entendido. No se modificó tu registro.")
         context.user_data.clear()
         return ConversationHandler.END
 
-    context.user_data["admin_name"] = text
+    if not text:
+        update.message.reply_text(
+            "El nombre no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return LOCAL_ADMIN_NAME
 
+    context.user_data["admin_name"] = text
     update.message.reply_text(
-        "Escribe tu número de documento (CC o equivalente).\n"
-        "Este dato se usa solo para control interno de la plataforma."
+        "Escribe tu número de documento (CC o equivalente):"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_DOCUMENT)
     return LOCAL_ADMIN_DOCUMENT
@@ -3462,58 +3573,89 @@ def admin_name(update, context):
 
 def admin_document(update, context):
     doc = update.message.text.strip()
-
     if len(doc) < 5:
-        update.message.reply_text("El número de documento parece muy corto. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El número de documento parece muy corto. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return LOCAL_ADMIN_DOCUMENT
 
     context.user_data["admin_document"] = doc
-
     update.message.reply_text(
-        "Ahora escribe el nombre de tu administración (nombre del equipo).\n"
+        "Escribe el nombre de tu administración (nombre del equipo).\n"
         "Ejemplo: Mensajeros Pereira Centro"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_TEAMNAME)
     return LOCAL_ADMIN_TEAMNAME
 
-    
+
 def admin_teamname(update, context):
     team_name = update.message.text.strip()
-
     if len(team_name) < 3:
-        update.message.reply_text("El nombre de la administración debe tener al menos 3 caracteres. Escríbelo de nuevo:")
+        update.message.reply_text(
+            "El nombre de la administración debe tener al menos 3 caracteres. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return LOCAL_ADMIN_TEAMNAME
 
     context.user_data["admin_team_name"] = team_name
-    update.message.reply_text("Escribe tu número de teléfono:")
+    update.message.reply_text(
+        "Escribe tu número de teléfono:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     _set_flow_step(context, "admin", LOCAL_ADMIN_PHONE)
     return LOCAL_ADMIN_PHONE
-    
+
 
 def admin_phone(update, context):
     phone = update.message.text.strip()
-
-    if len(phone) < 7:
-        update.message.reply_text("El teléfono parece inválido. Escríbelo de nuevo:")
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
         return LOCAL_ADMIN_PHONE
 
     context.user_data["phone"] = phone
-    update.message.reply_text("¿En qué ciudad vas a operar como Administrador Local?")
+    update.message.reply_text(
+        "¿En qué ciudad vas a operar como Administrador Local?"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     _set_flow_step(context, "admin", LOCAL_ADMIN_CITY)
     return LOCAL_ADMIN_CITY
 
 
 def admin_city(update, context):
-    context.user_data["admin_city"] = update.message.text.strip()
-    update.message.reply_text("Escribe tu barrio o zona base de operación:")
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "La ciudad no puede estar vacía. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return LOCAL_ADMIN_CITY
+    context.user_data["admin_city"] = texto
+    update.message.reply_text(
+        "Escribe tu barrio o zona base de operación:"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+    )
     _set_flow_step(context, "admin", LOCAL_ADMIN_BARRIO)
     return LOCAL_ADMIN_BARRIO
 
 
 def admin_barrio(update, context):
-    context.user_data["admin_barrio"] = update.message.text.strip()
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text(
+            "El barrio no puede estar vacío. Escríbelo de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        return LOCAL_ADMIN_BARRIO
+    context.user_data["admin_barrio"] = texto
     update.message.reply_text(
         "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_ADDRESS)
     return LOCAL_ADMIN_RESIDENCE_ADDRESS
@@ -3524,11 +3666,13 @@ def admin_residence_address(update, context):
     if len(address) < 6:
         update.message.reply_text(
             "La dirección debe tener al menos 6 caracteres. Escríbela de nuevo:"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
         )
         return LOCAL_ADMIN_RESIDENCE_ADDRESS
     context.user_data["admin_residence_address"] = address
     update.message.reply_text(
-        "Ahora envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps. (Obligatorio)"
+        "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_LOCATION)
     return LOCAL_ADMIN_RESIDENCE_LOCATION
@@ -3555,24 +3699,40 @@ def admin_residence_location(update, context):
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
+    update.message.reply_text("Ubicación guardada.")
 
-    residence_address = (context.user_data.get("admin_residence_address") or "").strip()
-    msg = (
-        "Resumen de residencia:\n"
+    # Mostrar resumen completo + requisitos + pedir ACEPTAR
+    full_name = context.user_data.get("admin_name", "")
+    document_number = context.user_data.get("admin_document", "")
+    team_name = context.user_data.get("admin_team_name", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("admin_city", "")
+    barrio = context.user_data.get("admin_barrio", "")
+    residence_address = context.user_data.get("admin_residence_address", "")
+
+    resumen = (
+        "Verifica tus datos de Administrador Local:\n\n"
+        f"Nombre: {full_name}\n"
+        f"Cédula: {document_number}\n"
+        f"Equipo: {team_name}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
         f"Dirección: {residence_address}\n"
-        f"Coordenadas: {lat}, {lng}\n\n"
+        f"Ubicación: {lat}, {lng}\n\n"
         "Condiciones para Administrador Local:\n"
         "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
         "2) Cada repartidor debe tener recarga mínima de 5000.\n"
         "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
-        "Escribe ACEPTAR para finalizar el registro o /cancel para salir."
+        "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
+        "Si quieres corregir, escribe 'volver' o usa /cancel."
     )
-    update.message.reply_text(msg)
-    _set_flow_step(context, "admin", LOCAL_ADMIN_ACCEPT)
-    return LOCAL_ADMIN_ACCEPT
+    update.message.reply_text(resumen)
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CONFIRM)
+    return LOCAL_ADMIN_CONFIRM
 
 
-def admin_accept(update, context):
+def admin_confirm(update, context):
     answer = update.message.text.strip().upper()
     user_db_id = get_user_db_id_from_update(update)
 
@@ -3580,7 +3740,7 @@ def admin_accept(update, context):
         update.message.reply_text("Registro cancelado. Si deseas intentarlo de nuevo usa /soy_admin.")
         context.user_data.clear()
         return ConversationHandler.END
-        
+
     full_name = (context.user_data.get("admin_name") or "").strip()
     document_number = (context.user_data.get("admin_document") or "").strip()
     team_name = (context.user_data.get("admin_team_name") or "").strip()
@@ -3609,12 +3769,11 @@ def admin_accept(update, context):
         context.user_data.clear()
         return ConversationHandler.END
     except Exception as e:
-        print("[ERROR] admin_accept:", e)
+        print("[ERROR] admin_confirm:", e)
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Notificación al Admin de Plataforma
     try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -5666,15 +5825,16 @@ ally_conv = ConversationHandler(
     states={
         ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command, ally_name)],
         ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command, ally_owner)],
-        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
-        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
+        ALLY_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, ally_document)],
         ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
+        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
+        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
         ALLY_UBICACION: [
-            CallbackQueryHandler(ally_ubicacion_skip_callback, pattern=r"^ally_ubicacion_skip$"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler)
+            MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler),
         ],
+        ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, ally_confirm)],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
     fallbacks=[
@@ -5720,8 +5880,8 @@ courier_conv = ConversationHandler(
         COURIER_CONFIRM: [
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
         ],
-        COURIER_TEAMCODE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_teamcode)
+        COURIER_TEAM: [
+            CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team:")
         ],
     },
     fallbacks=[
@@ -8372,10 +8532,12 @@ def main():
                 MessageHandler(Filters.location, admin_residence_location),
                 MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
             ],
-            LOCAL_ADMIN_ACCEPT: [MessageHandler(Filters.text & ~Filters.command, admin_accept)],
+            LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, admin_confirm)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
+            CommandHandler("menu", menu),
+            MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
         ],
     )
