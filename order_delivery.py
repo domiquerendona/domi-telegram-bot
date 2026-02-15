@@ -699,27 +699,35 @@ def _handle_release(update, context, order_id):
     admin_link = get_approved_admin_link_for_ally(ally_id)
     if admin_link:
         admin_id = admin_link["admin_id"]
-        requires_cash = bool(order["requires_cash"])
-        cash_amount = int(order["cash_required_amount"] or 0)
+    else:
+        courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
+        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
-        eligible = get_eligible_couriers_for_order(
-            admin_id=admin_id,
-            ally_id=ally_id,
-            requires_cash=requires_cash,
-            cash_required_amount=cash_amount,
-        )
-        if eligible:
-            import time
-            courier_ids = [c["courier_id"] for c in eligible]
-            delete_offer_queue(order_id)
-            create_offer_queue(order_id, courier_ids)
+    if not admin_id:
+        print("[WARN] No se pudo reofertar pedido {}: sin admin operativo".format(order_id))
+        return
 
-            context.bot_data.setdefault("offer_cycles", {})[order_id] = {
-                "started_at": time.time(),
-                "admin_id": admin_id,
-                "ally_id": ally_id,
-            }
-            _send_next_offer(order_id, context)
+    requires_cash = bool(order["requires_cash"])
+    cash_amount = int(order["cash_required_amount"] or 0)
+
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+    )
+    if eligible:
+        import time
+        courier_ids = [c["courier_id"] for c in eligible]
+        delete_offer_queue(order_id)
+        create_offer_queue(order_id, courier_ids)
+
+        context.bot_data.setdefault("offer_cycles", {})[order_id] = {
+            "started_at": time.time(),
+            "admin_id": admin_id,
+            "ally_id": ally_id,
+        }
+        _send_next_offer(order_id, context)
 
 
 def _handle_cancel_ally(update, context, order_id):

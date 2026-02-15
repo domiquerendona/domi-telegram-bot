@@ -3523,8 +3523,14 @@ def pedido_confirmacion_callback(update, context):
             context.user_data["order_id"] = order_id
 
             # Publicar pedido a couriers del equipo
+            published_count = 0
             try:
-                publish_order_to_couriers(order_id, ally_id, context, admin_id_override=admin_id_for_publish)
+                published_count = publish_order_to_couriers(
+                    order_id,
+                    ally_id,
+                    context,
+                    admin_id_override=admin_id_for_publish,
+                )
             except Exception as e:
                 print("[WARN] Error al publicar pedido a couriers:", e)
 
@@ -3548,6 +3554,9 @@ def pedido_confirmacion_callback(update, context):
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 query.edit_message_text(
                     f"Pedido #{order_id} creado exitosamente.\n\n"
+                    + ("No hay repartidores elegibles en este momento. "
+                       "El pedido quedo registrado pero sin publicar.\n\n" if published_count == 0 else "")
+                    +
                     "Quieres guardar este cliente para futuros pedidos?",
                     reply_markup=reply_markup
                 )
@@ -3561,7 +3570,20 @@ def pedido_confirmacion_callback(update, context):
             else:
                 # Cliente existente: éxito directo + menú
                 context.user_data.clear()
-                show_main_menu(update, context, f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.")
+                if published_count == 0:
+                    show_main_menu(
+                        update,
+                        context,
+                        f"Pedido #{order_id} creado exitosamente.\n"
+                        "No hay repartidores elegibles en este momento. "
+                        "El pedido quedo registrado pero sin publicar.",
+                    )
+                else:
+                    show_main_menu(
+                        update,
+                        context,
+                        f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.",
+                    )
                 return ConversationHandler.END
 
         except Exception as e:
