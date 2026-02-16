@@ -2829,10 +2829,14 @@ def pedido_ubicacion_handler(update, context):
 
 def pedido_ubicacion_location_handler(update, context):
     """Maneja ubicacion nativa de Telegram (PIN) enviada por el usuario."""
-    loc = update.message.location
+    message = update.message or update.edited_message
+    if not message or not message.location:
+        return PEDIDO_UBICACION
+
+    loc = message.location
     context.user_data["dropoff_lat"] = loc.latitude
     context.user_data["dropoff_lng"] = loc.longitude
-    update.message.reply_text(
+    message.reply_text(
         "Ubicacion guardada.\n\n"
         "Ahora escribe los detalles de la direccion:\n"
         "barrio, conjunto, torre, apto, referencias."
