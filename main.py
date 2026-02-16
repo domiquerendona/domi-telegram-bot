@@ -226,6 +226,74 @@ def es_admin(user_id: int) -> bool:
     return user_id == ADMIN_USER_ID
 
 
+def _get_important_alert_config():
+    enabled = str(get_setting("important_alerts_enabled", "1") or "1").strip() == "1"
+    seconds_raw = str(get_setting("important_alert_seconds", "20,50") or "20,50")
+    seconds = []
+    for chunk in seconds_raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            sec = int(chunk)
+            if sec > 0:
+                seconds.append(sec)
+        except Exception:
+            continue
+    if not seconds:
+        seconds = [20, 50]
+    return {"enabled": enabled, "seconds": seconds}
+
+
+def _important_alert_job(context):
+    data = context.job.context or {}
+    alert_key = data.get("alert_key")
+    if not alert_key:
+        return
+    if not context.bot_data.get("important_alert_open:{}".format(alert_key), False):
+        return
+    chat_id = data.get("chat_id")
+    text = data.get("text")
+    if not chat_id or not text:
+        return
+    reply_markup = data.get("reply_markup")
+    try:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    except Exception as e:
+        print("[WARN] No se pudo enviar recordatorio importante {}: {}".format(alert_key, e))
+
+
+def _schedule_important_alerts(context, alert_key, chat_id, reminder_text, reply_markup=None):
+    config = _get_important_alert_config()
+    if not config["enabled"]:
+        return
+    context.bot_data["important_alert_open:{}".format(alert_key)] = True
+    for idx, sec in enumerate(config["seconds"], start=1):
+        context.job_queue.run_once(
+            _important_alert_job,
+            when=sec,
+            context={
+                "alert_key": alert_key,
+                "chat_id": chat_id,
+                "text": reminder_text,
+                "reply_markup": reply_markup,
+            },
+            name="important_alert_{}_{}".format(alert_key, idx),
+        )
+
+
+def _resolve_important_alert(context, alert_key):
+    context.bot_data["important_alert_open:{}".format(alert_key)] = False
+    config = _get_important_alert_config()
+    for idx in range(1, len(config["seconds"]) + 1):
+        jobs = context.job_queue.get_jobs_by_name("important_alert_{}_{}".format(alert_key, idx))
+        for job in jobs:
+            try:
+                job.schedule_removal()
+            except Exception:
+                pass
+
+
 def es_admin_plataforma(telegram_id: int) -> bool:
     """
     Valida si el usuario es Administrador de Plataforma.
@@ -1435,6 +1503,16 @@ def ally_confirm(update, context):
                     "Usa /aliados_pendientes o /admin para revisarlo."
                 )
             )
+            _schedule_important_alerts(
+                context,
+                alert_key="ally_registration_{}".format(ally_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de aliado #{} sigue pendiente.\n"
+                    "Revisa /aliados_pendientes o /admin."
+                ).format(ally_id),
+            )
         except Exception as e:
             print("[WARN] No se pudo notificar al admin plataforma:", e)
 
@@ -1865,6 +1943,8 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
+    courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
+
     try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -1880,10 +1960,19 @@ def courier_confirm(update, context):
                 "Usa /admin para revisarlo."
             ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
         )
+        _schedule_important_alerts(
+            context,
+            alert_key="courier_registration_{}".format(courier_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de repartidor #{} sigue pendiente.\n"
+                "Revisa /repartidores_pendientes o /admin."
+            ).format(courier_id),
+        )
     except Exception as e:
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-    courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
     context.user_data["new_courier_id"] = courier_id
 
     update.message.reply_text(
@@ -2014,6 +2103,16 @@ def courier_team_callback(update, context):
                 f"Código: {admin_team_code}\n\n"
                 "Entra a /mi_admin para aprobar o rechazar."
             )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="team_courier_pending_{}_{}".format(admin_id, courier_id),
+            chat_id=admin_telegram_id,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
+                "Revisa /mi_admin."
+            ),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar al admin local:", e)
@@ -4309,6 +4408,16 @@ def admin_confirm(update, context):
                 "Usa /admin para revisarlo."
             ).format(full_name, document_number, team_name, team_code, phone, city, barrio)
         )
+        _schedule_important_alerts(
+            context,
+            alert_key="admin_registration_{}".format(admin_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de administrador local #{} sigue pendiente.\n"
+                "Revisa /admin."
+            ).format(admin_id),
+        )
     except Exception as e:
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
@@ -5451,6 +5560,16 @@ def courier_pick_admin_callback(update, context):
                     "Entra a /mi_admin para revisar pendientes."
                 )
             )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_courier_pending_{}_{}".format(admin_id, courier_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
         except Exception as e:
             print("[WARN] No se pudo notificar al admin local:", e)
 
@@ -5601,6 +5720,7 @@ def admin_aprobar_rechazar_callback(update, context):
             query.edit_message_text("Error aprobando administrador. Revisa logs.")
             return
 
+        _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
         query.edit_message_text("✅ Administrador aprobado (APPROVED).")
         return
 
@@ -5612,6 +5732,7 @@ def admin_aprobar_rechazar_callback(update, context):
             query.edit_message_text("Error rechazando administrador. Revisa logs.")
             return
 
+        _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
         query.edit_message_text("❌ Administrador rechazado (REJECTED).")
         return
 
@@ -7760,6 +7881,17 @@ def recargar_comprobante(update, context):
                     caption=notif_text,
                     reply_markup=InlineKeyboardMarkup(buttons)
                 )
+                _schedule_important_alerts(
+                    context,
+                    alert_key="recharge_request_{}".format(request_id),
+                    chat_id=admin_telegram_id,
+                    reminder_text=(
+                        "Recordatorio importante:\n"
+                        "La solicitud de recarga #{} sigue pendiente.\n"
+                        "Revisala en /recargas_pendientes o con los botones."
+                    ).format(request_id),
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
     except Exception as e:
         print(f"[WARN] No se pudo notificar al admin: {e}")
 
@@ -7943,6 +8075,7 @@ def recharge_callback(update, context):
         success, msg = approve_recharge_request(request_id, admin_id)
 
         if success:
+            _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Recarga aprobada.")
             suffix = f"\n\nAPROBADA por admin #{admin_id}"
             if query.message.text:
@@ -7964,6 +8097,7 @@ def recharge_callback(update, context):
         success, msg = reject_recharge_request(request_id, admin_id)
 
         if success:
+            _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Solicitud rechazada.")
             suffix = f"\n\nRECHAZADA por admin #{admin_id}"
             if query.message.text:
@@ -8505,6 +8639,7 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
             return
 
+        _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
             "✅ Repartidor aprobado en tu equipo.",
             reply_markup=InlineKeyboardMarkup([
@@ -8522,6 +8657,7 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error rechazando repartidor. Revisa logs.")
             return
 
+        _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
             "❌ Repartidor rechazado para tu equipo.",
             reply_markup=InlineKeyboardMarkup([
@@ -8539,6 +8675,7 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
             return
 
+        _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
             "⛔ Repartidor bloqueado en tu equipo.",
             reply_markup=InlineKeyboardMarkup([
@@ -8584,6 +8721,7 @@ def ally_approval_callback(update, context):
         print(f"[ERROR] ally_approval_callback: {e}")
         query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
         return
+    _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
     if nuevo_estado == "APPROVED":
         link = get_admin_link_for_ally(ally_id)
@@ -8696,6 +8834,7 @@ def courier_approval_callback(update, context):
         print(f"[ERROR] update_courier_status: {e}")
         query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
         return
+    _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
 
     if nuevo_estado == "APPROVED":
         try:
