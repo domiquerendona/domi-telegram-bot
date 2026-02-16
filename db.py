@@ -2,6 +2,7 @@ import sqlite3
 import os
 import re
 import json
+import time
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -184,8 +185,9 @@ def get_connection():
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
     db_path = os.getenv("DB_PATH", "domiquerendona.db")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 15000")
     return conn
 
 
@@ -1719,15 +1721,26 @@ def deactivate_courier(courier_id: int):
 
 def update_courier_live_location(courier_id: int, lat: float, lng: float):
     """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE couriers SET live_lat = ?, live_lng = ?, "
-        "live_location_active = 1, live_location_updated_at = datetime('now'), "
-        "availability_status = 'APPROVED' WHERE id = ?;",
-        (lat, lng, courier_id))
-    conn.commit()
-    conn.close()
+    retries = 3
+    for attempt in range(retries):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE couriers SET live_lat = ?, live_lng = ?, "
+                "live_location_active = 1, live_location_updated_at = datetime('now'), "
+                "availability_status = 'APPROVED' WHERE id = ?;",
+                (lat, lng, courier_id))
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "database is locked" in message and attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            raise
+        finally:
+            conn.close()
 
 
 def set_courier_availability(courier_id: int, status: str):
@@ -1765,30 +1778,40 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
     Marca como INACTIVE a couriers con live_location vencida.
     Retorna la lista de courier_ids afectados.
     """
-    conn = get_connection()
-    cur = conn.cursor()
+    retries = 3
+    for attempt in range(retries):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
 
-    # Primero obtener los que van a expirar
-    cur.execute("""
-        SELECT id FROM couriers
-        WHERE availability_status = 'APPROVED'
-          AND live_location_active = 1
-          AND live_location_updated_at < datetime('now', ? || ' seconds')
-    """, ('-' + str(timeout_seconds),))
-    expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
+            # Primero obtener los que van a expirar
+            cur.execute("""
+                SELECT id FROM couriers
+                WHERE availability_status = 'APPROVED'
+                  AND live_location_active = 1
+                  AND live_location_updated_at < datetime('now', ? || ' seconds')
+            """, ('-' + str(timeout_seconds),))
+            expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
-    if expired:
-        cur.execute("""
-            UPDATE couriers
-            SET availability_status = 'INACTIVE', live_location_active = 0
-            WHERE availability_status = 'APPROVED'
-              AND live_location_active = 1
-              AND live_location_updated_at < datetime('now', ? || ' seconds')
-        """, ('-' + str(timeout_seconds),))
-        conn.commit()
+            if expired:
+                cur.execute("""
+                    UPDATE couriers
+                    SET availability_status = 'INACTIVE', live_location_active = 0
+                    WHERE availability_status = 'APPROVED'
+                      AND live_location_active = 1
+                      AND live_location_updated_at < datetime('now', ? || ' seconds')
+                """, ('-' + str(timeout_seconds),))
+                conn.commit()
 
-    conn.close()
-    return expired
+            return expired
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "database is locked" in message and attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            raise
+        finally:
+            conn.close()
 
 
 def get_active_courier_cash(courier_id: int) -> int:
