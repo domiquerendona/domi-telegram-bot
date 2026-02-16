@@ -144,6 +144,7 @@ from db import (
     archive_ally_customer,
     restore_ally_customer,
     get_ally_customer_by_id,
+    get_ally_customer_by_phone,
     list_ally_customers,
     search_ally_customers,
     create_customer_address,
@@ -3710,9 +3711,14 @@ def pedido_confirmacion_callback(update, context):
                 distance_km, quote_price, requires_cash, cash_required_amount
             )
 
-            # Si es cliente nuevo, preguntar si guardar
+            # Preguntar guardar cliente cuando el telefono no exista en recurrentes.
             is_new_customer = context.user_data.get("is_new_customer", False)
-            if is_new_customer:
+            customer_phone = context.user_data.get("customer_phone", "")
+            customer_id_ctx = context.user_data.get("customer_id")
+            existing_customer = get_ally_customer_by_phone(ally_id, customer_phone) if customer_phone else None
+            should_offer_save_customer = bool((is_new_customer or not customer_id_ctx) and not existing_customer)
+
+            if should_offer_save_customer:
                 keyboard = [
                     [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
                     [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
@@ -3826,8 +3832,12 @@ def pedido_guardar_cliente_callback(update, context):
         customer_address = context.user_data.get("customer_address", "")
 
         try:
-            # Crear cliente
-            customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
+            # Crear cliente si no existe uno activo por telefono.
+            existing_customer = get_ally_customer_by_phone(ally_id, customer_phone)
+            if existing_customer:
+                customer_id = existing_customer["id"]
+            else:
+                customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
             create_customer_address(
                 customer_id,

@@ -4249,6 +4249,27 @@ def search_ally_customers(ally_id: int, query: str, limit: int = 10):
     return rows
 
 
+def get_ally_customer_by_phone(ally_id: int, phone: str):
+    """
+    Busca un cliente ACTIVO por telefono exacto (normalizado) dentro del aliado.
+    """
+    phone_norm = normalize_phone(phone or "")
+    if not phone_norm:
+        return None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+        FROM ally_customers
+        WHERE ally_id = ? AND status = 'ACTIVE' AND phone = ?
+        LIMIT 1
+    """, (ally_id, phone_norm))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
 # ============================================================
 # DIRECCIONES DE CLIENTES RECURRENTES (ally_customer_addresses)
 # ============================================================
