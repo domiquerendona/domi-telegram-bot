@@ -860,6 +860,7 @@ PAGO_BANCO = 961
 PAGO_TITULAR = 962
 PAGO_INSTRUCCIONES = 963
 PAGO_MENU = 964
+ALERTAS_OFERTA_INPUT = 965
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -7051,6 +7052,134 @@ def tarifas_set_valor(update, context):
     return ConversationHandler.END
 
 
+def _offer_alerts_status_text():
+    reminders_enabled = str(get_setting("offer_reminders_enabled", "1") or "1").strip()
+    reminder_seconds = str(get_setting("offer_reminder_seconds", "8,16") or "8,16").strip()
+    voice_enabled = str(get_setting("offer_voice_enabled", "0") or "0").strip()
+    voice_file_id = (get_setting("offer_voice_file_id", "") or "").strip()
+    voice_state = "ACTIVA" if (voice_enabled == "1" and voice_file_id) else "INACTIVA"
+
+    return (
+        "CONFIG ALERTAS OFERTA\n\n"
+        "Estado actual:\n"
+        "- Recordatorios: {}\n"
+        "- Segundos: {}\n"
+        "- Voz: {}\n"
+        "- Voice file_id: {}\n\n"
+        "Comandos:\n"
+        "- ver\n"
+        "- recordatorios 1  (o 0)\n"
+        "- segundos 8,16\n"
+        "- voz 1  (o 0)\n"
+        "- limpiar_voz\n\n"
+        "Tambien puedes enviar una nota de voz o audio aqui.\n"
+        "El bot guardara el file_id y activara voz automaticamente.\n\n"
+        "Escribe /cancel para salir."
+    ).format(
+        "ACTIVOS" if reminders_enabled == "1" else "INACTIVOS",
+        reminder_seconds or "8,16",
+        voice_state,
+        voice_file_id if voice_file_id else "(vacio)",
+    )
+
+
+def config_alertas_oferta_start(update, context):
+    user = update.effective_user
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+    update.message.reply_text(_offer_alerts_status_text())
+    return ALERTAS_OFERTA_INPUT
+
+
+def config_alertas_oferta_input(update, context):
+    user = update.effective_user
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado.")
+        return ConversationHandler.END
+
+    msg = update.message
+    if not msg:
+        return ALERTAS_OFERTA_INPUT
+
+    if msg.voice or msg.audio:
+        file_id = msg.voice.file_id if msg.voice else msg.audio.file_id
+        set_setting("offer_voice_file_id", file_id)
+        set_setting("offer_voice_enabled", "1")
+        update.message.reply_text(
+            "Voice file_id guardado y voz activada.\n\n" + _offer_alerts_status_text()
+        )
+        return ALERTAS_OFERTA_INPUT
+
+    text = (msg.text or "").strip()
+    text_lower = text.lower()
+
+    if text_lower in ("ver", "estado"):
+        update.message.reply_text(_offer_alerts_status_text())
+        return ALERTAS_OFERTA_INPUT
+
+    if text_lower.startswith("recordatorios "):
+        value = text_lower.replace("recordatorios ", "").strip()
+        if value not in ("0", "1", "on", "off"):
+            update.message.reply_text("Valor invalido. Usa: recordatorios 1 o recordatorios 0")
+            return ALERTAS_OFERTA_INPUT
+        normalized = "1" if value in ("1", "on") else "0"
+        set_setting("offer_reminders_enabled", normalized)
+        update.message.reply_text("Recordatorios actualizados.\n\n" + _offer_alerts_status_text())
+        return ALERTAS_OFERTA_INPUT
+
+    if text_lower.startswith("segundos "):
+        raw = text_lower.replace("segundos ", "").strip()
+        chunks = [c.strip() for c in raw.split(",") if c.strip()]
+        seconds = []
+        for c in chunks:
+            if not c.isdigit():
+                update.message.reply_text("Formato invalido. Ejemplo: segundos 8,16")
+                return ALERTAS_OFERTA_INPUT
+            n = int(c)
+            if n <= 0 or n >= 30:
+                update.message.reply_text("Cada segundo debe estar entre 1 y 29.")
+                return ALERTAS_OFERTA_INPUT
+            if n not in seconds:
+                seconds.append(n)
+        if not seconds:
+            update.message.reply_text("Debes enviar al menos un segundo. Ejemplo: segundos 8,16")
+            return ALERTAS_OFERTA_INPUT
+        set_setting("offer_reminder_seconds", ",".join(str(n) for n in seconds))
+        update.message.reply_text("Segundos actualizados.\n\n" + _offer_alerts_status_text())
+        return ALERTAS_OFERTA_INPUT
+
+    if text_lower.startswith("voz "):
+        value = text_lower.replace("voz ", "").strip()
+        if value not in ("0", "1", "on", "off"):
+            update.message.reply_text("Valor invalido. Usa: voz 1 o voz 0")
+            return ALERTAS_OFERTA_INPUT
+        normalized = "1" if value in ("1", "on") else "0"
+        if normalized == "1":
+            file_id = (get_setting("offer_voice_file_id", "") or "").strip()
+            if not file_id:
+                update.message.reply_text(
+                    "No hay voice_file_id guardado.\n"
+                    "Envia una nota de voz o audio primero."
+                )
+                return ALERTAS_OFERTA_INPUT
+        set_setting("offer_voice_enabled", normalized)
+        update.message.reply_text("Voz actualizada.\n\n" + _offer_alerts_status_text())
+        return ALERTAS_OFERTA_INPUT
+
+    if text_lower == "limpiar_voz":
+        set_setting("offer_voice_file_id", "")
+        set_setting("offer_voice_enabled", "0")
+        update.message.reply_text("Voice file_id limpiado y voz desactivada.\n\n" + _offer_alerts_status_text())
+        return ALERTAS_OFERTA_INPUT
+
+    update.message.reply_text(
+        "Comando no reconocido.\n"
+        "Usa: ver, recordatorios 1/0, segundos 8,16, voz 1/0, limpiar_voz"
+    )
+    return ALERTAS_OFERTA_INPUT
+
+
 # Conversacion para /tarifas
 tarifas_conv = ConversationHandler(
     entry_points=[CommandHandler("tarifas", tarifas_start)],
@@ -7061,6 +7190,21 @@ tarifas_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
+)
+
+
+config_alertas_oferta_conv = ConversationHandler(
+    entry_points=[CommandHandler("config_alertas_oferta", config_alertas_oferta_start)],
+    states={
+        ALERTAS_OFERTA_INPUT: [
+            MessageHandler((Filters.text | Filters.voice | Filters.audio) & ~Filters.command, config_alertas_oferta_input),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uÃº])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
 )
 
 
@@ -9514,6 +9658,7 @@ def main():
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
+    dp.add_handler(config_alertas_oferta_conv)  # /config_alertas_oferta (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
 
     # ConversationHandler para /recargar
