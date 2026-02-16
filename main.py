@@ -987,8 +987,12 @@ def start(update, context):
     if courier:
         comandos.append("")
         comandos.append("🚴 Repartidor:")
-        comandos.append("• Toca [Mi repartidor] en el menu para ver todas las opciones:")
-        comandos.append("  Activar/Pausar, Mis pedidos, Recargar, Mi saldo")
+        if courier["status"] == "APPROVED":
+            comandos.append("• Toca [Mi repartidor] en el menu para ver todas las opciones:")
+            comandos.append("  Activar/Pausar, Mis pedidos, Recargar, Mi saldo")
+        else:
+            comandos.append("• Tu perfil de repartidor no está APPROVED todavía.")
+            comandos.append("  Cuando esté APPROVED verás la sección [Mi repartidor] en el menu.")
     else:
         comandos.append("")
         comandos.append("Repartidor:")
@@ -1174,6 +1178,76 @@ def mi_repartidor(update, context):
     update.message.reply_text(msg, reply_markup=reply_markup)
 
 
+def courier_orders_history(update, context):
+    """Muestra pedidos del repartidor (activos e historial reciente)."""
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    orders = get_orders_by_courier(courier["id"], limit=20)
+    if not orders:
+        update.message.reply_text("No tienes pedidos registrados.")
+        return
+
+    status_labels = {
+        "PENDING": "Pendiente",
+        "PUBLISHED": "Buscando repartidor",
+        "ACCEPTED": "Asignado",
+        "PICKED_UP": "En camino",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+
+    active_orders = [o for o in orders if _row_value(o, "status") not in ("DELIVERED", "CANCELLED")]
+    history_orders = [o for o in orders if _row_value(o, "status") in ("DELIVERED", "CANCELLED")]
+
+    if active_orders:
+        update.message.reply_text("Tus pedidos activos:")
+        for order in active_orders:
+            status = status_labels.get(_row_value(order, "status"), _row_value(order, "status", "-"))
+            msg = (
+                "Pedido #{}\n"
+                "Estado: {}\n"
+                "Cliente: {}\n"
+                "Dirección: {}"
+            ).format(
+                _row_value(order, "id", "-"),
+                status,
+                _row_value(order, "customer_name", "N/A") or "N/A",
+                _row_value(order, "customer_address", "N/A") or "N/A",
+            )
+            update.message.reply_text(msg)
+    else:
+        update.message.reply_text("No tienes pedidos activos.")
+
+    if history_orders:
+        update.message.reply_text("Tu historial reciente:")
+        for order in history_orders[:10]:
+            status = status_labels.get(_row_value(order, "status"), _row_value(order, "status", "-"))
+            event_at = "-"
+            if _row_value(order, "status") == "DELIVERED":
+                event_at = _row_value(order, "delivered_at", "-") or "-"
+            elif _row_value(order, "status") == "CANCELLED":
+                event_at = _row_value(order, "canceled_at", "-") or "-"
+
+            msg = (
+                "Pedido #{}\n"
+                "Estado: {}\n"
+                "Fecha: {}\n"
+                "Cliente: {}\n"
+                "Dirección: {}"
+            ).format(
+                _row_value(order, "id", "-"),
+                status,
+                event_at,
+                _row_value(order, "customer_name", "N/A") or "N/A",
+                _row_value(order, "customer_address", "N/A") or "N/A",
+            )
+            update.message.reply_text(msg)
+
+
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
     if getattr(update, "callback_query", None) and update.callback_query.message:
@@ -1286,7 +1360,7 @@ def menu_button_handler(update, context):
     elif text == "Pausar repartidor":
         return courier_deactivate_from_message(update, context)
     elif text == "Mis pedidos repartidor":
-        return ally_active_orders(update, context)
+        return courier_orders_history(update, context)
     elif text == "Mi saldo repartidor":
         return cmd_saldo(update, context)
 
