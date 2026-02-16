@@ -1698,16 +1698,20 @@ def ally_confirm(update, context):
 
     except ValueError as e:
         print(f"[ERROR] Error de validación al crear aliado: {e}")
-        err = str(e)
-        if "cédula ya está registrada con otro teléfono" in err or "cedula ya está registrada con otro teléfono" in err:
-            update.message.reply_text(
-                "No se pudo completar el registro: ese número de cédula ya está registrado con otro teléfono."
-            )
+        err = str(e).lower()
+        if "cedula ya" in err and "otro telefono" in err:
+            msg = "No se pudo completar el registro: ese numero de cedula ya esta registrado con otro telefono."
+        elif "telefono ya" in err and "otra cedula" in err:
+            msg = "No se pudo completar el registro: ese telefono ya esta registrado con otra cedula."
+        elif "ya existe un registro de aliado" in err:
+            msg = "Ya existe un registro de aliado para esta cuenta o identidad."
+        elif "telefono es obligatorio" in err:
+            msg = "No se pudo completar el registro: el telefono es obligatorio."
         else:
-            update.message.reply_text("No se pudo completar el registro con los datos enviados. Verifica e intenta de nuevo.")
+            msg = "No se pudo completar el registro con los datos enviados. Verifica e intenta de nuevo."
+        update.message.reply_text(msg)
         context.user_data.clear()
         return ConversationHandler.END
-
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
         update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
@@ -9941,3 +9945,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
