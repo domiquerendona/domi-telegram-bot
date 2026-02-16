@@ -184,7 +184,9 @@ CREATE TABLE IF NOT EXISTS orders (
     accepted_at TIMESTAMP,
     pickup_confirmed_at TIMESTAMP,
     delivered_at TIMESTAMP,
-    canceled_at TIMESTAMP
+    canceled_at TIMESTAMP,
+    ally_admin_id_snapshot BIGINT,
+    courier_admin_id_snapshot BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS courier_ratings (

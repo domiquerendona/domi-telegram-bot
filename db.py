@@ -724,6 +724,8 @@ def init_db():
             pickup_confirmed_at TEXT,
             delivered_at TEXT,
             canceled_at TEXT,
+            ally_admin_id_snapshot INTEGER,
+            courier_admin_id_snapshot INTEGER,
             FOREIGN KEY (ally_id) REFERENCES allies(id),
             FOREIGN KEY (courier_id) REFERENCES couriers(id),
             FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
@@ -920,6 +922,10 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lng REAL")
     if 'quote_source' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
+    if 'ally_admin_id_snapshot' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN ally_admin_id_snapshot INTEGER")
+    if 'courier_admin_id_snapshot' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_admin_id_snapshot INTEGER")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -3083,6 +3089,7 @@ def create_order(
     dropoff_lat: float = None,
     dropoff_lng: float = None,
     quote_source: str = None,
+    ally_admin_id_snapshot: int = None,
 ):
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
@@ -3114,8 +3121,10 @@ def create_order(
             pickup_lng,
             dropoff_lat,
             dropoff_lng,
-            quote_source
-        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            quote_source,
+            ally_admin_id_snapshot,
+            courier_admin_id_snapshot
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -3141,6 +3150,8 @@ def create_order(
         dropoff_lat,
         dropoff_lng,
         quote_source,
+        ally_admin_id_snapshot,
+        None,
     ))
     conn.commit()
     order_id = cur.lastrowid
@@ -3167,15 +3178,16 @@ def set_order_status(order_id: int, status: str, timestamp_field: str = None):
     conn.close()
 
 
-def assign_order_to_courier(order_id: int, courier_id: int):
+def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_snapshot: int = None):
     """Asigna un pedido a un repartidor y marca accepted_at."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now'),
+            courier_admin_id_snapshot = ?
         WHERE id = ?;
-    """, (courier_id, order_id))
+    """, (courier_id, courier_admin_id_snapshot, order_id))
     conn.commit()
     conn.close()
 

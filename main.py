@@ -3650,6 +3650,7 @@ def pedido_confirmacion_callback(update, context):
                 dropoff_lat=dropoff_lat,
                 dropoff_lng=dropoff_lng,
                 quote_source=quote_source,
+                ally_admin_id_snapshot=admin_id_for_publish,
             )
             context.user_data["order_id"] = order_id
 

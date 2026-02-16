@@ -630,9 +630,11 @@ def _handle_accept(update, context, order_id):
     # Marcar oferta como aceptada
     mark_offer_response(current["queue_id"], "ACCEPTED")
 
-    # Asignar courier al pedido
+    # Asignar courier al pedido y guardar snapshot de admin del courier
     courier_id = courier["id"]
-    assign_order_to_courier(order_id, courier_id)
+    courier_admin_link = get_approved_admin_link_for_courier(courier_id)
+    courier_admin_id_snapshot = courier_admin_link["admin_id"] if courier_admin_link else None
+    assign_order_to_courier(order_id, courier_id, courier_admin_id_snapshot)
     courier_name = courier["full_name"] or "Repartidor"
 
     pickup_lat, pickup_lng = _get_pickup_coords(order)
