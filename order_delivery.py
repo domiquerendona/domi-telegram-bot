@@ -22,6 +22,7 @@ from db import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_admin_team,
+    get_setting,
     get_user_by_telegram_id,
     get_user_by_id,
     mark_offer_as_offered,
@@ -37,6 +38,99 @@ from db import (
 
 OFFER_TIMEOUT_SECONDS = 30
 MAX_CYCLE_SECONDS = 420  # 7 minutos
+
+
+def _offer_reply_markup(order_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Aceptar", callback_data="order_accept_{}".format(order_id)),
+            InlineKeyboardButton("Rechazar", callback_data="order_reject_{}".format(order_id)),
+        ],
+        [InlineKeyboardButton("Estoy ocupado", callback_data="order_busy_{}".format(order_id))],
+    ])
+
+
+def _get_offer_alert_config():
+    reminders_enabled = str(get_setting("offer_reminders_enabled", "1") or "1").strip() == "1"
+    reminder_seconds_raw = str(get_setting("offer_reminder_seconds", "8,16") or "8,16")
+    voice_enabled = str(get_setting("offer_voice_enabled", "0") or "0").strip() == "1"
+    voice_file_id = (get_setting("offer_voice_file_id", "") or "").strip()
+
+    reminder_seconds = []
+    for chunk in reminder_seconds_raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            sec = int(chunk)
+            if 0 < sec < OFFER_TIMEOUT_SECONDS:
+                reminder_seconds.append(sec)
+        except Exception:
+            continue
+    if not reminder_seconds:
+        reminder_seconds = [8, 16]
+
+    return {
+        "reminders_enabled": reminders_enabled,
+        "reminder_seconds": reminder_seconds,
+        "voice_enabled": voice_enabled and bool(voice_file_id),
+        "voice_file_id": voice_file_id,
+    }
+
+
+def _cancel_offer_jobs(context, order_id, queue_id):
+    timeout_jobs = context.job_queue.get_jobs_by_name(
+        "offer_timeout_{}_{}".format(order_id, queue_id)
+    )
+    for job in timeout_jobs:
+        job.schedule_removal()
+
+    reminder_prefix = "offer_reminder_{}_{}_".format(order_id, queue_id)
+    for idx in range(1, 6):
+        jobs = context.job_queue.get_jobs_by_name(reminder_prefix + str(idx))
+        for job in jobs:
+            job.schedule_removal()
+
+
+def _offer_reminder_job(context):
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    queue_id = data.get("queue_id")
+    chat_id = data.get("telegram_id")
+    reminder_idx = data.get("reminder_idx", 1)
+
+    if not order_id or not queue_id or not chat_id:
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    current = get_current_offer_for_order(order_id)
+    if not current or current["queue_id"] != queue_id:
+        return
+
+    config = _get_offer_alert_config()
+
+    if config["voice_enabled"]:
+        try:
+            context.bot.send_voice(
+                chat_id=chat_id,
+                voice=config["voice_file_id"],
+            )
+        except Exception:
+            pass
+
+    try:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Servicio disponible #{}. Responde ahora para no perderlo.".format(order_id),
+            reply_markup=_offer_reply_markup(order_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo enviar recordatorio de oferta {} (intento {}): {}".format(
+            order_id, reminder_idx, e
+        ))
 
 
 def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None):
@@ -114,13 +208,8 @@ def _send_next_offer(order_id, context):
 
     mark_offer_as_offered(next_offer["queue_id"])
 
-    offer_text = _build_offer_text(order)
-    reply_markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Aceptar", callback_data="order_accept_{}".format(order_id)),
-            InlineKeyboardButton("Rechazar", callback_data="order_reject_{}".format(order_id)),
-        ]
-    ])
+    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(order)
+    reply_markup = _offer_reply_markup(order_id)
 
     try:
         msg = context.bot.send_message(
@@ -147,6 +236,23 @@ def _send_next_offer(order_id, context):
         name="offer_timeout_{}_{}".format(order_id, next_offer["queue_id"]),
     )
 
+    config = _get_offer_alert_config()
+    if config["reminders_enabled"]:
+        reminder_idx = 1
+        for sec in config["reminder_seconds"]:
+            context.job_queue.run_once(
+                _offer_reminder_job,
+                sec,
+                context={
+                    "order_id": order_id,
+                    "queue_id": next_offer["queue_id"],
+                    "telegram_id": next_offer["telegram_id"],
+                    "reminder_idx": reminder_idx,
+                },
+                name="offer_reminder_{}_{}_{}".format(order_id, next_offer["queue_id"], reminder_idx),
+            )
+            reminder_idx += 1
+
 
 def _offer_timeout_job(context):
     """Job ejecutado cuando expira el timeout de 30s para un courier."""
@@ -162,6 +268,7 @@ def _offer_timeout_job(context):
     if not current or current["queue_id"] != queue_id:
         return
 
+    _cancel_offer_jobs(context, order_id, queue_id)
     mark_offer_response(queue_id, "EXPIRED")
 
     # Editar mensaje del courier para indicar que expiró
@@ -664,7 +771,7 @@ def order_courier_callback(update, context):
     """
     Maneja botones de ofertas y ciclo de vida de pedidos.
     Patterns:
-    - ^order_(accept|reject|pickup|delivered|release|cancel)_\\d+$
+    - ^order_(accept|reject|busy|pickup|delivered|release|cancel)_\\d+$
     - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
@@ -684,6 +791,9 @@ def order_courier_callback(update, context):
     if data.startswith("order_reject_"):
         order_id = int(data.replace("order_reject_", ""))
         return _handle_reject(update, context, order_id)
+    if data.startswith("order_busy_"):
+        order_id = int(data.replace("order_busy_", ""))
+        return _handle_busy(update, context, order_id)
     if data.startswith("order_pickup_"):
         order_id = int(data.replace("order_pickup_", ""))
         return _handle_pickup(update, context, order_id)
@@ -723,11 +833,7 @@ def _handle_accept(update, context, order_id):
         return
 
     # Cancelar el job de timeout
-    jobs = context.job_queue.get_jobs_by_name(
-        "offer_timeout_{}_{}".format(order_id, current["queue_id"])
-    )
-    for job in jobs:
-        job.schedule_removal()
+    _cancel_offer_jobs(context, order_id, current["queue_id"])
 
     # Marcar oferta como aceptada
     mark_offer_response(current["queue_id"], "ACCEPTED")
@@ -796,16 +902,38 @@ def _handle_reject(update, context, order_id):
         return
 
     # Cancelar el job de timeout
-    jobs = context.job_queue.get_jobs_by_name(
-        "offer_timeout_{}_{}".format(order_id, current["queue_id"])
-    )
-    for job in jobs:
-        job.schedule_removal()
+    _cancel_offer_jobs(context, order_id, current["queue_id"])
 
     mark_offer_response(current["queue_id"], "REJECTED")
     query.edit_message_text("Oferta #{} rechazada.".format(order_id))
 
     # Enviar al siguiente courier
+    _send_next_offer(order_id, context)
+
+
+def _handle_busy(update, context, order_id):
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        query.edit_message_text("Esta oferta ya no esta disponible.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        query.edit_message_text("Oferta #{} marcada como ocupado.".format(order_id))
+        return
+
+    current = get_current_offer_for_order(order_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    _cancel_offer_jobs(context, order_id, current["queue_id"])
+
+    # Se registra como REJECTED para mantener el flujo actual de cola y reinicio.
+    mark_offer_response(current["queue_id"], "REJECTED")
+    query.edit_message_text("Oferta #{} marcada como ocupado. Se asignara a otro repartidor.".format(order_id))
     _send_next_offer(order_id, context)
 
 
