@@ -8030,15 +8030,18 @@ def recargar_monto(update, context):
         update.message.reply_text(info_text)
         return RECARGAR_COMPROBANTE
 
-    # Courier/Ally: mostrar opciones de admin
+    # Courier/Ally: mostrar opciones de admin con vínculo APPROVED vigente
     if target_type == "COURIER":
         link = get_approved_admin_link_for_courier(target_id)
+        approved_links = get_all_approved_links_for_courier(target_id)
     else:
         link = get_approved_admin_link_for_ally(target_id)
+        approved_links = get_all_approved_links_for_ally(target_id)
+    approved_admin_ids = {row["admin_id"] for row in approved_links} if approved_links else set()
 
     buttons = []
 
-    if link:
+    if link and link["admin_id"] in approved_admin_ids:
         admin_id = link["admin_id"]
         team_name = link["team_name"] or "Mi admin"
         buttons.append([InlineKeyboardButton(
@@ -8051,7 +8054,7 @@ def recargar_monto(update, context):
     if platform:
         platform_id = platform["id"]
         platform_name = platform["team_name"] or platform["full_name"] or "Plataforma"
-        if not link or link["admin_id"] != platform_id:
+        if platform_id in approved_admin_ids and (not link or link["admin_id"] != platform_id):
             buttons.append([InlineKeyboardButton(
                 f"Plataforma: {platform_name}",
                 callback_data=f"recargar_admin_{platform_id}"
@@ -8095,18 +8098,19 @@ def recargar_admin_callback(update, context):
         query.edit_message_text("Error: datos incompletos. Usa /recargar nuevamente.")
         return ConversationHandler.END
 
-    platform_admin = get_platform_admin()
-    platform_admin_id = platform_admin["id"] if platform_admin else None
-
-    mi_admin_id = None
     if target_type == "COURIER":
-        link = get_approved_admin_link_for_courier(target_id)
-        mi_admin_id = link["admin_id"] if link else None
+        approved_links = get_all_approved_links_for_courier(target_id)
+        allowed_admin_ids = {row["admin_id"] for row in approved_links}
     elif target_type == "ALLY":
-        link = get_approved_admin_link_for_ally(target_id)
-        mi_admin_id = link["admin_id"] if link else None
+        approved_links = get_all_approved_links_for_ally(target_id)
+        allowed_admin_ids = {row["admin_id"] for row in approved_links}
+    elif target_type == "ADMIN":
+        platform_admin = get_platform_admin()
+        platform_admin_id = platform_admin["id"] if platform_admin else None
+        allowed_admin_ids = {platform_admin_id} if platform_admin_id else set()
+    else:
+        allowed_admin_ids = set()
 
-    allowed_admin_ids = {aid for aid in [platform_admin_id, mi_admin_id] if aid}
     if admin_id not in allowed_admin_ids:
         query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
         return ConversationHandler.END

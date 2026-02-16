@@ -961,14 +961,11 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         # Admin local recargando con plataforma: no necesita vínculo,
         # se acredita directamente el saldo master del admin
         pass
-    elif target_type == "COURIER":
-        link = get_approved_admin_link_for_courier(target_id)
-        if not link or link["admin_id"] != admin_id:
-            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-    elif target_type == "ALLY":
-        link = get_approved_admin_link_for_ally(target_id)
-        if not link or link["admin_id"] != admin_id:
-            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+    elif target_type in ("COURIER", "ALLY"):
+        # La validación real del vínculo se ejecuta en el UPDATE por
+        # (target_id, admin_id, status='APPROVED') dentro de la transacción.
+        # Así evitamos depender del "vínculo más reciente".
+        pass
     else:
         return False, f"Tipo de destino desconocido: {target_type}"
 
