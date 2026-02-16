@@ -165,6 +165,7 @@ from db import (
     get_all_approved_links_for_ally,
     get_admin_balance,
     get_platform_admin,
+    ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
     list_pending_recharges_for_admin,
     get_recharge_request,
@@ -3561,7 +3562,33 @@ def pedido_confirmacion_callback(update, context):
                 context.user_data.clear()
                 return ConversationHandler.END
         else:
-            if user_has_platform_admin(query.from_user.id):
+            latest_admin_link = get_admin_link_for_ally(ally_id)
+            latest_link_status = (latest_admin_link["link_status"] or "").upper() if latest_admin_link else ""
+
+            if latest_admin_link and latest_link_status in ("PENDING", "REJECTED", "INACTIVE"):
+                ok_cov, cov_msg, migrated_couriers = ensure_platform_temp_coverage_for_ally(ally_id)
+                if ok_cov:
+                    platform_admin = get_platform_admin()
+                    admin_id_for_publish = platform_admin["id"] if platform_admin else None
+                    print("[INFO] Cobertura temporal plataforma aplicada para ally_id={} couriers_migrados={}".format(
+                        ally_id, migrated_couriers
+                    ))
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "Tu administracion local aun no esta aprobada. "
+                            "Activamos cobertura temporal con Plataforma para que puedas operar.\n"
+                            "Te recomendamos solicitar migracion a un admin APPROVED desde 'Solicitar cambio'."
+                        ),
+                    )
+                else:
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text="No se pudo activar cobertura temporal: {}".format(cov_msg),
+                    )
+                    context.user_data.clear()
+                    return ConversationHandler.END
+            elif user_has_platform_admin(query.from_user.id):
                 platform_admin = get_platform_admin()
                 if platform_admin:
                     admin_id_for_publish = platform_admin["id"]

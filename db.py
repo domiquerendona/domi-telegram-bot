@@ -4002,6 +4002,52 @@ def get_approved_admin_link_for_ally(ally_id: int):
     return row
 
 
+def ensure_platform_temp_coverage_for_ally(ally_id: int):
+    """
+    Cobertura temporal:
+    - Asegura vínculo APPROVED del aliado con plataforma.
+    - Replica vínculo APPROVED en plataforma para couriers del admin actual del aliado.
+    Retorna: (ok: bool, message: str, migrated_couriers: int)
+    """
+    platform = get_platform_admin()
+    if not platform:
+        return False, "No existe admin plataforma activo.", 0
+
+    platform_admin_id = platform["id"] if isinstance(platform, dict) else platform[0]
+    current_link = get_admin_link_for_ally(ally_id)
+    if not current_link:
+        return False, "El aliado no tiene vinculo de administracion para cobertura temporal.", 0
+
+    source_admin_id = current_link["admin_id"] if "admin_id" in current_link.keys() else None
+    source_link_status = (current_link["link_status"] or "").upper() if "link_status" in current_link.keys() else ""
+
+    if source_link_status == "APPROVED":
+        return False, "El aliado ya tiene un vinculo APPROVED; no requiere cobertura temporal.", 0
+
+    upsert_admin_ally_link(platform_admin_id, ally_id, status="APPROVED")
+
+    migrated = 0
+    if source_admin_id and source_admin_id != platform_admin_id:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT courier_id
+            FROM admin_couriers
+            WHERE admin_id = ?
+              AND status IN ('APPROVED', 'PENDING')
+        """, (source_admin_id,))
+        rows = cur.fetchall()
+        conn.close()
+
+        for row in rows:
+            courier_id = row["courier_id"] if isinstance(row, dict) else row[0]
+            if courier_id:
+                upsert_admin_courier_link(platform_admin_id, courier_id, status="APPROVED", is_active=1)
+                migrated += 1
+
+    return True, "Cobertura temporal plataforma aplicada.", migrated
+
+
 def get_all_approved_links_for_courier(courier_id: int):
     """
     Devuelve TODOS los vínculos APPROVED de un courier con admins.

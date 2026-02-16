@@ -19,6 +19,11 @@ from db import (
     mark_profile_change_request_rejected,
     get_ally_by_id,
     get_connection,
+    get_admin_by_team_code,
+    upsert_admin_courier_link,
+    upsert_admin_ally_link,
+    deactivate_other_approved_admin_courier_links,
+    deactivate_other_approved_admin_ally_links,
 )
 
 
@@ -30,11 +35,16 @@ VERIFIED_FIELDS = {
     "business_name",
     "owner_name",
     "ally_default_location",
+    "admin_team_code",
 }
 
 ADMIN_FIELDS = ["phone", "city", "barrio", "residence_address", "residence_location"]
 COURIER_FIELDS = ["phone", "city", "barrio", "plate", "bike_type", "residence_address", "residence_location"]
 ALLY_FIELDS = ["phone", "city", "barrio", "address", "business_name", "owner_name", "ally_default_location"]
+
+# Migración de administración disponible para roles operativos
+COURIER_FIELDS.append("admin_team_code")
+ALLY_FIELDS.append("admin_team_code")
 
 FIELD_LABELS = {
     "phone": "Telefono",
@@ -48,6 +58,7 @@ FIELD_LABELS = {
     "business_name": "Nombre del negocio",
     "owner_name": "Nombre del propietario",
     "ally_default_location": "Ubicacion del negocio (GPS)",
+    "admin_team_code": "Migracion de administracion",
 }
 
 (
@@ -102,7 +113,13 @@ def _clear_pc_context(context):
             del context.user_data[k]
 
 
-def _resolve_team_for_request(target_role, role_obj, target_role_id):
+def _resolve_team_for_request(target_role, role_obj, target_role_id, field_name=None):
+    if field_name == "admin_team_code":
+        platform = get_platform_admin()
+        if platform:
+            return platform["id"], "PLATFORM"
+        return None, "PLATFORM"
+
     if target_role == "admin":
         team_admin_id = role_obj["id"]
         team_code = role_obj["team_code"]
@@ -120,6 +137,17 @@ def _resolve_team_for_request(target_role, role_obj, target_role_id):
 
 
 def _get_old_value(target_role, field_name, role_obj, target_role_id):
+    if field_name == "admin_team_code":
+        if target_role == "courier":
+            link = get_admin_link_for_courier(target_role_id)
+        elif target_role == "ally":
+            link = get_admin_link_for_ally(target_role_id)
+        else:
+            link = None
+        if link and "team_code" in link.keys() and link["team_code"]:
+            return link["team_code"]
+        return "SIN_ADMIN"
+
     if field_name == "residence_location":
         lat = role_obj["residence_lat"] if "residence_lat" in role_obj.keys() else None
         lng = role_obj["residence_lng"] if "residence_lng" in role_obj.keys() else None
@@ -243,6 +271,12 @@ def pc_select_field(update, context):
     if field_name in ("residence_location", "ally_default_location"):
         query.edit_message_text("Envia tu ubicacion GPS (pin de Telegram) o pega un link de Google Maps.")
         return PC_NEW_VALUE
+    if field_name == "admin_team_code":
+        query.edit_message_text(
+            "Escribe el codigo del equipo destino (ej: TEAM3 o PLATFORM).\n"
+            "Solo se permite migrar a administradores con estado APPROVED."
+        )
+        return PC_NEW_VALUE
 
     query.edit_message_text(
         "Escribe el nuevo valor para {}.\n\nValor actual: {}".format(
@@ -279,6 +313,23 @@ def pc_new_value(update, context):
         context.user_data["pc_new_lng"] = lng
         new_value_display = "{}, {}".format(lat, lng)
         context.user_data["pc_new_value"] = (update.message.text or "").strip()
+    elif field_name == "admin_team_code":
+        team_code = (update.message.text or "").strip().upper()
+        if not team_code:
+            update.message.reply_text("Debes escribir un codigo de equipo valido.")
+            return PC_NEW_VALUE
+        admin_row = get_admin_by_team_code(team_code)
+        if not admin_row:
+            update.message.reply_text("No existe un administrador con ese codigo de equipo.")
+            return PC_NEW_VALUE
+        admin_status = admin_row["status"] if "status" in admin_row.keys() else admin_row[3]
+        if admin_status != "APPROVED":
+            update.message.reply_text(
+                "Ese administrador no esta APPROVED. Debes elegir un equipo APPROVED."
+            )
+            return PC_NEW_VALUE
+        context.user_data["pc_new_value"] = team_code
+        new_value_display = team_code
     else:
         text = update.message.text.strip()
         context.user_data["pc_new_value"] = text
@@ -344,6 +395,8 @@ def apply_profile_change_request(request_row):
                 "UPDATE couriers SET residence_lat = ?, residence_lng = ? WHERE id = ?",
                 (new_lat, new_lng, target_role_id)
             )
+        elif field_name == "admin_team_code":
+            pass
     else:
         if field_name == "phone":
             cur.execute("UPDATE allies SET phone = ? WHERE id = ?", (new_value, target_role_id))
@@ -371,9 +424,28 @@ def apply_profile_change_request(request_row):
                     INSERT INTO ally_locations (ally_id, label, address, city, barrio, is_default, lat, lng, created_at)
                     VALUES (?, 'Principal', ?, ?, ?, 1, ?, ?, datetime('now'))
                 """, (target_role_id, new_value, city, barrio, new_lat, new_lng))
+        elif field_name == "admin_team_code":
+            pass
 
     conn.commit()
     conn.close()
+
+    if field_name == "admin_team_code":
+        team_code = (new_value or "").strip().upper()
+        admin_row = get_admin_by_team_code(team_code)
+        if not admin_row:
+            raise ValueError("Admin destino no encontrado para team_code={}".format(team_code))
+        admin_id = admin_row["id"] if "id" in admin_row.keys() else admin_row[0]
+        admin_status = admin_row["status"] if "status" in admin_row.keys() else admin_row[3]
+        if admin_status != "APPROVED":
+            raise ValueError("Admin destino no esta APPROVED.")
+
+        if target_role == "courier":
+            upsert_admin_courier_link(admin_id, target_role_id, status="APPROVED", is_active=1)
+            deactivate_other_approved_admin_courier_links(target_role_id, admin_id)
+        elif target_role == "ally":
+            upsert_admin_ally_link(admin_id, target_role_id, status="APPROVED")
+            deactivate_other_approved_admin_ally_links(target_role_id, admin_id)
 
 
 def pc_confirm(update, context):
@@ -405,7 +477,7 @@ def pc_confirm(update, context):
         role_obj = context.user_data.get("pc_ally")
         role_id = role_obj["id"]
 
-    team_admin_id, team_code = _resolve_team_for_request(role, role_obj, role_id)
+    team_admin_id, team_code = _resolve_team_for_request(role, role_obj, role_id, field_name=field_name)
     req_id = create_profile_change_request(
         requester_user_id=user_db_id,
         target_role=role,
