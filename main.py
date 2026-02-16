@@ -3011,16 +3011,13 @@ def pedido_nombre_cliente(update, context):
 
 def pedido_telefono_cliente(update, context):
     context.user_data["customer_phone"] = update.message.text.strip()
-    # Preguntar por ubicación (opcional)
-    keyboard = [[InlineKeyboardButton("Omitir ubicacion", callback_data="pedido_ubicacion_skip")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
-        "UBICACION (opcional)\n\n"
+        "UBICACION (obligatoria)\n\n"
         "Envia la ubicacion (PIN de Telegram), "
         "pega el enlace (Google Maps/WhatsApp) "
         "o escribe coordenadas (lat,lng).\n\n"
-        "Si no tienes, toca Omitir.",
-        reply_markup=reply_markup
+        "No se puede continuar sin una ubicacion valida."
     )
     return PEDIDO_UBICACION
 
@@ -3086,12 +3083,10 @@ def pedido_ubicacion_handler(update, context):
             )
             return PEDIDO_DIRECCION
 
-    # 5) No se pudo resolver
-    # Detectar si es un link de maps.app.goo.gl para mensaje UX especial
+    # 5) No se pudo resolver: la ubicacion es obligatoria
     es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
 
     if es_link_corto_google:
-        # UX especial para links de Google Maps sin coordenadas
         keyboard = [[InlineKeyboardButton(
             "📋 Copiar mensaje para enviar al cliente",
             callback_data="ubicacion_copiar_msg_cliente"
@@ -3099,22 +3094,19 @@ def pedido_ubicacion_handler(update, context):
         reply_markup = InlineKeyboardMarkup(keyboard)
         update.message.reply_text(
             "⚠️ Ese enlace no incluye coordenadas exactas.\n\n"
-            "👉 Para registrar la dirección rápido, pídele al cliente una de estas opciones (toma 5 segundos):\n"
+            "👉 Pídele al cliente una de estas opciones:\n"
             "• En WhatsApp: 📎 → Ubicación → Enviar ubicación actual\n"
             "• En Google Maps: tocar el punto azul → Compartir → copiar el link largo\n\n"
-            "Mientras tanto, escribe los detalles de la dirección:\n"
-            "barrio, conjunto, torre, apto, referencias.",
+            "Cuando la tengas, envíala en este chat para continuar.",
             reply_markup=reply_markup
         )
     else:
-        # Mensaje genérico para otros casos
         update.message.reply_text(
             "No pude extraer coordenadas de ese texto.\n\n"
-            "Escribe los detalles de la dirección:\n"
-            "barrio, conjunto, torre, apto, referencias.\n\n"
-            "(Tip: pega coordenadas lat,lng o pide ubicación por WhatsApp)"
+            "Envia una ubicacion valida para continuar.\n"
+            "Tip: comparte PIN de Telegram, link de Maps con coordenadas o lat,lng."
         )
-    return PEDIDO_DIRECCION
+    return PEDIDO_UBICACION
 
 
 def pedido_ubicacion_location_handler(update, context):
@@ -3130,18 +3122,6 @@ def pedido_ubicacion_location_handler(update, context):
         "Ubicacion guardada.\n\n"
         "Ahora escribe los detalles de la direccion:\n"
         "barrio, conjunto, torre, apto, referencias."
-    )
-    return PEDIDO_DIRECCION
-
-
-def pedido_ubicacion_skip_callback(update, context):
-    """Omite la ubicación y pide solo dirección de texto."""
-    query = update.callback_query
-    query.answer()
-    query.edit_message_text(
-        "Escribe los detalles de la direccion:\n"
-        "barrio, conjunto, torre, apto, referencias.\n\n"
-        "(La cotizacion sera menos precisa sin ubicacion exacta)"
     )
     return PEDIDO_DIRECCION
 
@@ -3278,7 +3258,7 @@ def pedido_pickup_callback(update, context):
             "Envia la ubicacion (PIN de Telegram), "
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
-            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+            "La ubicacion es obligatoria para continuar."
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
@@ -3371,7 +3351,7 @@ def pedido_pickup_lista_callback(update, context):
             "Envia la ubicacion (PIN de Telegram), "
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
-            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+            "La ubicacion es obligatoria para continuar."
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
@@ -3472,20 +3452,11 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
     fixing_default = bool(context.user_data.get("pickup_fix_default_loc_id"))
 
     if text.lower() == "omitir":
-        if fixing_default:
-            update.message.reply_text(
-                "No puedes omitir la ubicacion de la direccion principal.\n"
-                "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
-            )
-            return PEDIDO_PICKUP_NUEVA_UBICACION
-        context.user_data["new_pickup_lat"] = None
-        context.user_data["new_pickup_lng"] = None
         update.message.reply_text(
-            "Sin ubicacion exacta.\n\n"
-            "Ahora escribe los detalles de la direccion de recogida:\n"
-            "direccion, barrio, referencias..."
+            "No puedes omitir la ubicacion.\n"
+            "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
         )
-        return PEDIDO_PICKUP_NUEVA_DETALLES
+        return PEDIDO_PICKUP_NUEVA_UBICACION
 
     # Normalizar: tomar primer URL si hay varios tokens
     raw_link = text
@@ -3533,9 +3504,6 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
     # No se pudo extraer - detectar si es link corto de Google
-    context.user_data["new_pickup_lat"] = None
-    context.user_data["new_pickup_lng"] = None
-
     es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
 
     if es_link_corto_google:
@@ -3549,25 +3517,16 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
             "👉 Pidele al cliente una de estas opciones:\n"
             "• En WhatsApp: 📎 → Ubicacion → Enviar ubicacion actual\n"
             "• En Google Maps: tocar el punto azul → Compartir → copiar el link largo\n\n"
-            "Mientras tanto, escribe los detalles de la direccion de recogida:\n"
-            "direccion, barrio, referencias...",
+            "Cuando la tengas, enviala aqui para continuar.",
             reply_markup=reply_markup
         )
     else:
-        if fixing_default:
-            update.message.reply_text(
-                "No se pudo extraer ubicacion valida.\n"
-                "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
-            )
-            return PEDIDO_PICKUP_NUEVA_UBICACION
-
         update.message.reply_text(
-            "No se pudo extraer ubicacion del texto.\n\n"
-            "Escribe los detalles de la direccion de recogida:\n"
-            "direccion, barrio, referencias..."
+            "No se pudo extraer ubicacion valida.\n"
+            "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
         )
 
-    return PEDIDO_PICKUP_NUEVA_DETALLES
+    return PEDIDO_PICKUP_NUEVA_UBICACION
 
 
 def pedido_pickup_nueva_ubicacion_location_handler(update, context):
@@ -6634,7 +6593,7 @@ def agenda_pickups_callback(update, context):
             "Envia la ubicacion (PIN de Telegram), "
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
-            "Tambien puedes escribir 'omitir' para ingresar solo texto."
+            "La ubicacion es obligatoria para continuar."
         )
         return DIRECCIONES_PICKUP_NUEVA_UBICACION
 
@@ -6646,13 +6605,11 @@ def direcciones_pickup_nueva_ubicacion(update, context):
     text = update.message.text.strip()
 
     if text.lower() == "omitir":
-        context.user_data["new_pickup_lat"] = None
-        context.user_data["new_pickup_lng"] = None
         update.message.reply_text(
-            "OK, sin coordenadas.\n\n"
-            "Escribe la direccion de recogida (texto):"
+            "No puedes omitir la ubicacion.\n"
+            "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
         )
-        return DIRECCIONES_PICKUP_NUEVA_DETALLES
+        return DIRECCIONES_PICKUP_NUEVA_UBICACION
 
     # Intentar extraer coordenadas de link de Google Maps
     lat, lng = None, None
@@ -6689,15 +6646,13 @@ def direcciones_pickup_nueva_ubicacion(update, context):
             f"Coordenadas capturadas: {lat:.6f}, {lng:.6f}\n\n"
             "Escribe la direccion de recogida (texto):"
         )
+        return DIRECCIONES_PICKUP_NUEVA_DETALLES
     else:
-        context.user_data["new_pickup_lat"] = None
-        context.user_data["new_pickup_lng"] = None
         update.message.reply_text(
-            "No se detectaron coordenadas validas.\n\n"
-            "Escribe la direccion de recogida (texto):"
+            "No se detectaron coordenadas validas.\n"
+            "Envia un PIN, link de Google Maps o coordenadas (lat,lng)."
         )
-
-    return DIRECCIONES_PICKUP_NUEVA_DETALLES
+        return DIRECCIONES_PICKUP_NUEVA_UBICACION
 
 
 def direcciones_pickup_nueva_ubicacion_location_handler(update, context):
@@ -6999,7 +6954,6 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
         ],
         PEDIDO_UBICACION: [
-            CallbackQueryHandler(pedido_ubicacion_skip_callback, pattern=r"^pedido_ubicacion_skip$"),
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
