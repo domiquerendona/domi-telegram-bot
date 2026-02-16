@@ -4,9 +4,17 @@ import re
 import json
 import time
 
-# Detectar motor de base de datos
+# Entorno y motor de base de datos
+ENV = os.getenv("ENV", "PROD").upper()
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Validación obligatoria en producción: DATABASE_URL debe existir.
+if ENV == "PROD" and not DATABASE_URL:
+    print("[FATAL][DB] ENV=PROD requiere DATABASE_URL. Arranque cancelado.")
+    raise RuntimeError("ENV=PROD requiere DATABASE_URL; no se permite fallback a SQLite.")
+
 DB_ENGINE = "postgres" if DATABASE_URL else "sqlite"
+_DB_STARTUP_LOGGED = False
 
 # Importar Postgres solo si aplica
 if DB_ENGINE == "postgres":
@@ -15,6 +23,16 @@ if DB_ENGINE == "postgres":
 
 # Placeholder unificado: %s para Postgres, ? para SQLite
 P = "%s" if DB_ENGINE == "postgres" else "?"
+
+
+def _log_db_startup_once():
+    global _DB_STARTUP_LOGGED
+    if _DB_STARTUP_LOGGED or ENV != "PROD":
+        return
+    print(f"[DB] ambiente={ENV}")
+    print(f"[DB] motor={DB_ENGINE}")
+    print("[DB] conexion=ok")
+    _DB_STARTUP_LOGGED = True
 
 # ----------------- Normalización -----------------
 
@@ -185,7 +203,9 @@ def get_connection():
     - PostgreSQL si existe DATABASE_URL.
     """
     if DB_ENGINE == "postgres":
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        _log_db_startup_once()
+        return conn
 
     db_path = os.getenv("DB_PATH", "domiquerendona.db")
     conn = sqlite3.connect(db_path, timeout=30)
@@ -193,6 +213,7 @@ def get_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout = 30000")
+    _log_db_startup_once()
     return conn
 
 
@@ -1012,7 +1033,7 @@ def init_db():
         terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
         sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
         cur.execute(
-            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
+            f"INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES ({P}, {P}, {P}, {P}, {P})",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
         )
 
@@ -1179,8 +1200,8 @@ def _init_db_postgres():
     #    (si la tabla ya existía con schema viejo, agregar columnas faltantes)
     def _pg_add_col(table, column, col_type):
         cur.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = %s AND column_name = %s",
+            f"SELECT 1 FROM information_schema.columns "
+            f"WHERE table_name = {P} AND column_name = {P}",
             (table, column),
         )
         if not cur.fetchone():
@@ -1351,7 +1372,7 @@ def _init_db_postgres():
         terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
         sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
         cur.execute(
-            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (%s, %s, %s, %s, %s)",
+            f"INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES ({P}, {P}, {P}, {P}, {P})",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1),
         )
 
