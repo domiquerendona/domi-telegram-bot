@@ -133,6 +133,54 @@ def _offer_reminder_job(context):
         ))
 
 
+def _notify_recharge_needed_to_ally(context, ally_id):
+    try:
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            return
+        user = get_user_by_id(ally["user_id"])
+        if not user:
+            return
+        context.bot.send_message(
+            chat_id=user["telegram_id"],
+            text="No se puede ofrecer el servicio porque tu saldo es insuficiente. Recarga para continuar operando.",
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar saldo insuficiente al aliado {}: {}".format(ally_id, e))
+
+
+def _notify_recharge_needed_to_admin(context, admin_id):
+    try:
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        user = get_user_by_id(admin["user_id"])
+        if not user:
+            return
+        context.bot.send_message(
+            chat_id=user["telegram_id"],
+            text="No se puede ofrecer servicio porque tu saldo de administrador es insuficiente. Recarga para seguir operando.",
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar saldo insuficiente al admin {}: {}".format(admin_id, e))
+
+
+def _notify_recharge_needed_to_courier(context, courier_id):
+    try:
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            return
+        user = get_user_by_id(courier["user_id"])
+        if not user:
+            return
+        context.bot.send_message(
+            chat_id=user["telegram_id"],
+            text="No recibiste oferta porque tu saldo es insuficiente. Recarga para volver a operar.",
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar saldo insuficiente al courier {}: {}".format(courier_id, e))
+
+
 def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
@@ -152,6 +200,21 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
         admin_id = admin_link["admin_id"]
     order = get_order_by_id(order_id)
     if not order:
+        return 0
+
+    from services import check_service_fee_available
+
+    # Verificacion previa de saldo del aliado y del admin antes de ofertar.
+    ally_ok, ally_code = check_service_fee_available(
+        target_type="ALLY",
+        target_id=ally_id,
+        admin_id=admin_id,
+    )
+    if not ally_ok:
+        print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
+        _notify_recharge_needed_to_ally(context, ally_id)
+        if ally_code == "ADMIN_SIN_SALDO":
+            _notify_recharge_needed_to_admin(context, admin_id)
         return 0
 
     requires_cash = bool(order["requires_cash"])
@@ -179,7 +242,40 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
         print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
         return 0
 
-    courier_ids = [c["courier_id"] for c in eligible]
+    # Verificacion previa de saldo por courier y admin antes de ofertar.
+    filtered = []
+    admin_without_balance = False
+    couriers_without_balance = []
+    for c in eligible:
+        courier_id = c["courier_id"]
+        ok, code = check_service_fee_available(
+            target_type="COURIER",
+            target_id=courier_id,
+            admin_id=admin_id,
+        )
+        if ok:
+            filtered.append(c)
+        else:
+            if code == "ADMIN_SIN_SALDO":
+                admin_without_balance = True
+            else:
+                couriers_without_balance.append(courier_id)
+
+    if admin_without_balance:
+        print("[WARN] Pedido {} sin oferta por saldo admin insuficiente".format(order_id))
+        _notify_recharge_needed_to_admin(context, admin_id)
+        _notify_recharge_needed_to_ally(context, ally_id)
+        return 0
+
+    for courier_id in couriers_without_balance:
+        _notify_recharge_needed_to_courier(context, courier_id)
+
+    if not filtered:
+        print("[WARN] Pedido {} sin oferta: todos los couriers sin saldo operativo".format(order_id))
+        _notify_recharge_needed_to_ally(context, ally_id)
+        return 0
+
+    courier_ids = [c["courier_id"] for c in filtered]
     create_offer_queue(order_id, courier_ids)
     set_order_status(order_id, "PUBLISHED", "published_at")
 
