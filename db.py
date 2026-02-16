@@ -185,9 +185,9 @@ def get_connection():
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
     db_path = os.getenv("DB_PATH", "domiquerendona.db")
-    conn = sqlite3.connect(db_path, timeout=15)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 15000")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -203,6 +203,29 @@ def normalize_role_status(status: str) -> str:
     if normalized not in STANDARD_ROLE_STATUSES:
         raise ValueError(f"Estado inválido: {status}. Use uno de: {', '.join(sorted(STANDARD_ROLE_STATUSES))}.")
     return normalized
+
+
+def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str, new_status: str,
+                         reason: str = None, source: str = None, changed_by: str = None):
+    """
+    Registra cambios de estado en status_audit_log sin romper el flujo principal.
+    """
+    try:
+        cur.execute("""
+            INSERT INTO status_audit_log (
+                entity_type, entity_id, old_status, new_status, reason, source, changed_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+        """, (
+            entity_type,
+            entity_id,
+            old_status,
+            new_status,
+            reason,
+            source,
+            changed_by or "UNKNOWN",
+        ))
+    except Exception as e:
+        print("[WARN] No se pudo registrar status_audit_log:", e)
 
 
 def init_db():
@@ -1721,7 +1744,7 @@ def deactivate_courier(courier_id: int):
 
 def update_courier_live_location(courier_id: int, lat: float, lng: float):
     """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
-    retries = 3
+    retries = 5
     for attempt in range(retries):
         conn = get_connection()
         try:
@@ -1738,9 +1761,13 @@ def update_courier_live_location(courier_id: int, lat: float, lng: float):
             if "database is locked" in message and attempt < retries - 1:
                 time.sleep(0.15 * (attempt + 1))
                 continue
+            if "database is locked" in message:
+                print("[WARN] update_courier_live_location: database is locked tras reintentos")
+                return False
             raise
         finally:
             conn.close()
+    return False
 
 
 def set_courier_availability(courier_id: int, status: str):
@@ -1778,7 +1805,7 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
     Marca como INACTIVE a couriers con live_location vencida.
     Retorna la lista de courier_ids afectados.
     """
-    retries = 3
+    retries = 5
     for attempt in range(retries):
         conn = get_connection()
         try:
@@ -1809,9 +1836,13 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
             if "database is locked" in message and attempt < retries - 1:
                 time.sleep(0.15 * (attempt + 1))
                 continue
+            if "database is locked" in message:
+                print("[WARN] expire_stale_live_locations: database is locked tras reintentos")
+                return []
             raise
         finally:
             conn.close()
+    return []
 
 
 def get_active_courier_cash(courier_id: int) -> int:
