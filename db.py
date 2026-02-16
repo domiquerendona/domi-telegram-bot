@@ -13,6 +13,9 @@ if DB_ENGINE == "postgres":
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
+# Placeholder unificado: %s para Postgres, ? para SQLite
+P = "%s" if DB_ENGINE == "postgres" else "?"
+
 # ----------------- Normalización -----------------
 
 def normalize_phone(phone: str) -> str:
@@ -72,10 +75,10 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     cur = conn.cursor()
 
     # 1) Buscar si ya existe identidad con este teléfono
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, phone, document_number
         FROM identities
-        WHERE phone = ?
+        WHERE phone = {P}
         LIMIT 1
     """, (phone_n,))
     row = cur.fetchone()
@@ -86,9 +89,9 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
         # CASO A: Viene documento real y el actual es placeholder → UPGRADE
         if doc_n and existing_doc.startswith("SIN_DOC_"):
             # Verificar que el documento real no esté usado por otra identidad
-            cur.execute("""
+            cur.execute(f"""
                 SELECT id FROM identities
-                WHERE document_number = ? AND id != ?
+                WHERE document_number = {P} AND id != {P}
                 LIMIT 1
             """, (doc_n, identity_id))
             conflict = cur.fetchone()
@@ -98,10 +101,10 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
 
             # Actualizar placeholder a documento real
             try:
-                cur.execute("""
+                cur.execute(f"""
                     UPDATE identities
-                    SET document_number = ?
-                    WHERE id = ?
+                    SET document_number = {P}
+                    WHERE id = {P}
                 """, (doc_n, identity_id))
                 conn.commit()
                 conn.close()
@@ -123,9 +126,9 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     # 2) No existe identidad con este teléfono
     # Si viene documento real, verificar que no esté usado por otro teléfono
     if doc_n:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id FROM identities
-            WHERE document_number = ?
+            WHERE document_number = {P}
             LIMIT 1
         """, (doc_n,))
         conflict = cur.fetchone()
@@ -136,9 +139,9 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     # 3) Crear nueva identidad con documento real o placeholder
     final_doc = doc_n if doc_n else placeholder
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO identities (phone, document_number, full_name)
-            VALUES (?, ?, ?)
+            VALUES ({P}, {P}, {P})
         """, (phone_n, final_doc, (full_name or "").strip() if full_name else None))
         identity_id = cur.lastrowid
         conn.commit()
@@ -154,10 +157,10 @@ def ensure_user_person_id(user_id: int, person_id: int) -> None:
     """Amarra users.person_id si está vacío. No sobreescribe si ya existe."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT person_id FROM users WHERE id = ?", (user_id,))
+    cur.execute(f"SELECT person_id FROM users WHERE id = {P}", (user_id,))
     row = cur.fetchone()
     if row and (row[0] is None or row[0] == ""):
-        cur.execute("UPDATE users SET person_id = ? WHERE id = ?", (person_id, user_id))
+        cur.execute(f"UPDATE users SET person_id = {P} WHERE id = {P}", (person_id, user_id))
         conn.commit()
     conn.close()
 
@@ -167,9 +170,9 @@ def add_user_role(user_id: int, role: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT OR IGNORE INTO user_roles (user_id, role)
-            VALUES (?, ?)
+            VALUES ({P}, {P})
         """, (user_id, role))
         conn.commit()
     finally:
@@ -213,10 +216,10 @@ def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str,
     Registra cambios de estado en status_audit_log sin romper el flujo principal.
     """
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO status_audit_log (
                 entity_type, entity_id, old_status, new_status, reason, source, changed_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P});
         """, (
             entity_type,
             entity_id,
@@ -1367,7 +1370,6 @@ def force_platform_admin(platform_telegram_id: int):
     conn = get_connection()
     cur = conn.cursor()
     _pg = DB_ENGINE == "postgres"
-    P = "%s" if _pg else "?"
     NOW = "NOW()" if _pg else "datetime('now')"
 
     # 1) asegurar users
@@ -1458,9 +1460,9 @@ def user_has_platform_admin(telegram_id: int) -> bool:
         return False
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT 1 FROM admins
-        WHERE user_id = ? AND team_code = 'PLATFORM' AND status = 'APPROVED' AND is_deleted = 0
+        WHERE user_id = {P} AND team_code = 'PLATFORM' AND status = 'APPROVED' AND is_deleted = 0
         LIMIT 1;
     """, (user_id,))
     row = cur.fetchone()
@@ -1475,12 +1477,12 @@ def get_admin_by_user_id(user_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id, user_id, person_id, full_name, phone, city, barrio,
             status, created_at, team_name, document_number, team_code
         FROM admins
-        WHERE user_id = ? AND is_deleted = 0
+        WHERE user_id = {P} AND is_deleted = 0
         ORDER BY id DESC
         LIMIT 1;
     """, (user_id,))
@@ -1496,7 +1498,7 @@ def get_admin_by_user_id(user_id: int):
 def get_admin_by_id(admin_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id,                 -- 0
             user_id,            -- 1
@@ -1513,7 +1515,7 @@ def get_admin_by_id(admin_id: int):
             residence_lat,      -- 12
             residence_lng       -- 13
         FROM admins
-        WHERE id = ?
+        WHERE id = {P}
         ORDER BY id DESC
         LIMIT 1
     """, (admin_id,))
@@ -1532,7 +1534,7 @@ def get_admin_by_team_code(team_code: str):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id,
             a.user_id,
@@ -1543,7 +1545,7 @@ def get_admin_by_team_code(team_code: str):
             u.telegram_id
         FROM admins a
         JOIN users u ON u.id = a.user_id
-        WHERE UPPER(TRIM(a.team_code)) = UPPER(TRIM(?))
+        WHERE UPPER(TRIM(a.team_code)) = UPPER(TRIM({P}))
           AND a.is_deleted = 0
         ORDER BY a.id DESC
         LIMIT 1;
@@ -1568,7 +1570,7 @@ def get_user_by_telegram_id(telegram_id: int):
     """Devuelve el usuario según su telegram_id o None si no existe."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE telegram_id = ?;", (telegram_id,))
+    cur.execute(f"SELECT * FROM users WHERE telegram_id = {P};", (telegram_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -1577,7 +1579,7 @@ def get_user_by_id(user_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, telegram_id, username, created_at FROM users WHERE id = ?",
+        f"SELECT id, telegram_id, username, created_at FROM users WHERE id = {P}",
         (user_id,)
     )
     row = cur.fetchone()
@@ -1609,7 +1611,7 @@ def ensure_user(telegram_id: int, username: str = None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO users (telegram_id, username, role) VALUES (?, ?, NULL);",
+        f"INSERT INTO users (telegram_id, username, role) VALUES ({P}, {P}, NULL);",
         (telegram_id, username),
     )
     conn.commit()
@@ -1621,7 +1623,7 @@ def ensure_user(telegram_id: int, username: str = None):
 def get_setting(key: str, default=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key = ? LIMIT 1", (key,))
+    cur.execute(f"SELECT value FROM settings WHERE key = {P} LIMIT 1", (key,))
     row = cur.fetchone()
     conn.close()
     return row["value"] if row else default
@@ -1718,7 +1720,7 @@ def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0)
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             ac.id AS link_id,
             c.id AS courier_id,
@@ -1729,10 +1731,10 @@ def list_courier_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0)
             ac.balance
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
-        WHERE ac.admin_id = ?
+        WHERE ac.admin_id = {P}
           AND ac.status = 'APPROVED'
         ORDER BY c.full_name ASC
-        LIMIT ? OFFSET ?
+        LIMIT {P} OFFSET {P}
     """, (admin_id, limit, offset))
     rows = cur.fetchall()
     conn.close()
@@ -1743,9 +1745,9 @@ def block_courier_for_ally(ally_id: int, courier_id: int, reason: str = None):
     """Aliado bloquea/veta a un courier."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT OR IGNORE INTO ally_courier_blocks (ally_id, courier_id, reason)
-        VALUES (?, ?, ?);
+        VALUES ({P}, {P}, {P});
     """, (ally_id, courier_id, reason))
     conn.commit()
     conn.close()
@@ -1754,7 +1756,7 @@ def block_courier_for_ally(ally_id: int, courier_id: int, reason: str = None):
 def unblock_courier_for_ally(ally_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM ally_courier_blocks WHERE ally_id = ? AND courier_id = ?;",
+    cur.execute(f"DELETE FROM ally_courier_blocks WHERE ally_id = {P} AND courier_id = {P};",
                 (ally_id, courier_id))
     conn.commit()
     conn.close()
@@ -1763,7 +1765,7 @@ def unblock_courier_for_ally(ally_id: int, courier_id: int):
 def get_blocked_courier_ids_for_ally(ally_id: int) -> set:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?;", (ally_id,))
+    cur.execute(f"SELECT courier_id FROM ally_courier_blocks WHERE ally_id = {P};", (ally_id,))
     rows = cur.fetchall()
     conn.close()
     return {row[0] for row in rows}
@@ -1774,9 +1776,9 @@ def create_offer_queue(order_id: int, courier_ids: list):
     conn = get_connection()
     cur = conn.cursor()
     for position, courier_id in enumerate(courier_ids):
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO order_offer_queue (order_id, courier_id, position, status)
-            VALUES (?, ?, ?, 'PENDING');
+            VALUES ({P}, {P}, {P}, 'PENDING');
         """, (order_id, courier_id, position))
     conn.commit()
     conn.close()
@@ -1786,12 +1788,12 @@ def get_next_pending_offer(order_id: int):
     """Devuelve el siguiente courier en cola con status PENDING."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT oq.id, oq.courier_id, oq.position, c.full_name, u.telegram_id
         FROM order_offer_queue oq
         JOIN couriers c ON c.id = oq.courier_id
         JOIN users u ON u.id = c.user_id
-        WHERE oq.order_id = ? AND oq.status = 'PENDING'
+        WHERE oq.order_id = {P} AND oq.status = 'PENDING'
         ORDER BY oq.position ASC
         LIMIT 1;
     """, (order_id,))
@@ -1811,10 +1813,10 @@ def get_next_pending_offer(order_id: int):
 def mark_offer_as_offered(queue_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE order_offer_queue
         SET status = 'OFFERED', offered_at = datetime('now')
-        WHERE id = ?;
+        WHERE id = {P};
     """, (queue_id,))
     conn.commit()
     conn.close()
@@ -1824,10 +1826,10 @@ def mark_offer_response(queue_id: int, response: str):
     """response: 'ACCEPTED', 'REJECTED', o 'EXPIRED'"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE order_offer_queue
-        SET status = ?, response = ?, responded_at = datetime('now')
-        WHERE id = ?;
+        SET status = {P}, response = {P}, responded_at = datetime('now')
+        WHERE id = {P};
     """, (response, response, queue_id))
     conn.commit()
     conn.close()
@@ -1837,12 +1839,12 @@ def get_current_offer_for_order(order_id: int):
     """Devuelve la oferta actualmente en status OFFERED para un pedido."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT oq.id, oq.courier_id, oq.position, u.telegram_id
         FROM order_offer_queue oq
         JOIN couriers c ON c.id = oq.courier_id
         JOIN users u ON u.id = c.user_id
-        WHERE oq.order_id = ? AND oq.status = 'OFFERED'
+        WHERE oq.order_id = {P} AND oq.status = 'OFFERED'
         LIMIT 1;
     """, (order_id,))
     row = cur.fetchone()
@@ -1861,10 +1863,10 @@ def reset_offer_queue(order_id: int):
     """Resetea toda la cola a PENDING para reiniciar el ciclo."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE order_offer_queue
         SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
-        WHERE order_id = ? AND status IN ('REJECTED', 'EXPIRED');
+        WHERE order_id = {P} AND status IN ('REJECTED', 'EXPIRED');
     """, (order_id,))
     conn.commit()
     conn.close()
@@ -1874,7 +1876,7 @@ def delete_offer_queue(order_id: int):
     """Elimina la cola de ofertas de un pedido (al cancelar o completar)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM order_offer_queue WHERE order_id = ?;", (order_id,))
+    cur.execute(f"DELETE FROM order_offer_queue WHERE order_id = {P};", (order_id,))
     conn.commit()
     conn.close()
 
@@ -1883,11 +1885,11 @@ def upsert_order_pickup_confirmation(order_id: int, courier_id: int, ally_id: in
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO order_pickup_confirmations (
             order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
         )
-        VALUES (?, ?, ?, ?, datetime('now'), NULL, NULL)
+        VALUES ({P}, {P}, {P}, {P}, datetime('now'), NULL, NULL)
         ON CONFLICT(order_id)
         DO UPDATE SET
             courier_id=excluded.courier_id,
@@ -1904,10 +1906,10 @@ def upsert_order_pickup_confirmation(order_id: int, courier_id: int, ally_id: in
 def get_order_pickup_confirmation(order_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
         FROM order_pickup_confirmations
-        WHERE order_id = ?
+        WHERE order_id = {P}
         LIMIT 1;
     """, (order_id,))
     row = cur.fetchone()
@@ -1919,12 +1921,12 @@ def review_order_pickup_confirmation(order_id: int, new_status: str, reviewed_by
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE order_pickup_confirmations
-        SET status = ?,
-            reviewed_by_ally_id = ?,
+        SET status = {P},
+            reviewed_by_ally_id = {P},
             reviewed_at = datetime('now')
-        WHERE order_id = ?
+        WHERE order_id = {P}
           AND status = 'PENDING';
     """, (new_status, reviewed_by_ally_id, order_id))
     ok = cur.rowcount > 0
@@ -1936,7 +1938,7 @@ def review_order_pickup_confirmation(order_id: int, new_status: str, reviewed_by
 def set_courier_available_cash(courier_id: int, amount: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE couriers SET available_cash = ?, is_active = 1 WHERE id = ?;",
+    cur.execute(f"UPDATE couriers SET available_cash = {P}, is_active = 1 WHERE id = {P};",
                 (amount, courier_id))
     conn.commit()
     conn.close()
@@ -1947,7 +1949,7 @@ def deactivate_courier(courier_id: int):
     cur = conn.cursor()
     cur.execute(
         "UPDATE couriers SET is_active = 0, available_cash = 0, "
-        "availability_status = 'INACTIVE', live_location_active = 0 WHERE id = ?;",
+        f"availability_status = 'INACTIVE', live_location_active = 0 WHERE id = {P};",
         (courier_id,))
     conn.commit()
     conn.close()
@@ -1961,9 +1963,9 @@ def update_courier_live_location(courier_id: int, lat: float, lng: float):
         try:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE couriers SET live_lat = ?, live_lng = ?, "
+                f"UPDATE couriers SET live_lat = {P}, live_lng = {P}, "
                 "live_location_active = 1, live_location_updated_at = datetime('now'), "
-                "availability_status = 'APPROVED' WHERE id = ?;",
+                f"availability_status = 'APPROVED' WHERE id = {P};",
                 (lat, lng, courier_id))
             conn.commit()
             return
@@ -1989,11 +1991,11 @@ def set_courier_availability(courier_id: int, status: str):
     if normalized == 'INACTIVE':
         cur.execute(
             "UPDATE couriers SET availability_status = 'INACTIVE', "
-            "live_location_active = 0 WHERE id = ?;",
+            f"live_location_active = 0 WHERE id = {P};",
             (courier_id,))
     else:
         cur.execute(
-            "UPDATE couriers SET availability_status = ? WHERE id = ?;",
+            f"UPDATE couriers SET availability_status = {P} WHERE id = {P};",
             (normalized, courier_id))
     conn.commit()
     conn.close()
@@ -2003,7 +2005,7 @@ def get_courier_availability(courier_id: int) -> str:
     """Retorna el availability_status del courier."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT availability_status FROM couriers WHERE id = ?;", (courier_id,))
+    cur.execute(f"SELECT availability_status FROM couriers WHERE id = {P};", (courier_id,))
     row = cur.fetchone()
     conn.close()
     if row:
@@ -2023,21 +2025,21 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
             cur = conn.cursor()
 
             # Primero obtener los que van a expirar
-            cur.execute("""
+            cur.execute(f"""
                 SELECT id FROM couriers
                 WHERE availability_status = 'APPROVED'
                   AND live_location_active = 1
-                  AND live_location_updated_at < datetime('now', ? || ' seconds')
+                  AND live_location_updated_at < datetime('now', {P} || ' seconds')
             """, ('-' + str(timeout_seconds),))
             expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
             if expired:
-                cur.execute("""
+                cur.execute(f"""
                     UPDATE couriers
                     SET availability_status = 'INACTIVE', live_location_active = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
-                      AND live_location_updated_at < datetime('now', ? || ' seconds')
+                      AND live_location_updated_at < datetime('now', {P} || ' seconds')
                 """, ('-' + str(timeout_seconds),))
                 conn.commit()
 
@@ -2059,7 +2061,7 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
 def get_active_courier_cash(courier_id: int) -> int:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT available_cash FROM couriers WHERE id = ?;", (courier_id,))
+    cur.execute(f"SELECT available_cash FROM couriers WHERE id = {P};", (courier_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else 0
@@ -2069,9 +2071,9 @@ def get_active_orders_by_ally(ally_id: int):
     """Devuelve pedidos activos de un aliado (no entregados ni cancelados)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT * FROM orders
-        WHERE ally_id = ?
+        WHERE ally_id = {P}
           AND status NOT IN ('DELIVERED', 'CANCELLED')
         ORDER BY created_at DESC;
     """, (ally_id,))
@@ -2084,10 +2086,10 @@ def cancel_order(order_id: int, canceled_by: str):
     """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE orders
-        SET status = 'CANCELLED', canceled_at = datetime('now'), canceled_by = ?
-        WHERE id = ?;
+        SET status = 'CANCELLED', canceled_at = datetime('now'), canceled_by = {P}
+        WHERE id = {P};
     """, (canceled_by, order_id))
     conn.commit()
     conn.close()
@@ -2097,10 +2099,10 @@ def release_order_from_courier(order_id: int):
     """Courier libera el pedido. Vuelve a PUBLISHED y limpia courier_id."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE orders
         SET status = 'PUBLISHED', courier_id = NULL, accepted_at = NULL
-        WHERE id = ?;
+        WHERE id = {P};
     """, (order_id,))
     conn.commit()
     conn.close()
@@ -2129,14 +2131,14 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     conn = get_connection()
     cur = conn.cursor()
 
-    query = """
+    query = f"""
         SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash,
                c.availability_status, c.live_lat, c.live_lng, c.live_location_active,
                c.residence_lat, c.residence_lng
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
-        WHERE ac.admin_id = ?
+        WHERE ac.admin_id = {P}
           AND ac.status = 'APPROVED'
           AND c.status = 'APPROVED'
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
@@ -2145,15 +2147,15 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     params = [admin_id]
 
     if ally_id:
-        query += """
+        query += f"""
           AND c.id NOT IN (
-              SELECT courier_id FROM ally_courier_blocks WHERE ally_id = ?
+              SELECT courier_id FROM ally_courier_blocks WHERE ally_id = {P}
           )
         """
         params.append(ally_id)
 
     if requires_cash and cash_required_amount > 0:
-        query += " AND c.available_cash >= ?"
+        query += f" AND c.available_cash >= {P}"
         params.append(cash_required_amount)
 
     query += " ORDER BY c.available_cash DESC;"
@@ -2236,7 +2238,7 @@ def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             aa.id AS link_id,
             al.id AS ally_id,
@@ -2248,10 +2250,10 @@ def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
             aa.balance
         FROM admin_allies aa
         JOIN allies al ON al.id = aa.ally_id
-        WHERE aa.admin_id = ?
+        WHERE aa.admin_id = {P}
           AND aa.status = 'APPROVED'
         ORDER BY al.business_name ASC
-        LIMIT ? OFFSET ?
+        LIMIT {P} OFFSET {P}
     """, (admin_id, limit, offset))
     rows = cur.fetchall()
     conn.close()
@@ -2269,17 +2271,17 @@ def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING")
     cur = conn.cursor()
 
     # Inserta si no existe
-    cur.execute("""
+    cur.execute(f"""
         INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, balance, created_at, updated_at)
-        VALUES (?, ?, ?, 0, datetime('now'), datetime('now'))
+        VALUES ({P}, {P}, {P}, 0, datetime('now'), datetime('now'))
     """, (admin_id, ally_id, status))
 
     # Si ya existía, actualiza status y updated_at
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_allies
-        SET status = ?,
+        SET status = {P},
             updated_at = datetime('now')
-        WHERE admin_id = ? AND ally_id = ?
+        WHERE admin_id = {P} AND ally_id = {P}
     """, (status, admin_id, ally_id))
 
     conn.commit()
@@ -2292,12 +2294,12 @@ def deactivate_other_approved_admin_courier_links(courier_id: int, keep_admin_id
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_couriers
         SET status='INACTIVE', updated_at=datetime('now')
-        WHERE courier_id=?
+        WHERE courier_id={P}
           AND status='APPROVED'
-          AND admin_id<>?;
+          AND admin_id<>{P};
     """, (courier_id, keep_admin_id))
     conn.commit()
     conn.close()
@@ -2309,12 +2311,12 @@ def deactivate_other_approved_admin_ally_links(ally_id: int, keep_admin_id: int)
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_allies
         SET status='INACTIVE', updated_at=datetime('now')
-        WHERE ally_id=?
+        WHERE ally_id={P}
           AND status='APPROVED'
-          AND admin_id<>?;
+          AND admin_id<>{P};
     """, (ally_id, keep_admin_id))
     conn.commit()
     conn.close()
@@ -2331,9 +2333,9 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
         has_is_active = "is_active" in cols
 
     if has_is_active:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            VALUES ({P}, {P}, {P}, {P}, datetime('now'), datetime('now'))
             ON CONFLICT(admin_id, courier_id)
             DO UPDATE SET
                 status=excluded.status,
@@ -2341,9 +2343,9 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
                 updated_at=datetime('now')
         """, (admin_id, courier_id, status, is_active))
     else:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO admin_couriers (admin_id, courier_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, datetime('now'), datetime('now'))
+            VALUES ({P}, {P}, {P}, datetime('now'), datetime('now'))
             ON CONFLICT(admin_id, courier_id)
             DO UPDATE SET
                 status=excluded.status,
@@ -2356,9 +2358,9 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
 def set_setting(key: str, value: str):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO settings (key, value)
-        VALUES (?, ?)
+        VALUES ({P}, {P})
         ON CONFLICT(key) DO UPDATE SET value = excluded.value;
     """, (key, value))
     conn.commit()
@@ -2408,10 +2410,10 @@ def upsert_reference_alias_candidate(raw_text: str, normalized_text: str, sugges
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO reference_alias_candidates
             (raw_text, normalized_text, suggested_lat, suggested_lng, source, status)
-        VALUES (?, ?, ?, ?, ?, 'PENDING')
+        VALUES ({P}, {P}, {P}, {P}, {P}, 'PENDING')
         ON CONFLICT(normalized_text) DO UPDATE SET
             raw_text = excluded.raw_text,
             suggested_lat = COALESCE(reference_alias_candidates.suggested_lat, excluded.suggested_lat),
@@ -2432,14 +2434,14 @@ def list_reference_alias_candidates(status: str = "PENDING", limit: int = 20, of
     wanted = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
             seen_count, first_seen_at, last_seen_at, status
         FROM reference_alias_candidates
-        WHERE status = ?
+        WHERE status = {P}
         ORDER BY last_seen_at DESC, id DESC
-        LIMIT ? OFFSET ?
+        LIMIT {P} OFFSET {P}
     """, (wanted, int(limit), int(offset)))
     rows = cur.fetchall()
     conn.close()
@@ -2449,13 +2451,13 @@ def list_reference_alias_candidates(status: str = "PENDING", limit: int = 20, of
 def get_reference_alias_candidate_by_id(candidate_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
             seen_count, first_seen_at, last_seen_at, status,
             reviewed_by_admin_id, reviewed_at, review_note
         FROM reference_alias_candidates
-        WHERE id = ?
+        WHERE id = {P}
         LIMIT 1
     """, (candidate_id,))
     row = cur.fetchone()
@@ -2471,13 +2473,13 @@ def set_reference_alias_candidate_coords(candidate_id: int, lat: float, lng: flo
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE reference_alias_candidates
-        SET suggested_lat = ?,
-            suggested_lng = ?,
-            source = COALESCE(?, source),
+        SET suggested_lat = {P},
+            suggested_lng = {P},
+            source = COALESCE({P}, source),
             last_seen_at = datetime('now')
-        WHERE id = ?
+        WHERE id = {P}
     """, (float(lat), float(lng), source, int(candidate_id)))
     changed = cur.rowcount > 0
     conn.commit()
@@ -2512,10 +2514,10 @@ def review_reference_alias_candidate(candidate_id: int, new_status: str, reviewe
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, raw_text, normalized_text, suggested_lat, suggested_lng, status
         FROM reference_alias_candidates
-        WHERE id = ?
+        WHERE id = {P}
         LIMIT 1
     """, (candidate_id,))
     row = cur.fetchone()
@@ -2542,10 +2544,10 @@ def review_reference_alias_candidate(candidate_id: int, new_status: str, reviewe
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         UPDATE reference_alias_candidates
-        SET status = ?, reviewed_by_admin_id = ?, reviewed_at = datetime('now'), review_note = ?
-        WHERE id = ?
+        SET status = {P}, reviewed_by_admin_id = {P}, reviewed_at = datetime('now'), review_note = {P}
+        WHERE id = {P}
     """, (status, reviewed_by_admin_id, (note or "").strip() or None, candidate_id))
     conn.commit()
     conn.close()
@@ -2555,10 +2557,10 @@ def review_reference_alias_candidate(candidate_id: int, new_status: str, reviewe
 def get_admin_reference_validator_permission(admin_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, admin_id, status, granted_by_admin_id, created_at, updated_at
         FROM admin_reference_validator_permissions
-        WHERE admin_id = ?
+        WHERE admin_id = {P}
         LIMIT 1
     """, (admin_id,))
     row = cur.fetchone()
@@ -2573,10 +2575,10 @@ def set_admin_reference_validator_permission(admin_id: int, new_status: str, gra
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO admin_reference_validator_permissions
             (admin_id, status, granted_by_admin_id)
-        VALUES (?, ?, ?)
+        VALUES ({P}, {P}, {P})
         ON CONFLICT(admin_id) DO UPDATE SET
             status = excluded.status,
             granted_by_admin_id = excluded.granted_by_admin_id,
@@ -2624,7 +2626,7 @@ def create_ally(
     print(f"  document_number={document_number!r}")
 
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO allies (
                 user_id,
                 person_id,
@@ -2636,7 +2638,7 @@ def create_ally(
                 phone,
                 document_number
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
         """, (
             user_id,
             person_id,
@@ -2667,10 +2669,10 @@ def get_courier_by_user_id(user_id: int):
     """Devuelve el repartidor más reciente asociado a un user_id (no eliminado)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT *
         FROM couriers
-        WHERE user_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+        WHERE user_id = {P} AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id DESC
         LIMIT 1;
     """, (user_id,))
@@ -2683,10 +2685,10 @@ def get_ally_by_user_id(user_id: int):
     """Devuelve el aliado más reciente asociado a un user_id (no eliminado)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT *
         FROM allies
-        WHERE user_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
+        WHERE user_id = {P} AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id DESC
         LIMIT 1;
     """, (user_id,))
@@ -2700,7 +2702,7 @@ def get_ally_by_id(ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM allies WHERE id = ? LIMIT 1;",
+        f"SELECT * FROM allies WHERE id = {P} LIMIT 1;",
         (ally_id,),
     )
     row = cur.fetchone()
@@ -2799,26 +2801,26 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM admins WHERE id = ? AND is_deleted = 0", (admin_id,))
+    cur.execute(f"SELECT status FROM admins WHERE id = {P} AND is_deleted = 0", (admin_id,))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
-        cur.execute("""
+        cur.execute(f"""
             UPDATE admins
-            SET status = ?,
-                rejection_type = ?,
-                rejection_reason = ?,
+            SET status = {P},
+                rejection_type = {P},
+                rejection_reason = {P},
                 rejected_at = datetime('now')
-            WHERE id = ? AND is_deleted = 0;
+            WHERE id = {P} AND is_deleted = 0;
         """, (new_status, rejection_type, rejection_reason, admin_id))
     else:
         # Actualizar solo status (compatible con llamadas existentes)
-        cur.execute("""
+        cur.execute(f"""
             UPDATE admins
-            SET status = ?
-            WHERE id = ? AND is_deleted = 0;
+            SET status = {P}
+            WHERE id = {P} AND is_deleted = 0;
         """, (new_status, admin_id))
 
     if cur.rowcount > 0:
@@ -2842,26 +2844,26 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM couriers WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (courier_id,))
+    cur.execute(f"SELECT status FROM couriers WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0)", (courier_id,))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
-        cur.execute("""
+        cur.execute(f"""
             UPDATE couriers
-            SET status = ?,
-                rejection_type = ?,
-                rejection_reason = ?,
+            SET status = {P},
+                rejection_type = {P},
+                rejection_reason = {P},
                 rejected_at = datetime('now')
-            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+            WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, rejection_type, rejection_reason, courier_id))
     else:
         # Actualizar solo status (compatible con llamadas existentes)
-        cur.execute("""
+        cur.execute(f"""
             UPDATE couriers
-            SET status = ?
-            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+            SET status = {P}
+            WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, courier_id))
 
     if cur.rowcount > 0:
@@ -2885,26 +2887,26 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM allies WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (ally_id,))
+    cur.execute(f"SELECT status FROM allies WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0)", (ally_id,))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
-        cur.execute("""
+        cur.execute(f"""
             UPDATE allies
-            SET status = ?,
-                rejection_type = ?,
-                rejection_reason = ?,
+            SET status = {P},
+                rejection_type = {P},
+                rejection_reason = {P},
                 rejected_at = datetime('now')
-            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+            WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, rejection_type, rejection_reason, ally_id))
     else:
         # Actualizar solo status (compatible con llamadas existentes)
-        cur.execute("""
+        cur.execute(f"""
             UPDATE allies
-            SET status = ?
-            WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
+            SET status = {P}
+            WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, ally_id))
 
     if cur.rowcount > 0:
@@ -2928,7 +2930,7 @@ def get_admin_rejection_type_by_id(admin_id: int):
     """Devuelve el rejection_type del admin especificado."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT rejection_type FROM admins WHERE id = ?", (admin_id,))
+    cur.execute(f"SELECT rejection_type FROM admins WHERE id = {P}", (admin_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
@@ -2938,7 +2940,7 @@ def get_ally_rejection_type_by_id(ally_id: int):
     """Devuelve el rejection_type del aliado especificado."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT rejection_type FROM allies WHERE id = ?", (ally_id,))
+    cur.execute(f"SELECT rejection_type FROM allies WHERE id = {P}", (ally_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
@@ -2948,7 +2950,7 @@ def get_courier_rejection_type_by_id(courier_id: int):
     """Devuelve el rejection_type del repartidor especificado."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT rejection_type FROM couriers WHERE id = ?", (courier_id,))
+    cur.execute(f"SELECT rejection_type FROM couriers WHERE id = {P}", (courier_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
@@ -3003,7 +3005,7 @@ def get_pending_couriers_by_admin(admin_id):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             c.id AS courier_id,
             c.full_name,
@@ -3012,7 +3014,7 @@ def get_pending_couriers_by_admin(admin_id):
             c.barrio
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
-        WHERE ac.admin_id = ?
+        WHERE ac.admin_id = {P}
           AND ac.status = 'PENDING'
           AND c.status != 'REJECTED'
         ORDER BY ac.created_at ASC
@@ -3030,7 +3032,7 @@ def get_couriers_by_admin_and_status(admin_id, status):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             c.id AS courier_id,
             c.full_name,
@@ -3041,8 +3043,8 @@ def get_couriers_by_admin_and_status(admin_id, status):
             ac.status
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
-        WHERE ac.admin_id = ?
-          AND ac.status = ?
+        WHERE ac.admin_id = {P}
+          AND ac.status = {P}
         ORDER BY c.full_name ASC
     """, (admin_id, status))
 
@@ -3061,14 +3063,14 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
         has_is_active = "is_active" in cols
 
     if has_is_active:
-        cur.execute("""
+        cur.execute(f"""
             INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-            VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
+            VALUES ({P}, {P}, 'PENDING', 0, 0, datetime('now'))
         """, (admin_id, courier_id))
     else:
-        cur.execute("""
+        cur.execute(f"""
             INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
-            VALUES (?, ?, 'PENDING', 0, datetime('now'))
+            VALUES ({P}, {P}, 'PENDING', 0, datetime('now'))
         """, (admin_id, courier_id))
     conn.commit()
     conn.close()
@@ -3079,14 +3081,14 @@ def update_ally_status(ally_id: int, status: str, changed_by: str = None):
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM allies WHERE id = ?", (ally_id,))
+    cur.execute(f"SELECT status FROM allies WHERE id = {P}", (ally_id,))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
     cur.execute(
-        """
+        f"""
         UPDATE allies
-        SET status = ?
-        WHERE id = ?;
+        SET status = {P}
+        WHERE id = {P};
         """,
         (status, ally_id),
     )
@@ -3123,14 +3125,14 @@ def create_ally_location(
     if is_default:
         # Si esta será la principal, poner las demás en 0
         cur.execute(
-            "UPDATE ally_locations SET is_default = 0 WHERE ally_id = ?;",
+            f"UPDATE ally_locations SET is_default = 0 WHERE ally_id = {P};",
             (ally_id,),
         )
 
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO ally_locations (
             ally_id, label, address, city, barrio, phone, is_default, lat, lng
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (ally_id, label, address, city, barrio, phone, 1 if is_default else 0, lat, lng))
 
     conn.commit()
@@ -3146,11 +3148,11 @@ def get_ally_locations(ally_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
                lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
-        WHERE ally_id = ?
+        WHERE ally_id = {P}
         ORDER BY is_default DESC, is_frequent DESC, use_count DESC, id ASC;
     """, (ally_id,))
     rows = cur.fetchall()
@@ -3184,11 +3186,11 @@ def get_default_ally_location(ally_id: int):
     """Devuelve la dirección principal de un aliado como dict (o None)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
                lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
-        WHERE ally_id = ? AND is_default = 1
+        WHERE ally_id = {P} AND is_default = 1
         ORDER BY id ASC
         LIMIT 1;
     """, (ally_id,))
@@ -3219,11 +3221,11 @@ def set_default_ally_location(location_id: int, ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE ally_locations SET is_default = 0 WHERE ally_id = ?;",
+        f"UPDATE ally_locations SET is_default = 0 WHERE ally_id = {P};",
         (ally_id,),
     )
     cur.execute(
-        "UPDATE ally_locations SET is_default = 1 WHERE id = ? AND ally_id = ?;",
+        f"UPDATE ally_locations SET is_default = 1 WHERE id = {P} AND ally_id = {P};",
         (location_id, ally_id),
     )
     conn.commit()
@@ -3234,11 +3236,11 @@ def get_ally_location_by_id(location_id: int, ally_id: int):
     """Devuelve una dirección específica de un aliado como dict (o None)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, ally_id, label, address, city, barrio, phone, is_default, created_at,
                lat, lng, use_count, is_frequent, last_used_at
         FROM ally_locations
-        WHERE id = ? AND ally_id = ?
+        WHERE id = {P} AND ally_id = {P}
         LIMIT 1;
     """, (location_id, ally_id))
     row = cur.fetchone()
@@ -3267,10 +3269,10 @@ def update_ally_location(location_id: int, address: str, city: str, barrio: str,
     """Actualiza los datos de una dirección."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_locations
-        SET address = ?, city = ?, barrio = ?, phone = ?
-        WHERE id = ?;
+        SET address = {P}, city = {P}, barrio = {P}, phone = {P}
+        WHERE id = {P};
     """, (address, city, barrio, phone, location_id))
     conn.commit()
     conn.close()
@@ -3281,7 +3283,7 @@ def delete_ally_location(location_id: int, ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "DELETE FROM ally_locations WHERE id = ? AND ally_id = ?;",
+        f"DELETE FROM ally_locations WHERE id = {P} AND ally_id = {P};",
         (location_id, ally_id),
     )
     conn.commit()
@@ -3293,7 +3295,7 @@ def update_ally_location_coords(location_id: int, lat: float, lng: float):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE ally_locations SET lat = ?, lng = ? WHERE id = ?;",
+        f"UPDATE ally_locations SET lat = {P}, lng = {P} WHERE id = {P};",
         (lat, lng, location_id),
     )
     conn.commit()
@@ -3304,11 +3306,11 @@ def increment_pickup_usage(location_id: int, ally_id: int):
     """Incrementa use_count y actualiza last_used_at para una pickup."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_locations
         SET use_count = COALESCE(use_count, 0) + 1,
             last_used_at = datetime('now')
-        WHERE id = ? AND ally_id = ?;
+        WHERE id = {P} AND ally_id = {P};
     """, (location_id, ally_id))
     conn.commit()
     conn.close()
@@ -3318,10 +3320,10 @@ def set_frequent_pickup(location_id: int, ally_id: int, is_frequent: bool):
     """Marca o desmarca una pickup como frecuente."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_locations
-        SET is_frequent = ?
-        WHERE id = ? AND ally_id = ?;
+        SET is_frequent = {P}
+        WHERE id = {P} AND ally_id = {P};
     """, (1 if is_frequent else 0, location_id, ally_id))
     conn.commit()
     conn.close()
@@ -3359,7 +3361,7 @@ def create_order(
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO orders (
             ally_id,
             courier_id,
@@ -3389,7 +3391,7 @@ def create_order(
             quote_source,
             ally_admin_id_snapshot,
             courier_admin_id_snapshot
-        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES ({P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         customer_name,
@@ -3434,10 +3436,10 @@ def set_order_status(order_id: int, status: str, timestamp_field: str = None):
     cur = conn.cursor()
 
     if timestamp_field:
-        query = f"UPDATE orders SET status = ?, {timestamp_field} = datetime('now') WHERE id = ?;"
+        query = f"UPDATE orders SET status = {P}, {timestamp_field} = datetime('now') WHERE id = {P};"
         cur.execute(query, (status, order_id))
     else:
-        cur.execute("UPDATE orders SET status = ? WHERE id = ?;", (status, order_id))
+        cur.execute(f"UPDATE orders SET status = {P} WHERE id = {P};", (status, order_id))
 
     conn.commit()
     conn.close()
@@ -3447,11 +3449,11 @@ def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_sna
     """Asigna un pedido a un repartidor y marca accepted_at."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE orders
-        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now'),
-            courier_admin_id_snapshot = ?
-        WHERE id = ?;
+        SET courier_id = {P}, status = 'ACCEPTED', accepted_at = datetime('now'),
+            courier_admin_id_snapshot = {P}
+        WHERE id = {P};
     """, (courier_id, courier_admin_id_snapshot, order_id))
     conn.commit()
     conn.close()
@@ -3460,10 +3462,10 @@ def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_sna
 def get_order_by_id(order_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT *
         FROM orders
-        WHERE id = ?;
+        WHERE id = {P};
     """, (order_id,))
     row = cur.fetchone()
     conn.close()
@@ -3474,12 +3476,12 @@ def get_orders_by_ally(ally_id: int, limit: int = 50):
     """Devuelve los últimos pedidos de un aliado (para historial)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT *
         FROM orders
-        WHERE ally_id = ?
+        WHERE ally_id = {P}
         ORDER BY id DESC
-        LIMIT ?;
+        LIMIT {P};
     """, (ally_id, limit))
     rows = cur.fetchall()
     conn.close()
@@ -3490,12 +3492,12 @@ def get_orders_by_courier(courier_id: int, limit: int = 50):
     """Devuelve los últimos pedidos de un repartidor."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT *
         FROM orders
-        WHERE courier_id = ?
+        WHERE courier_id = {P}
         ORDER BY id DESC
-        LIMIT ?;
+        LIMIT {P};
     """, (courier_id, limit))
     rows = cur.fetchall()
     conn.close()
@@ -3510,10 +3512,10 @@ def get_orders_by_admin_team(admin_id: int, status_filter: str = None, limit: in
     conn = get_connection()
     cur = conn.cursor()
 
-    query = """
+    query = f"""
         SELECT o.* FROM orders o
         JOIN admin_allies aa ON aa.ally_id = o.ally_id
-        WHERE aa.admin_id = ? AND aa.status = 'APPROVED'
+        WHERE aa.admin_id = {P} AND aa.status = 'APPROVED'
     """
     params = [admin_id]
 
@@ -3524,7 +3526,7 @@ def get_orders_by_admin_team(admin_id: int, status_filter: str = None, limit: in
     elif status_filter == "CANCELLED":
         query += " AND o.status = 'CANCELLED'"
 
-    query += " ORDER BY o.created_at DESC LIMIT ?;"
+    query += f" ORDER BY o.created_at DESC LIMIT {P};"
     params.append(limit)
 
     cur.execute(query, params)
@@ -3551,7 +3553,7 @@ def get_all_orders(status_filter: str = None, limit: int = 20):
     elif status_filter == "CANCELLED":
         query += " WHERE status = 'CANCELLED'"
 
-    query += " ORDER BY created_at DESC LIMIT ?;"
+    query += f" ORDER BY created_at DESC LIMIT {P};"
     params.append(limit)
 
     cur.execute(query, params)
@@ -3566,9 +3568,9 @@ def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str
     """Registra una calificación para un repartidor."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO courier_ratings (order_id, courier_id, rating, comment)
-        VALUES (?, ?, ?, ?);
+        VALUES ({P}, {P}, {P}, {P});
     """, (order_id, courier_id, rating, comment))
     conn.commit()
     conn.close()
@@ -3599,7 +3601,7 @@ def create_courier(
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO couriers (
                 user_id,
                 person_id,
@@ -3616,7 +3618,7 @@ def create_courier(
                 residence_address,
                 residence_lat,
                 residence_lng
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, ?);
+            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P});
         """, (
             user_id,
             person_id,
@@ -3649,7 +3651,7 @@ def create_courier(
 def get_courier_by_id(courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id,                -- 0
             user_id,           -- 1
@@ -3673,7 +3675,7 @@ def get_courier_by_id(courier_id: int):
             live_location_updated_at, -- 19
             COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
         FROM couriers
-        WHERE id = ?;
+        WHERE id = {P};
     """, (courier_id,))
     row = cur.fetchone()
     conn.close()
@@ -3684,11 +3686,11 @@ def update_courier_status(courier_id: int, new_status: str, changed_by: str = No
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM couriers WHERE id = ?", (courier_id,))
+    cur.execute(f"SELECT status FROM couriers WHERE id = {P}", (courier_id,))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
     cur.execute(
-        "UPDATE couriers SET status = ? WHERE id = ?;",
+        f"UPDATE couriers SET status = {P} WHERE id = {P};",
         (new_status, courier_id),
     )
     if cur.rowcount > 0:
@@ -3724,21 +3726,21 @@ def delete_courier(courier_id: int) -> None:
     cur = conn.cursor()
 
     # Desactivar perfil
-    cur.execute("""
+    cur.execute(f"""
         UPDATE couriers
         SET status = 'INACTIVE',
             is_deleted = 1,
             deleted_at = datetime('now')
-        WHERE id = ?
+        WHERE id = {P}
     """, (courier_id,))
 
     # Desactivar vínculos con admins (no borrar, solo inactivar)
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_couriers
         SET status = 'INACTIVE',
             is_active = 0,
             updated_at = datetime('now')
-        WHERE courier_id = ?
+        WHERE courier_id = {P}
     """, (courier_id,))
 
     conn.commit()
@@ -3750,22 +3752,22 @@ def delete_ally(ally_id: int) -> None:
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         UPDATE allies
         SET status = 'INACTIVE',
             is_deleted = 1,
             created_at = created_at, -- no cambia, solo explícito
             deleted_at = datetime('now')
-        WHERE id = ?
+        WHERE id = {P}
     """, (ally_id,))
 
     # Desactivar vínculos con admins
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_allies
         SET status = 'INACTIVE',
             is_active = 0,
             updated_at = datetime('now')
-        WHERE ally_id = ?
+        WHERE ally_id = {P}
     """, (ally_id,))
 
     conn.commit()
@@ -3776,10 +3778,10 @@ def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE allies
-        SET business_name = ?, owner_name = ?, phone = ?, address = ?, city = ?, barrio = ?, status = ?
-        WHERE id = ?
+        SET business_name = {P}, owner_name = {P}, phone = {P}, address = {P}, city = {P}, barrio = {P}, status = {P}
+        WHERE id = {P}
     """, (business_name, owner_name, phone, address, city, barrio, status, ally_id))
     conn.commit()
     conn.close()
@@ -3789,10 +3791,10 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE couriers
-        SET full_name = ?, phone = ?, bike_type = ?, status = ?
-        WHERE id = ?
+        SET full_name = {P}, phone = {P}, bike_type = {P}, status = {P}
+        WHERE id = {P}
     """, (full_name, phone, bike_type, status, courier_id))
     conn.commit()
     conn.close()
@@ -3819,13 +3821,13 @@ def create_admin(
     cur = conn.cursor()
 
     try:
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO admins (
                 user_id, person_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number,
                 residence_address, residence_lat, residence_lng
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'), ?, ?, ?, ?, ?)
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', datetime('now'), {P}, {P}, {P}, {P}, {P})
         """, (
             user_id,
             person_id,
@@ -3844,7 +3846,7 @@ def create_admin(
 
         # TEAM_CODE automático y único
         team_code = f"TEAM{admin_id}"
-        cur.execute("UPDATE admins SET team_code = ? WHERE id = ?", (team_code, admin_id))
+        cur.execute(f"UPDATE admins SET team_code = {P} WHERE id = {P}", (team_code, admin_id))
 
         conn.commit()
 
@@ -3881,10 +3883,10 @@ def update_admin_status(user_id: int, new_status: str):
     new_status = normalize_role_status(new_status)
     conn = conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admins
-        SET status=?
-        WHERE user_id=? AND is_deleted=0
+        SET status={P}
+        WHERE user_id={P} AND is_deleted=0
     """, (new_status, user_id))
     conn.commit()
     conn.close()
@@ -3894,10 +3896,10 @@ def soft_delete_admin_by_id(admin_id: int):
     conn = conn = get_connection()
     cur = conn.cursor()
     now = datetime.utcnow().isoformat()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admins
-        SET is_deleted=1, deleted_at=?, status='INACTIVE'
-        WHERE id=?
+        SET is_deleted=1, deleted_at={P}, status='INACTIVE'
+        WHERE id={P}
     """, (now, admin_id))
     conn.commit()
     conn.close()
@@ -3918,7 +3920,7 @@ def count_admins():
 def get_admin_status_by_id(admin_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT status FROM admins WHERE id=? AND is_deleted=0", (admin_id,))
+    cur.execute(f"SELECT status FROM admins WHERE id={P} AND is_deleted=0", (admin_id,))
     row = cur.fetchone()
     conn.close()
     if not row:
@@ -3930,10 +3932,10 @@ def get_admin_status_by_id(admin_id: int):
 def count_admin_couriers(admin_id: int):
     conn = conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT COUNT(*)
         FROM admin_couriers
-        WHERE admin_id=?
+        WHERE admin_id={P}
     """, (admin_id,))
     n = cur.fetchone()[0]
     conn.close()
@@ -3947,11 +3949,11 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     """
     conn = conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT COUNT(*)
         FROM admin_couriers
-        WHERE admin_id=?
-          AND balance >= ?
+        WHERE admin_id={P}
+          AND balance >= {P}
     """, (admin_id, min_balance))
     n = cur.fetchone()[0]
     conn.close()
@@ -3962,10 +3964,10 @@ def count_admin_allies(admin_id: int):
     """Cuenta el total de aliados vinculados al admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT COUNT(*)
         FROM admin_allies
-        WHERE admin_id = ?
+        WHERE admin_id = {P}
     """, (admin_id,))
     n = cur.fetchone()[0]
     conn.close()
@@ -3976,11 +3978,11 @@ def count_admin_allies_with_min_balance(admin_id: int, min_balance: int = 5000):
     """Cuenta aliados del admin con saldo >= min_balance."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT COUNT(*)
         FROM admin_allies
-        WHERE admin_id = ?
-          AND balance >= ?
+        WHERE admin_id = {P}
+          AND balance >= {P}
     """, (admin_id, min_balance))
     n = cur.fetchone()[0]
     conn.close()
@@ -3990,10 +3992,10 @@ def count_admin_allies_with_min_balance(admin_id: int, min_balance: int = 5000):
 def get_active_terms_version(role: str):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT version, url, sha256
         FROM terms_versions
-        WHERE role = ? AND is_active = 1
+        WHERE role = {P} AND is_active = 1
         ORDER BY id DESC
         LIMIT 1
     """, (role,))
@@ -4004,10 +4006,10 @@ def get_active_terms_version(role: str):
 def has_accepted_terms(telegram_id: int, role: str, version: str, sha256: str) -> bool:
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT 1
         FROM terms_acceptances
-        WHERE telegram_id = ? AND role = ? AND version = ? AND sha256 = ?
+        WHERE telegram_id = {P} AND role = {P} AND version = {P} AND sha256 = {P}
         LIMIT 1
     """, (telegram_id, role, version, sha256))
     ok = cur.fetchone() is not None
@@ -4017,9 +4019,9 @@ def has_accepted_terms(telegram_id: int, role: str, version: str, sha256: str) -
 def save_terms_acceptance(telegram_id: int, role: str, version: str, sha256: str, message_id: int = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES ({P}, {P}, {P}, {P}, {P})
     """, (telegram_id, role, version, sha256, message_id))
     conn.commit()
     conn.close()
@@ -4027,9 +4029,9 @@ def save_terms_acceptance(telegram_id: int, role: str, version: str, sha256: str
 def save_terms_session_ack(telegram_id: int, role: str, version: str):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO terms_session_acks (telegram_id, role, version)
-        VALUES (?, ?, ?)
+        VALUES ({P}, {P}, {P})
     """, (telegram_id, role, version))
     conn.commit()
     conn.close()
@@ -4038,18 +4040,18 @@ def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = 
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT status
         FROM admin_couriers
-        WHERE admin_id = ? AND courier_id = ?
+        WHERE admin_id = {P} AND courier_id = {P}
         LIMIT 1
     """, (admin_id, courier_id))
     row_old = cur.fetchone()
     old_status = row_old[0] if row_old else None
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_couriers
-        SET status = ?, updated_at = datetime('now')
-        WHERE admin_id = ? AND courier_id = ?
+        SET status = {P}, updated_at = datetime('now')
+        WHERE admin_id = {P} AND courier_id = {P}
     """, (status, admin_id, courier_id))
     if cur.rowcount > 0:
         _audit_status_change(
@@ -4069,10 +4071,10 @@ def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = 
 def set_admin_team_code(admin_id: int, team_code: str):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admins
-        SET team_code = ?
-        WHERE id = ?
+        SET team_code = {P}
+        WHERE id = {P}
     """, (team_code, admin_id))
     conn.commit()
     conn.close()
@@ -4086,7 +4088,7 @@ def get_available_admins(limit=10, offset=0):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             id,
             COALESCE(team_name, full_name) AS team_name,
@@ -4099,7 +4101,7 @@ def get_available_admins(limit=10, offset=0):
           AND team_code IS NOT NULL
           AND TRIM(team_code) != ''
         ORDER BY id ASC
-        LIMIT ? OFFSET ?
+        LIMIT {P} OFFSET {P}
     """, (limit, offset))
 
     rows = cur.fetchall()
@@ -4114,7 +4116,7 @@ def get_admin_link_for_courier(courier_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4122,7 +4124,7 @@ def get_admin_link_for_courier(courier_id: int):
             ac.status AS link_status
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
-        WHERE ac.courier_id = ?
+        WHERE ac.courier_id = {P}
           AND a.is_deleted = 0
         ORDER BY ac.created_at DESC
         LIMIT 1;
@@ -4139,7 +4141,7 @@ def get_admin_link_for_ally(ally_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4147,7 +4149,7 @@ def get_admin_link_for_ally(ally_id: int):
             aa.status AS link_status
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
-        WHERE aa.ally_id = ?
+        WHERE aa.ally_id = {P}
           AND a.is_deleted = 0
         ORDER BY aa.created_at DESC
         LIMIT 1;
@@ -4165,7 +4167,7 @@ def get_approved_admin_link_for_courier(courier_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4174,7 +4176,7 @@ def get_approved_admin_link_for_courier(courier_id: int):
             ac.id AS link_id
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
-        WHERE ac.courier_id = ?
+        WHERE ac.courier_id = {P}
           AND ac.status = 'APPROVED'
           AND a.is_deleted = 0
         ORDER BY ac.created_at DESC
@@ -4193,7 +4195,7 @@ def get_approved_admin_link_for_ally(ally_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4202,7 +4204,7 @@ def get_approved_admin_link_for_ally(ally_id: int):
             aa.id AS link_id
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
-        WHERE aa.ally_id = ?
+        WHERE aa.ally_id = {P}
           AND aa.status = 'APPROVED'
           AND a.is_deleted = 0
         ORDER BY aa.created_at DESC
@@ -4241,10 +4243,10 @@ def ensure_platform_temp_coverage_for_ally(ally_id: int):
     if source_admin_id and source_admin_id != platform_admin_id:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             SELECT DISTINCT courier_id
             FROM admin_couriers
-            WHERE admin_id = ?
+            WHERE admin_id = {P}
               AND status IN ('APPROVED', 'PENDING')
         """, (source_admin_id,))
         rows = cur.fetchall()
@@ -4266,7 +4268,7 @@ def get_all_approved_links_for_courier(courier_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4276,7 +4278,7 @@ def get_all_approved_links_for_courier(courier_id: int):
             ac.updated_at AS last_movement_at
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
-        WHERE ac.courier_id = ?
+        WHERE ac.courier_id = {P}
           AND ac.status = 'APPROVED'
           AND a.is_deleted = 0
         ORDER BY a.team_code ASC;
@@ -4293,7 +4295,7 @@ def get_all_approved_links_for_ally(ally_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
@@ -4303,7 +4305,7 @@ def get_all_approved_links_for_ally(ally_id: int):
             aa.updated_at AS last_movement_at
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
-        WHERE aa.ally_id = ?
+        WHERE aa.ally_id = {P}
           AND aa.status = 'APPROVED'
           AND a.is_deleted = 0
         ORDER BY a.team_code ASC;
@@ -4324,9 +4326,9 @@ def create_ally_customer(ally_id: int, name: str, phone: str, notes: str = None)
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO ally_customers (ally_id, name, phone, notes, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'ACTIVE', datetime('now'), datetime('now'))
+        VALUES ({P}, {P}, {P}, {P}, 'ACTIVE', datetime('now'), datetime('now'))
     """, (ally_id, name.strip(), normalize_phone(phone), notes))
     customer_id = cur.lastrowid
     conn.commit()
@@ -4341,10 +4343,10 @@ def update_ally_customer(customer_id: int, ally_id: int, name: str, phone: str, 
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customers
-        SET name = ?, phone = ?, notes = ?, updated_at = datetime('now')
-        WHERE id = ? AND ally_id = ? AND status = 'ACTIVE'
+        SET name = {P}, phone = {P}, notes = {P}, updated_at = datetime('now')
+        WHERE id = {P} AND ally_id = {P} AND status = 'ACTIVE'
     """, (name.strip(), normalize_phone(phone), notes, customer_id, ally_id))
     updated = cur.rowcount > 0
     conn.commit()
@@ -4359,10 +4361,10 @@ def archive_ally_customer(customer_id: int, ally_id: int) -> bool:
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customers
         SET status = 'INACTIVE', updated_at = datetime('now')
-        WHERE id = ? AND ally_id = ? AND status = 'ACTIVE'
+        WHERE id = {P} AND ally_id = {P} AND status = 'ACTIVE'
     """, (customer_id, ally_id))
     archived = cur.rowcount > 0
     conn.commit()
@@ -4377,10 +4379,10 @@ def restore_ally_customer(customer_id: int, ally_id: int) -> bool:
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customers
         SET status = 'ACTIVE', updated_at = datetime('now')
-        WHERE id = ? AND ally_id = ? AND status = 'INACTIVE'
+        WHERE id = {P} AND ally_id = {P} AND status = 'INACTIVE'
     """, (customer_id, ally_id))
     restored = cur.rowcount > 0
     conn.commit()
@@ -4395,16 +4397,16 @@ def get_ally_customer_by_id(customer_id: int, ally_id: int = None):
     conn = get_connection()
     cur = conn.cursor()
     if ally_id:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
             FROM ally_customers
-            WHERE id = ? AND ally_id = ?
+            WHERE id = {P} AND ally_id = {P}
         """, (customer_id, ally_id))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
             FROM ally_customers
-            WHERE id = ?
+            WHERE id = {P}
         """, (customer_id,))
     row = cur.fetchone()
     conn.close()
@@ -4418,20 +4420,20 @@ def list_ally_customers(ally_id: int, limit: int = 10, include_inactive: bool = 
     conn = get_connection()
     cur = conn.cursor()
     if include_inactive:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
             FROM ally_customers
-            WHERE ally_id = ?
+            WHERE ally_id = {P}
             ORDER BY updated_at DESC
-            LIMIT ?
+            LIMIT {P}
         """, (ally_id, limit))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
             FROM ally_customers
-            WHERE ally_id = ? AND status = 'ACTIVE'
+            WHERE ally_id = {P} AND status = 'ACTIVE'
             ORDER BY updated_at DESC
-            LIMIT ?
+            LIMIT {P}
         """, (ally_id, limit))
     rows = cur.fetchall()
     conn.close()
@@ -4445,13 +4447,13 @@ def search_ally_customers(ally_id: int, query: str, limit: int = 10):
     conn = get_connection()
     cur = conn.cursor()
     search_term = f"%{query.strip()}%"
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
         FROM ally_customers
-        WHERE ally_id = ? AND status = 'ACTIVE'
-          AND (name LIKE ? OR phone LIKE ?)
+        WHERE ally_id = {P} AND status = 'ACTIVE'
+          AND (name LIKE {P} OR phone LIKE {P})
         ORDER BY updated_at DESC
-        LIMIT ?
+        LIMIT {P}
     """, (ally_id, search_term, search_term, limit))
     rows = cur.fetchall()
     conn.close()
@@ -4468,10 +4470,10 @@ def get_ally_customer_by_phone(ally_id: int, phone: str):
 
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
         FROM ally_customers
-        WHERE ally_id = ? AND status = 'ACTIVE' AND phone = ?
+        WHERE ally_id = {P} AND status = 'ACTIVE' AND phone = {P}
         LIMIT 1
     """, (ally_id, phone_norm))
     row = cur.fetchone()
@@ -4499,10 +4501,10 @@ def create_customer_address(
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO ally_customer_addresses
         (customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', datetime('now'), datetime('now'))
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'ACTIVE', datetime('now'), datetime('now'))
     """, (customer_id, label, address_text.strip(), city, barrio, notes, lat, lng))
     address_id = cur.lastrowid
     conn.commit()
@@ -4527,11 +4529,11 @@ def update_customer_address(
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customer_addresses
-        SET label = ?, address_text = ?, city = ?, barrio = ?, notes = ?, lat = ?, lng = ?,
+        SET label = {P}, address_text = {P}, city = {P}, barrio = {P}, notes = {P}, lat = {P}, lng = {P},
             updated_at = datetime('now')
-        WHERE id = ? AND customer_id = ? AND status = 'ACTIVE'
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
     """, (label, address_text.strip(), city, barrio, notes, lat, lng, address_id, customer_id))
     updated = cur.rowcount > 0
     conn.commit()
@@ -4546,10 +4548,10 @@ def archive_customer_address(address_id: int, customer_id: int) -> bool:
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customer_addresses
         SET status = 'INACTIVE', updated_at = datetime('now')
-        WHERE id = ? AND customer_id = ? AND status = 'ACTIVE'
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
     """, (address_id, customer_id))
     archived = cur.rowcount > 0
     conn.commit()
@@ -4563,10 +4565,10 @@ def restore_customer_address(address_id: int, customer_id: int) -> bool:
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE ally_customer_addresses
         SET status = 'ACTIVE', updated_at = datetime('now')
-        WHERE id = ? AND customer_id = ? AND status = 'INACTIVE'
+        WHERE id = {P} AND customer_id = {P} AND status = 'INACTIVE'
     """, (address_id, customer_id))
     restored = cur.rowcount > 0
     conn.commit()
@@ -4581,16 +4583,16 @@ def get_customer_address_by_id(address_id: int, customer_id: int = None):
     conn = get_connection()
     cur = conn.cursor()
     if customer_id:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
-            WHERE id = ? AND customer_id = ?
+            WHERE id = {P} AND customer_id = {P}
         """, (address_id, customer_id))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
-            WHERE id = ?
+            WHERE id = {P}
         """, (address_id,))
     row = cur.fetchone()
     conn.close()
@@ -4604,17 +4606,17 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
     conn = get_connection()
     cur = conn.cursor()
     if include_inactive:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
-            WHERE customer_id = ?
+            WHERE customer_id = {P}
             ORDER BY created_at DESC
         """, (customer_id,))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
-            WHERE customer_id = ? AND status = 'ACTIVE'
+            WHERE customer_id = {P} AND status = 'ACTIVE'
             ORDER BY created_at DESC
         """, (customer_id,))
     rows = cur.fetchall()
@@ -4628,10 +4630,10 @@ def get_last_order_by_ally(ally_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, customer_name, customer_phone, customer_address, customer_city, customer_barrio
         FROM orders
-        WHERE ally_id = ?
+        WHERE ally_id = {P}
         ORDER BY id DESC
         LIMIT 1
     """, (ally_id,))
@@ -4646,9 +4648,9 @@ def get_link_cache(raw_link: str):
     """Busca un link en cache. Retorna dict o None."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT raw_link, expanded_link, lat, lng, formatted_address, provider, place_id
-        FROM map_link_cache WHERE raw_link = ?
+        FROM map_link_cache WHERE raw_link = {P}
     """, (raw_link,))
     row = cur.fetchone()
     conn.close()
@@ -4670,9 +4672,9 @@ def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = Non
     """Inserta o actualiza un link en cache."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO map_link_cache (raw_link, expanded_link, lat, lng, formatted_address, provider, place_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P})
         ON CONFLICT(raw_link) DO UPDATE SET
           expanded_link = COALESCE(excluded.expanded_link, map_link_cache.expanded_link),
           lat = COALESCE(excluded.lat, map_link_cache.lat),
@@ -4689,10 +4691,10 @@ def get_distance_cache(origin_key: str, destination_key: str, mode: str):
     """Busca distancia cacheada por origen/destino y modo. Retorna dict o None."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT distance_km, provider
         FROM map_distance_cache
-        WHERE origin_key = ? AND destination_key = ? AND mode = ?
+        WHERE origin_key = {P} AND destination_key = {P} AND mode = {P}
         LIMIT 1
     """, (origin_key, destination_key, mode))
     row = cur.fetchone()
@@ -4709,9 +4711,9 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
     """Inserta/actualiza distancia cacheada por origen/destino y modo."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO map_distance_cache (origin_key, destination_key, mode, distance_km, provider, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        VALUES ({P}, {P}, {P}, {P}, {P}, datetime('now'), datetime('now'))
         ON CONFLICT(origin_key, destination_key, mode) DO UPDATE SET
           distance_km = excluded.distance_km,
           provider = COALESCE(excluded.provider, map_distance_cache.provider),
@@ -4727,9 +4729,9 @@ def get_api_usage_today(api_name: str) -> int:
     """Retorna el número de llamadas hoy para una API."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT call_count FROM api_usage_daily
-        WHERE api_name = ? AND usage_date = date('now')
+        WHERE api_name = {P} AND usage_date = date('now')
     """, (api_name,))
     row = cur.fetchone()
     conn.close()
@@ -4742,9 +4744,9 @@ def increment_api_usage(api_name: str):
     """Incrementa el contador de uso diario para una API."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO api_usage_daily (api_name, usage_date, call_count)
-        VALUES (?, date('now'), 1)
+        VALUES ({P}, date('now'), 1)
         ON CONFLICT(api_name, usage_date) DO UPDATE SET
           call_count = api_usage_daily.call_count + 1
     """, (api_name,))
@@ -4760,7 +4762,7 @@ def get_admin_balance(admin_id: int) -> int:
     """Retorna el saldo actual de un admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
+    cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else 0
@@ -4788,7 +4790,7 @@ def update_admin_balance_with_ledger(
     cur = conn.cursor()
     cur.execute("BEGIN")
     try:
-        cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
+        cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
         row = cur.fetchone()
         if not row:
             conn.rollback()
@@ -4800,13 +4802,13 @@ def update_admin_balance_with_ledger(
                 f"Saldo insuficiente en admin id={admin_id}. Balance actual={current_balance}, delta={delta}."
             )
         cur.execute(
-            "UPDATE admins SET balance = balance + ? WHERE id = ?",
+            f"UPDATE admins SET balance = balance + {P} WHERE id = {P}",
             (delta, admin_id),
         )
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO ledger
                 (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-            VALUES (?, ?, ?, 'ADMIN', ?, ?, ?, ?, ?)
+            VALUES ({P}, {P}, {P}, 'ADMIN', {P}, {P}, {P}, {P}, {P})
         """, (kind, from_type, from_id, admin_id, abs(delta), ref_type, ref_id, note))
         ledger_id = cur.lastrowid
         conn.commit()
@@ -4822,9 +4824,9 @@ def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
     """Retorna el saldo del vínculo courier-admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT balance FROM admin_couriers
-        WHERE courier_id = ? AND admin_id = ?
+        WHERE courier_id = {P} AND admin_id = {P}
     """, (courier_id, admin_id))
     row = cur.fetchone()
     conn.close()
@@ -4835,10 +4837,10 @@ def update_courier_link_balance(courier_id: int, admin_id: int, delta: int):
     """Actualiza el saldo del vínculo courier-admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admin_couriers SET balance = balance + ?, updated_at = datetime('now')
-        WHERE courier_id = ? AND admin_id = ?
-          AND balance + ? >= 0
+    cur.execute(f"""
+        UPDATE admin_couriers SET balance = balance + {P}, updated_at = datetime('now')
+        WHERE courier_id = {P} AND admin_id = {P}
+          AND balance + {P} >= 0
     """, (delta, courier_id, admin_id, delta))
     if cur.rowcount != 1:
         conn.rollback()
@@ -4854,9 +4856,9 @@ def get_ally_link_balance(ally_id: int, admin_id: int) -> int:
     """Retorna el saldo del vínculo ally-admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT balance FROM admin_allies
-        WHERE ally_id = ? AND admin_id = ?
+        WHERE ally_id = {P} AND admin_id = {P}
     """, (ally_id, admin_id))
     row = cur.fetchone()
     conn.close()
@@ -4867,10 +4869,10 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
     """Actualiza el saldo del vínculo ally-admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admin_allies SET balance = balance + ?, updated_at = datetime('now')
-        WHERE ally_id = ? AND admin_id = ?
-          AND balance + ? >= 0
+    cur.execute(f"""
+        UPDATE admin_allies SET balance = balance + {P}, updated_at = datetime('now')
+        WHERE ally_id = {P} AND admin_id = {P}
+          AND balance + {P} >= 0
     """, (delta, ally_id, admin_id, delta))
     if cur.rowcount != 1:
         conn.rollback()
@@ -4888,9 +4890,9 @@ def exists_pending_recharge_by_proof(proof_file_id: str) -> bool:
         return False
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT 1 FROM recharge_requests
-        WHERE proof_file_id = ? AND status = 'PENDING'
+        WHERE proof_file_id = {P} AND status = 'PENDING'
         LIMIT 1
     """, (proof_file_id,))
     row = cur.fetchone()
@@ -4911,10 +4913,10 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
         return None
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO recharge_requests
             (target_type, target_id, admin_id, amount, status, requested_by_user_id, method, note, proof_file_id)
-        VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
+        VALUES ({P}, {P}, {P}, {P}, 'PENDING', {P}, {P}, {P}, {P})
     """, (target_type, target_id, admin_id, amount, requested_by_user_id, method, note, proof_file_id))
     request_id = cur.lastrowid
     conn.commit()
@@ -4926,11 +4928,11 @@ def get_recharge_request(request_id: int):
     """Obtiene una solicitud de recarga por ID (dict homogéneo)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, target_type, target_id, admin_id, amount, status,
                requested_by_user_id, decided_by_admin_id, method, note,
                created_at, decided_at, proof_file_id
-        FROM recharge_requests WHERE id = ?
+        FROM recharge_requests WHERE id = {P}
     """, (request_id,))
     row = cur.fetchone()
     conn.close()
@@ -4959,7 +4961,7 @@ def list_pending_recharges_for_admin(admin_id: int):
     """Lista las solicitudes PENDING asignadas a un admin."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT rr.id, rr.target_type, rr.target_id, rr.amount, rr.method, rr.note, rr.created_at,
                CASE
                    WHEN rr.target_type = 'COURIER' THEN c.full_name
@@ -4970,7 +4972,7 @@ def list_pending_recharges_for_admin(admin_id: int):
         FROM recharge_requests rr
         LEFT JOIN couriers c ON rr.target_type = 'COURIER' AND rr.target_id = c.id
         LEFT JOIN allies al ON rr.target_type = 'ALLY' AND rr.target_id = al.id
-        WHERE rr.admin_id = ? AND rr.status = 'PENDING'
+        WHERE rr.admin_id = {P} AND rr.status = 'PENDING'
         ORDER BY rr.created_at ASC
     """, (admin_id,))
     rows = cur.fetchall()
@@ -4983,10 +4985,10 @@ def update_recharge_status(request_id: int, status: str, decided_by_admin_id: in
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE recharge_requests
-        SET status = ?, decided_by_admin_id = ?, decided_at = datetime('now')
-        WHERE id = ?
+        SET status = {P}, decided_by_admin_id = {P}, decided_at = datetime('now')
+        WHERE id = {P}
     """, (status, decided_by_admin_id, request_id))
     conn.commit()
     conn.close()
@@ -5001,9 +5003,9 @@ def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, t
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
     """, (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note))
     ledger_id = cur.lastrowid
     conn.commit()
@@ -5037,9 +5039,9 @@ def get_admin_payment_info(admin_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT payment_phone, payment_bank, payment_holder, payment_instructions
-        FROM admins WHERE id = ?
+        FROM admins WHERE id = {P}
     """, (admin_id,))
     row = cur.fetchone()
     conn.close()
@@ -5066,22 +5068,22 @@ def update_admin_payment_info(admin_id: int, payment_phone: str = None, payment_
     params = []
 
     if payment_phone is not None:
-        updates.append("payment_phone = ?")
+        updates.append(f"payment_phone = {P}")
         params.append(payment_phone)
     if payment_bank is not None:
-        updates.append("payment_bank = ?")
+        updates.append(f"payment_bank = {P}")
         params.append(payment_bank)
     if payment_holder is not None:
-        updates.append("payment_holder = ?")
+        updates.append(f"payment_holder = {P}")
         params.append(payment_holder)
     if payment_instructions is not None:
-        updates.append("payment_instructions = ?")
+        updates.append(f"payment_instructions = {P}")
         params.append(payment_instructions)
 
     if updates:
         params.append(admin_id)
         cur.execute(f"""
-            UPDATE admins SET {', '.join(updates)} WHERE id = ?
+            UPDATE admins SET {', '.join(updates)} WHERE id = {P}
         """, params)
         conn.commit()
 
@@ -5092,8 +5094,8 @@ def update_recharge_proof(request_id: int, proof_file_id: str):
     """Actualiza el comprobante de una solicitud de recarga."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE recharge_requests SET proof_file_id = ? WHERE id = ?
+    cur.execute(f"""
+        UPDATE recharge_requests SET proof_file_id = {P} WHERE id = {P}
     """, (proof_file_id, request_id))
     conn.commit()
     conn.close()
@@ -5111,10 +5113,10 @@ def create_payment_method(admin_id: int, method_name: str, account_number: str,
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO admin_payment_methods
             (admin_id, method_name, account_number, account_holder, instructions, is_active)
-        VALUES (?, ?, ?, ?, ?, 1)
+        VALUES ({P}, {P}, {P}, {P}, {P}, 1)
     """, (admin_id, method_name.strip(), account_number.strip(), account_holder.strip(), instructions))
     method_id = cur.lastrowid
     conn.commit()
@@ -5126,9 +5128,9 @@ def get_payment_method_by_id(method_id: int):
     """Obtiene un metodo de pago por ID."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
-        FROM admin_payment_methods WHERE id = ?
+        FROM admin_payment_methods WHERE id = {P}
     """, (method_id,))
     row = cur.fetchone()
     conn.close()
@@ -5143,17 +5145,17 @@ def list_payment_methods(admin_id: int, only_active: bool = False):
     conn = get_connection()
     cur = conn.cursor()
     if only_active:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
             FROM admin_payment_methods
-            WHERE admin_id = ? AND is_active = 1
+            WHERE admin_id = {P} AND is_active = 1
             ORDER BY created_at DESC
         """, (admin_id,))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, admin_id, method_name, account_number, account_holder, instructions, is_active, created_at
             FROM admin_payment_methods
-            WHERE admin_id = ?
+            WHERE admin_id = {P}
             ORDER BY is_active DESC, created_at DESC
         """, (admin_id,))
     rows = cur.fetchall()
@@ -5165,8 +5167,8 @@ def toggle_payment_method(method_id: int, is_active: int):
     """Activa o desactiva un metodo de pago."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        UPDATE admin_payment_methods SET is_active = ? WHERE id = ?
+    cur.execute(f"""
+        UPDATE admin_payment_methods SET is_active = {P} WHERE id = {P}
     """, (is_active, method_id))
     conn.commit()
     conn.close()
@@ -5176,10 +5178,10 @@ def deactivate_payment_method(method_id: int):
     """Desactiva un metodo de pago (sin borrado fisico)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE admin_payment_methods
         SET is_active = 0
-        WHERE id = ?
+        WHERE id = {P}
     """, (method_id,))
     conn.commit()
     conn.close()
@@ -5203,7 +5205,7 @@ def create_profile_change_request(
 ):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO profile_change_requests (
             requester_user_id,
             target_role,
@@ -5217,7 +5219,7 @@ def create_profile_change_request(
             team_admin_id,
             team_code,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, datetime('now'));
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {P}, {P}, datetime('now'));
     """, (
         requester_user_id,
         target_role,
@@ -5239,14 +5241,14 @@ def create_profile_change_request(
 def has_pending_profile_change_request(requester_user_id, target_role, target_role_id, field_name):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         SELECT COUNT(*) AS total
         FROM profile_change_requests
         WHERE status = 'PENDING'
-          AND requester_user_id = ?
-          AND target_role = ?
-          AND target_role_id = ?
-          AND field_name = ?
+          AND requester_user_id = {P}
+          AND target_role = {P}
+          AND target_role_id = {P}
+          AND field_name = {P}
     """, (requester_user_id, target_role, target_role_id, field_name))
     row = cur.fetchone()
     conn.close()
@@ -5263,10 +5265,10 @@ def list_pending_profile_change_requests(is_platform: bool, admin_id: int):
             ORDER BY created_at ASC
         """)
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT * FROM profile_change_requests
             WHERE status = 'PENDING'
-              AND team_admin_id = ?
+              AND team_admin_id = {P}
               AND (team_code IS NULL OR team_code != 'PLATFORM')
             ORDER BY created_at ASC
         """, (admin_id,))
@@ -5278,8 +5280,8 @@ def list_pending_profile_change_requests(is_platform: bool, admin_id: int):
 def get_profile_change_request_by_id(request_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT * FROM profile_change_requests WHERE id = ?
+    cur.execute(f"""
+        SELECT * FROM profile_change_requests WHERE id = {P}
     """, (request_id,))
     row = cur.fetchone()
     conn.close()
@@ -5289,13 +5291,13 @@ def get_profile_change_request_by_id(request_id):
 def mark_profile_change_request_approved(request_id, reviewer_user_id, reviewer_admin_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE profile_change_requests
         SET status = 'APPROVED',
-            reviewed_by_user_id = ?,
-            reviewed_by_admin_id = ?,
+            reviewed_by_user_id = {P},
+            reviewed_by_admin_id = {P},
             reviewed_at = datetime('now')
-        WHERE id = ?
+        WHERE id = {P}
     """, (reviewer_user_id, reviewer_admin_id, request_id))
     conn.commit()
     conn.close()
@@ -5304,14 +5306,14 @@ def mark_profile_change_request_approved(request_id, reviewer_user_id, reviewer_
 def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_admin_id, reason):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(f"""
         UPDATE profile_change_requests
         SET status = 'REJECTED',
-            reviewed_by_user_id = ?,
-            reviewed_by_admin_id = ?,
+            reviewed_by_user_id = {P},
+            reviewed_by_admin_id = {P},
             reviewed_at = datetime('now'),
-            rejection_reason = ?
-        WHERE id = ?
+            rejection_reason = {P}
+        WHERE id = {P}
     """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
     conn.commit()
     conn.close()
