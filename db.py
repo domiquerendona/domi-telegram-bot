@@ -1366,19 +1366,27 @@ def force_platform_admin(platform_telegram_id: int):
     """
     conn = get_connection()
     cur = conn.cursor()
+    _pg = DB_ENGINE == "postgres"
+    P = "%s" if _pg else "?"
+    NOW = "NOW()" if _pg else "datetime('now')"
 
     # 1) asegurar users
-    cur.execute("SELECT id FROM users WHERE telegram_id = ? LIMIT 1", (platform_telegram_id,))
+    cur.execute(f"SELECT id FROM users WHERE telegram_id = {P} LIMIT 1", (platform_telegram_id,))
     row = cur.fetchone()
 
     if row:
-        user_id = row[0] if not isinstance(row, sqlite3.Row) else row["id"]
+        user_id = row["id"]
     else:
         cur.execute(
-            "INSERT INTO users (telegram_id, username, role, created_at) VALUES (?, ?, ?, datetime('now'))",
+            f"INSERT INTO users (telegram_id, username, role, created_at) VALUES ({P}, {P}, {P}, {NOW})",
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
-        user_id = cur.lastrowid
+        if _pg:
+            # psycopg2 no soporta lastrowid; recuperar id insertado
+            cur.execute("SELECT currval(pg_get_serial_sequence('users','id'))")
+            user_id = cur.fetchone()["currval"]
+        else:
+            user_id = cur.lastrowid
 
     # 2) asegurar admins - buscar por team_code='PLATFORM' (UNIQUE, solo puede haber uno)
     cur.execute("""
@@ -1390,22 +1398,22 @@ def force_platform_admin(platform_telegram_id: int):
 
     if admin_row:
         # Ya existe PLATFORM, reasignar al user_id correcto y aprobar
-        admin_id = admin_row[0] if not isinstance(admin_row, sqlite3.Row) else admin_row["id"]
-        cur.execute("""
+        admin_id = admin_row["id"]
+        cur.execute(f"""
             UPDATE admins
-            SET user_id = ?, status = 'APPROVED', is_deleted = 0
-            WHERE id = ?
+            SET user_id = {P}, status = 'APPROVED', is_deleted = 0
+            WHERE id = {P}
         """, (user_id, admin_id))
     else:
         # No existe, crear nuevo
-        cur.execute("""
+        cur.execute(f"""
             INSERT INTO admins (
                 user_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number, team_code
             )
             VALUES (
-                ?, ?, ?, ?, ?,
-                'APPROVED', datetime('now'), ?, ?, 'PLATFORM'
+                {P}, {P}, {P}, {P}, {P},
+                'APPROVED', {NOW}, {P}, {P}, 'PLATFORM'
             )
         """, (
             user_id,
