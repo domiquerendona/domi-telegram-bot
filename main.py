@@ -3534,37 +3534,6 @@ def pedido_confirmacion_callback(update, context):
 
         if admin_link:
             admin_id_for_publish = admin_link["admin_id"]
-            fee_ok, fee_code = check_service_fee_available(
-                target_type="ALLY",
-                target_id=ally_id,
-                admin_id=admin_id_for_publish,
-            )
-            if not fee_ok:
-                if fee_code == "ADMIN_SIN_SALDO":
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text="Tu administrador no tiene saldo suficiente para operar. "
-                             "Contacta a tu administrador o recarga directamente con plataforma."
-                    )
-                    try:
-                        admin_row = get_admin_by_id(admin_link["admin_id"])
-                        if admin_row:
-                            admin_user = get_user_by_id(admin_row["user_id"])
-                            if admin_user:
-                                context.bot.send_message(
-                                    chat_id=admin_user["telegram_id"],
-                                    text="Tu equipo no puede operar porque no tienes saldo. "
-                                         "Recarga con plataforma para que tu equipo siga generando ganancias."
-                                )
-                    except Exception as e:
-                        print("[WARN] No se pudo notificar al admin:", e)
-                else:
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text="No tienes saldo suficiente para este servicio. Recarga para continuar."
-                    )
-                context.user_data.clear()
-                return ConversationHandler.END
         else:
             latest_admin_link = get_admin_link_for_ally(ally_id)
             latest_link_status = (latest_admin_link["link_status"] or "").upper() if latest_admin_link else ""
@@ -3617,6 +3586,40 @@ def pedido_confirmacion_callback(update, context):
                 )
                 context.user_data.clear()
                 return ConversationHandler.END
+
+        # Verificacion final obligatoria de saldo ANTES de crear pedido,
+        # incluyendo cobertura temporal con plataforma.
+        fee_ok, fee_code = check_service_fee_available(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=admin_id_for_publish,
+        )
+        if not fee_ok:
+            if fee_code == "ADMIN_SIN_SALDO":
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Tu administrador no tiene saldo suficiente para operar. "
+                         "Contacta a tu administrador o recarga directamente con plataforma."
+                )
+                try:
+                    admin_row = get_admin_by_id(admin_id_for_publish)
+                    if admin_row:
+                        admin_user = get_user_by_id(admin_row["user_id"])
+                        if admin_user:
+                            context.bot.send_message(
+                                chat_id=admin_user["telegram_id"],
+                                text="Tu equipo no puede operar porque no tienes saldo. "
+                                     "Recarga con plataforma para que tu equipo siga generando ganancias."
+                            )
+                except Exception as e:
+                    print("[WARN] No se pudo notificar al admin:", e)
+            else:
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text="No tienes saldo suficiente para este servicio. Recarga para continuar."
+                )
+            context.user_data.clear()
+            return ConversationHandler.END
 
         # Obtener pickup del selector (o default si no existe)
         pickup_location = context.user_data.get("pickup_location")
