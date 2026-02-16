@@ -1,6 +1,6 @@
 from typing import Tuple, Optional
 from dataclasses import dataclass
-from Backend.db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting
+from db import get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting
 import math
 
 
