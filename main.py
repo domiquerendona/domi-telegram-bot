@@ -1699,14 +1699,19 @@ def ally_confirm(update, context):
     except ValueError as e:
         print(f"[ERROR] Error de validación al crear aliado: {e}")
         err = str(e).lower()
-        if "cedula ya" in err and "otro telefono" in err:
+        err_ascii = err.encode("ascii", "ignore").decode("ascii")
+        if "cedula ya" in err_ascii and "otro telefono" in err_ascii:
             msg = "No se pudo completar el registro: ese numero de cedula ya esta registrado con otro telefono."
-        elif "telefono ya" in err and "otra cedula" in err:
+        elif "telefono ya" in err_ascii and "otra cedula" in err_ascii:
             msg = "No se pudo completar el registro: ese telefono ya esta registrado con otra cedula."
-        elif "ya existe un registro de aliado" in err:
+        elif "ya existe un registro de aliado" in err_ascii:
             msg = "Ya existe un registro de aliado para esta cuenta o identidad."
-        elif "telefono es obligatorio" in err:
+        elif "telefono es obligatorio" in err_ascii:
             msg = "No se pudo completar el registro: el telefono es obligatorio."
+        elif "error al crear identidad" in err_ascii:
+            msg = "No se pudo completar el registro por un conflicto de identidad. Revisa cedula y telefono."
+        elif "error al actualizar documento" in err_ascii:
+            msg = "No se pudo completar el registro al validar el documento. Verifica e intenta de nuevo."
         else:
             msg = "No se pudo completar el registro con los datos enviados. Verifica e intenta de nuevo."
         update.message.reply_text(msg)
