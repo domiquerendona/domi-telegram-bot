@@ -20,6 +20,7 @@ from db import (
     get_eligible_couriers_for_order,
     get_next_pending_offer,
     get_order_by_id,
+    get_orders_by_ally,
     get_orders_by_admin_team,
     get_user_by_telegram_id,
     get_user_by_id,
@@ -241,7 +242,7 @@ def _expire_order(order_id, cycle_info, context):
 
 
 def ally_active_orders(update, context):
-    """Muestra pedidos activos del aliado con opcion de cancelar."""
+    """Muestra pedidos activos e historial reciente del aliado."""
     telegram_id = update.effective_user.id
     user = get_user_by_telegram_id(telegram_id)
     if not user:
@@ -253,9 +254,12 @@ def ally_active_orders(update, context):
         update.message.reply_text("No tienes perfil de aliado.")
         return
 
-    orders = get_active_orders_by_ally(ally["id"])
-    if not orders:
-        update.message.reply_text("No tienes pedidos activos.")
+    active_orders = get_active_orders_by_ally(ally["id"])
+    all_orders = get_orders_by_ally(ally["id"], limit=20)
+    history_orders = [o for o in all_orders if o["status"] in ("DELIVERED", "CANCELLED")]
+
+    if not active_orders and not history_orders:
+        update.message.reply_text("No tienes pedidos registrados.")
         return
 
     STATUS_LABELS = {
@@ -263,24 +267,85 @@ def ally_active_orders(update, context):
         "PUBLISHED": "Buscando repartidor",
         "ACCEPTED": "Repartidor asignado",
         "PICKED_UP": "En camino al cliente",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
     }
 
-    for order in orders:
-        status_label = STATUS_LABELS.get(order["status"], order["status"])
-        text = "Pedido #{}\nEstado: {}\nCliente: {}\nDireccion: {}".format(
-            order["id"],
-            status_label,
-            order["customer_name"] or "N/A",
-            order["customer_address"] or "N/A",
-        )
+    if active_orders:
+        update.message.reply_text("Pedidos activos:")
+        for order in active_orders:
+            status_label = STATUS_LABELS.get(order["status"], order["status"])
+            text = "Pedido #{}\nEstado: {}\nCliente: {}\nDireccion: {}".format(
+                order["id"],
+                status_label,
+                order["customer_name"] or "N/A",
+                order["customer_address"] or "N/A",
+            )
 
-        if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
-            keyboard = [[InlineKeyboardButton(
-                "Cancelar pedido",
-                callback_data="order_cancel_{}".format(order["id"]),
-            )]]
-            update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
+            if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
+                keyboard = [[InlineKeyboardButton(
+                    "Cancelar pedido",
+                    callback_data="order_cancel_{}".format(order["id"]),
+                )]]
+                update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                update.message.reply_text(text)
+    else:
+        update.message.reply_text("No tienes pedidos activos.")
+
+    if history_orders:
+        update.message.reply_text("Historial reciente (entregados/cancelados):")
+        for order in history_orders[:10]:
+            status_label = STATUS_LABELS.get(order["status"], order["status"])
+
+            courier_name = "Sin asignar"
+            courier_id = order["courier_id"] if "courier_id" in order.keys() else None
+            if courier_id:
+                courier_row = get_courier_by_id(courier_id)
+                if courier_row and courier_row["full_name"]:
+                    courier_name = courier_row["full_name"]
+
+            ally_admin_snapshot_id = order["ally_admin_id_snapshot"] if "ally_admin_id_snapshot" in order.keys() else None
+            courier_admin_snapshot_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+
+            ally_admin_label = str(ally_admin_snapshot_id) if ally_admin_snapshot_id else "N/A"
+            if ally_admin_snapshot_id:
+                admin_row = get_admin_by_id(int(ally_admin_snapshot_id))
+                if admin_row and admin_row["full_name"]:
+                    ally_admin_label = "{} ({})".format(ally_admin_label, admin_row["full_name"])
+
+            courier_admin_label = str(courier_admin_snapshot_id) if courier_admin_snapshot_id else "N/A"
+            if courier_admin_snapshot_id:
+                admin_row = get_admin_by_id(int(courier_admin_snapshot_id))
+                if admin_row and admin_row["full_name"]:
+                    courier_admin_label = "{} ({})".format(courier_admin_label, admin_row["full_name"])
+
+            event_at = "N/A"
+            if order["status"] == "DELIVERED" and "delivered_at" in order.keys() and order["delivered_at"]:
+                event_at = order["delivered_at"]
+            elif order["status"] == "CANCELLED" and "canceled_at" in order.keys() and order["canceled_at"]:
+                event_at = order["canceled_at"]
+            canceled_by = order["canceled_by"] if "canceled_by" in order.keys() and order["canceled_by"] else "N/A"
+
+            text = (
+                "Pedido #{}\n"
+                "Estado: {}\n"
+                "Fecha: {}\n"
+                "Cliente: {}\n"
+                "Repartidor: {}\n"
+                "Admin aliado (snapshot): {}\n"
+                "Admin repartidor (snapshot): {}\n"
+                "Cancelado por: {}"
+            ).format(
+                order["id"],
+                status_label,
+                event_at,
+                order["customer_name"] or "N/A",
+                courier_name,
+                ally_admin_label,
+                courier_admin_label,
+                canceled_by,
+            )
             update.message.reply_text(text)
 
 
