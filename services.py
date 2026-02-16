@@ -1,17 +1,20 @@
 from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
+import json
+import unicodedata
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
+    get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     update_courier_link_balance, update_ally_link_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
-    ensure_platform_link_for_courier, ensure_platform_link_for_ally,
-    get_connection
+    upsert_reference_alias_candidate,
+    get_connection,
 )
 import math
 import re
@@ -20,6 +23,140 @@ import os
 # Límite diario de llamadas a Google (configurable)
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
+
+
+def _distance_factor() -> float:
+    """Factor de correccion urbana para Haversine (configurable)."""
+    raw = get_setting("pricing_local_distance_factor", str(DEFAULT_LOCAL_DISTANCE_FACTOR))
+    try:
+        val = float(raw)
+    except Exception:
+        return DEFAULT_LOCAL_DISTANCE_FACTOR
+    if val < 1.0:
+        return 1.0
+    if val > 2.0:
+        return 2.0
+    return val
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Distancia Haversine en km entre dos coordenadas."""
+    r = 6371.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def _coords_cache_key(lat: float, lng: float) -> str:
+    return f"{round(lat, 5)},{round(lng, 5)}"
+
+
+def _text_cache_key(text: str, city_hint: str) -> str:
+    city = (city_hint or "").strip().lower()
+    t = (text or "").strip().lower()
+    return f"{city}|{t}"
+
+
+def _normalize_reference_key(value: str) -> str:
+    """Normaliza texto para matching de aliases locales."""
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower().strip()
+    normalized = re.sub(r"[^\w\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def _parse_local_alias_point(raw_value: Any) -> Optional[Dict[str, Any]]:
+    """Convierte un alias configurado en dict canonico {lat, lng, label}."""
+    if isinstance(raw_value, dict):
+        try:
+            lat = float(raw_value.get("lat"))
+            lng = float(raw_value.get("lng"))
+        except Exception:
+            return None
+        label = str(raw_value.get("label") or raw_value.get("address") or "").strip()
+        return {"lat": lat, "lng": lng, "label": label}
+
+    if isinstance(raw_value, (list, tuple)) and len(raw_value) >= 2:
+        try:
+            lat = float(raw_value[0])
+            lng = float(raw_value[1])
+        except Exception:
+            return None
+        return {"lat": lat, "lng": lng, "label": ""}
+
+    return None
+
+
+def _resolve_local_reference(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca referencias locales de barrio/conjunto/punto desde settings.
+    Formato esperado en `location_reference_aliases_json`:
+    {
+      "alfonso lopez": {"lat": 4.81, "lng": -75.69, "label": "Barrio Alfonso Lopez"},
+      "terminal": [4.816, -75.69]
+    }
+    """
+    normalized_text = _normalize_reference_key(text)
+    if not normalized_text:
+        return None
+
+    raw = get_setting("location_reference_aliases_json", "")
+    if not raw:
+        return None
+
+    try:
+        aliases = json.loads(raw)
+    except Exception:
+        return None
+
+    if not isinstance(aliases, dict):
+        return None
+
+    normalized_aliases = {}
+    for alias, point in aliases.items():
+        key = _normalize_reference_key(str(alias))
+        parsed_point = _parse_local_alias_point(point)
+        if key and parsed_point:
+            normalized_aliases[key] = parsed_point
+
+    if not normalized_aliases:
+        return None
+
+    if normalized_text in normalized_aliases:
+        point = normalized_aliases[normalized_text]
+        return {"lat": point["lat"], "lng": point["lng"], "method": "local_alias", "label": point["label"]}
+
+    candidates = [k for k in normalized_aliases if k in normalized_text or normalized_text in k]
+    if not candidates:
+        return None
+    best = max(candidates, key=len)
+    point = normalized_aliases[best]
+    return {"lat": point["lat"], "lng": point["lng"], "method": "local_alias", "label": point["label"]}
+
+
+# ---------- HAVERSINE (DISTANCIA LOCAL GRATIS) ----------
+
+def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Wrapper publico de _haversine_km. Retorna distancia en linea recta en km."""
+    return round(_haversine_km(lat1, lng1, lat2, lng2), 2)
+
+
+def haversine_road_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    Distancia estimada por carretera urbana = Haversine * factor de correccion configurable.
+    Factor por defecto 1.30 (calles urbanas tipicas agregan ~30% sobre linea recta).
+    Configurable via BD (pricing_local_distance_factor) o env (LOCAL_DISTANCE_FACTOR).
+    """
+    straight = _haversine_km(lat1, lng1, lat2, lng2)
+    return round(straight * _distance_factor(), 2)
 
 
 # ---------- GOOGLE API HELPERS ----------
@@ -223,35 +360,81 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-
+        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
         return None
 
 
+def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> dict:
+    """
+    Estrategia en 3 capas para calcular distancia de forma economica:
+
+    Capa 1 - Haversine: calculo local gratuito (distancia * factor urbano).
+    Capa 2 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
+    Capa 3 - Google API: solo si hay cuota disponible (costoso).
+
+    Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
+    """
+    origin_key = _coords_cache_key(lat1, lng1)
+    destination_key = _coords_cache_key(lat2, lng2)
+
+    # --- CAPA 1: Haversine (primera opcion, gratis) ---
+    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+    local_result = {
+        "distance_km": haversine_dist,
+        "source": "haversine",
+        "used_api": False,
+    }
+
+    # --- CAPA 2: Cache ---
+    cached = get_distance_cache(origin_key, destination_key, mode="coords")
+    if cached and cached.get("distance_km") is not None:
+        return {
+            "distance_km": float(cached["distance_km"]),
+            "source": f"cache({cached.get('provider', 'unknown')})",
+            "used_api": False,
+        }
+
+    # Si no hay cache, guardamos resultado local para siguientes consultas.
+    upsert_distance_cache(origin_key, destination_key, mode="coords",
+                          distance_km=haversine_dist, provider="haversine")
+
+    # --- CAPA 3: Google API (solo si hay cuota) ---
+    # En cotizacion por coords casi nunca es necesario, pero se mantiene como ultimo recurso
+    # cuando no hay un valor local util.
+    if haversine_dist <= 0 and can_call_google_today() and GOOGLE_MAPS_API_KEY:
+        google_dist = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
+        if google_dist is not None:
+            upsert_distance_cache(origin_key, destination_key, mode="coords",
+                                  distance_km=google_dist, provider="google_distance_matrix")
+            return {
+                "distance_km": google_dist,
+                "source": "google",
+                "used_api": True,
+            }
+
+    # Fusible/fallback: continuar con estimacion local.
+    return local_result
+
+
 def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
     """
-    Calcula cotización usando coordenadas (más preciso que texto).
+    Calcula cotizacion usando coordenadas con estrategia economica en 3 capas:
+    1. Cache de distancias previas
+    2. Haversine local (gratis)
+    3. Google API (solo si hay cuota)
 
     Args:
         pickup_lat, pickup_lng: Coordenadas de recogida
         dropoff_lat, dropoff_lng: Coordenadas de entrega
 
     Returns:
-        dict con: success, distance_km, price, quote_source, config
+        dict con: success, distance_km, price, quote_source, config, distance_source
     """
-    distance_km = get_distance_from_api_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-
-    if distance_km is None:
-        return {
-            "success": False,
-            "distance_km": None,
-            "price": None,
-            "config": None,
-            "quote_source": None,
-            "error": "API no disponible o fallo",
-        }
+    result = get_smart_distance(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+    distance_km = result["distance_km"]
 
     config = get_pricing_config()
     price = calcular_precio_distancia(distance_km, config)
@@ -262,6 +445,8 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
         "price": price,
         "config": config,
         "quote_source": "coords",
+        "distance_source": result["source"],
+        "used_api": result["used_api"],
     }
 
 
@@ -591,7 +776,7 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-
+        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -611,27 +796,136 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         dict con: distance_km, price, config, success, quote_source
         Si la API falla, distance_km y price seran None
     """
-    distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
+    config = get_pricing_config()
 
-    if distance_km is None:
+    # 1) Capa local gratis si el texto trae coordenadas
+    pickup_coords = extract_lat_lng_from_text(pickup_text)
+    dropoff_coords = extract_lat_lng_from_text(dropoff_text)
+    if pickup_coords and dropoff_coords:
+        coords_quote = quote_order_by_coords(
+            pickup_coords[0], pickup_coords[1],
+            dropoff_coords[0], dropoff_coords[1]
+        )
+        if coords_quote.get("success"):
+            return {
+                "distance_km": coords_quote["distance_km"],
+                "price": coords_quote["price"],
+                "config": coords_quote["config"],
+                "success": True,
+                "quote_source": "text_via_" + str(coords_quote.get("quote_source")),
+            }
+
+    # 2) Cache por par de direcciones
+    origin_key = _text_cache_key(pickup_text, city_hint)
+    destination_key = _text_cache_key(dropoff_text, city_hint)
+    cached = get_distance_cache(origin_key, destination_key, mode="text")
+    if cached and cached.get("distance_km") is not None:
+        distance_km = float(cached["distance_km"])
+        price = calcular_precio_distancia(distance_km, config)
         return {
-            "distance_km": None,
-            "price": None,
-            "config": None,
-            "success": False,
-            "quote_source": None,
+            "distance_km": distance_km,
+            "price": price,
+            "config": config,
+            "success": True,
+            "quote_source": "text_cache",
         }
 
-    config = get_pricing_config()
-    price = calcular_precio_distancia(distance_km, config)
+    # 3) API paga como ultimo recurso (si hay cuota diaria)
+    if can_call_google_today():
+        distance_km = get_distance_from_api(pickup_text, dropoff_text, city_hint)
+        if distance_km is not None:
+            upsert_distance_cache(origin_key, destination_key, mode="text", distance_km=distance_km, provider="google_distance_matrix")
+            price = calcular_precio_distancia(distance_km, config)
+            return {
+                "distance_km": distance_km,
+                "price": price,
+                "config": config,
+                "success": True,
+                "quote_source": "text_api",
+            }
 
+    # 4) Fusible/fallback local para no romper flujo sin cuota/API
+    fallback_distance = float(config["base_distance_km"])
+    price = calcular_precio_distancia(fallback_distance, config)
     return {
-        "distance_km": distance_km,
+        "distance_km": fallback_distance,
         "price": price,
         "config": config,
         "success": True,
-        "quote_source": "text",
+        "quote_source": "text_fallback_local",
     }
+
+
+# ---------- RESOLVER UBICACION INTELIGENTE ----------
+
+def resolve_location(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Intenta extraer lat/lng de cualquier entrada del usuario:
+    1. Coordenadas directas (4.81,-75.69)
+    2. Link de Google Maps (corto o largo)
+    3. Geocoding con Google API (solo si hay cuota)
+
+    Retorna dict {lat, lng, method} o None.
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+    is_url_like = "http" in text.lower()
+
+    # 1. Intentar extraer coords directamente
+    coords = extract_lat_lng_from_text(text)
+    if coords:
+        return {"lat": coords[0], "lng": coords[1], "method": "coords"}
+
+    # 2. Si es link corto, expandir primero
+    expanded = expand_short_url(text)
+    if expanded:
+        coords = extract_lat_lng_from_text(expanded)
+        if coords:
+            return {"lat": coords[0], "lng": coords[1], "method": "link"}
+
+        # Intentar extraer place_id del link expandido
+        place_id = extract_place_id_from_url(expanded)
+        if place_id and can_call_google_today():
+            details = google_place_details(place_id)
+            if details and details.get("lat") and details.get("lng"):
+                return {"lat": details["lat"], "lng": details["lng"], "method": "places_api"}
+
+    # 3. Si es link largo de Google Maps
+    if "google" in text.lower() or "maps" in text.lower() or "goo.gl" in text.lower():
+        place_id = extract_place_id_from_url(text)
+        if place_id and can_call_google_today():
+            details = google_place_details(place_id)
+            if details and details.get("lat") and details.get("lng"):
+                return {"lat": details["lat"], "lng": details["lng"], "method": "places_api"}
+
+    # 4. Referencias locales (gratis): barrio/conjunto/punto configurado.
+    local_ref = _resolve_local_reference(text)
+    if local_ref:
+        return local_ref
+
+    # 5. Geocoding por texto (ultimo recurso, cuesta API)
+    normalized_text = _normalize_reference_key(text)
+    if can_call_google_today() and not is_url_like:
+        geo = google_geocode_forward(text)
+        if geo and geo.get("lat") and geo.get("lng"):
+            upsert_reference_alias_candidate(
+                raw_text=text,
+                normalized_text=normalized_text,
+                suggested_lat=geo["lat"],
+                suggested_lng=geo["lng"],
+                source="geocode",
+            )
+            return {"lat": geo["lat"], "lng": geo["lng"], "method": "geocode"}
+
+    if not is_url_like:
+        upsert_reference_alias_candidate(
+            raw_text=text,
+            normalized_text=normalized_text,
+            source="unresolved",
+        )
+    return None
 
 
 # ============================================================
@@ -667,24 +961,16 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         # Admin local recargando con plataforma: no necesita vínculo,
         # se acredita directamente el saldo master del admin
         pass
-    elif is_platform:
-        if target_type == "COURIER":
-            ensure_platform_link_for_courier(admin_id, target_id)
-        elif target_type == "ALLY":
-            ensure_platform_link_for_ally(admin_id, target_id)
-        else:
-            return False, f"Tipo de destino desconocido: {target_type}"
+    elif target_type == "COURIER":
+        link = get_approved_admin_link_for_courier(target_id)
+        if not link or link["admin_id"] != admin_id:
+            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+    elif target_type == "ALLY":
+        link = get_approved_admin_link_for_ally(target_id)
+        if not link or link["admin_id"] != admin_id:
+            return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
     else:
-        if target_type == "COURIER":
-            link = get_approved_admin_link_for_courier(target_id)
-            if not link or link["admin_id"] != admin_id:
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-        elif target_type == "ALLY":
-            link = get_approved_admin_link_for_ally(target_id)
-            if not link or link["admin_id"] != admin_id:
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-        else:
-            return False, f"Tipo de destino desconocido: {target_type}"
+        return False, f"Tipo de destino desconocido: {target_type}"
 
     conn = get_connection()
     cur = conn.cursor()

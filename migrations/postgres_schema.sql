@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS couriers (
     rejected_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
+    live_lat REAL,
+    live_lng REAL,
+    live_location_active INTEGER DEFAULT 0,
+    live_location_updated_at TIMESTAMP,
+    availability_status TEXT DEFAULT 'INACTIVE',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -179,7 +184,9 @@ CREATE TABLE IF NOT EXISTS orders (
     accepted_at TIMESTAMP,
     pickup_confirmed_at TIMESTAMP,
     delivered_at TIMESTAMP,
-    canceled_at TIMESTAMP
+    canceled_at TIMESTAMP,
+    ally_admin_id_snapshot BIGINT,
+    courier_admin_id_snapshot BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS courier_ratings (
@@ -189,6 +196,17 @@ CREATE TABLE IF NOT EXISTS courier_ratings (
     rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
     comment TEXT,
     created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS order_pickup_confirmations (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL UNIQUE,
+    courier_id BIGINT NOT NULL,
+    ally_id BIGINT NOT NULL,
+    status TEXT DEFAULT 'PENDING',
+    requested_at TIMESTAMP DEFAULT NOW(),
+    reviewed_at TIMESTAMP,
+    reviewed_by_ally_id BIGINT
 );
 
 -- ============================================================

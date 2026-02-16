@@ -1,6 +1,8 @@
 import sqlite3
 import os
 import re
+import json
+import time
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -183,8 +185,11 @@ def get_connection():
         return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
     db_path = os.getenv("DB_PATH", "domiquerendona.db")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -200,6 +205,29 @@ def normalize_role_status(status: str) -> str:
     if normalized not in STANDARD_ROLE_STATUSES:
         raise ValueError(f"Estado inválido: {status}. Use uno de: {', '.join(sorted(STANDARD_ROLE_STATUSES))}.")
     return normalized
+
+
+def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str, new_status: str,
+                         reason: str = None, source: str = None, changed_by: str = None):
+    """
+    Registra cambios de estado en status_audit_log sin romper el flujo principal.
+    """
+    try:
+        cur.execute("""
+            INSERT INTO status_audit_log (
+                entity_type, entity_id, old_status, new_status, reason, source, changed_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+        """, (
+            entity_type,
+            entity_id,
+            old_status,
+            new_status,
+            reason,
+            source,
+            changed_by or "UNKNOWN",
+        ))
+    except Exception as e:
+        print("[WARN] No se pudo registrar status_audit_log:", e)
 
 
 def init_db():
@@ -314,6 +342,34 @@ def init_db():
             usage_date TEXT NOT NULL,
             call_count INTEGER DEFAULT 0,
             UNIQUE(api_name, usage_date)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS map_distance_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_key TEXT NOT NULL,
+            destination_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            distance_km REAL NOT NULL,
+            provider TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(origin_key, destination_key, mode)
+        );
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS status_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            reason TEXT,
+            source TEXT,
+            changed_by TEXT DEFAULT 'UNKNOWN',
+            created_at TEXT DEFAULT (datetime('now'))
         );
     """)
 
@@ -553,6 +609,43 @@ def init_db():
         );
     """)
 
+    # Tabla: reference_alias_candidates (cola de referencias para validacion humana)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reference_alias_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw_text TEXT NOT NULL,
+            normalized_text TEXT NOT NULL UNIQUE,
+            suggested_lat REAL,
+            suggested_lng REAL,
+            source TEXT,
+            seen_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT DEFAULT (datetime('now')),
+            last_seen_at TEXT DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            reviewed_by_admin_id INTEGER,
+            reviewed_at TEXT,
+            review_note TEXT,
+            FOREIGN KEY (reviewed_by_admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_alias_candidates_status ON reference_alias_candidates(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_alias_candidates_last_seen ON reference_alias_candidates(last_seen_at)")
+
+    # Tabla: permisos para validar referencias (delegables por Admin Plataforma)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_reference_validator_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'INACTIVE',
+            granted_by_admin_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id),
+            FOREIGN KEY (granted_by_admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ref_validator_perm_status ON admin_reference_validator_permissions(status)")
+
     # Tabla: ally_locations (direcciones de recogida)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ally_locations (
@@ -658,6 +751,8 @@ def init_db():
             pickup_confirmed_at TEXT,
             delivered_at TEXT,
             canceled_at TEXT,
+            ally_admin_id_snapshot INTEGER,
+            courier_admin_id_snapshot INTEGER,
             FOREIGN KEY (ally_id) REFERENCES allies(id),
             FOREIGN KEY (courier_id) REFERENCES couriers(id),
             FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
@@ -691,6 +786,24 @@ def init_db():
             FOREIGN KEY (courier_id) REFERENCES couriers(id)
         );
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_pickup_confirmations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL UNIQUE,
+            courier_id INTEGER NOT NULL,
+            ally_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            requested_at TEXT DEFAULT (datetime('now')),
+            reviewed_at TEXT,
+            reviewed_by_ally_id INTEGER,
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (courier_id) REFERENCES couriers(id),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_pickup_confirmations_status ON order_pickup_confirmations(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_pickup_confirmations_ally ON order_pickup_confirmations(ally_id)")
 
     # Tabla: courier_ratings (calificaciones)
     cur.execute("""
@@ -836,6 +949,10 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lng REAL")
     if 'quote_source' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
+    if 'ally_admin_id_snapshot' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN ally_admin_id_snapshot INTEGER")
+    if 'courier_admin_id_snapshot' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_admin_id_snapshot INTEGER")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -849,6 +966,34 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE couriers ADD COLUMN is_active INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+
+    # Columnas para live location y estado de disponibilidad
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_lat REAL;")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_lng REAL;")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_location_active INTEGER DEFAULT 0;")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_location_updated_at TEXT;")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN availability_status TEXT DEFAULT 'INACTIVE';")
+    except Exception:
+        pass
+    # Normalizacion: availability_status debe usar estados estandar.
+    try:
+        cur.execute("UPDATE couriers SET availability_status = 'APPROVED' WHERE availability_status = 'ONLINE';")
+        cur.execute("UPDATE couriers SET availability_status = 'INACTIVE' WHERE availability_status IN ('PAUSADO', 'OFFLINE') OR availability_status IS NULL;")
     except Exception:
         pass
 
@@ -1525,6 +1670,60 @@ def delete_offer_queue(order_id: int):
     conn.close()
 
 
+def upsert_order_pickup_confirmation(order_id: int, courier_id: int, ally_id: int, status: str = "PENDING"):
+    status = normalize_role_status(status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO order_pickup_confirmations (
+            order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
+        )
+        VALUES (?, ?, ?, ?, datetime('now'), NULL, NULL)
+        ON CONFLICT(order_id)
+        DO UPDATE SET
+            courier_id=excluded.courier_id,
+            ally_id=excluded.ally_id,
+            status=excluded.status,
+            requested_at=datetime('now'),
+            reviewed_at=NULL,
+            reviewed_by_ally_id=NULL;
+    """, (order_id, courier_id, ally_id, status))
+    conn.commit()
+    conn.close()
+
+
+def get_order_pickup_confirmation(order_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, order_id, courier_id, ally_id, status, requested_at, reviewed_at, reviewed_by_ally_id
+        FROM order_pickup_confirmations
+        WHERE order_id = ?
+        LIMIT 1;
+    """, (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def review_order_pickup_confirmation(order_id: int, new_status: str, reviewed_by_ally_id: int):
+    new_status = normalize_role_status(new_status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE order_pickup_confirmations
+        SET status = ?,
+            reviewed_by_ally_id = ?,
+            reviewed_at = datetime('now')
+        WHERE order_id = ?
+          AND status = 'PENDING';
+    """, (new_status, reviewed_by_ally_id, order_id))
+    ok = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
 def set_courier_available_cash(courier_id: int, amount: int):
     conn = get_connection()
     cur = conn.cursor()
@@ -1537,10 +1736,115 @@ def set_courier_available_cash(courier_id: int, amount: int):
 def deactivate_courier(courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE couriers SET is_active = 0, available_cash = 0 WHERE id = ?;",
-                (courier_id,))
+    cur.execute(
+        "UPDATE couriers SET is_active = 0, available_cash = 0, "
+        "availability_status = 'INACTIVE', live_location_active = 0 WHERE id = ?;",
+        (courier_id,))
     conn.commit()
     conn.close()
+
+
+def update_courier_live_location(courier_id: int, lat: float, lng: float):
+    """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
+    retries = 5
+    for attempt in range(retries):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE couriers SET live_lat = ?, live_lng = ?, "
+                "live_location_active = 1, live_location_updated_at = datetime('now'), "
+                "availability_status = 'APPROVED' WHERE id = ?;",
+                (lat, lng, courier_id))
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "database is locked" in message and attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            if "database is locked" in message:
+                print("[WARN] update_courier_live_location: database is locked tras reintentos")
+                return False
+            raise
+        finally:
+            conn.close()
+    return False
+
+
+def set_courier_availability(courier_id: int, status: str):
+    """Cambia availability_status usando estados estandar (APPROVED/INACTIVE)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    normalized = normalize_role_status(status)
+    if normalized == 'INACTIVE':
+        cur.execute(
+            "UPDATE couriers SET availability_status = 'INACTIVE', "
+            "live_location_active = 0 WHERE id = ?;",
+            (courier_id,))
+    else:
+        cur.execute(
+            "UPDATE couriers SET availability_status = ? WHERE id = ?;",
+            (normalized, courier_id))
+    conn.commit()
+    conn.close()
+
+
+def get_courier_availability(courier_id: int) -> str:
+    """Retorna el availability_status del courier."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT availability_status FROM couriers WHERE id = ?;", (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return row["availability_status"] if isinstance(row, dict) else row[0]
+    return "INACTIVE"
+
+
+def expire_stale_live_locations(timeout_seconds: int = 120):
+    """
+    Marca como INACTIVE a couriers con live_location vencida.
+    Retorna la lista de courier_ids afectados.
+    """
+    retries = 5
+    for attempt in range(retries):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+
+            # Primero obtener los que van a expirar
+            cur.execute("""
+                SELECT id FROM couriers
+                WHERE availability_status = 'APPROVED'
+                  AND live_location_active = 1
+                  AND live_location_updated_at < datetime('now', ? || ' seconds')
+            """, ('-' + str(timeout_seconds),))
+            expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
+
+            if expired:
+                cur.execute("""
+                    UPDATE couriers
+                    SET availability_status = 'INACTIVE', live_location_active = 0
+                    WHERE availability_status = 'APPROVED'
+                      AND live_location_active = 1
+                      AND live_location_updated_at < datetime('now', ? || ' seconds')
+                """, ('-' + str(timeout_seconds),))
+                conn.commit()
+
+            return expired
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "database is locked" in message and attempt < retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            if "database is locked" in message:
+                print("[WARN] expire_stale_live_locations: database is locked tras reintentos")
+                return []
+            raise
+        finally:
+            conn.close()
+    return []
 
 
 def get_active_courier_cash(courier_id: int) -> int:
@@ -1595,7 +1899,9 @@ def release_order_from_courier(order_id: int):
 
 def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
                                       requires_cash: bool = False,
-                                      cash_required_amount: int = 0):
+                                      cash_required_amount: int = 0,
+                                      pickup_lat: float = None,
+                                      pickup_lng: float = None):
     """
     Devuelve couriers elegibles para un pedido, filtrados por:
     - Aprobados y activos en el equipo
@@ -1603,13 +1909,21 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     - is_active = 1 (courier se activo y declaro base)
     - No vetados por el aliado (si ally_id dado)
     - Con base suficiente (si requires_cash)
-    Ordenados por available_cash DESC (mayor base primero).
+
+    Ordenamiento inteligente:
+    1. APPROVED + live_location_active=1 primero, por distancia al pickup
+    2. APPROVED + live_location_active=0 segundo, por distancia
+    3. INACTIVE al final por available_cash DESC (fallback)
+
+    Si no hay pickup_lat/lng, usa el orden por available_cash DESC como antes.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     query = """
-        SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash
+        SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash,
+               c.availability_status, c.live_lat, c.live_lng, c.live_location_active,
+               c.residence_lat, c.residence_lng
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
@@ -1637,15 +1951,73 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
-    return [
-        {
-            "courier_id": row[0],
-            "full_name": row[1],
-            "telegram_id": row[2],
-            "available_cash": row[3],
-        }
-        for row in rows
-    ]
+
+    result = []
+    for row in rows:
+        if isinstance(row, dict):
+            item = {
+                "courier_id": row["courier_id"],
+                "full_name": row["full_name"],
+                "telegram_id": row["telegram_id"],
+                "available_cash": row["available_cash"],
+                "availability_status": row.get("availability_status", "INACTIVE"),
+                "live_location_active": row.get("live_location_active", 0),
+                "live_lat": row.get("live_lat"),
+                "live_lng": row.get("live_lng"),
+                "residence_lat": row.get("residence_lat"),
+                "residence_lng": row.get("residence_lng"),
+            }
+        else:
+            item = {
+                "courier_id": row[0],
+                "full_name": row[1],
+                "telegram_id": row[2],
+                "available_cash": row[3],
+                "availability_status": row[4] if len(row) > 4 else "INACTIVE",
+                "live_lat": row[5] if len(row) > 5 else None,
+                "live_lng": row[6] if len(row) > 6 else None,
+                "live_location_active": row[7] if len(row) > 7 else 0,
+                "residence_lat": row[8] if len(row) > 8 else None,
+                "residence_lng": row[9] if len(row) > 9 else None,
+            }
+        result.append(item)
+
+    # Ordenamiento inteligente si tenemos coordenadas de pickup
+    if pickup_lat is not None and pickup_lng is not None:
+        import math
+
+        def _haversine(lat1, lng1, lat2, lng2):
+            r = 6371.0
+            p1, p2 = math.radians(lat1), math.radians(lat2)
+            dlat = math.radians(lat2 - lat1)
+            dlng = math.radians(lng2 - lng1)
+            a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+            return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        def _sort_key(c):
+            status = c.get("availability_status", "INACTIVE")
+            is_live = int(c.get("live_location_active") or 0) == 1
+            if status == "APPROVED" and is_live:
+                priority = 0
+            elif status == "APPROVED":
+                priority = 1
+            else:
+                priority = 2
+
+            # Mejor ubicacion disponible: live > residence
+            clat = c.get("live_lat") or c.get("residence_lat")
+            clng = c.get("live_lng") or c.get("residence_lng")
+
+            if clat is not None and clng is not None:
+                dist = _haversine(pickup_lat, pickup_lng, clat, clng)
+            else:
+                dist = 9999  # Sin ubicacion, al final
+
+            return (priority, dist, -int(c.get("available_cash") or 0))
+
+        result.sort(key=_sort_key)
+
+    return result
 
 
 def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
@@ -1743,15 +2115,31 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(admin_id, courier_id)
-        DO UPDATE SET
-            status=excluded.status,
-            is_active=excluded.is_active,
-            updated_at=datetime('now')
-    """, (admin_id, courier_id, status, is_active))
+    has_is_active = DB_ENGINE == "postgres"
+    if DB_ENGINE != "postgres":
+        cur.execute("PRAGMA table_info(admin_couriers)")
+        cols = {row["name"] for row in cur.fetchall()}
+        has_is_active = "is_active" in cols
+
+    if has_is_active:
+        cur.execute("""
+            INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(admin_id, courier_id)
+            DO UPDATE SET
+                status=excluded.status,
+                is_active=excluded.is_active,
+                updated_at=datetime('now')
+        """, (admin_id, courier_id, status, is_active))
+    else:
+        cur.execute("""
+            INSERT INTO admin_couriers (admin_id, courier_id, status, created_at, updated_at)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(admin_id, courier_id)
+            DO UPDATE SET
+                status=excluded.status,
+                updated_at=datetime('now')
+        """, (admin_id, courier_id, status))
     conn.commit()
     conn.close()
 
@@ -1785,6 +2173,213 @@ def ensure_pricing_defaults():
         existing = get_setting(k)
         if existing is None:
             set_setting(k, v)
+
+
+# ---------- REFERENCIAS LOCALES (CATALOGO + VALIDACION) ----------
+
+def _normalize_reference_text(text: str) -> str:
+    value = (text or "").strip().lower()
+    value = re.sub(r"[^\w\s]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def upsert_reference_alias_candidate(raw_text: str, normalized_text: str, suggested_lat=None,
+                                     suggested_lng=None, source: str = None):
+    """
+    Registra o incrementa un candidato de referencia local.
+    No elimina registros; solo actualiza contador y ultima vez visto.
+    """
+    if not raw_text:
+        return
+
+    normalized = _normalize_reference_text(normalized_text or raw_text)
+    if not normalized:
+        return
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO reference_alias_candidates
+            (raw_text, normalized_text, suggested_lat, suggested_lng, source, status)
+        VALUES (?, ?, ?, ?, ?, 'PENDING')
+        ON CONFLICT(normalized_text) DO UPDATE SET
+            raw_text = excluded.raw_text,
+            suggested_lat = COALESCE(reference_alias_candidates.suggested_lat, excluded.suggested_lat),
+            suggested_lng = COALESCE(reference_alias_candidates.suggested_lng, excluded.suggested_lng),
+            source = COALESCE(excluded.source, reference_alias_candidates.source),
+            seen_count = reference_alias_candidates.seen_count + 1,
+            last_seen_at = datetime('now'),
+            status = CASE
+                WHEN reference_alias_candidates.status = 'REJECTED' THEN 'REJECTED'
+                ELSE reference_alias_candidates.status
+            END
+    """, (raw_text.strip(), normalized, suggested_lat, suggested_lng, source))
+    conn.commit()
+    conn.close()
+
+
+def list_reference_alias_candidates(status: str = "PENDING", limit: int = 20, offset: int = 0):
+    wanted = normalize_role_status(status)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
+            seen_count, first_seen_at, last_seen_at, status
+        FROM reference_alias_candidates
+        WHERE status = ?
+        ORDER BY last_seen_at DESC, id DESC
+        LIMIT ? OFFSET ?
+    """, (wanted, int(limit), int(offset)))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_reference_alias_candidate_by_id(candidate_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            id, raw_text, normalized_text, suggested_lat, suggested_lng, source,
+            seen_count, first_seen_at, last_seen_at, status,
+            reviewed_by_admin_id, reviewed_at, review_note
+        FROM reference_alias_candidates
+        WHERE id = ?
+        LIMIT 1
+    """, (candidate_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_reference_alias_candidate_coords(candidate_id: int, lat: float, lng: float,
+                                         source: str = "manual_pin") -> bool:
+    """
+    Asigna coordenadas manuales a una referencia candidata.
+    Mantiene el estado actual; solo actualiza coordenadas/fuente y timestamps.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE reference_alias_candidates
+        SET suggested_lat = ?,
+            suggested_lng = ?,
+            source = COALESCE(?, source),
+            last_seen_at = datetime('now')
+        WHERE id = ?
+    """, (float(lat), float(lng), source, int(candidate_id)))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def _upsert_location_reference_alias(alias_text: str, lat: float, lng: float, label: str = ""):
+    raw = get_setting("location_reference_aliases_json", "")
+    aliases = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                aliases = parsed
+        except Exception:
+            aliases = {}
+
+    key = _normalize_reference_text(alias_text)
+    if not key:
+        return
+
+    aliases[key] = {"lat": float(lat), "lng": float(lng), "label": (label or alias_text or "").strip()}
+    set_setting("location_reference_aliases_json", json.dumps(aliases, ensure_ascii=True))
+
+
+def review_reference_alias_candidate(candidate_id: int, new_status: str, reviewed_by_admin_id: int,
+                                     note: str = None):
+    status = normalize_role_status(new_status)
+    if status not in {"APPROVED", "REJECTED", "INACTIVE"}:
+        raise ValueError("Estado invalido para revision de referencia.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, raw_text, normalized_text, suggested_lat, suggested_lng, status
+        FROM reference_alias_candidates
+        WHERE id = ?
+        LIMIT 1
+    """, (candidate_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False, "Referencia no encontrada."
+
+    if row["status"] == "APPROVED":
+        conn.close()
+        return False, "La referencia ya estaba APPROVED."
+
+    if status == "APPROVED":
+        lat = row["suggested_lat"]
+        lng = row["suggested_lng"]
+        if lat is None or lng is None:
+            conn.close()
+            return False, "No se puede aprobar sin coordenadas sugeridas."
+
+    conn.close()
+
+    if status == "APPROVED":
+        _upsert_location_reference_alias(row["normalized_text"], float(lat), float(lng), row["raw_text"])
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE reference_alias_candidates
+        SET status = ?, reviewed_by_admin_id = ?, reviewed_at = datetime('now'), review_note = ?
+        WHERE id = ?
+    """, (status, reviewed_by_admin_id, (note or "").strip() or None, candidate_id))
+    conn.commit()
+    conn.close()
+    return True, "Referencia actualizada a {}.".format(status)
+
+
+def get_admin_reference_validator_permission(admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, admin_id, status, granted_by_admin_id, created_at, updated_at
+        FROM admin_reference_validator_permissions
+        WHERE admin_id = ?
+        LIMIT 1
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def set_admin_reference_validator_permission(admin_id: int, new_status: str, granted_by_admin_id: int):
+    status = normalize_role_status(new_status)
+    if status not in {"APPROVED", "INACTIVE"}:
+        raise ValueError("Estado invalido para permiso de validador.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO admin_reference_validator_permissions
+            (admin_id, status, granted_by_admin_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(admin_id) DO UPDATE SET
+            status = excluded.status,
+            granted_by_admin_id = excluded.granted_by_admin_id,
+            updated_at = datetime('now')
+    """, (admin_id, status, granted_by_admin_id))
+    conn.commit()
+    conn.close()
+
+
+def can_admin_validate_references(admin_id: int) -> bool:
+    perm = get_admin_reference_validator_permission(admin_id)
+    return bool(perm and perm["status"] == "APPROVED")
 
 
 # ---------- ALIADOS ----------
@@ -1990,10 +2585,14 @@ def get_all_admins():
     conn.close()
     return rows
 
-def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: str = None,
+                              rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM admins WHERE id = ? AND is_deleted = 0", (admin_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2013,13 +2612,30 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
             WHERE id = ? AND is_deleted = 0;
         """, (new_status, admin_id))
 
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="ADMIN",
+            entity_id=admin_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_admin_status_by_id",
+            changed_by=changed_by,
+        )
+
     conn.commit()
     conn.close()
 
-def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type: str = None,
+                                rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM couriers WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (courier_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2039,13 +2655,30 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
             WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, courier_id))
 
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="COURIER",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_courier_status_by_id",
+            changed_by=changed_by,
+        )
+
     conn.commit()
     conn.close()
 
-def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None, rejection_reason: str = None):
+def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str = None,
+                             rejection_reason: str = None, changed_by: str = None):
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM allies WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)", (ally_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2064,6 +2697,19 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
             SET status = ?
             WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0);
         """, (new_status, ally_id))
+
+    if cur.rowcount > 0:
+        reason = rejection_reason if rejection_reason else rejection_type
+        _audit_status_change(
+            cur,
+            entity_type="ALLY",
+            entity_id=ally_id,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason,
+            source="update_ally_status_by_id",
+            changed_by=changed_by,
+        )
 
     conn.commit()
     conn.close()
@@ -2199,19 +2845,34 @@ def get_couriers_by_admin_and_status(admin_id, status):
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-        VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
-    """, (admin_id, courier_id))
+    has_is_active = DB_ENGINE == "postgres"
+    if DB_ENGINE != "postgres":
+        cur.execute("PRAGMA table_info(admin_couriers)")
+        cols = {row["name"] for row in cur.fetchall()}
+        has_is_active = "is_active" in cols
+
+    if has_is_active:
+        cur.execute("""
+            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
+            VALUES (?, ?, 'PENDING', 0, 0, datetime('now'))
+        """, (admin_id, courier_id))
+    else:
+        cur.execute("""
+            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
+            VALUES (?, ?, 'PENDING', 0, datetime('now'))
+        """, (admin_id, courier_id))
     conn.commit()
     conn.close()
     
 
-def update_ally_status(ally_id: int, status: str):
+def update_ally_status(ally_id: int, status: str, changed_by: str = None):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM allies WHERE id = ?", (ally_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
     cur.execute(
         """
         UPDATE allies
@@ -2220,6 +2881,16 @@ def update_ally_status(ally_id: int, status: str):
         """,
         (status, ally_id),
     )
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="ALLY",
+            entity_id=ally_id,
+            old_status=old_status,
+            new_status=status,
+            source="update_ally_status",
+            changed_by=changed_by,
+        )
     conn.commit()
     conn.close()
 
@@ -2474,6 +3145,7 @@ def create_order(
     dropoff_lat: float = None,
     dropoff_lng: float = None,
     quote_source: str = None,
+    ally_admin_id_snapshot: int = None,
 ):
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
@@ -2505,8 +3177,10 @@ def create_order(
             pickup_lng,
             dropoff_lat,
             dropoff_lng,
-            quote_source
-        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            quote_source,
+            ally_admin_id_snapshot,
+            courier_admin_id_snapshot
+        ) VALUES (?, NULL, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """, (
         ally_id,
         customer_name,
@@ -2532,6 +3206,8 @@ def create_order(
         dropoff_lat,
         dropoff_lng,
         quote_source,
+        ally_admin_id_snapshot,
+        None,
     ))
     conn.commit()
     order_id = cur.lastrowid
@@ -2558,15 +3234,16 @@ def set_order_status(order_id: int, status: str, timestamp_field: str = None):
     conn.close()
 
 
-def assign_order_to_courier(order_id: int, courier_id: int):
+def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_snapshot: int = None):
     """Asigna un pedido a un repartidor y marca accepted_at."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         UPDATE orders
-        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now')
+        SET courier_id = ?, status = 'ACCEPTED', accepted_at = datetime('now'),
+            courier_admin_id_snapshot = ?
         WHERE id = ?;
-    """, (courier_id, order_id))
+    """, (courier_id, courier_admin_id_snapshot, order_id))
     conn.commit()
     conn.close()
 
@@ -2765,17 +3442,27 @@ def get_courier_by_id(courier_id: int):
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            id,
-            user_id,
-            full_name,
-            id_number,
-            phone,
-            city,
-            barrio,
-            plate,
-            bike_type,
-            code,
-            status
+            id,                -- 0
+            user_id,           -- 1
+            full_name,         -- 2
+            id_number,         -- 3
+            phone,             -- 4
+            city,              -- 5
+            barrio,            -- 6
+            plate,             -- 7
+            bike_type,         -- 8
+            code,              -- 9
+            status,            -- 10
+            residence_address, -- 11
+            residence_lat,     -- 12
+            residence_lng,     -- 13
+            is_active,         -- 14
+            available_cash,    -- 15
+            live_lat,          -- 16
+            live_lng,          -- 17
+            live_location_active, -- 18
+            live_location_updated_at, -- 19
+            COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
         FROM couriers
         WHERE id = ?;
     """, (courier_id,))
@@ -2783,15 +3470,28 @@ def get_courier_by_id(courier_id: int):
     conn.close()
     return row
 
-def update_courier_status(courier_id: int, new_status: str):
+def update_courier_status(courier_id: int, new_status: str, changed_by: str = None):
     """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
     new_status = normalize_role_status(new_status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("SELECT status FROM couriers WHERE id = ?", (courier_id,))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
     cur.execute(
         "UPDATE couriers SET status = ? WHERE id = ?;",
         (new_status, courier_id),
     )
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="COURIER",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=new_status,
+            source="update_courier_status",
+            changed_by=changed_by,
+        )
     conn.commit()
     conn.close()
 
@@ -2888,7 +3588,6 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
     conn.commit()
     conn.close()
 
-import sqlite3
 from datetime import datetime
 
 def create_admin(
@@ -3126,15 +3825,34 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
     conn.commit()
     conn.close()
 
-def update_admin_courier_status(admin_id, courier_id, status):
+def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = None):
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
+    cur.execute("""
+        SELECT status
+        FROM admin_couriers
+        WHERE admin_id = ? AND courier_id = ?
+        LIMIT 1
+    """, (admin_id, courier_id))
+    row_old = cur.fetchone()
+    old_status = row_old[0] if row_old else None
     cur.execute("""
         UPDATE admin_couriers
         SET status = ?, updated_at = datetime('now')
         WHERE admin_id = ? AND courier_id = ?
     """, (status, admin_id, courier_id))
+    if cur.rowcount > 0:
+        _audit_status_change(
+            cur,
+            entity_type="ADMIN_COURIER_LINK",
+            entity_id=courier_id,
+            old_status=old_status,
+            new_status=status,
+            reason=f"admin_id={admin_id}",
+            source="update_admin_courier_status",
+            changed_by=changed_by,
+        )
     conn.commit()
     conn.close()
 
@@ -3284,6 +4002,52 @@ def get_approved_admin_link_for_ally(ally_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
+
+def ensure_platform_temp_coverage_for_ally(ally_id: int):
+    """
+    Cobertura temporal:
+    - Asegura vínculo APPROVED del aliado con plataforma.
+    - Replica vínculo APPROVED en plataforma para couriers del admin actual del aliado.
+    Retorna: (ok: bool, message: str, migrated_couriers: int)
+    """
+    platform = get_platform_admin()
+    if not platform:
+        return False, "No existe admin plataforma activo.", 0
+
+    platform_admin_id = platform["id"] if isinstance(platform, dict) else platform[0]
+    current_link = get_admin_link_for_ally(ally_id)
+    if not current_link:
+        return False, "El aliado no tiene vinculo de administracion para cobertura temporal.", 0
+
+    source_admin_id = current_link["admin_id"] if "admin_id" in current_link.keys() else None
+    source_link_status = (current_link["link_status"] or "").upper() if "link_status" in current_link.keys() else ""
+
+    if source_link_status == "APPROVED":
+        return False, "El aliado ya tiene un vinculo APPROVED; no requiere cobertura temporal.", 0
+
+    upsert_admin_ally_link(platform_admin_id, ally_id, status="APPROVED")
+
+    migrated = 0
+    if source_admin_id and source_admin_id != platform_admin_id:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT courier_id
+            FROM admin_couriers
+            WHERE admin_id = ?
+              AND status IN ('APPROVED', 'PENDING')
+        """, (source_admin_id,))
+        rows = cur.fetchall()
+        conn.close()
+
+        for row in rows:
+            courier_id = row["courier_id"] if isinstance(row, dict) else row[0]
+            if courier_id:
+                upsert_admin_courier_link(platform_admin_id, courier_id, status="APPROVED", is_active=1)
+                migrated += 1
+
+    return True, "Cobertura temporal plataforma aplicada.", migrated
 
 
 def get_all_approved_links_for_courier(courier_id: int):
@@ -3483,6 +4247,27 @@ def search_ally_customers(ally_id: int, query: str, limit: int = 10):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_ally_customer_by_phone(ally_id: int, phone: str):
+    """
+    Busca un cliente ACTIVO por telefono exacto (normalizado) dentro del aliado.
+    """
+    phone_norm = normalize_phone(phone or "")
+    if not phone_norm:
+        return None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+        FROM ally_customers
+        WHERE ally_id = ? AND status = 'ACTIVE' AND phone = ?
+        LIMIT 1
+    """, (ally_id, phone_norm))
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 # ============================================================
@@ -3691,6 +4476,42 @@ def upsert_link_cache(raw_link: str, expanded_link: str = None, lat: float = Non
     conn.close()
 
 
+def get_distance_cache(origin_key: str, destination_key: str, mode: str):
+    """Busca distancia cacheada por origen/destino y modo. Retorna dict o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT distance_km, provider
+        FROM map_distance_cache
+        WHERE origin_key = ? AND destination_key = ? AND mode = ?
+        LIMIT 1
+    """, (origin_key, destination_key, mode))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "distance_km": row[0],
+        "provider": row[1],
+    }
+
+
+def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, distance_km: float, provider: str):
+    """Inserta/actualiza distancia cacheada por origen/destino y modo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO map_distance_cache (origin_key, destination_key, mode, distance_km, provider, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(origin_key, destination_key, mode) DO UPDATE SET
+          distance_km = excluded.distance_km,
+          provider = COALESCE(excluded.provider, map_distance_cache.provider),
+          updated_at = datetime('now')
+    """, (origin_key, destination_key, mode, distance_km, provider))
+    conn.commit()
+    conn.close()
+
+
 # ---------- API USAGE DAILY (FUSIBLE) ----------
 
 def get_api_usage_today(api_name: str) -> int:
@@ -3706,33 +4527,6 @@ def get_api_usage_today(api_name: str) -> int:
     return row[0] if row else 0
 
 
-def ensure_platform_link_for_courier(platform_admin_id: int, courier_id: int):
-    """Crea o asegura vÃ­nculo APPROVED admin-courier para PLATAFORMA."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, status FROM admin_couriers
-        WHERE admin_id = ? AND courier_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (platform_admin_id, courier_id))
-    row = cur.fetchone()
-    if row:
-        link_id, status = row
-        if status != "APPROVED":
-            cur.execute("""
-                UPDATE admin_couriers
-                SET status = 'APPROVED', updated_at = datetime('now')
-                WHERE id = ?
-            """, (link_id,))
-    else:
-        cur.execute("""
-            INSERT INTO admin_couriers
-                (admin_id, courier_id, status, balance, created_at, updated_at)
-            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
-        """, (platform_admin_id, courier_id))
-    conn.commit()
-    conn.close()
 
 
 def increment_api_usage(api_name: str):
@@ -3763,33 +4557,6 @@ def get_admin_balance(admin_id: int) -> int:
     return row[0] if row else 0
 
 
-def ensure_platform_link_for_ally(platform_admin_id: int, ally_id: int):
-    """Crea o asegura vÃ­nculo APPROVED admin-ally para PLATAFORMA."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, status FROM admin_allies
-        WHERE admin_id = ? AND ally_id = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-    """, (platform_admin_id, ally_id))
-    row = cur.fetchone()
-    if row:
-        link_id, status = row
-        if status != "APPROVED":
-            cur.execute("""
-                UPDATE admin_allies
-                SET status = 'APPROVED', updated_at = datetime('now')
-                WHERE id = ?
-            """, (link_id,))
-    else:
-        cur.execute("""
-            INSERT INTO admin_allies
-                (admin_id, ally_id, status, balance, created_at, updated_at)
-            VALUES (?, ?, 'APPROVED', 0, datetime('now'), datetime('now'))
-        """, (platform_admin_id, ally_id))
-    conn.commit()
-    conn.close()
 
 
 def update_admin_balance_with_ledger(
@@ -4196,11 +4963,15 @@ def toggle_payment_method(method_id: int, is_active: int):
     conn.close()
 
 
-def delete_payment_method(method_id: int):
-    """Elimina un metodo de pago permanentemente."""
+def deactivate_payment_method(method_id: int):
+    """Desactiva un metodo de pago (sin borrado fisico)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM admin_payment_methods WHERE id = ?", (method_id,))
+    cur.execute("""
+        UPDATE admin_payment_methods
+        SET is_active = 0
+        WHERE id = ?
+    """, (method_id,))
     conn.commit()
     conn.close()
 
@@ -4335,3 +5106,5 @@ def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_
     """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
     conn.commit()
     conn.close()
+
+

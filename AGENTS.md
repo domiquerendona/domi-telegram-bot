@@ -191,22 +191,104 @@ si **no existe vínculo APPROVED** con ese admin.
 
 ---
 
-## 10. Regla de decisiones y veredictos (OBLIGATORIA)
+## X. Cotizador y uso de APIs (CRÍTICO: control de costos)
 
-Antes de emitir **cualquier veredicto técnico**, el agente DEBE:
+### Objetivo
+- Mantener calidad de cotización sin depender de APIs pagas en cada consulta.
+- Prioridad: 1) Gratis (cálculo local) 2) Caché 3) API paga (solo cuando sea necesario).
 
-1. Preguntar primero.
-2. Esperar confirmación explícita del usuario.
-3. Solo después:
- - dar veredicto,
- - proponer solución,
- - cerrar decisión.
+### Modos de cotización (regla obligatoria)
+- El sistema de cotización debe soportar 2 modos:
+  1) Modo simple (distancia manual en km) — NO usa APIs.
+  2) Modo por ubicaciones (recogida/entrega por GPS o link) — usa cálculo local si hay coordenadas.
 
-PROHIBIDO cerrar decisiones por iniciativa propia.
+### Regla de ubicación por defecto (Aliados)
+- Si el usuario es Aliado:
+  - Por defecto: usar su dirección registrada (pickup) para cotizar.
+  - Debe existir opción explícita: “Otra ubicación de recogida”.
+- Si NO es Aliado:
+  - Siempre pedir pickup.
+
+### Prohibiciones (anti-costos)
+- PROHIBIDO llamar APIs pagas (Google u otras) para:
+  - cotizaciones “rápidas” si ya hay lat/lng disponibles.
+  - recalcular lo mismo repetidamente sin caché.
+- PROHIBIDO introducir un proveedor nuevo (Maps/Geocoding/Routing) sin autorización explícita.
+
+### Estrategia obligatoria en 3 capas
+1) Capa local (gratis):
+   - Si pickup y dropoff tienen lat/lng: usar Haversine (o equivalente local).
+   - Aplicar factor de corrección configurable (ej. 1.2–1.4) si se requiere aproximación urbana.
+2) Caché (obligatorio):
+   - Antes de cualquier API paga, consultar caché.
+   - Toda resolución de link/dirección → coordenadas debe quedar cacheada.
+   - Toda distancia calculada por API (si se usa) debe cachearse por par de puntos.
+3) API paga (último recurso):
+   - Solo cuando:
+     - Falten coordenadas y no haya caché,
+     - O el pedido esté en fase de confirmación final (no en “exploración”),
+     - Y la cuota diaria lo permita.
+   - Registrar uso en contador diario.
+
+### Límite diario y “fusible”
+- Debe existir un límite diario configurable para llamadas pagas.
+- Al superar el límite:
+  - NO fallar el flujo.
+  - Degradar a cálculo local (Haversine + factor) y continuar.
+
+### Evidencia y medición (obligatorio)
+- Todo cambio que toque cotización/APIs debe incluir:
+  - Dónde se cachea (función + tabla),
+  - Cuándo se dispara API paga (condición exacta),
+  - Qué fallback se usa cuando no hay cuota.
+- Reportar al final:
+  - cantidad de llamadas pagas evitadas (estimación basada en flujo),
+  - escenarios cubiertos (GPS→GPS, link→GPS, texto→GPS, sin cuota).
+
+### UX mínima (no romper flujo)
+- No romper el /cotizar actual.
+- El modo nuevo debe entrar por selección explícita (botones o opción clara).
+- PROHIBIDO usar Markdown/parse_mode en mensajes del bot.
+
+## 10. Veracidad técnica y evidencia (OBLIGATORIA)
+
+- Separar SIEMPRE entre:
+  - IMPLEMENTADO (existe en el código actual)
+  - DISEÑO FUTURO (idea/plan aún no implementado)
+- PROHIBIDO afirmar que algo “existe” si no se puede señalar evidencia objetiva.
+  - Para decir IMPLEMENTADO, el agente debe indicar: archivo + función/bloque
+    (ej: `main.py: soy_repartidor()`, `services.py: quote_order_by_coords()`).
+  - Si no hay evidencia, debe marcarlo como: PROPUESTA / FUTURO.
+- No mezclar decisiones de diseño guardadas (p.ej. live location para ONLINE)
+  como si estuvieran ya en producción.
+- Si se está verificando una afirmación previa:
+  - el agente debe contrastar con el código y declarar el veredicto
+    (CORRECTO / PARCIAL / INCORRECTO) con evidencia.
 
 ---
 
-## 11. Estilo de colaboración
+## 11. Regla de decisiones y veredictos (OBLIGATORIA)
+
+Antes de proponer **cambios** (refactors, migraciones, nuevos flujos o reglas),
+el agente DEBE:
+
+1. Exponer opciones concretas.
+2. Preguntar primero.
+3. Esperar confirmación explícita del usuario.
+4. Solo después:
+ - proponer plan final,
+ - ejecutar cambios,
+ - cerrar decisión.
+
+NOTA: Esta regla aplica a **decisiones de cambio**.  
+Para **verificación técnica** (auditoría / comprobación), el agente puede dar veredicto
+directamente, siempre cumpliendo la sección 10 (evidencia).
+
+PROHIBIDO cerrar decisiones de cambio por iniciativa propia.
+
+---
+
+## 12. Estilo de colaboración
 
 - Priorizar estabilidad sobre velocidad.
 - Preguntar antes de decidir.
