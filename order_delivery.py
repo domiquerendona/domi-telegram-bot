@@ -442,6 +442,31 @@ def _admin_order_detail(update, context, data):
         if courier:
             courier_name = courier["full_name"] or "Repartidor"
 
+    ally_admin_snapshot_id = order["ally_admin_id_snapshot"] if "ally_admin_id_snapshot" in order.keys() else None
+    courier_admin_snapshot_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+
+    ally_admin_snapshot_name = ""
+    if ally_admin_snapshot_id:
+        ally_admin_row = get_admin_by_id(int(ally_admin_snapshot_id))
+        if ally_admin_row and ally_admin_row["full_name"]:
+            ally_admin_snapshot_name = ally_admin_row["full_name"]
+
+    courier_admin_snapshot_name = ""
+    if courier_admin_snapshot_id:
+        courier_admin_row = get_admin_by_id(int(courier_admin_snapshot_id))
+        if courier_admin_row and courier_admin_row["full_name"]:
+            courier_admin_snapshot_name = courier_admin_row["full_name"]
+
+    ally_admin_snapshot_label = str(ally_admin_snapshot_id) if ally_admin_snapshot_id else "N/A"
+    if ally_admin_snapshot_name:
+        ally_admin_snapshot_label = "{} ({})".format(ally_admin_snapshot_label, ally_admin_snapshot_name)
+
+    courier_admin_snapshot_label = str(courier_admin_snapshot_id) if courier_admin_snapshot_id else "N/A"
+    if courier_admin_snapshot_name:
+        courier_admin_snapshot_label = "{} ({})".format(courier_admin_snapshot_label, courier_admin_snapshot_name)
+
+    canceled_by = order["canceled_by"] if "canceled_by" in order.keys() and order["canceled_by"] else "N/A"
+
     text = (
         "Pedido #{}\n\n"
         "Estado: {}\n"
@@ -451,8 +476,18 @@ def _admin_order_detail(update, context, data):
         "Telefono: {}\n"
         "Direccion: {}\n"
         "Distancia: {:.1f} km\n"
-        "Tarifa: ${:,}\n"
+        "Tarifa: ${:,}\n\n"
+        "Trazabilidad:\n"
+        "Admin aliado (snapshot): {}\n"
+        "Admin repartidor (snapshot): {}\n\n"
+        "Timestamps:\n"
         "Creado: {}\n"
+        "Publicado: {}\n"
+        "Aceptado: {}\n"
+        "Recogida confirmada: {}\n"
+        "Entregado: {}\n"
+        "Cancelado: {}\n"
+        "Cancelado por: {}\n"
     ).format(
         order["id"],
         STATUS_LABELS.get(order["status"], order["status"]),
@@ -463,17 +498,19 @@ def _admin_order_detail(update, context, data):
         order["customer_address"] or "N/A",
         order["distance_km"] or 0,
         int(order["total_fee"] or 0),
+        ally_admin_snapshot_label,
+        courier_admin_snapshot_label,
         order["created_at"] or "N/A",
+        order["published_at"] if "published_at" in order.keys() and order["published_at"] else "N/A",
+        order["accepted_at"] if "accepted_at" in order.keys() and order["accepted_at"] else "N/A",
+        order["pickup_confirmed_at"] if "pickup_confirmed_at" in order.keys() and order["pickup_confirmed_at"] else "N/A",
+        order["delivered_at"] if "delivered_at" in order.keys() and order["delivered_at"] else "N/A",
+        order["canceled_at"] if "canceled_at" in order.keys() and order["canceled_at"] else "N/A",
+        canceled_by,
     )
 
     if order["instructions"]:
         text += "Instrucciones: {}\n".format(order["instructions"])
-    if order["canceled_at"]:
-        text += "Cancelado: {} por {}\n".format(
-            order["canceled_at"],
-            order.get("canceled_by") or "N/A",
-        )
-
     keyboard = []
     if order["status"] not in ("DELIVERED", "CANCELLED"):
         keyboard.append([InlineKeyboardButton(
