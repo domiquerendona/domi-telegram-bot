@@ -972,27 +972,26 @@ def start(update, context):
 
     comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
-    comandos.append("• /cotizar  - Cotizar por distancia")
-    if ally or courier or admin_local or es_admin_plataforma:
-        comandos.append("• /saldo  - Ver tu saldo")
 
-    comandos.append("")
-    comandos.append("Aliado:")
     if ally:
-        comandos.append("• /recargar  - Solicitar recarga")
-        if ally["status"] == "APPROVED":
-            comandos.append("• /nuevo_pedido  - Crear nuevo pedido")
-            comandos.append("• /clientes  - Agenda de clientes recurrentes")
-        else:
-            comandos.append("• Tu negocio aún no está APPROVED para crear pedidos.")
+        comandos.append("")
+        comandos.append("🍕 Aliado:")
+        comandos.append("• Toca [Mi aliado] en el menu para ver todas las opciones:")
+        comandos.append("  Nuevo pedido, Mis pedidos, Clientes, Agenda,")
+        comandos.append("  Cotizar envio, Recargar, Mi saldo")
     else:
+        comandos.append("")
+        comandos.append("Aliado:")
         comandos.append("• /soy_aliado  - Registrarte como aliado")
 
-    comandos.append("")
-    comandos.append("Repartidor:")
     if courier:
-        comandos.append("• /recargar  - Solicitar recarga")
+        comandos.append("")
+        comandos.append("🚴 Repartidor:")
+        comandos.append("• Toca [Mi repartidor] en el menu para ver todas las opciones:")
+        comandos.append("  Activar/Pausar, Mis pedidos, Recargar, Mi saldo")
     else:
+        comandos.append("")
+        comandos.append("Repartidor:")
         comandos.append("• /soy_repartidor  - Registrarte como repartidor")
 
     comandos.append("")
@@ -1021,7 +1020,7 @@ def start(update, context):
         f"{estado_text}\n\n"
         "Siguiente paso recomendado:\n"
         f"{siguientes_text}\n\n"
-        "Menú ordenado por rol:\n"
+        "Menú por secciones:\n"
         + "\n".join(comandos)
         + "\n"
     )
@@ -1036,7 +1035,9 @@ def start(update, context):
         context.user_data['keyboard_shown'] = True
         update.message.reply_text(mensaje, reply_markup=reply_markup)
     else:
-        update.message.reply_text(mensaje)
+        # Mostrar menú principal con botones de secciones
+        reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally)
+        update.message.reply_text(mensaje, reply_markup=reply_markup)
 
 
 def menu(update, context):
@@ -1066,16 +1067,19 @@ def _get_courier_toggle_button_label(courier):
     return "Activar repartidor"
 
 
-def get_main_menu_keyboard(missing_cmds, courier=None):
+def get_main_menu_keyboard(missing_cmds, courier=None, ally=None):
     """Retorna el teclado principal para usuarios fuera de flujos."""
-    keyboard = [
-        ['Nuevo pedido', 'Mis pedidos'],
-        ['Mi perfil', 'Ayuda'],
-        ['Menu']
-    ]
-    courier_toggle = _get_courier_toggle_button_label(courier)
-    if courier_toggle:
-        keyboard.insert(2, [courier_toggle])
+    keyboard = []
+    # Fila de roles: mostrar botones de seccion segun roles del usuario
+    role_row = []
+    if ally:
+        role_row.append('Mi aliado')
+    if courier and _row_value(courier, "status") == "APPROVED":
+        role_row.append('Mi repartidor')
+    if role_row:
+        keyboard.append(role_row)
+    keyboard.append(['Mi perfil', 'Ayuda'])
+    keyboard.append(['Menu'])
     if missing_cmds:
         if len(missing_cmds) == 1:
             register_rows = [missing_cmds]
@@ -1093,6 +1097,81 @@ def get_flow_menu_keyboard():
         ['Cancelar', 'Volver al menu']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_ally_menu_keyboard():
+    """Retorna el teclado de seccion Aliado."""
+    keyboard = [
+        ['Nuevo pedido', 'Mis pedidos'],
+        ['Clientes', 'Agenda'],
+        ['Cotizar envio', 'Recargar'],
+        ['Mi saldo aliado'],
+        ['Volver al menu']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_repartidor_menu_keyboard(courier):
+    """Retorna el teclado de seccion Repartidor."""
+    courier_toggle = _get_courier_toggle_button_label(courier)
+    keyboard = []
+    if courier_toggle:
+        keyboard.append([courier_toggle])
+    keyboard.append(['Mis pedidos repartidor'])
+    keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
+    keyboard.append(['Volver al menu'])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def mi_aliado(update, context):
+    """Muestra el submenu de gestion de aliado."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally:
+        update.message.reply_text("No tienes perfil de aliado. Usa /soy_aliado para registrarte.")
+        return
+    status = ally["status"] if isinstance(ally, dict) else ally[8]
+    business_name = ally["business_name"] if isinstance(ally, dict) else ally[2]
+    msg = (
+        "🍕 GESTION DE ALIADO\n\n"
+        f"Negocio: {business_name}\n"
+        f"Estado: {status}\n\n"
+        "Selecciona una opcion:"
+    )
+    reply_markup = get_ally_menu_keyboard()
+    update.message.reply_text(msg, reply_markup=reply_markup)
+
+
+def mi_repartidor(update, context):
+    """Muestra el submenu de gestion de repartidor."""
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor. Usa /soy_repartidor para registrarte.")
+        return
+    status = _row_value(courier, "status", "PENDING")
+    full_name = _row_value(courier, "full_name", "-")
+    is_active = _row_value(courier, "is_active", 0)
+    if is_active and status == "APPROVED":
+        avail_status = _row_value(courier, "availability_status", "INACTIVE")
+        live_active = int(_row_value(courier, "live_location_active", 0) or 0) == 1
+        if avail_status == "APPROVED" and live_active:
+            disp = "ONLINE"
+        elif avail_status == "APPROVED":
+            disp = "PAUSADO"
+        else:
+            disp = "OFFLINE"
+    else:
+        disp = "OFFLINE"
+    msg = (
+        "🚴 GESTION DE REPARTIDOR\n\n"
+        f"Nombre: {full_name}\n"
+        f"Estado: {status}\n"
+        f"Disponibilidad: {disp}\n\n"
+        "Selecciona una opcion:"
+    )
+    reply_markup = get_repartidor_menu_keyboard(courier)
+    update.message.reply_text(msg, reply_markup=reply_markup)
 
 
 def _get_chat_id(update):
@@ -1133,7 +1212,7 @@ def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:
     ally, courier, admin_local = _get_user_roles(update)
     es_admin_plataforma = (update.effective_user.id == ADMIN_USER_ID)
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
-    reply_markup = get_main_menu_keyboard(missing_cmds, courier)
+    reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -1154,15 +1233,14 @@ def cmd_id(update, context):
 
 
 def menu_button_handler(update, context):
-    """Maneja los botones del menú principal (ReplyKeyboard)."""
+    """Maneja los botones del menú principal y submenús (ReplyKeyboard)."""
     text = update.message.text.strip()
 
-    if text == "Activar repartidor":
-        return courier_activate_from_message(update, context)
-    elif text == "Pausar repartidor":
-        return courier_deactivate_from_message(update, context)
-    elif text == "Mis pedidos":
-        return ally_active_orders(update, context)
+    # --- Botones del menú principal ---
+    if text == "Mi aliado":
+        return mi_aliado(update, context)
+    elif text == "Mi repartidor":
+        return mi_repartidor(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
@@ -1170,10 +1248,15 @@ def menu_button_handler(update, context):
         missing_cmds = _get_missing_role_commands(ally, courier, admin_local)
         msg = (
             "AYUDA\n\n"
+            "Secciones del menu:\n"
+            "• Mi aliado - Gestion de tu negocio (pedidos, clientes, agenda, cotizar, recargar, saldo)\n"
+            "• Mi repartidor - Gestion de repartidor (activar/pausar, pedidos, recargar, saldo)\n\n"
             "Comandos disponibles:\n"
             "/nuevo_pedido - Crear un nuevo pedido\n"
             "/clientes - Gestionar clientes\n"
             "/cotizar - Cotizar envio por distancia\n"
+            "/recargar - Solicitar recarga\n"
+            "/saldo - Ver tu saldo\n"
             "/mi_perfil - Ver tu perfil\n"
             "/cancel - Cancelar proceso actual\n"
             "/menu - Ver menu principal"
@@ -1190,6 +1273,26 @@ def menu_button_handler(update, context):
         return
     elif text == "Menu":
         return start(update, context)
+
+    # --- Botones del submenú Aliado ---
+    elif text == "Mis pedidos":
+        return ally_active_orders(update, context)
+    elif text == "Mi saldo aliado":
+        return cmd_saldo(update, context)
+
+    # --- Botones del submenú Repartidor ---
+    elif text == "Activar repartidor":
+        return courier_activate_from_message(update, context)
+    elif text == "Pausar repartidor":
+        return courier_deactivate_from_message(update, context)
+    elif text == "Mis pedidos repartidor":
+        return ally_active_orders(update, context)
+    elif text == "Mi saldo repartidor":
+        return cmd_saldo(update, context)
+
+    # --- Botón compartido ---
+    elif text == "Volver al menu":
+        return show_main_menu(update, context, "Menu principal. Selecciona una opcion:")
 
 
 def saludo_menu_handler(update, context):
@@ -6617,7 +6720,10 @@ def direcciones_pickup_guardar_callback(update, context):
 
 # ConversationHandler para /agenda
 agenda_conv = ConversationHandler(
-    entry_points=[CommandHandler("agenda", agenda_cmd)],
+    entry_points=[
+        CommandHandler("agenda", agenda_cmd),
+        MessageHandler(Filters.regex(r'^Agenda$'), agenda_cmd),
+    ],
     states={
         DIRECCIONES_MENU: [
             CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_(pickups|clientes|cerrar|volver)$"),
@@ -6646,7 +6752,10 @@ agenda_conv = ConversationHandler(
 
 # ConversationHandler para /clientes
 clientes_conv = ConversationHandler(
-    entry_points=[CommandHandler("clientes", clientes_cmd)],
+    entry_points=[
+        CommandHandler("clientes", clientes_cmd),
+        MessageHandler(Filters.regex(r'^Clientes$'), clientes_cmd),
+    ],
     states={
         CLIENTES_MENU: [
             CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
@@ -6871,7 +6980,10 @@ nuevo_pedido_conv = ConversationHandler(
 
 # Conversación para /cotizar
 cotizar_conv = ConversationHandler(
-    entry_points=[CommandHandler("cotizar", cotizar_start)],
+    entry_points=[
+        CommandHandler("cotizar", cotizar_start),
+        MessageHandler(Filters.regex(r'^Cotizar envio$'), cotizar_start),
+    ],
     states={
         COTIZAR_MODO: [
             CallbackQueryHandler(cotizar_modo_callback, pattern=r"^cotizar_modo_"),
@@ -9675,7 +9787,10 @@ def main():
 
     # ConversationHandler para /recargar
     recargar_conv = ConversationHandler(
-        entry_points=[CommandHandler("recargar", cmd_recargar)],
+        entry_points=[
+            CommandHandler("recargar", cmd_recargar),
+            MessageHandler(Filters.regex(r'^(Recargar|Recargar repartidor)$'), cmd_recargar),
+        ],
         states={
             RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
             RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
@@ -9755,7 +9870,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Activar repartidor|Pausar repartidor|Mis pedidos|Mi perfil|Ayuda|Menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
