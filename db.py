@@ -2044,14 +2044,17 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
         conn = get_connection()
         try:
             cur = conn.cursor()
+            is_pg = DB_ENGINE == "postgres"
+            threshold_sql = "(NOW() - (%s * INTERVAL '1 second'))" if is_pg else f"datetime('now', {P} || ' seconds')"
+            threshold_param = (timeout_seconds,) if is_pg else ('-' + str(timeout_seconds),)
 
             # Primero obtener los que van a expirar
             cur.execute(f"""
                 SELECT id FROM couriers
                 WHERE availability_status = 'APPROVED'
                   AND live_location_active = 1
-                  AND live_location_updated_at < datetime('now', {P} || ' seconds')
-            """, ('-' + str(timeout_seconds),))
+                  AND live_location_updated_at < {threshold_sql}
+            """, threshold_param)
             expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
             if expired:
@@ -2060,8 +2063,8 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
                     SET availability_status = 'INACTIVE', live_location_active = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
-                      AND live_location_updated_at < datetime('now', {P} || ' seconds')
-                """, ('-' + str(timeout_seconds),))
+                      AND live_location_updated_at < {threshold_sql}
+                """, threshold_param)
                 conn.commit()
 
             return expired
@@ -2675,7 +2678,10 @@ def create_ally(
         ally_id = cur.lastrowid
         conn.commit()
 
-    except sqlite3.IntegrityError as e:
+    except Exception as e:
+        # Multi-motor: SQLite y Postgres reportan clases de integridad distintas.
+        if "integrity" not in e.__class__.__name__.lower() and "unique" not in str(e).lower():
+            raise
         conn.rollback()
         raise ValueError("Ya existe un registro de Aliado para esta cuenta o identidad.") from e
     finally:
