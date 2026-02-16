@@ -231,6 +231,11 @@ def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str,
 
 
 def init_db():
+    # Postgres: usar schema dedicado (sin AUTOINCREMENT ni PRAGMA)
+    if DB_ENGINE == "postgres":
+        _init_db_postgres()
+        return
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1154,6 +1159,202 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def _init_db_postgres():
+    """Crea/migra tablas en Postgres usando postgres_schema.sql."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # 1) Ejecutar schema completo (CREATE TABLE IF NOT EXISTS + índices)
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "migrations", "postgres_schema.sql")
+    with open(schema_path, "r", encoding="utf-8") as f:
+        cur.execute(f.read())
+
+    # 2) Migraciones de columnas para despliegues previos
+    #    (si la tabla ya existía con schema viejo, agregar columnas faltantes)
+    def _pg_add_col(table, column, col_type):
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        )
+        if not cur.fetchone():
+            cur.execute(
+                f'ALTER TABLE "{table}" ADD COLUMN "{column}" {col_type}'
+            )
+
+    # admins
+    for col, ctype in [
+        ("balance", "INTEGER DEFAULT 0"),
+        ("residence_address", "TEXT"),
+        ("residence_lat", "REAL"),
+        ("residence_lng", "REAL"),
+        ("payment_phone", "TEXT"),
+        ("payment_bank", "TEXT"),
+        ("payment_holder", "TEXT"),
+        ("payment_instructions", "TEXT"),
+    ]:
+        _pg_add_col("admins", col, ctype)
+
+    # couriers
+    for col, ctype in [
+        ("available_cash", "INTEGER DEFAULT 0"),
+        ("is_active", "INTEGER DEFAULT 0"),
+        ("residence_address", "TEXT"),
+        ("residence_lat", "REAL"),
+        ("residence_lng", "REAL"),
+    ]:
+        _pg_add_col("couriers", col, ctype)
+
+    # ally_locations
+    for col, ctype in [
+        ("lat", "REAL"),
+        ("lng", "REAL"),
+        ("use_count", "INTEGER DEFAULT 0"),
+        ("is_frequent", "INTEGER DEFAULT 0"),
+        ("last_used_at", "TIMESTAMP"),
+    ]:
+        _pg_add_col("ally_locations", col, ctype)
+
+    # orders
+    for col, ctype in [
+        ("requires_cash", "INTEGER DEFAULT 0"),
+        ("cash_required_amount", "INTEGER DEFAULT 0"),
+        ("pickup_lat", "REAL"),
+        ("pickup_lng", "REAL"),
+        ("dropoff_lat", "REAL"),
+        ("dropoff_lng", "REAL"),
+        ("quote_source", "TEXT"),
+        ("canceled_by", "TEXT"),
+    ]:
+        _pg_add_col("orders", col, ctype)
+
+    # map_link_cache
+    for col, ctype in [
+        ("formatted_address", "TEXT"),
+        ("provider", "TEXT"),
+        ("place_id", "TEXT"),
+    ]:
+        _pg_add_col("map_link_cache", col, ctype)
+
+    # recharge_requests
+    _pg_add_col("recharge_requests", "proof_file_id", "TEXT")
+
+    # terms_versions
+    _pg_add_col("terms_versions", "is_active", "INTEGER DEFAULT 1")
+
+    # 3) Migraciones de datos (idempotentes)
+
+    # team_name / team_code bootstrap
+    cur.execute("""
+        UPDATE admins
+        SET team_name = COALESCE(team_name, full_name)
+        WHERE team_name IS NULL OR team_name = ''
+    """)
+    cur.execute("""
+        UPDATE admins
+        SET team_code = 'TEAM' || id
+        WHERE team_code IS NULL OR team_code = ''
+    """)
+
+    # free_orders_remaining cleanup
+    cur.execute("""
+        UPDATE couriers SET free_orders_remaining = 15
+        WHERE free_orders_remaining IS NULL
+    """)
+
+    # availability_status normalización
+    cur.execute("UPDATE couriers SET availability_status = 'APPROVED' WHERE availability_status = 'ONLINE'")
+    cur.execute("UPDATE couriers SET availability_status = 'INACTIVE' WHERE availability_status IN ('PAUSADO', 'OFFLINE') OR availability_status IS NULL")
+
+    # identities bootstrap (ON CONFLICT DO NOTHING = INSERT OR IGNORE)
+    cur.execute("""
+        INSERT INTO identities(phone, document_number, full_name)
+        SELECT a.phone, a.document_number, a.full_name
+        FROM admins a
+        WHERE a.phone IS NOT NULL AND a.phone <> ''
+          AND a.document_number IS NOT NULL AND a.document_number <> ''
+        ON CONFLICT DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO identities(phone, document_number, full_name)
+        SELECT c.phone, c.id_number, c.full_name
+        FROM couriers c
+        WHERE c.phone IS NOT NULL AND c.phone <> ''
+          AND c.id_number IS NOT NULL AND c.id_number <> ''
+        ON CONFLICT DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO identities(phone, document_number, full_name)
+        SELECT al.phone, al.document_number, al.owner_name
+        FROM allies al
+        WHERE al.phone IS NOT NULL AND al.phone <> ''
+          AND al.document_number IS NOT NULL AND al.document_number <> ''
+        ON CONFLICT DO NOTHING
+    """)
+
+    # person_id linking
+    cur.execute("""
+        UPDATE admins SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = admins.phone AND i.document_number = admins.document_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND document_number IS NOT NULL AND document_number <> ''
+    """)
+    cur.execute("""
+        UPDATE couriers SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = couriers.phone AND i.document_number = couriers.id_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND id_number IS NOT NULL AND id_number <> ''
+    """)
+    cur.execute("""
+        UPDATE allies SET person_id = (
+            SELECT i.id FROM identities i
+            WHERE i.phone = allies.phone AND i.document_number = allies.document_number
+        )
+        WHERE person_id IS NULL
+          AND phone IS NOT NULL AND phone <> ''
+          AND document_number IS NOT NULL AND document_number <> ''
+    """)
+
+    # users.person_id (prioridad admins -> couriers -> allies)
+    cur.execute("""
+        UPDATE users SET person_id = (SELECT a.person_id FROM admins a WHERE a.user_id = users.id)
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM admins a WHERE a.user_id = users.id AND a.person_id IS NOT NULL)
+    """)
+    cur.execute("""
+        UPDATE users SET person_id = (SELECT c.person_id FROM couriers c WHERE c.user_id = users.id)
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM couriers c WHERE c.user_id = users.id AND c.person_id IS NOT NULL)
+    """)
+    cur.execute("""
+        UPDATE users SET person_id = (SELECT al.person_id FROM allies al WHERE al.user_id = users.id)
+        WHERE person_id IS NULL
+          AND EXISTS (SELECT 1 FROM allies al WHERE al.user_id = users.id AND al.person_id IS NOT NULL)
+    """)
+
+    # Terms bootstrap
+    cur.execute("SELECT 1 FROM terms_versions WHERE role = 'ALLY' LIMIT 1")
+    if not cur.fetchone():
+        import hashlib
+        terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
+        sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
+        cur.execute(
+            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (%s, %s, %s, %s, %s)",
+            ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1),
+        )
+
+    conn.commit()
+    conn.close()
+
 
 def force_platform_admin(platform_telegram_id: int):
     """
