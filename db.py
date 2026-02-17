@@ -175,7 +175,7 @@ def ensure_user_person_id(user_id: int, person_id: int) -> None:
     cur = conn.cursor()
     cur.execute(f"SELECT person_id FROM users WHERE id = {P}", (user_id,))
     row = cur.fetchone()
-    if row and (row[0] is None or row[0] == ""):
+    if row and (row["person_id"] is None or row["person_id"] == ""):
         cur.execute(f"UPDATE users SET person_id = {P} WHERE id = {P}", (person_id, user_id))
         conn.commit()
     conn.close()
@@ -186,10 +186,17 @@ def add_user_role(user_id: int, role: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute(f"""
-            INSERT OR IGNORE INTO user_roles (user_id, role)
-            VALUES ({P}, {P})
-        """, (user_id, role))
+        if DB_ENGINE == "postgres":
+            cur.execute(f"""
+                INSERT INTO user_roles (user_id, role)
+                VALUES ({P}, {P})
+                ON CONFLICT DO NOTHING
+            """, (user_id, role))
+        else:
+            cur.execute(f"""
+                INSERT OR IGNORE INTO user_roles (user_id, role)
+                VALUES ({P}, {P})
+            """, (user_id, role))
         conn.commit()
     finally:
         conn.close()
