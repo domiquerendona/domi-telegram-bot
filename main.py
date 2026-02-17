@@ -1061,6 +1061,19 @@ def _row_value(row, key, default=None):
         return default
 
 
+def _row_value_fallback(row, key, index, default=None):
+    """Lee por clave y, si no existe, usa índice posicional."""
+    if row is None:
+        return default
+    val = _row_value(row, key, None)
+    if val is not None:
+        return val
+    try:
+        return row[index]
+    except Exception:
+        return default
+
+
 def _get_courier_toggle_button_label(courier):
     """Retorna el texto del boton de estado para repartidor APPROVED."""
     if not courier or _row_value(courier, "status") != "APPROVED":
@@ -1747,11 +1760,10 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
     # Botones por equipo disponible
     if teams:
         for row in teams:
-            # row puede venir como sqlite3.Row o tupla
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = _row_value_fallback(row, "id", 0)
+            team_name = _row_value_fallback(row, "team_name", 1, "")
+            team_code = _row_value_fallback(row, "team_code", 2, "")
+            admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
 
             # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
@@ -2203,10 +2215,10 @@ def show_courier_team_selection(update, context):
 
     if teams:
         for row in teams:
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = _row_value_fallback(row, "id", 0)
+            team_name = _row_value_fallback(row, "team_name", 1, "")
+            team_code = _row_value_fallback(row, "team_code", 2, "")
+            admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
 
             label = f"{team_name} ({team_code})"
             if admin_status == 'PENDING':
@@ -4140,7 +4152,14 @@ def aliados_pendientes(update, context):
         return
 
     for ally in allies:
-        ally_id, business_name, owner_name, address, city, barrio, phone, status = ally
+        ally_id = _row_value_fallback(ally, "id", 0)
+        business_name = _row_value_fallback(ally, "business_name", 1, "")
+        owner_name = _row_value_fallback(ally, "owner_name", 2, "")
+        address = _row_value_fallback(ally, "address", 3, "")
+        city = _row_value_fallback(ally, "city", 4, "")
+        barrio = _row_value_fallback(ally, "barrio", 5, "")
+        phone = _row_value_fallback(ally, "phone", 6, "")
+        status = _row_value_fallback(ally, "status", 7, "PENDING")
 
         texto = (
             "Aliado pendiente:\n"
@@ -5772,9 +5791,9 @@ def admins_pendientes(update, context):
 
     keyboard = []
     for admin in admins:
-        admin_id = admin[0]
-        full_name = admin[2]
-        city = admin[4]
+        admin_id = _row_value_fallback(admin, "id", 0)
+        full_name = _row_value_fallback(admin, "full_name", 2, "")
+        city = _row_value_fallback(admin, "city", 4, "")
 
         keyboard.append([
             InlineKeyboardButton(
@@ -5807,9 +5826,17 @@ def admin_ver_pendiente(update, context):
         return
 
     # id, user_id, full_name, phone, city, barrio, team_name, document_number, team_code, status, created_at, residence_address, residence_lat, residence_lng
-    residence_address = admin[11] if len(admin) > 11 else None
-    residence_lat = admin[12] if len(admin) > 12 else None
-    residence_lng = admin[13] if len(admin) > 13 else None
+    admin_id_row = _row_value_fallback(admin, "id", 0)
+    full_name = _row_value_fallback(admin, "full_name", 2, "")
+    phone = _row_value_fallback(admin, "phone", 3, "")
+    city = _row_value_fallback(admin, "city", 4, "")
+    barrio = _row_value_fallback(admin, "barrio", 5, "")
+    team_code = _row_value_fallback(admin, "team_code", 8, "-")
+    document_number = _row_value_fallback(admin, "document_number", 7, "-")
+    status = _row_value_fallback(admin, "status", 9, "PENDING")
+    residence_address = _row_value_fallback(admin, "residence_address", 11)
+    residence_lat = _row_value_fallback(admin, "residence_lat", 12)
+    residence_lng = _row_value_fallback(admin, "residence_lng", 13)
     if residence_lat is not None and residence_lng is not None:
         residence_location = "{}, {}".format(residence_lat, residence_lng)
         maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -5819,14 +5846,14 @@ def admin_ver_pendiente(update, context):
 
     texto = (
         "Administrador pendiente:\n\n"
-        f"ID: {admin[0]}\n"
-        f"Nombre: {admin[2]}\n"
-        f"Teléfono: {admin[3]}\n"
-        f"Ciudad: {admin[4]}\n"
-        f"Barrio: {admin[5]}\n"
-        f"Equipo: {admin[8] or '-'}\n"
-        f"Documento: {admin[7] or '-'}\n"
-        f"Estado: {admin[9]}\n"
+        f"ID: {admin_id_row}\n"
+        f"Nombre: {full_name}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
+        f"Equipo: {team_code or '-'}\n"
+        f"Documento: {document_number or '-'}\n"
+        f"Estado: {status}\n"
         "Residencia: {}\n"
         "Ubicación residencia: {}\n"
         "{}"

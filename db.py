@@ -3829,6 +3829,7 @@ def create_admin(
     # 1) Identidad global
     person_id = get_or_create_identity(phone, document_number, full_name=full_name)
     ensure_user_person_id(user_id, person_id)
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
 
     conn = get_connection()
     cur = conn.cursor()
@@ -3840,7 +3841,7 @@ def create_admin(
                 status, created_at, team_name, document_number,
                 residence_address, residence_lat, residence_lng
             )
-            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', datetime('now'), {P}, {P}, {P}, {P}, {P})
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql}, {P}, {P}, {P}, {P}, {P})
         """, (
             user_id,
             person_id,
