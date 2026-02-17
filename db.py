@@ -4,17 +4,9 @@ import re
 import json
 import time
 
-# Entorno y motor de base de datos
-ENV = os.getenv("ENV", "PROD").upper()
+# Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Validación obligatoria en producción: DATABASE_URL debe existir.
-if ENV == "PROD" and not DATABASE_URL:
-    print("[FATAL][DB] ENV=PROD requiere DATABASE_URL. Arranque cancelado.")
-    raise RuntimeError("ENV=PROD requiere DATABASE_URL; no se permite fallback a SQLite.")
-
 DB_ENGINE = "postgres" if DATABASE_URL else "sqlite"
-_DB_STARTUP_LOGGED = False
 
 # Importar Postgres solo si aplica
 if DB_ENGINE == "postgres":
@@ -23,15 +15,6 @@ if DB_ENGINE == "postgres":
 
 # Placeholder unificado: %s para Postgres, ? para SQLite
 P = "%s" if DB_ENGINE == "postgres" else "?"
-
-def _log_db_startup_once():
-    global _DB_STARTUP_LOGGED
-    if _DB_STARTUP_LOGGED or ENV != "PROD":
-        return
-    print(f"[DB] ambiente={ENV}")
-    print(f"[DB] motor={DB_ENGINE}")
-    print("[DB] conexion=ok")
-    _DB_STARTUP_LOGGED = True
 
 # IntegrityError compatible multi-motor
 _IntegrityError = psycopg2.IntegrityError if DB_ENGINE == "postgres" else sqlite3.IntegrityError
@@ -192,7 +175,7 @@ def ensure_user_person_id(user_id: int, person_id: int) -> None:
     cur = conn.cursor()
     cur.execute(f"SELECT person_id FROM users WHERE id = {P}", (user_id,))
     row = cur.fetchone()
-    if row and (row[0] is None or row[0] == ""):
+    if row and (row["person_id"] is None or row["person_id"] == ""):
         cur.execute(f"UPDATE users SET person_id = {P} WHERE id = {P}", (person_id, user_id))
         conn.commit()
     conn.close()
@@ -203,10 +186,17 @@ def add_user_role(user_id: int, role: str) -> None:
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute(f"""
-            INSERT OR IGNORE INTO user_roles (user_id, role)
-            VALUES ({P}, {P})
-        """, (user_id, role))
+        if DB_ENGINE == "postgres":
+            cur.execute(f"""
+                INSERT INTO user_roles (user_id, role)
+                VALUES ({P}, {P})
+                ON CONFLICT DO NOTHING
+            """, (user_id, role))
+        else:
+            cur.execute(f"""
+                INSERT OR IGNORE INTO user_roles (user_id, role)
+                VALUES ({P}, {P})
+            """, (user_id, role))
         conn.commit()
     finally:
         conn.close()
@@ -218,9 +208,7 @@ def get_connection():
     - PostgreSQL si existe DATABASE_URL.
     """
     if DB_ENGINE == "postgres":
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        _log_db_startup_once()
-        return conn
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
     db_path = os.getenv("DB_PATH", "domiquerendona.db")
     conn = sqlite3.connect(db_path, timeout=30)
@@ -228,7 +216,6 @@ def get_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    _log_db_startup_once()
     return conn
 
 
@@ -1048,7 +1035,7 @@ def init_db():
         terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
         sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
         cur.execute(
-            f"INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES ({P}, {P}, {P}, {P}, {P})",
+            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
         )
 
@@ -1215,8 +1202,8 @@ def _init_db_postgres():
     #    (si la tabla ya existía con schema viejo, agregar columnas faltantes)
     def _pg_add_col(table, column, col_type):
         cur.execute(
-            f"SELECT 1 FROM information_schema.columns "
-            f"WHERE table_name = {P} AND column_name = {P}",
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
             (table, column),
         )
         if not cur.fetchone():
@@ -1387,7 +1374,7 @@ def _init_db_postgres():
         terms_text = "Términos y Condiciones Domiquerendona - Rol ALLY v1.0"
         sha256_hash = hashlib.sha256(terms_text.encode()).hexdigest()
         cur.execute(
-            f"INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES ({P}, {P}, {P}, {P}, {P})",
+            "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (%s, %s, %s, %s, %s)",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1),
         )
 
@@ -2054,17 +2041,14 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
         conn = get_connection()
         try:
             cur = conn.cursor()
-            is_pg = DB_ENGINE == "postgres"
-            threshold_sql = "(NOW() - (%s * INTERVAL '1 second'))" if is_pg else f"datetime('now', {P} || ' seconds')"
-            threshold_param = (timeout_seconds,) if is_pg else ('-' + str(timeout_seconds),)
 
             # Primero obtener los que van a expirar
             cur.execute(f"""
                 SELECT id FROM couriers
                 WHERE availability_status = 'APPROVED'
                   AND live_location_active = 1
-                  AND live_location_updated_at < {threshold_sql}
-            """, threshold_param)
+                  AND live_location_updated_at < datetime('now', {P} || ' seconds')
+            """, ('-' + str(timeout_seconds),))
             expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
             if expired:
@@ -2073,8 +2057,8 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
                     SET availability_status = 'INACTIVE', live_location_active = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
-                      AND live_location_updated_at < {threshold_sql}
-                """, threshold_param)
+                      AND live_location_updated_at < datetime('now', {P} || ' seconds')
+                """, ('-' + str(timeout_seconds),))
                 conn.commit()
 
             return expired
