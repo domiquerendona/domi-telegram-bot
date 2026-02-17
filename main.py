@@ -8760,12 +8760,12 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_check_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
+        status = _row_value_fallback(admin_full, "status", 9, "PENDING")
         team_code = "-"
         if isinstance(admin_full, dict):
             team_code = admin_full.get("team_code") or "-"
         else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+            team_code = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
 
         # Administrador de Plataforma: siempre operativo
         if team_code == "PLATFORM":
@@ -8834,12 +8834,12 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_status_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
+        status = _row_value_fallback(admin_full, "status", 9, "PENDING")
         team_code = "-"
         if isinstance(admin_full, dict):
             team_code = admin_full.get("team_code") or "-"
         else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+            team_code = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
 
         # Administrador de Plataforma: mensaje especial
         if team_code == "PLATFORM":
@@ -8891,8 +8891,8 @@ def admin_local_callback(update, context):
 
         keyboard = []
         for c in pendientes:
-            courier_id = c[0]
-            full_name = c[1] if len(c) > 1 else ""
+            courier_id = _row_value_fallback(c, "courier_id", 0)
+            full_name = _row_value_fallback(c, "full_name", 1, "")
             keyboard.append([
                 InlineKeyboardButton(
                     f"ID {courier_id} - {full_name}",
@@ -8916,9 +8916,17 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
 
-        residence_address = courier[11] if len(courier) > 11 else None
-        residence_lat = courier[12] if len(courier) > 12 else None
-        residence_lng = courier[13] if len(courier) > 13 else None
+        courier_id_row = _row_value_fallback(courier, "id", 0)
+        full_name = _row_value_fallback(courier, "full_name", 2, "")
+        id_number = _row_value_fallback(courier, "id_number", 3, "")
+        phone = _row_value_fallback(courier, "phone", 4, "")
+        city = _row_value_fallback(courier, "city", 5, "")
+        barrio = _row_value_fallback(courier, "barrio", 6, "")
+        plate = _row_value_fallback(courier, "plate", 7, "-")
+        bike_type = _row_value_fallback(courier, "bike_type", 8, "-")
+        residence_address = _row_value_fallback(courier, "residence_address", 11)
+        residence_lat = _row_value_fallback(courier, "residence_lat", 12)
+        residence_lng = _row_value_fallback(courier, "residence_lng", 13)
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -8928,17 +8936,17 @@ def admin_local_callback(update, context):
 
         texto = (
             "REPARTIDOR (pendiente de tu equipo)\n\n"
-            f"ID: {courier[0]}\n"
-            f"Nombre: {courier[2]}\n"
-            f"Documento: {courier[3]}\n"
-            f"Teléfono: {courier[4]}\n"
-            f"Ciudad: {courier[5]}\n"
-            f"Barrio: {courier[6]}\n"
+            f"ID: {courier_id_row}\n"
+            f"Nombre: {full_name}\n"
+            f"Documento: {id_number}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n"
             "Dirección residencia: {}\n"
             "Ubicación residencia: {}\n"
             "{}"
-            f"Placa: {courier[7] or '-'}\n"
-            f"Moto: {courier[8] or '-'}\n"
+            f"Placa: {plate or '-'}\n"
+            f"Moto: {bike_type or '-'}\n"
         ).format(
             residence_address or "No registrada",
             residence_location,
@@ -8960,7 +8968,7 @@ def admin_local_callback(update, context):
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
     if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
         admin_full = get_admin_by_id(admin_id)
-        admin_status = admin_full[9] if admin_full else None
+        admin_status = _row_value_fallback(admin_full, "status", 9) if admin_full else None
         if admin_status != "APPROVED":
             query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
             return
@@ -9070,9 +9078,8 @@ def ally_approval_callback(update, context):
         query.edit_message_text("No se encontró el aliado después de actualizar.")
         return
 
-    # Estructura esperada: id, user_id(telegram_id), business_name, owner_name, phone, address, city, barrio, status
-    ally_user_id = ally[1]       # EN TU DISEÑO ACTUAL ESTO ES telegram_id (porque create_ally usa user_id=telegram_id)
-    business_name = ally[2]
+    ally_user_id = _row_value_fallback(ally, "user_id", 1)
+    business_name = _row_value_fallback(ally, "business_name", 2, "Aliado")
 
     # Notificar al aliado (si falla, no rompemos el flujo)
     try:
@@ -9191,9 +9198,8 @@ def courier_approval_callback(update, context):
         query.edit_message_text("No se encontró el repartidor después de actualizar.")
         return
 
-    # courier esperado: id, user_id(users.id), full_name, id_number, phone, city, barrio, plate, bike_type, code, status
-    courier_user_db_id = courier[1]   # users.id
-    full_name = courier[2]
+    courier_user_db_id = _row_value_fallback(courier, "user_id", 1)
+    full_name = _row_value_fallback(courier, "full_name", 2, "Repartidor")
 
     # Notificar al repartidor si existe get_user_by_id (recomendado).
     # Si no existe, solo omitimos notificación sin romper.

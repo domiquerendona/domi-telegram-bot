@@ -66,6 +66,21 @@ def _insert_returning_id(cur, sql, params=()):
     return cur.lastrowid
 
 
+def _row_value(row, key, index=0, default=None):
+    """Lee un campo por clave (dict/Row) y fallback por índice."""
+    if row is None:
+        return default
+    try:
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return row[key]
+    except Exception:
+        try:
+            return row[index]
+        except Exception:
+            return default
+
+
 # ----------------- Identidad global -----------------
 
 def get_or_create_identity(phone: str, document_number: str, full_name: str = None) -> int:
@@ -2819,7 +2834,7 @@ def update_admin_status_by_id(admin_id: int, new_status: str, rejection_type: st
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM admins WHERE id = {P} AND is_deleted = 0", (admin_id,))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2862,7 +2877,7 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM couriers WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0)", (courier_id,))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2905,7 +2920,7 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM allies WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0)", (ally_id,))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
 
     if new_status == "REJECTED" and rejection_type:
         # Rechazo tipificado: actualizar status + rejection fields + rejected_at
@@ -2949,7 +2964,7 @@ def get_admin_rejection_type_by_id(admin_id: int):
     cur.execute(f"SELECT rejection_type FROM admins WHERE id = {P}", (admin_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else None
+    return _row_value(row, "rejection_type", 0)
 
 
 def get_ally_rejection_type_by_id(ally_id: int):
@@ -2959,7 +2974,7 @@ def get_ally_rejection_type_by_id(ally_id: int):
     cur.execute(f"SELECT rejection_type FROM allies WHERE id = {P}", (ally_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else None
+    return _row_value(row, "rejection_type", 0)
 
 
 def get_courier_rejection_type_by_id(courier_id: int):
@@ -2969,7 +2984,7 @@ def get_courier_rejection_type_by_id(courier_id: int):
     cur.execute(f"SELECT rejection_type FROM couriers WHERE id = {P}", (courier_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else None
+    return _row_value(row, "rejection_type", 0)
 
 
 def get_local_admins_count():
@@ -3099,7 +3114,7 @@ def update_ally_status(ally_id: int, status: str, changed_by: str = None):
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM allies WHERE id = {P}", (ally_id,))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
     cur.execute(
         f"""
         UPDATE allies
@@ -3701,7 +3716,7 @@ def update_courier_status(courier_id: int, new_status: str, changed_by: str = No
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM couriers WHERE id = {P}", (courier_id,))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
     cur.execute(
         f"UPDATE couriers SET status = {P} WHERE id = {P};",
         (new_status, courier_id),
@@ -4050,6 +4065,7 @@ def save_terms_session_ack(telegram_id: int, role: str, version: str):
 
 def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = None):
     status = normalize_role_status(status)
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
@@ -4059,10 +4075,10 @@ def update_admin_courier_status(admin_id, courier_id, status, changed_by: str = 
         LIMIT 1
     """, (admin_id, courier_id))
     row_old = cur.fetchone()
-    old_status = row_old[0] if row_old else None
+    old_status = _row_value(row_old, "status", 0)
     cur.execute(f"""
         UPDATE admin_couriers
-        SET status = {P}, updated_at = datetime('now')
+        SET status = {P}, updated_at = {now_sql}
         WHERE admin_id = {P} AND courier_id = {P}
     """, (status, admin_id, courier_id))
     if cur.rowcount > 0:
