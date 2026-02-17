@@ -24,7 +24,6 @@ if DB_ENGINE == "postgres":
 # Placeholder unificado: %s para Postgres, ? para SQLite
 P = "%s" if DB_ENGINE == "postgres" else "?"
 
-
 def _log_db_startup_once():
     global _DB_STARTUP_LOGGED
     if _DB_STARTUP_LOGGED or ENV != "PROD":
@@ -33,6 +32,9 @@ def _log_db_startup_once():
     print(f"[DB] motor={DB_ENGINE}")
     print("[DB] conexion=ok")
     _DB_STARTUP_LOGGED = True
+
+# IntegrityError compatible multi-motor
+_IntegrityError = psycopg2.IntegrityError if DB_ENGINE == "postgres" else sqlite3.IntegrityError
 
 # ----------------- Normalización -----------------
 
@@ -69,6 +71,18 @@ def normalize_document(doc: str) -> str:
     return doc
 
 
+# ----------------- Helpers multi-motor -----------------
+
+def _insert_returning_id(cur, sql, params=()):
+    """INSERT y devuelve el id generado. Usa RETURNING id en Postgres."""
+    if DB_ENGINE == "postgres":
+        sql_s = sql.rstrip().rstrip(';')
+        cur.execute(sql_s + ' RETURNING id', params)
+        return cur.fetchone()["id"]
+    cur.execute(sql, params)
+    return cur.lastrowid
+
+
 # ----------------- Identidad global -----------------
 
 def get_or_create_identity(phone: str, document_number: str, full_name: str = None) -> int:
@@ -102,7 +116,9 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     row = cur.fetchone()
 
     if row:
-        identity_id, existing_phone, existing_doc = row
+        identity_id = row["id"]
+        existing_phone = row["phone"]
+        existing_doc = row["document_number"]
 
         # CASO A: Viene documento real y el actual es placeholder → UPGRADE
         if doc_n and existing_doc.startswith("SIN_DOC_"):
@@ -127,7 +143,7 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
                 conn.commit()
                 conn.close()
                 return identity_id
-            except sqlite3.IntegrityError as e:
+            except _IntegrityError as e:
                 conn.rollback()
                 conn.close()
                 raise ValueError("Error al actualizar documento.") from e
@@ -157,15 +173,14 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
     # 3) Crear nueva identidad con documento real o placeholder
     final_doc = doc_n if doc_n else placeholder
     try:
-        cur.execute(f"""
+        identity_id = _insert_returning_id(cur, f"""
             INSERT INTO identities (phone, document_number, full_name)
             VALUES ({P}, {P}, {P})
         """, (phone_n, final_doc, (full_name or "").strip() if full_name else None))
-        identity_id = cur.lastrowid
         conn.commit()
         conn.close()
         return identity_id
-    except sqlite3.IntegrityError as e:
+    except _IntegrityError as e:
         conn.rollback()
         conn.close()
         raise ValueError("Error al crear identidad.") from e
@@ -1400,16 +1415,11 @@ def force_platform_admin(platform_telegram_id: int):
     if row:
         user_id = row["id"]
     else:
-        cur.execute(
+        user_id = _insert_returning_id(
+            cur,
             f"INSERT INTO users (telegram_id, username, role, created_at) VALUES ({P}, {P}, {P}, {NOW})",
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
-        if _pg:
-            # psycopg2 no soporta lastrowid; recuperar id insertado
-            cur.execute("SELECT currval(pg_get_serial_sequence('users','id'))")
-            user_id = cur.fetchone()["currval"]
-        else:
-            user_id = cur.lastrowid
 
     # 2) asegurar admins - buscar por team_code='PLATFORM' (UNIQUE, solo puede haber uno)
     cur.execute("""
@@ -2650,7 +2660,7 @@ def create_ally(
     print(f"  document_number={document_number!r}")
 
     try:
-        cur.execute(f"""
+        ally_id = _insert_returning_id(cur, f"""
             INSERT INTO allies (
                 user_id,
                 person_id,
@@ -2674,14 +2684,9 @@ def create_ally(
             normalize_phone(phone),
             normalize_document(document_number),
         ))
-
-        ally_id = cur.lastrowid
         conn.commit()
 
-    except Exception as e:
-        # Multi-motor: SQLite y Postgres reportan clases de integridad distintas.
-        if "integrity" not in e.__class__.__name__.lower() and "unique" not in str(e).lower():
-            raise
+    except _IntegrityError as e:
         conn.rollback()
         raise ValueError("Ya existe un registro de Aliado para esta cuenta o identidad.") from e
     finally:
@@ -3156,14 +3161,13 @@ def create_ally_location(
             (ally_id,),
         )
 
-    cur.execute(f"""
+    location_id = _insert_returning_id(cur, f"""
         INSERT INTO ally_locations (
             ally_id, label, address, city, barrio, phone, is_default, lat, lng
         ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (ally_id, label, address, city, barrio, phone, 1 if is_default else 0, lat, lng))
 
     conn.commit()
-    location_id = cur.lastrowid
     conn.close()
     return location_id
 
@@ -3388,7 +3392,7 @@ def create_order(
     """Crea un pedido en estado PENDING y devuelve su id."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    order_id = _insert_returning_id(cur, f"""
         INSERT INTO orders (
             ally_id,
             courier_id,
@@ -3448,7 +3452,6 @@ def create_order(
         None,
     ))
     conn.commit()
-    order_id = cur.lastrowid
     conn.close()
     return order_id
 
@@ -3628,7 +3631,7 @@ def create_courier(
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute(f"""
+        courier_id = _insert_returning_id(cur, f"""
             INSERT INTO couriers (
                 user_id,
                 person_id,
@@ -3662,9 +3665,8 @@ def create_courier(
             residence_lng,
         ))
         conn.commit()
-        courier_id = cur.lastrowid
 
-    except sqlite3.IntegrityError as e:
+    except _IntegrityError as e:
         conn.rollback()
         raise ValueError("Ya existe un registro de Repartidor para esta cuenta o identidad.") from e
     finally:
@@ -3848,7 +3850,7 @@ def create_admin(
     cur = conn.cursor()
 
     try:
-        cur.execute(f"""
+        admin_id = _insert_returning_id(cur, f"""
             INSERT INTO admins (
                 user_id, person_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number,
@@ -3869,15 +3871,13 @@ def create_admin(
             residence_lng,
         ))
 
-        admin_id = cur.lastrowid
-
         # TEAM_CODE automático y único
         team_code = f"TEAM{admin_id}"
         cur.execute(f"UPDATE admins SET team_code = {P} WHERE id = {P}", (team_code, admin_id))
 
         conn.commit()
 
-    except sqlite3.IntegrityError as e:
+    except _IntegrityError as e:
         # Si ya existe admin para esa identidad o ese user_id, informamos de forma controlada
         conn.rollback()
         raise ValueError("Ya existe un registro de Administrador Local para esta cuenta o identidad.") from e
@@ -4353,11 +4353,10 @@ def create_ally_customer(ally_id: int, name: str, phone: str, notes: str = None)
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    customer_id = _insert_returning_id(cur, f"""
         INSERT INTO ally_customers (ally_id, name, phone, notes, status, created_at, updated_at)
         VALUES ({P}, {P}, {P}, {P}, 'ACTIVE', datetime('now'), datetime('now'))
     """, (ally_id, name.strip(), normalize_phone(phone), notes))
-    customer_id = cur.lastrowid
     conn.commit()
     conn.close()
     return customer_id
@@ -4528,12 +4527,11 @@ def create_customer_address(
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    address_id = _insert_returning_id(cur, f"""
         INSERT INTO ally_customer_addresses
         (customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at)
         VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'ACTIVE', datetime('now'), datetime('now'))
     """, (customer_id, label, address_text.strip(), city, barrio, notes, lat, lng))
-    address_id = cur.lastrowid
     conn.commit()
     conn.close()
     return address_id
@@ -4832,12 +4830,11 @@ def update_admin_balance_with_ledger(
             f"UPDATE admins SET balance = balance + {P} WHERE id = {P}",
             (delta, admin_id),
         )
-        cur.execute(f"""
+        ledger_id = _insert_returning_id(cur, f"""
             INSERT INTO ledger
                 (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
             VALUES ({P}, {P}, {P}, 'ADMIN', {P}, {P}, {P}, {P}, {P})
         """, (kind, from_type, from_id, admin_id, abs(delta), ref_type, ref_id, note))
-        ledger_id = cur.lastrowid
         conn.commit()
     except Exception:
         conn.rollback()
@@ -4940,12 +4937,11 @@ def create_recharge_request(target_type: str, target_id: int, admin_id: int,
         return None
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    request_id = _insert_returning_id(cur, f"""
         INSERT INTO recharge_requests
             (target_type, target_id, admin_id, amount, status, requested_by_user_id, method, note, proof_file_id)
         VALUES ({P}, {P}, {P}, {P}, 'PENDING', {P}, {P}, {P}, {P})
     """, (target_type, target_id, admin_id, amount, requested_by_user_id, method, note, proof_file_id))
-    request_id = cur.lastrowid
     conn.commit()
     conn.close()
     return request_id
@@ -5030,11 +5026,10 @@ def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, t
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    ledger_id = _insert_returning_id(cur, f"""
         INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
         VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
     """, (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note))
-    ledger_id = cur.lastrowid
     conn.commit()
     conn.close()
     return ledger_id
@@ -5140,12 +5135,11 @@ def create_payment_method(admin_id: int, method_name: str, account_number: str,
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    method_id = _insert_returning_id(cur, f"""
         INSERT INTO admin_payment_methods
             (admin_id, method_name, account_number, account_holder, instructions, is_active)
         VALUES ({P}, {P}, {P}, {P}, {P}, 1)
     """, (admin_id, method_name.strip(), account_number.strip(), account_holder.strip(), instructions))
-    method_id = cur.lastrowid
     conn.commit()
     conn.close()
     return method_id
@@ -5232,7 +5226,7 @@ def create_profile_change_request(
 ):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
+    req_id = _insert_returning_id(cur, f"""
         INSERT INTO profile_change_requests (
             requester_user_id,
             target_role,
@@ -5259,7 +5253,6 @@ def create_profile_change_request(
         team_admin_id,
         team_code,
     ))
-    req_id = cur.lastrowid
     conn.commit()
     conn.close()
     return req_id
