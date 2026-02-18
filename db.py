@@ -5216,6 +5216,81 @@ def list_accounting_weeks(limit: int = 12, offset: int = 0):
     return rows
 
 
+def get_courier_daily_earnings_history(courier_id: int, days: int = 7):
+    """
+    Historial diario de ganancias del repartidor usando liquidaciones contables.
+    Retorna lista con:
+    - date_key (YYYY-MM-DD), order_id, delivered_at, customer_name,
+      gross_amount, platform_fee, net_amount
+    """
+    if days < 1:
+        days = 1
+    end_dt = datetime.utcnow()
+    start_dt = (end_dt - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_s = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_s = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    return _get_courier_earnings_between(courier_id, start_s, end_s)
+
+
+def _get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            s.order_id,
+            COALESCE(s.delivered_at, o.delivered_at, o.created_at) AS delivered_at,
+            o.customer_name,
+            COALESCE(s.order_total_fee, o.total_fee, 0) AS gross_amount,
+            COALESCE(s.courier_fee_charged, 0) AS platform_fee
+        FROM order_accounting_settlements s
+        JOIN orders o ON o.id = s.order_id
+        WHERE s.courier_id = {P}
+          AND COALESCE(s.delivered_at, o.delivered_at, o.created_at) >= {P}
+          AND COALESCE(s.delivered_at, o.delivered_at, o.created_at) < {P}
+        ORDER BY COALESCE(s.delivered_at, o.delivered_at, o.created_at) DESC
+    """, (courier_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        order_id = int(_row_value(row, "order_id", 0, 0) or 0)
+        delivered_at = _row_value(row, "delivered_at", 1, "") or ""
+        customer_name = _row_value(row, "customer_name", 2, "N/A") or "N/A"
+        gross_amount = int(_row_value(row, "gross_amount", 3, 0) or 0)
+        platform_fee = int(_row_value(row, "platform_fee", 4, 0) or 0)
+        net_amount = gross_amount - platform_fee
+        date_key = str(delivered_at)[:10] if delivered_at else "-"
+        hour_key = str(delivered_at)[11:16] if delivered_at else "--:--"
+
+        result.append({
+            "date_key": date_key,
+            "hour_key": hour_key,
+            "order_id": order_id,
+            "delivered_at": delivered_at,
+            "customer_name": customer_name,
+            "gross_amount": gross_amount,
+            "platform_fee": platform_fee,
+            "net_amount": net_amount,
+        })
+    return result
+
+
+def get_courier_earnings_by_date(courier_id: int, date_key: str):
+    """
+    Ganancias del repartidor para una fecha exacta (YYYY-MM-DD).
+    """
+    try:
+        dt = datetime.strptime((date_key or "").strip(), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("Fecha inválida. Usa formato YYYY-MM-DD.") from exc
+
+    start_s = dt.strftime("%Y-%m-%d 00:00:00")
+    end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    return _get_courier_earnings_between(courier_id, start_s, end_s)
+
+
 def close_accounting_week(week_key: str, closed_by: str = "SYSTEM") -> bool:
     conn = get_connection()
     cur = conn.cursor()

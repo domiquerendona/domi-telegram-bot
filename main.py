@@ -130,6 +130,8 @@ from db import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_daily_earnings_history,
+    get_courier_earnings_by_date,
 
     # Herramientas administrativas
     get_totales_registros,
@@ -1140,6 +1142,7 @@ def get_repartidor_menu_keyboard(courier):
     if courier_toggle:
         keyboard.append([courier_toggle])
     keyboard.append(['Mis pedidos repartidor'])
+    keyboard.append(['Ganancias repartidor'])
     keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
     keyboard.append(['Volver al menu'])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1266,6 +1269,142 @@ def courier_orders_history(update, context):
             update.message.reply_text(msg)
 
 
+def courier_earnings_history(update, context):
+    """
+    Muestra historial de ganancias por día del repartidor (últimos 7 días).
+    Formato: pedido, valor bruto, descuento plataforma y neto.
+    """
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    history = get_courier_daily_earnings_history(courier["id"], days=7)
+    if not history:
+        update.message.reply_text(
+            "No tienes ganancias registradas en los últimos 7 días."
+        )
+        return
+
+    grouped = {}
+    for item in history:
+        date_key = item["date_key"]
+        grouped.setdefault(date_key, []).append(item)
+
+    update.message.reply_text(
+        "HISTORIAL DE GANANCIAS\n"
+        "Ganancias diarias por pedido (últimos 7 días)."
+    )
+
+    for date_key in sorted(grouped.keys(), reverse=True):
+        rows = grouped[date_key]
+        total_dia = sum(int(r["net_amount"] or 0) for r in rows)
+        total_bruto = sum(int(r["gross_amount"] or 0) for r in rows)
+        total_desc = sum(int(r["platform_fee"] or 0) for r in rows)
+
+        header = (
+            "Fecha: {date}\n"
+            "Pedidos del día: {n}\n"
+            "Bruto del día: ${bruto:,}\n"
+            "Descuento plataforma del día: ${desc:,}\n"
+            "Ganancia neta del día: ${neto:,}"
+        ).format(
+            date=date_key,
+            n=len(rows),
+            bruto=total_bruto,
+            desc=total_desc,
+            neto=total_dia,
+        )
+        update.message.reply_text(header)
+
+        for r in rows:
+            detail = (
+                "Hora: {hora}\n"
+                "Pedido #{order_id}\n"
+                "Cliente: {cliente}\n"
+                "Valor pedido: ${bruto:,}\n"
+                "Descuento servicio plataforma: ${desc:,}\n"
+                "Ganancia neta: ${neto:,}"
+            ).format(
+                hora=r["hour_key"],
+                order_id=r["order_id"],
+                cliente=r["customer_name"],
+                bruto=int(r["gross_amount"] or 0),
+                desc=int(r["platform_fee"] or 0),
+                neto=int(r["net_amount"] or 0),
+            )
+            update.message.reply_text(detail)
+
+
+def cmd_ganancias_repartidor_fecha(update, context):
+    """
+    /ganancias_repartidor YYYY-MM-DD
+    Consulta ganancias del repartidor en una fecha exacta.
+    """
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    if not context.args:
+        update.message.reply_text(
+            "Uso: /ganancias_repartidor YYYY-MM-DD\n"
+            "Ejemplo: /ganancias_repartidor 2026-02-17"
+        )
+        return
+
+    date_key = (context.args[0] or "").strip()
+    try:
+        rows = get_courier_earnings_by_date(courier["id"], date_key)
+    except ValueError as e:
+        update.message.reply_text(str(e))
+        return
+
+    if not rows:
+        update.message.reply_text(
+            "No tienes ganancias registradas para la fecha {}.".format(date_key)
+        )
+        return
+
+    total_neto = sum(int(r["net_amount"] or 0) for r in rows)
+    total_bruto = sum(int(r["gross_amount"] or 0) for r in rows)
+    total_desc = sum(int(r["platform_fee"] or 0) for r in rows)
+
+    update.message.reply_text(
+        "GANANCIAS DEL REPARTIDOR\n"
+        "Fecha: {date}\n"
+        "Pedidos del dia: {n}\n"
+        "Bruto del dia: ${bruto:,}\n"
+        "Descuento plataforma del dia: ${desc:,}\n"
+        "Ganancia neta del dia: ${neto:,}".format(
+            date=date_key,
+            n=len(rows),
+            bruto=total_bruto,
+            desc=total_desc,
+            neto=total_neto,
+        )
+    )
+
+    for r in rows:
+        update.message.reply_text(
+            "Hora: {hora}\n"
+            "Pedido #{pedido}\n"
+            "Cliente: {cliente}\n"
+            "Valor pedido: ${bruto:,}\n"
+            "Descuento servicio plataforma: ${desc:,}\n"
+            "Ganancia neta: ${neto:,}".format(
+                hora=r["hour_key"],
+                pedido=r["order_id"],
+                cliente=r["customer_name"],
+                bruto=int(r["gross_amount"] or 0),
+                desc=int(r["platform_fee"] or 0),
+                neto=int(r["net_amount"] or 0),
+            )
+        )
+
+
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
     if getattr(update, "callback_query", None) and update.callback_query.message:
@@ -1380,6 +1519,8 @@ def menu_button_handler(update, context):
         return courier_deactivate_from_message(update, context)
     elif text == "Mis pedidos repartidor":
         return courier_orders_history(update, context)
+    elif text == "Ganancias repartidor":
+        return courier_earnings_history(update, context)
     elif text == "Mi saldo repartidor":
         return cmd_saldo(update, context)
 
@@ -10270,6 +10411,7 @@ def main():
 
     # Sistema de recargas
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
+    dp.add_handler(CommandHandler("ganancias_repartidor", cmd_ganancias_repartidor_fecha))
     dp.add_handler(CommandHandler("contabilidad", cmd_contabilidad))
     dp.add_handler(CommandHandler("contabilidad_snapshot", cmd_contabilidad_snapshot))
     dp.add_handler(CommandHandler("cerrar_semana_contable", cmd_cerrar_semana_contable))
@@ -10438,7 +10580,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Ganancias repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
