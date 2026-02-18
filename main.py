@@ -1795,7 +1795,7 @@ def ally_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = _row_value_fallback(platform_admin, "admin_id", 0)
 
         try:
             upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
@@ -1855,9 +1855,9 @@ def ally_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    team_name = admin_row[4]
-    team_code = admin_row[5]
+    admin_id = _row_value_fallback(admin_row, "admin_id", 0)
+    team_name = _row_value_fallback(admin_row, "team_name", 4, "-")
+    team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
 
     try:
         upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
@@ -2270,7 +2270,7 @@ def courier_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = _row_value_fallback(platform_admin, "admin_id", 0)
 
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
@@ -2331,10 +2331,10 @@ def courier_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    admin_team = admin_row[4]
-    admin_team_code = admin_row[5]
-    admin_telegram_id = admin_row[6]
+    admin_id = _row_value_fallback(admin_row, "admin_id", 0)
+    admin_team = _row_value_fallback(admin_row, "team_name", 4, "-")
+    admin_team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
+    admin_telegram_id = _row_value_fallback(admin_row, "telegram_id", 6)
 
     try:
         create_admin_courier_link(admin_id, courier_id)
