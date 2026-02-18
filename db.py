@@ -4773,7 +4773,7 @@ def get_api_usage_today(api_name: str) -> int:
     """, (api_name,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return int(_row_value(row, "call_count", 0, 0) or 0)
 
 
 
@@ -4803,7 +4803,7 @@ def get_admin_balance(admin_id: int) -> int:
     cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return int(_row_value(row, "balance", 0, 0) or 0)
 
 
 
@@ -4867,7 +4867,7 @@ def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
     """, (courier_id, admin_id))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return int(_row_value(row, "balance", 0, 0) or 0)
 
 
 def update_courier_link_balance(courier_id: int, admin_id: int, delta: int):
@@ -4899,7 +4899,7 @@ def get_ally_link_balance(ally_id: int, admin_id: int) -> int:
     """, (ally_id, admin_id))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return int(_row_value(row, "balance", 0, 0) or 0)
 
 
 def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
