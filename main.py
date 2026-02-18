@@ -1330,7 +1330,7 @@ def menu_button_handler(update, context):
     elif text_norm == "mi repartidor":
         return mi_repartidor(update, context)
     elif text_norm == "mi perfil":
-        return mi_perfil(update, context)
+        return mi_perfil_safe(update, context)
     elif text_norm == "ayuda":
         ally, courier, admin_local = _get_user_roles(update)
         missing_cmds = _get_missing_role_commands(ally, courier, admin_local)
@@ -7799,6 +7799,23 @@ def mi_perfil(update, context):
         update.message.reply_text(mensaje)
 
 
+def mi_perfil_safe(update, context):
+    """Wrapper defensivo para evitar silencio si /mi_perfil falla internamente."""
+    try:
+        return mi_perfil(update, context)
+    except Exception as e:
+        telegram_id = update.effective_user.id if update.effective_user else "unknown"
+        print(f"[ERROR] mi_perfil falló para telegram_id={telegram_id}: {e}")
+        if update.message:
+            update.message.reply_text("Error tecnico al cargar tu perfil. Intenta de nuevo en unos segundos.")
+        elif update.effective_chat:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Error tecnico al cargar tu perfil. Intenta de nuevo en unos segundos."
+            )
+        return
+
+
 # ============================================================
 # SISTEMA DE RECARGAS
 # ============================================================
@@ -9850,7 +9867,7 @@ def main():
     dp.add_handler(CommandHandler("referencias", cmd_referencias))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
-    dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
+    dp.add_handler(CommandHandler("mi_perfil", mi_perfil_safe))
 
     # Sistema de recargas
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
