@@ -1322,15 +1322,16 @@ def cmd_id(update, context):
 def menu_button_handler(update, context):
     """Maneja los botones del menú principal y submenús (ReplyKeyboard)."""
     text = update.message.text.strip()
+    text_norm = text.lower()
 
     # --- Botones del menú principal ---
-    if text == "Mi aliado":
+    if text_norm == "mi aliado":
         return mi_aliado(update, context)
-    elif text == "Mi repartidor":
+    elif text_norm == "mi repartidor":
         return mi_repartidor(update, context)
-    elif text == "Mi perfil":
+    elif text_norm == "mi perfil":
         return mi_perfil(update, context)
-    elif text == "Ayuda":
+    elif text_norm == "ayuda":
         ally, courier, admin_local = _get_user_roles(update)
         missing_cmds = _get_missing_role_commands(ally, courier, admin_local)
         msg = (
@@ -10018,7 +10019,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
