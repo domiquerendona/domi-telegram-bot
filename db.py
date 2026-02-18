@@ -3,6 +3,7 @@ import os
 import re
 import json
 import time
+from datetime import datetime, timedelta
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -1181,6 +1182,85 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_from ON ledger(from_type, from_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_to ON ledger(to_type, to_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(ref_type, ref_id)")
+
+    # Tabla: accounting_weeks (cortes semanales)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS accounting_weeks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_key TEXT NOT NULL UNIQUE,
+            week_start_at TEXT NOT NULL,
+            week_end_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            closed_at TEXT,
+            closed_by TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_weeks_status ON accounting_weeks(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_weeks_start ON accounting_weeks(week_start_at)")
+
+    # Tabla: accounting_events (eventos contables normalizados)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS accounting_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_key TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            from_type TEXT,
+            from_id INTEGER,
+            to_type TEXT,
+            to_id INTEGER,
+            entity_type TEXT,
+            entity_id INTEGER,
+            admin_id INTEGER,
+            order_id INTEGER,
+            ledger_id INTEGER,
+            amount INTEGER NOT NULL CHECK(amount >= 0),
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_events_week ON accounting_events(week_key)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_events_type ON accounting_events(event_type)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_events_entity ON accounting_events(entity_type, entity_id)")
+
+    # Tabla: order_accounting_settlements (devengado/cobrado por pedido)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_accounting_settlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL UNIQUE,
+            week_key TEXT NOT NULL,
+            admin_id INTEGER,
+            ally_id INTEGER,
+            courier_id INTEGER,
+            order_total_fee INTEGER NOT NULL DEFAULT 0,
+            ally_fee_expected INTEGER NOT NULL DEFAULT 0,
+            ally_fee_charged INTEGER NOT NULL DEFAULT 0,
+            courier_fee_expected INTEGER NOT NULL DEFAULT 0,
+            courier_fee_charged INTEGER NOT NULL DEFAULT 0,
+            settlement_status TEXT NOT NULL DEFAULT 'OPEN',
+            note TEXT,
+            delivered_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_accounting_week ON order_accounting_settlements(week_key)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_accounting_courier ON order_accounting_settlements(courier_id, week_key)")
+
+    # Tabla: accounting_week_snapshots (resumen congelado por semana)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS accounting_week_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_key TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            scope_id INTEGER NOT NULL DEFAULT 0,
+            metric_key TEXT NOT NULL,
+            metric_value INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(week_key, scope_type, scope_id, metric_key)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_accounting_snapshots_week ON accounting_week_snapshots(week_key)")
 
     # Tabla: admin_payment_methods (metodos de pago de admins)
     cur.execute("""
@@ -5046,6 +5126,320 @@ def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, t
     conn.commit()
     conn.close()
     return ledger_id
+
+
+def _coerce_datetime(value=None) -> datetime:
+    """Convierte timestamp DB/ISO a datetime naive UTC."""
+    if value is None:
+        return datetime.utcnow()
+    if isinstance(value, datetime):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return datetime.utcnow()
+    raw = raw.replace("T", " ").replace("Z", "")
+    raw = raw.split("+")[0]
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return datetime.utcnow()
+
+
+def _week_window_from_datetime(reference_at=None):
+    ref = _coerce_datetime(reference_at)
+    week_start = (ref - timedelta(days=ref.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_end = week_start + timedelta(days=7)
+    iso_year, iso_week, _ = week_start.isocalendar()
+    week_key = f"{iso_year}-W{iso_week:02d}"
+    return week_key, week_start, week_end
+
+
+def _week_window_from_key(week_key: str):
+    try:
+        year_part, week_part = week_key.split("-W")
+        iso_year = int(year_part)
+        iso_week = int(week_part)
+    except Exception as exc:
+        raise ValueError(f"week_key invalido: {week_key}. Formato esperado: YYYY-Www") from exc
+    week_start = datetime.fromisocalendar(iso_year, iso_week, 1)
+    week_end = week_start + timedelta(days=7)
+    normalized_key = f"{iso_year}-W{iso_week:02d}"
+    return normalized_key, week_start, week_end
+
+
+def get_or_create_accounting_week(reference_at=None, week_key: str = None):
+    """
+    Obtiene o crea semana contable.
+    - week_key esperado: YYYY-Www
+    - si no se envía week_key, se calcula por referencia (UTC naive)
+    """
+    if week_key:
+        normalized_key, week_start, week_end = _week_window_from_key(week_key)
+    else:
+        normalized_key, week_start, week_end = _week_window_from_datetime(reference_at)
+
+    week_start_s = week_start.strftime("%Y-%m-%d %H:%M:%S")
+    week_end_s = week_end.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        INSERT INTO accounting_weeks (week_key, week_start_at, week_end_at, status)
+        VALUES ({P}, {P}, {P}, 'OPEN')
+        ON CONFLICT(week_key) DO NOTHING
+    """, (normalized_key, week_start_s, week_end_s))
+    conn.commit()
+    cur.execute(f"""
+        SELECT id, week_key, week_start_at, week_end_at, status, closed_at, closed_by
+        FROM accounting_weeks
+        WHERE week_key = {P}
+        LIMIT 1
+    """, (normalized_key,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_accounting_weeks(limit: int = 12, offset: int = 0):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, week_key, week_start_at, week_end_at, status, closed_at, closed_by, created_at
+        FROM accounting_weeks
+        ORDER BY week_start_at DESC
+        LIMIT {P} OFFSET {P}
+    """, (limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def close_accounting_week(week_key: str, closed_by: str = "SYSTEM") -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE accounting_weeks
+        SET status = 'CLOSED', closed_at = {now_sql}, closed_by = {P}
+        WHERE week_key = {P} AND status = 'OPEN'
+    """, (closed_by, week_key))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def record_accounting_event(
+    event_type: str,
+    amount: int,
+    from_type: str = None,
+    from_id: int = None,
+    to_type: str = None,
+    to_id: int = None,
+    entity_type: str = None,
+    entity_id: int = None,
+    admin_id: int = None,
+    order_id: int = None,
+    ledger_id: int = None,
+    created_at=None,
+    note: str = None,
+) -> int:
+    """
+    Registra evento contable normalizado y lo asigna a semana contable.
+    amount debe ser positivo.
+    """
+    if amount is None or int(amount) < 0:
+        raise ValueError("amount debe ser >= 0")
+    amount_int = int(amount)
+    week = get_or_create_accounting_week(reference_at=created_at)
+    week_key = week["week_key"] if hasattr(week, "keys") else week[1]
+    event_created_at = _coerce_datetime(created_at).strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    event_id = _insert_returning_id(cur, f"""
+        INSERT INTO accounting_events (
+            week_key, event_type, from_type, from_id, to_type, to_id,
+            entity_type, entity_id, admin_id, order_id, ledger_id, amount, note, created_at
+        )
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
+    """, (
+        week_key, event_type, from_type, from_id, to_type, to_id,
+        entity_type, entity_id, admin_id, order_id, ledger_id, amount_int, note, event_created_at
+    ))
+    conn.commit()
+    conn.close()
+    return event_id
+
+
+def upsert_order_accounting_settlement(
+    order_id: int,
+    admin_id: int,
+    ally_id: int,
+    courier_id: int,
+    order_total_fee: int,
+    ally_fee_expected: int,
+    ally_fee_charged: int,
+    courier_fee_expected: int,
+    courier_fee_charged: int,
+    note: str = None,
+    delivered_at=None,
+):
+    """
+    Guarda liquidacion por pedido para separar devengado vs cobrado.
+    settlement_status: OPEN | PARTIAL | SETTLED
+    """
+    delivered_dt = _coerce_datetime(delivered_at)
+    week = get_or_create_accounting_week(reference_at=delivered_dt)
+    week_key = week["week_key"] if hasattr(week, "keys") else week[1]
+    delivered_at_s = delivered_dt.strftime("%Y-%m-%d %H:%M:%S")
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
+    ally_expected = int(ally_fee_expected or 0)
+    courier_expected = int(courier_fee_expected or 0)
+    ally_charged = int(ally_fee_charged or 0)
+    courier_charged = int(courier_fee_charged or 0)
+    total_expected = ally_expected + courier_expected
+    total_charged = ally_charged + courier_charged
+    if total_charged >= total_expected and total_expected > 0:
+        status = "SETTLED"
+    elif total_charged > 0:
+        status = "PARTIAL"
+    else:
+        status = "OPEN"
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        INSERT INTO order_accounting_settlements (
+            order_id, week_key, admin_id, ally_id, courier_id, order_total_fee,
+            ally_fee_expected, ally_fee_charged, courier_fee_expected, courier_fee_charged,
+            settlement_status, note, delivered_at, created_at, updated_at
+        )
+        VALUES (
+            {P}, {P}, {P}, {P}, {P}, {P},
+            {P}, {P}, {P}, {P},
+            {P}, {P}, {P}, {now_sql}, {now_sql}
+        )
+        ON CONFLICT(order_id) DO UPDATE SET
+            week_key = excluded.week_key,
+            admin_id = excluded.admin_id,
+            ally_id = excluded.ally_id,
+            courier_id = excluded.courier_id,
+            order_total_fee = excluded.order_total_fee,
+            ally_fee_expected = excluded.ally_fee_expected,
+            ally_fee_charged = excluded.ally_fee_charged,
+            courier_fee_expected = excluded.courier_fee_expected,
+            courier_fee_charged = excluded.courier_fee_charged,
+            settlement_status = excluded.settlement_status,
+            note = excluded.note,
+            delivered_at = excluded.delivered_at,
+            updated_at = {now_sql}
+    """, (
+        order_id, week_key, admin_id, ally_id, courier_id, int(order_total_fee or 0),
+        ally_expected, ally_charged, courier_expected, courier_charged,
+        status, note, delivered_at_s
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_weekly_platform_accounting_summary(week_key: str, platform_admin_id: int):
+    """Resumen semanal de ingresos plataforma."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            COALESCE(SUM(
+                CASE
+                    WHEN event_type = 'SERVICE_FEE_CHARGED' AND to_type = 'ADMIN' AND to_id = {P}
+                    THEN amount ELSE 0
+                END
+            ), 0) AS platform_direct_fee_income,
+            COALESCE(SUM(
+                CASE
+                    WHEN event_type = 'PLATFORM_COMMISSION_CHARGED' AND to_type = 'ADMIN' AND to_id = {P}
+                    THEN amount ELSE 0
+                END
+            ), 0) AS platform_commission_income
+        FROM accounting_events
+        WHERE week_key = {P}
+    """, (platform_admin_id, platform_admin_id, week_key))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_weekly_courier_settlement_summary(week_key: str, courier_id: int = None):
+    """Resumen semanal por repartidor desde liquidacion de pedidos."""
+    conn = get_connection()
+    cur = conn.cursor()
+    query = f"""
+        SELECT
+            courier_id,
+            COUNT(*) AS delivered_orders,
+            COALESCE(SUM(order_total_fee), 0) AS gross_income,
+            COALESCE(SUM(courier_fee_charged), 0) AS platform_fee_charged,
+            COALESCE(SUM(order_total_fee), 0) - COALESCE(SUM(courier_fee_charged), 0) AS net_estimated_income,
+            COALESCE(SUM(CASE WHEN settlement_status = 'SETTLED' THEN 1 ELSE 0 END), 0) AS settled_orders,
+            COALESCE(SUM(CASE WHEN settlement_status = 'PARTIAL' THEN 1 ELSE 0 END), 0) AS partial_orders,
+            COALESCE(SUM(CASE WHEN settlement_status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_orders
+        FROM order_accounting_settlements
+        WHERE week_key = {P}
+    """
+    params = [week_key]
+    if courier_id is not None:
+        query += f" AND courier_id = {P}"
+        params.append(courier_id)
+    query += " GROUP BY courier_id ORDER BY gross_income DESC"
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def upsert_accounting_week_snapshot_metric(
+    week_key: str,
+    scope_type: str,
+    scope_id: int,
+    metric_key: str,
+    metric_value: int,
+):
+    """Guarda/actualiza metrica congelada de semana."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        INSERT INTO accounting_week_snapshots (week_key, scope_type, scope_id, metric_key, metric_value)
+        VALUES ({P}, {P}, {P}, {P}, {P})
+        ON CONFLICT(week_key, scope_type, scope_id, metric_key)
+        DO UPDATE SET metric_value = excluded.metric_value
+    """, (week_key, scope_type, int(scope_id), metric_key, int(metric_value)))
+    conn.commit()
+    conn.close()
+
+
+def list_accounting_week_snapshots(week_key: str, scope_type: str = None, scope_id: int = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = f"""
+        SELECT id, week_key, scope_type, scope_id, metric_key, metric_value, created_at
+        FROM accounting_week_snapshots
+        WHERE week_key = {P}
+    """
+    params = [week_key]
+    if scope_type is not None:
+        query += f" AND scope_type = {P}"
+        params.append(scope_type)
+    if scope_id is not None:
+        query += f" AND scope_id = {P}"
+        params.append(int(scope_id))
+    query += " ORDER BY scope_type ASC, scope_id ASC, metric_key ASC"
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_platform_admin():

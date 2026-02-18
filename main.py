@@ -1,5 +1,7 @@
 import os
 import hashlib
+import re
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -35,6 +37,9 @@ from services import (
     check_service_fee_available,
     resolve_location,
     get_smart_distance,
+    build_weekly_accounting_summary,
+    get_weekly_accounting_snapshot_summary,
+    close_and_snapshot_accounting_week,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -4713,6 +4718,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
     ]
 
     update.message.reply_text(
@@ -5089,6 +5095,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+            [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
         ]
 
         query.edit_message_text(
@@ -5440,6 +5447,151 @@ def admin_menu_callback(update, context):
 
     if data == "admin_tarifas":
         query.answer("La sección de tarifas aún no está implementada.")
+        return
+
+    if data == "admin_contab_panel":
+        query.answer()
+        current_wk = _current_week_key()
+        prev_wk = _previous_week_key()
+        keyboard = [
+            [InlineKeyboardButton("Ver semana actual ({})".format(current_wk), callback_data="admin_contab_view_current")],
+            [InlineKeyboardButton("Ver semana anterior ({})".format(prev_wk), callback_data="admin_contab_view_prev")],
+            [InlineKeyboardButton("Ver snapshot anterior ({})".format(prev_wk), callback_data="admin_contab_snapshot_prev")],
+            [InlineKeyboardButton("Cerrar semana anterior ({})".format(prev_wk), callback_data="admin_contab_close_prev")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Contabilidad semanal.\nSelecciona una opción:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    if data.startswith("admin_contab_view_"):
+        query.answer()
+        week_key = _current_week_key() if data.endswith("_current") else _previous_week_key()
+        try:
+            summary = build_weekly_accounting_summary(week_key=week_key)
+        except Exception as e:
+            query.edit_message_text(
+                "No se pudo construir resumen de {}: {}".format(week_key, e),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+            )
+            return
+
+        platform = summary["platform"]
+        couriers = summary["couriers"]
+        text = (
+            "CONTABILIDAD SEMANAL\n\n"
+            "Semana: {wk}\n"
+            "Rango: {start} a {end}\n"
+            "Estado: {status}\n\n"
+            "Plataforma:\n"
+            "- Fee directo: ${direct:,}\n"
+            "- Comisiones: ${comm:,}\n"
+            "- Total: ${total:,}\n\n"
+            "Repartidores con actividad: {n}\n"
+        ).format(
+            wk=summary["week_key"],
+            start=summary["week_start_at"],
+            end=summary["week_end_at"],
+            status=summary["week_status"],
+            direct=platform["direct_fee_income"],
+            comm=platform["commission_income"],
+            total=platform["total_income"],
+            n=len(couriers),
+        )
+        for idx, row in enumerate(couriers[:8], start=1):
+            text += "{}. #{} | Pedidos {} | Bruto ${:,} | Neto ${:,}\n".format(
+                idx,
+                row["courier_id"],
+                row["delivered_orders"],
+                row["gross_income"],
+                row["net_estimated_income"],
+            )
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
+        return
+
+    if data == "admin_contab_snapshot_prev":
+        query.answer()
+        week_key = _previous_week_key()
+        try:
+            snap = get_weekly_accounting_snapshot_summary(week_key=week_key)
+        except Exception as e:
+            query.edit_message_text(
+                "No se pudo consultar snapshot de {}: {}".format(week_key, e),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+            )
+            return
+
+        platform = snap.get("platform", {})
+        couriers = snap.get("couriers", [])
+        if not platform and not couriers:
+            text = "No hay snapshot congelado para {}.".format(week_key)
+        else:
+            text = (
+                "SNAPSHOT CONTABLE\n\n"
+                "Semana: {wk}\n"
+                "Plataforma total: ${total:,}\n"
+                "Fee directo: ${direct:,}\n"
+                "Comisiones: ${comm:,}\n"
+                "Repartidores en snapshot: {n}\n"
+            ).format(
+                wk=week_key,
+                total=int(platform.get("total_income", 0)),
+                direct=int(platform.get("direct_fee_income", 0)),
+                comm=int(platform.get("commission_income", 0)),
+                n=len(couriers),
+            )
+            for idx, row in enumerate(couriers[:8], start=1):
+                text += "{}. #{} | Pedidos {} | Bruto ${:,} | Neto ${:,}\n".format(
+                    idx,
+                    int(row.get("courier_id", 0)),
+                    int(row.get("delivered_orders", 0)),
+                    int(row.get("gross_income", 0)),
+                    int(row.get("net_estimated_income", 0)),
+                )
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
+        return
+
+    if data == "admin_contab_close_prev":
+        query.answer()
+        week_key = _previous_week_key()
+        try:
+            closed, summary = close_and_snapshot_accounting_week(
+                week_key=week_key,
+                closed_by="tg:{}".format(user_id),
+            )
+            platform = summary["platform"]
+            if closed:
+                text = (
+                    "Semana cerrada correctamente.\n\n"
+                    "Semana: {wk}\n"
+                    "Total plataforma: ${total:,}\n"
+                    "Fee directo: ${direct:,}\n"
+                    "Comisiones: ${comm:,}"
+                ).format(
+                    wk=summary["week_key"],
+                    total=platform["total_income"],
+                    direct=platform["direct_fee_income"],
+                    comm=platform["commission_income"],
+                )
+            else:
+                text = "La semana {} ya estaba cerrada o no pudo cerrarse.".format(week_key)
+        except Exception as e:
+            text = "No se pudo cerrar semana {}: {}".format(week_key, e)
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
         return
 
     if data == "admin_finanzas":
@@ -7513,6 +7665,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
             [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
         update.message.reply_text(
@@ -7931,6 +8084,252 @@ def cmd_saldo(update, context):
         mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
 
     update.message.reply_text(mensaje)
+
+
+def _is_platform_admin_actor(telegram_id: int):
+    """Valida acceso contable: solo Admin Plataforma."""
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        return False, None
+    team_code = (admin.get("team_code") or "").strip().upper()
+    status = (admin.get("status") or "").strip().upper()
+    if team_code != "PLATFORM":
+        return False, admin
+    if status != "APPROVED":
+        return False, admin
+    return True, admin
+
+
+def _parse_week_key_or_none(raw_value: str):
+    if not raw_value:
+        return None
+    wk = raw_value.strip().upper()
+    if not re.match(r"^\d{4}-W\d{2}$", wk):
+        return None
+    return wk
+
+
+def _current_week_key():
+    now = datetime.utcnow()
+    year, week, _ = now.isocalendar()
+    return "{}-W{:02d}".format(year, week)
+
+
+def _previous_week_key():
+    ref = datetime.utcnow() - timedelta(days=7)
+    year, week, _ = ref.isocalendar()
+    return "{}-W{:02d}".format(year, week)
+
+
+def cmd_contabilidad(update, context):
+    """
+    /contabilidad [YYYY-Www]
+    Muestra resumen semanal contable.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+
+    week_key = None
+    if context.args:
+        week_key = _parse_week_key_or_none(context.args[0])
+        if not week_key:
+            update.message.reply_text(
+                "Formato invalido. Usa: /contabilidad YYYY-Www. Ejemplo: /contabilidad 2026-W08"
+            )
+            return
+
+    try:
+        summary = build_weekly_accounting_summary(week_key=week_key)
+    except ValueError as e:
+        update.message.reply_text("Error de semana contable: {}".format(e))
+        return
+    except Exception as e:
+        update.message.reply_text("No se pudo construir el resumen contable: {}".format(e))
+        return
+
+    platform = summary["platform"]
+    couriers = summary["couriers"]
+    text = (
+        "CONTABILIDAD SEMANAL\n\n"
+        "Semana: {wk}\n"
+        "Rango: {start} a {end}\n"
+        "Estado: {status}\n\n"
+        "Plataforma:\n"
+        "- Ingreso fee directo: ${direct:,}\n"
+        "- Ingreso comisiones: ${comm:,}\n"
+        "- Total ingreso: ${total:,}\n\n"
+        "Repartidores con actividad: {n}\n"
+    ).format(
+        wk=summary["week_key"],
+        start=summary["week_start_at"],
+        end=summary["week_end_at"],
+        status=summary["week_status"],
+        direct=platform["direct_fee_income"],
+        comm=platform["commission_income"],
+        total=platform["total_income"],
+        n=len(couriers),
+    )
+
+    top = couriers[:10]
+    if top:
+        text += "\nTop 10 repartidores por ingreso bruto:\n"
+        for idx, row in enumerate(top, start=1):
+            text += (
+                "{}. Courier #{cid} | Pedidos: {orders} | Bruto: ${gross:,} | "
+                "Fee cobrado: ${fee:,} | Neto estimado: ${net:,}\n"
+            ).format(
+                idx,
+                cid=row["courier_id"],
+                orders=row["delivered_orders"],
+                gross=row["gross_income"],
+                fee=row["platform_fee_charged"],
+                net=row["net_estimated_income"],
+            )
+
+    update.message.reply_text(text)
+
+
+def cmd_contabilidad_snapshot(update, context):
+    """
+    /contabilidad_snapshot [YYYY-Www]
+    Muestra snapshot congelado semanal.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+
+    week_key = _current_week_key()
+    if context.args:
+        parsed = _parse_week_key_or_none(context.args[0])
+        if not parsed:
+            update.message.reply_text(
+                "Formato invalido. Usa: /contabilidad_snapshot YYYY-Www. Ejemplo: /contabilidad_snapshot 2026-W08"
+            )
+            return
+        week_key = parsed
+
+    try:
+        summary = get_weekly_accounting_snapshot_summary(week_key=week_key)
+    except Exception as e:
+        update.message.reply_text("No se pudo consultar snapshot: {}".format(e))
+        return
+
+    platform = summary.get("platform", {})
+    couriers = summary.get("couriers", [])
+    if not platform and not couriers:
+        update.message.reply_text(
+            "No hay snapshot congelado para la semana {}.\n"
+            "Cierra la semana con /cerrar_semana_contable {}.".format(week_key, week_key)
+        )
+        return
+
+    direct = int(platform.get("direct_fee_income", 0))
+    comm = int(platform.get("commission_income", 0))
+    total = int(platform.get("total_income", direct + comm))
+
+    text = (
+        "SNAPSHOT CONTABLE\n\n"
+        "Semana: {wk}\n\n"
+        "Plataforma:\n"
+        "- Ingreso fee directo: ${direct:,}\n"
+        "- Ingreso comisiones: ${comm:,}\n"
+        "- Total ingreso: ${total:,}\n\n"
+        "Repartidores en snapshot: {n}\n"
+    ).format(
+        wk=week_key,
+        direct=direct,
+        comm=comm,
+        total=total,
+        n=len(couriers),
+    )
+
+    top = couriers[:10]
+    if top:
+        text += "\nTop 10 snapshot (bruto):\n"
+        for idx, row in enumerate(top, start=1):
+            text += (
+                "{}. Courier #{cid} | Pedidos: {orders} | Bruto: ${gross:,} | "
+                "Fee cobrado: ${fee:,} | Neto estimado: ${net:,}\n"
+            ).format(
+                idx,
+                cid=int(row.get("courier_id", 0)),
+                orders=int(row.get("delivered_orders", 0)),
+                gross=int(row.get("gross_income", 0)),
+                fee=int(row.get("platform_fee_charged", 0)),
+                net=int(row.get("net_estimated_income", 0)),
+            )
+
+    update.message.reply_text(text)
+
+
+def cmd_cerrar_semana_contable(update, context):
+    """
+    /cerrar_semana_contable YYYY-Www
+    Cierra la semana y congela snapshots.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+
+    if not context.args:
+        update.message.reply_text(
+            "Debes indicar la semana. Ejemplo: /cerrar_semana_contable 2026-W08"
+        )
+        return
+
+    week_key = _parse_week_key_or_none(context.args[0])
+    if not week_key:
+        update.message.reply_text(
+            "Formato invalido. Usa YYYY-Www. Ejemplo: 2026-W08"
+        )
+        return
+
+    try:
+        closed, summary = close_and_snapshot_accounting_week(
+            week_key=week_key,
+            closed_by="tg:{}".format(telegram_id),
+        )
+    except ValueError as e:
+        update.message.reply_text("Error de semana contable: {}".format(e))
+        return
+    except Exception as e:
+        update.message.reply_text("No se pudo cerrar la semana contable: {}".format(e))
+        return
+
+    platform = summary["platform"]
+    if closed:
+        update.message.reply_text(
+            "Semana cerrada correctamente.\n\n"
+            "Semana: {wk}\n"
+            "Total plataforma: ${total:,}\n"
+            "Fee directo: ${direct:,}\n"
+            "Comisiones: ${comm:,}\n"
+            "Repartidores con actividad: {n}".format(
+                wk=summary["week_key"],
+                total=platform["total_income"],
+                direct=platform["direct_fee_income"],
+                comm=platform["commission_income"],
+                n=len(summary["couriers"]),
+            )
+        )
+    else:
+        update.message.reply_text(
+            "La semana ya estaba cerrada o no pudo cerrarse.\n"
+            "Semana: {}".format(summary["week_key"])
+        )
 
 
 def cmd_recargar(update, context):
@@ -9871,6 +10270,9 @@ def main():
 
     # Sistema de recargas
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
+    dp.add_handler(CommandHandler("contabilidad", cmd_contabilidad))
+    dp.add_handler(CommandHandler("contabilidad_snapshot", cmd_contabilidad_snapshot))
+    dp.add_handler(CommandHandler("cerrar_semana_contable", cmd_cerrar_semana_contable))
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))

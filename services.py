@@ -2,6 +2,7 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
 import unicodedata
+from collections import defaultdict
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
@@ -12,6 +13,13 @@ from db import (
     update_courier_link_balance, update_ally_link_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
+    record_accounting_event,
+    get_or_create_accounting_week,
+    get_weekly_platform_accounting_summary,
+    get_weekly_courier_settlement_summary,
+    list_accounting_week_snapshots,
+    upsert_accounting_week_snapshot_metric,
+    close_accounting_week,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
     upsert_reference_alias_candidate,
     get_connection,
@@ -975,6 +983,7 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     begin_sql = "BEGIN" if DB_ENGINE == "postgres" else "BEGIN IMMEDIATE"
+    events_to_log = []
     try:
         cur.execute(begin_sql)
 
@@ -1014,6 +1023,19 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 "RECHARGE_REQUEST", request_id,
                 f"Recarga de admin local aprobada por plataforma admin_id={decided_by_admin_id}",
             ))
+            events_to_log.append({
+                "event_type": "RECHARGE_APPROVED",
+                "from_type": "PLATFORM",
+                "from_id": admin_id,
+                "to_type": "ADMIN",
+                "to_id": target_id,
+                "entity_type": "ADMIN",
+                "entity_id": target_id,
+                "admin_id": admin_id,
+                "order_id": None,
+                "note": f"Recarga aprobada request_id={request_id}",
+                "amount": amount,
+            })
         elif target_type == "COURIER":
             cur.execute(f"""
                 UPDATE admin_couriers
@@ -1032,6 +1054,19 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 "RECHARGE_REQUEST", request_id,
                 f"Recarga aprobada por admin_id={decided_by_admin_id}",
             ))
+            events_to_log.append({
+                "event_type": "RECHARGE_APPROVED",
+                "from_type": "PLATFORM" if is_platform else "ADMIN",
+                "from_id": admin_id,
+                "to_type": "COURIER",
+                "to_id": target_id,
+                "entity_type": "COURIER",
+                "entity_id": target_id,
+                "admin_id": admin_id,
+                "order_id": None,
+                "note": f"Recarga aprobada request_id={request_id}",
+                "amount": amount,
+            })
         elif target_type == "ALLY":
             cur.execute(f"""
                 UPDATE admin_allies
@@ -1050,6 +1085,19 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 "RECHARGE_REQUEST", request_id,
                 f"Recarga aprobada por admin_id={decided_by_admin_id}",
             ))
+            events_to_log.append({
+                "event_type": "RECHARGE_APPROVED",
+                "from_type": "PLATFORM" if is_platform else "ADMIN",
+                "from_id": admin_id,
+                "to_type": "ALLY",
+                "to_id": target_id,
+                "entity_type": "ALLY",
+                "entity_id": target_id,
+                "admin_id": admin_id,
+                "order_id": None,
+                "note": f"Recarga aprobada request_id={request_id}",
+                "amount": amount,
+            })
         else:
             conn.rollback()
             return False, f"Tipo de destino desconocido: {target_type}"
@@ -1069,6 +1117,24 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         raise
     finally:
         conn.close()
+
+    for ev in events_to_log:
+        try:
+            record_accounting_event(
+                event_type=ev["event_type"],
+                amount=ev["amount"],
+                from_type=ev["from_type"],
+                from_id=ev["from_id"],
+                to_type=ev["to_type"],
+                to_id=ev["to_id"],
+                entity_type=ev["entity_type"],
+                entity_id=ev["entity_id"],
+                admin_id=ev["admin_id"],
+                order_id=ev["order_id"],
+                note=ev["note"],
+            )
+        except Exception as e:
+            print("[WARN] No se pudo registrar accounting_event de recarga:", e)
 
     return True, "Recarga aprobada exitosamente."
 
@@ -1141,7 +1207,7 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     elif target_type == "ALLY":
         update_ally_link_balance(target_id, admin_id, -fee)
 
-    insert_ledger_entry(
+    ledger_id = insert_ledger_entry(
         kind="FEE",
         from_type=target_type,
         from_id=target_id,
@@ -1152,6 +1218,23 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
         ref_id=ref_id,
         note="Tarifa de servicio"
     )
+    try:
+        record_accounting_event(
+            event_type="SERVICE_FEE_CHARGED",
+            amount=fee,
+            from_type=target_type,
+            from_id=target_id,
+            to_type="ADMIN",
+            to_id=admin_id,
+            entity_type=target_type,
+            entity_id=target_id,
+            admin_id=admin_id,
+            order_id=ref_id if ref_type == "ORDER" else None,
+            ledger_id=ledger_id,
+            note="Cobro de tarifa de servicio",
+        )
+    except Exception as e:
+        print("[WARN] No se pudo registrar accounting_event de fee:", e)
 
     if not is_platform:
         update_admin_balance_with_ledger(
@@ -1164,6 +1247,23 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
             from_type="ADMIN",
             from_id=admin_id,
         )
+        if platform_admin:
+            try:
+                record_accounting_event(
+                    event_type="PLATFORM_COMMISSION_CHARGED",
+                    amount=platform_commission,
+                    from_type="ADMIN",
+                    from_id=admin_id,
+                    to_type="ADMIN",
+                    to_id=platform_admin["id"],
+                    entity_type=target_type,
+                    entity_id=target_id,
+                    admin_id=admin_id,
+                    order_id=ref_id if ref_type == "ORDER" else None,
+                    note="Comision de plataforma descontada al admin",
+                )
+            except Exception as e:
+                print("[WARN] No se pudo registrar accounting_event de comision plataforma:", e)
 
     return True, "Tarifa de ${:,} aplicada.".format(fee)
 
@@ -1196,6 +1296,114 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
             return False, "ADMIN_SIN_SALDO"
 
     return True, "OK"
+
+
+def build_weekly_accounting_summary(week_key: str = None) -> Dict[str, Any]:
+    """
+    Construye resumen semanal contable consolidado.
+    Si week_key es None, usa semana actual.
+    """
+    week = get_or_create_accounting_week(week_key=week_key) if week_key else get_or_create_accounting_week()
+    wk = week["week_key"] if hasattr(week, "keys") else week[1]
+    week_start = week["week_start_at"] if hasattr(week, "keys") else week[2]
+    week_end = week["week_end_at"] if hasattr(week, "keys") else week[3]
+    week_status = week["status"] if hasattr(week, "keys") else week[4]
+
+    platform_admin = get_platform_admin()
+    platform_admin_id = platform_admin["id"] if platform_admin else 0
+    platform_row = get_weekly_platform_accounting_summary(wk, platform_admin_id) if platform_admin_id else None
+
+    if platform_row:
+        platform_direct = int(platform_row["platform_direct_fee_income"] if hasattr(platform_row, "keys") else platform_row[0] or 0)
+        platform_comm = int(platform_row["platform_commission_income"] if hasattr(platform_row, "keys") else platform_row[1] or 0)
+    else:
+        platform_direct = 0
+        platform_comm = 0
+
+    courier_rows = get_weekly_courier_settlement_summary(wk)
+    courier_summary = []
+    for row in courier_rows:
+        courier_summary.append({
+            "courier_id": int(row["courier_id"] if hasattr(row, "keys") else row[0]),
+            "delivered_orders": int(row["delivered_orders"] if hasattr(row, "keys") else row[1]),
+            "gross_income": int(row["gross_income"] if hasattr(row, "keys") else row[2]),
+            "platform_fee_charged": int(row["platform_fee_charged"] if hasattr(row, "keys") else row[3]),
+            "net_estimated_income": int(row["net_estimated_income"] if hasattr(row, "keys") else row[4]),
+            "settled_orders": int(row["settled_orders"] if hasattr(row, "keys") else row[5]),
+            "partial_orders": int(row["partial_orders"] if hasattr(row, "keys") else row[6]),
+            "open_orders": int(row["open_orders"] if hasattr(row, "keys") else row[7]),
+        })
+
+    return {
+        "week_key": wk,
+        "week_start_at": week_start,
+        "week_end_at": week_end,
+        "week_status": week_status,
+        "platform": {
+            "direct_fee_income": platform_direct,
+            "commission_income": platform_comm,
+            "total_income": platform_direct + platform_comm,
+        },
+        "couriers": courier_summary,
+    }
+
+
+def close_and_snapshot_accounting_week(week_key: str, closed_by: str = "SYSTEM") -> Tuple[bool, Dict[str, Any]]:
+    """
+    Cierra una semana y guarda snapshots congelados para consulta historica.
+    """
+    summary = build_weekly_accounting_summary(week_key=week_key)
+    wk = summary["week_key"]
+    platform = summary["platform"]
+
+    upsert_accounting_week_snapshot_metric(wk, "PLATFORM", 0, "direct_fee_income", platform["direct_fee_income"])
+    upsert_accounting_week_snapshot_metric(wk, "PLATFORM", 0, "commission_income", platform["commission_income"])
+    upsert_accounting_week_snapshot_metric(wk, "PLATFORM", 0, "total_income", platform["total_income"])
+
+    for courier in summary["couriers"]:
+        cid = courier["courier_id"]
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "delivered_orders", courier["delivered_orders"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "gross_income", courier["gross_income"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "platform_fee_charged", courier["platform_fee_charged"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "net_estimated_income", courier["net_estimated_income"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "settled_orders", courier["settled_orders"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "partial_orders", courier["partial_orders"])
+        upsert_accounting_week_snapshot_metric(wk, "COURIER", cid, "open_orders", courier["open_orders"])
+
+    closed = close_accounting_week(wk, closed_by=closed_by)
+    summary["week_closed"] = closed
+    return closed, summary
+
+
+def get_weekly_accounting_snapshot_summary(week_key: str) -> Dict[str, Any]:
+    """
+    Lee snapshots congelados de una semana cerrada.
+    """
+    rows = list_accounting_week_snapshots(week_key=week_key)
+    if not rows:
+        return {"week_key": week_key, "platform": {}, "couriers": []}
+
+    platform = {}
+    courier_map = defaultdict(dict)
+
+    for row in rows:
+        scope_type = row["scope_type"] if hasattr(row, "keys") else row[2]
+        scope_id = int(row["scope_id"] if hasattr(row, "keys") else row[3])
+        metric_key = row["metric_key"] if hasattr(row, "keys") else row[4]
+        metric_value = int(row["metric_value"] if hasattr(row, "keys") else row[5] or 0)
+
+        if scope_type == "PLATFORM":
+            platform[metric_key] = metric_value
+        elif scope_type == "COURIER":
+            courier_map[scope_id][metric_key] = metric_value
+            courier_map[scope_id]["courier_id"] = scope_id
+
+    couriers = sorted(
+        courier_map.values(),
+        key=lambda item: int(item.get("gross_income", 0)),
+        reverse=True,
+    )
+    return {"week_key": week_key, "platform": platform, "couriers": couriers}
 
 
 # TODO: Fase 2 - Implementar cobro al courier cuando complete entrega

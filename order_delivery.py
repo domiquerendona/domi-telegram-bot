@@ -33,6 +33,7 @@ from db import (
     review_order_pickup_confirmation,
     reset_offer_queue,
     set_order_status,
+    upsert_order_accounting_settlement,
 )
 
 
@@ -1277,6 +1278,30 @@ def _handle_delivered(update, context, order_id):
                 except Exception as e:
                     print("[WARN] No se pudo notificar al admin: {}".format(e))
             print("[WARN] No se pudo cobrar fee al courier: {}".format(courier_msg))
+
+    try:
+        ally_fee_charged = 300 if fee_ally_ok else 0
+        courier_fee_charged = 300 if fee_courier_ok else 0
+        settlement_note = (
+            "Fees cobrados OK"
+            if (fee_ally_ok and fee_courier_ok)
+            else "Cobro parcial o pendiente de fees al entregar"
+        )
+        upsert_order_accounting_settlement(
+            order_id=order_id,
+            admin_id=admin_id,
+            ally_id=ally_id,
+            courier_id=courier_id,
+            order_total_fee=int(order["total_fee"] or 0),
+            ally_fee_expected=300,
+            ally_fee_charged=ally_fee_charged,
+            courier_fee_expected=300,
+            courier_fee_charged=courier_fee_charged,
+            note=settlement_note,
+            delivered_at=None,
+        )
+    except Exception as e:
+        print("[WARN] No se pudo registrar liquidacion contable de pedido {}: {}".format(order_id, e))
 
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)

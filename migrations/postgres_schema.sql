@@ -398,6 +398,65 @@ CREATE TABLE IF NOT EXISTS ledger (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS accounting_weeks (
+    id BIGSERIAL PRIMARY KEY,
+    week_key TEXT NOT NULL UNIQUE,
+    week_start_at TIMESTAMP NOT NULL,
+    week_end_at TIMESTAMP NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    closed_at TIMESTAMP,
+    closed_by TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS accounting_events (
+    id BIGSERIAL PRIMARY KEY,
+    week_key TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    from_type TEXT,
+    from_id BIGINT,
+    to_type TEXT,
+    to_id BIGINT,
+    entity_type TEXT,
+    entity_id BIGINT,
+    admin_id BIGINT,
+    order_id BIGINT,
+    ledger_id BIGINT,
+    amount INTEGER NOT NULL CHECK(amount >= 0),
+    note TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS order_accounting_settlements (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL UNIQUE,
+    week_key TEXT NOT NULL,
+    admin_id BIGINT,
+    ally_id BIGINT,
+    courier_id BIGINT,
+    order_total_fee INTEGER NOT NULL DEFAULT 0,
+    ally_fee_expected INTEGER NOT NULL DEFAULT 0,
+    ally_fee_charged INTEGER NOT NULL DEFAULT 0,
+    courier_fee_expected INTEGER NOT NULL DEFAULT 0,
+    courier_fee_charged INTEGER NOT NULL DEFAULT 0,
+    settlement_status TEXT NOT NULL DEFAULT 'OPEN',
+    note TEXT,
+    delivered_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS accounting_week_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    week_key TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id BIGINT NOT NULL DEFAULT 0,
+    metric_key TEXT NOT NULL,
+    metric_value INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(week_key, scope_type, scope_id, metric_key)
+);
+
 CREATE TABLE IF NOT EXISTS admin_payment_methods (
     id BIGSERIAL PRIMARY KEY,
     admin_id BIGINT NOT NULL,
@@ -520,6 +579,14 @@ CREATE INDEX IF NOT EXISTS idx_recharge_requests_target ON recharge_requests(tar
 CREATE INDEX IF NOT EXISTS idx_ledger_from ON ledger(from_type, from_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_to ON ledger(to_type, to_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(ref_type, ref_id);
+CREATE INDEX IF NOT EXISTS idx_accounting_weeks_status ON accounting_weeks(status);
+CREATE INDEX IF NOT EXISTS idx_accounting_weeks_start ON accounting_weeks(week_start_at);
+CREATE INDEX IF NOT EXISTS idx_accounting_events_week ON accounting_events(week_key);
+CREATE INDEX IF NOT EXISTS idx_accounting_events_type ON accounting_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_accounting_events_entity ON accounting_events(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_order_accounting_week ON order_accounting_settlements(week_key);
+CREATE INDEX IF NOT EXISTS idx_order_accounting_courier ON order_accounting_settlements(courier_id, week_key);
+CREATE INDEX IF NOT EXISTS idx_accounting_snapshots_week ON accounting_week_snapshots(week_key);
 CREATE INDEX IF NOT EXISTS idx_admin_payment_methods_admin ON admin_payment_methods(admin_id, is_active);
 
 -- References
