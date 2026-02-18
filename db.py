@@ -2303,19 +2303,15 @@ def upsert_admin_ally_link(admin_id: int, ally_id: int, status: str = "PENDING")
     conn = get_connection()
     cur = conn.cursor()
 
-    # Inserta si no existe
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     cur.execute(f"""
-        INSERT OR IGNORE INTO admin_allies (admin_id, ally_id, status, balance, created_at, updated_at)
-        VALUES ({P}, {P}, {P}, 0, datetime('now'), datetime('now'))
+        INSERT INTO admin_allies (admin_id, ally_id, status, balance, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, 0, {now_sql}, {now_sql})
+        ON CONFLICT(admin_id, ally_id)
+        DO UPDATE SET
+            status = excluded.status,
+            updated_at = {now_sql}
     """, (admin_id, ally_id, status))
-
-    # Si ya existía, actualiza status y updated_at
-    cur.execute(f"""
-        UPDATE admin_allies
-        SET status = {P},
-            updated_at = datetime('now')
-        WHERE admin_id = {P} AND ally_id = {P}
-    """, (status, admin_id, ally_id))
 
     conn.commit()
     conn.close()
@@ -2359,6 +2355,7 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
     status = normalize_role_status(status)
     conn = get_connection()
     cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     has_is_active = DB_ENGINE == "postgres"
     if DB_ENGINE != "postgres":
         cur.execute("PRAGMA table_info(admin_couriers)")
@@ -2368,21 +2365,21 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
     if has_is_active:
         cur.execute(f"""
             INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, created_at, updated_at)
-            VALUES ({P}, {P}, {P}, {P}, datetime('now'), datetime('now'))
+            VALUES ({P}, {P}, {P}, {P}, {now_sql}, {now_sql})
             ON CONFLICT(admin_id, courier_id)
             DO UPDATE SET
                 status=excluded.status,
                 is_active=excluded.is_active,
-                updated_at=datetime('now')
+                updated_at={now_sql}
         """, (admin_id, courier_id, status, is_active))
     else:
         cur.execute(f"""
             INSERT INTO admin_couriers (admin_id, courier_id, status, created_at, updated_at)
-            VALUES ({P}, {P}, {P}, datetime('now'), datetime('now'))
+            VALUES ({P}, {P}, {P}, {now_sql}, {now_sql})
             ON CONFLICT(admin_id, courier_id)
             DO UPDATE SET
                 status=excluded.status,
-                updated_at=datetime('now')
+                updated_at={now_sql}
         """, (admin_id, courier_id, status))
     conn.commit()
     conn.close()
@@ -3087,6 +3084,7 @@ def get_couriers_by_admin_and_status(admin_id, status):
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     has_is_active = DB_ENGINE == "postgres"
     if DB_ENGINE != "postgres":
         cur.execute("PRAGMA table_info(admin_couriers)")
@@ -3094,15 +3092,29 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
         has_is_active = "is_active" in cols
 
     if has_is_active:
-        cur.execute(f"""
-            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-            VALUES ({P}, {P}, 'PENDING', 0, 0, datetime('now'))
-        """, (admin_id, courier_id))
+        if DB_ENGINE == "postgres":
+            cur.execute(f"""
+                INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
+                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO NOTHING
+            """, (admin_id, courier_id))
+        else:
+            cur.execute(f"""
+                INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
+                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql})
+            """, (admin_id, courier_id))
     else:
-        cur.execute(f"""
-            INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
-            VALUES ({P}, {P}, 'PENDING', 0, datetime('now'))
-        """, (admin_id, courier_id))
+        if DB_ENGINE == "postgres":
+            cur.execute(f"""
+                INSERT INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
+                VALUES ({P}, {P}, 'PENDING', 0, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO NOTHING
+            """, (admin_id, courier_id))
+        else:
+            cur.execute(f"""
+                INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
+                VALUES ({P}, {P}, 'PENDING', 0, {now_sql})
+            """, (admin_id, courier_id))
     conn.commit()
     conn.close()
     
