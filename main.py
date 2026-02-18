@@ -1680,32 +1680,6 @@ def ally_confirm(update, context):
         if ally_lat and ally_lng and location_id:
             update_ally_location_coords(location_id, ally_lat, ally_lng)
 
-        try:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=(
-                    "Nuevo registro de ALIADO pendiente:\n\n"
-                    f"Negocio: {business_name}\n"
-                    f"Dueño: {owner_name}\n"
-                    f"Cédula: {ally_document}\n"
-                    f"Teléfono: {phone}\n"
-                    f"Ciudad: {city}\n"
-                    f"Barrio: {barrio}\n\n"
-                    "Usa /aliados_pendientes o /admin para revisarlo."
-                )
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="ally_registration_{}".format(ally_id),
-                chat_id=ADMIN_USER_ID,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "El registro de aliado #{} sigue pendiente.\n"
-                    "Revisa /aliados_pendientes o /admin."
-                ).format(ally_id),
-            )
-        except Exception as e:
-            print("[WARN] No se pudo notificar al admin plataforma:", e)
 
         return show_ally_team_selection(update, context, from_callback=False)
 
@@ -1796,22 +1770,20 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
 def ally_team_callback(update, context):
     query = update.callback_query
     data = (query.data or "").strip()
-    print(f"[DEBUG] ally_team_callback recibió data={data}")
+    print(f"[DEBUG] ally_team_callback recibio data={data}")
     query.answer()
 
-    # Validación básica
     if not data.startswith("ally_team:"):
         return ALLY_TEAM
 
     ally_id = context.user_data.get("ally_id")
     if not ally_id:
-        query.edit_message_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
+        query.edit_message_text("Error tecnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
     selected = data.split("ally_team:", 1)[1].strip()
 
-    # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
@@ -1826,56 +1798,115 @@ def ally_team_callback(update, context):
 
         try:
             upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
-            print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
+            print(f"[DEBUG] ally_team_callback: vinculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
         except Exception as e:
-            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-            query.edit_message_text(
-                "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-            )
+            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link fallo: {e}")
+            query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_aliado de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
 
+        business_name = context.user_data.get("business_name", "").strip()
+        owner_name = context.user_data.get("owner_name", "").strip()
+        ally_document = context.user_data.get("ally_document", "").strip()
+        phone = context.user_data.get("ally_phone", "").strip()
+        city = context.user_data.get("city", "").strip()
+        barrio = context.user_data.get("barrio", "").strip()
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de ALIADO pendiente:\n\n"
+                    f"Negocio: {business_name}\n"
+                    f"Dueno: {owner_name}\n"
+                    f"Cedula: {ally_document}\n"
+                    f"Telefono: {phone}\n"
+                    f"Ciudad: {city}\n"
+                    f"Barrio: {barrio}\n\n"
+                    "Usa /aliados_pendientes o /admin para revisarlo."
+                )
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="ally_registration_{}".format(ally_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de aliado #{} sigue pendiente.\n"
+                    "Revisa /aliados_pendientes o /admin."
+                ).format(ally_id),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin plataforma:", e)
+
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
+            "Tu vinculo quedo en estado PENDING hasta aprobacion."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    # 2) Si selecciona un TEAM_CODE real
     admin_row = get_admin_by_team_code(selected)
     if not admin_row:
         query.edit_message_text(
-            "Ese TEAM_CODE no existe o no está disponible.\n"
+            "Ese TEAM_CODE no existe o no esta disponible.\n"
             "Vuelve a intentar /soy_aliado."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
     admin_id = admin_row[0]
-    team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
+    team_name = admin_row[4]
     team_code = admin_row[5]
 
     try:
         upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
-        print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
+        print(f"[DEBUG] ally_team_callback: vinculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
     except Exception as e:
-        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-        query.edit_message_text(
-            "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-        )
+        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link fallo: {e}")
+        query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
+
+    business_name = context.user_data.get("business_name", "").strip()
+    owner_name = context.user_data.get("owner_name", "").strip()
+    ally_document = context.user_data.get("ally_document", "").strip()
+    phone = context.user_data.get("ally_phone", "").strip()
+    city = context.user_data.get("city", "").strip()
+    barrio = context.user_data.get("barrio", "").strip()
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ALIADO pendiente:\n\n"
+                f"Negocio: {business_name}\n"
+                f"Dueno: {owner_name}\n"
+                f"Cedula: {ally_document}\n"
+                f"Telefono: {phone}\n"
+                f"Ciudad: {city}\n"
+                f"Barrio: {barrio}\n\n"
+                "Usa /aliados_pendientes o /admin para revisarlo."
+            )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="ally_registration_{}".format(ally_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de aliado #{} sigue pendiente.\n"
+                "Revisa /aliados_pendientes o /admin."
+            ).format(ally_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
         f"{team_name} ({team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Tu vinculo quedo en estado PENDING hasta aprobacion."
     )
     context.user_data.clear()
     return ConversationHandler.END
-
-
 
 # ----- REGISTRO DE REPARTIDOR (flujo unificado) -----
 
@@ -2156,33 +2187,6 @@ def courier_confirm(update, context):
 
     courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
 
-    try:
-        context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de REPARTIDOR pendiente:\n\n"
-                "Nombre: {}\n"
-                "Cedula: {}\n"
-                "Telefono: {}\n"
-                "Ciudad: {}\n"
-                "Barrio: {}\n"
-                "Placa: {}\n"
-                "Tipo de moto: {}\n\n"
-                "Usa /admin para revisarlo."
-            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
-        )
-        _schedule_important_alerts(
-            context,
-            alert_key="courier_registration_{}".format(courier_id),
-            chat_id=ADMIN_USER_ID,
-            reminder_text=(
-                "Recordatorio importante:\n"
-                "El registro de repartidor #{} sigue pendiente.\n"
-                "Revisa /repartidores_pendientes o /admin."
-            ).format(courier_id),
-        )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     context.user_data["new_courier_id"] = courier_id
 
@@ -2239,7 +2243,7 @@ def show_courier_team_selection(update, context):
 
 
 def courier_team_callback(update, context):
-    """Maneja la selección de equipo del repartidor (botones)."""
+    """Maneja la seleccion de equipo del repartidor (botones)."""
     query = update.callback_query
     data = (query.data or "").strip()
     query.answer()
@@ -2249,7 +2253,7 @@ def courier_team_callback(update, context):
 
     courier_id = context.user_data.get("new_courier_id")
     if not courier_id:
-        query.edit_message_text("Error técnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
+        query.edit_message_text("Error tecnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -2270,14 +2274,49 @@ def courier_team_callback(update, context):
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
         except Exception as e:
-            print(f"[ERROR] courier_team_callback: create_admin_courier_link falló: {e}")
-            query.edit_message_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
+            print(f"[ERROR] courier_team_callback: create_admin_courier_link fallo: {e}")
+            query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
 
+        full_name = context.user_data.get("full_name", "")
+        id_number = context.user_data.get("id_number", "")
+        phone = context.user_data.get("phone", "")
+        city = context.user_data.get("city", "")
+        barrio = context.user_data.get("barrio", "")
+        plate = context.user_data.get("plate", "")
+        bike_type = context.user_data.get("bike_type", "")
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                    "Nombre: {}\n"
+                    "Cedula: {}\n"
+                    "Telefono: {}\n"
+                    "Ciudad: {}\n"
+                    "Barrio: {}\n"
+                    "Placa: {}\n"
+                    "Tipo de moto: {}\n\n"
+                    "Usa /admin para revisarlo."
+                ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="courier_registration_{}".format(courier_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de repartidor #{} sigue pendiente.\n"
+                    "Revisa /repartidores_pendientes o /admin."
+                ).format(courier_id),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin plataforma:", e)
+
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
+            "Tu vinculo quedo en estado PENDING hasta aprobacion."
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -2285,7 +2324,7 @@ def courier_team_callback(update, context):
     admin_row = get_admin_by_team_code(selected)
     if not admin_row:
         query.edit_message_text(
-            "Ese código de equipo no existe o no está disponible.\n"
+            "Ese codigo de equipo no existe o no esta disponible.\n"
             "Vuelve a intentar /soy_repartidor."
         )
         context.user_data.clear()
@@ -2300,7 +2339,7 @@ def courier_team_callback(update, context):
         create_admin_courier_link(admin_id, courier_id)
     except Exception as e:
         print("[ERROR] create_admin_courier_link:", e)
-        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        query.edit_message_text("Ocurrio un error creando la solicitud. Intenta mas tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -2311,7 +2350,7 @@ def courier_team_callback(update, context):
                 "Nueva solicitud de repartidor para tu equipo.\n\n"
                 f"Repartidor ID: {courier_id}\n"
                 f"Equipo: {admin_team}\n"
-                f"Código: {admin_team_code}\n\n"
+                f"Codigo: {admin_team_code}\n\n"
                 "Entra a /mi_admin para aprobar o rechazar."
             )
         )
@@ -2328,10 +2367,45 @@ def courier_team_callback(update, context):
     except Exception as e:
         print("[WARN] No se pudo notificar al admin local:", e)
 
+    full_name = context.user_data.get("full_name", "")
+    id_number = context.user_data.get("id_number", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("city", "")
+    barrio = context.user_data.get("barrio", "")
+    plate = context.user_data.get("plate", "")
+    bike_type = context.user_data.get("bike_type", "")
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="courier_registration_{}".format(courier_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de repartidor #{} sigue pendiente.\n"
+                "Revisa /repartidores_pendientes o /admin."
+            ).format(courier_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
         f"{admin_team} ({admin_team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Tu vinculo quedo en estado PENDING hasta aprobacion."
     )
     context.user_data.clear()
     return ConversationHandler.END
