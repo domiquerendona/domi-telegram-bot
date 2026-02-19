@@ -870,6 +870,8 @@ PAGO_TITULAR = 962
 PAGO_INSTRUCCIONES = 963
 PAGO_MENU = 964
 ALERTAS_OFERTA_INPUT = 965
+CHANGE_GROUP_ROLE = 966
+CHANGE_GROUP_TEAM = 967
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -1006,6 +1008,12 @@ def start(update, context):
         comandos.append("")
         comandos.append("Repartidor:")
         comandos.append("• /soy_repartidor  - Registrarte como repartidor")
+
+    ally_approved = bool(ally and _row_value_fallback(ally, "status", 9) == "APPROVED")
+    courier_approved = bool(courier and _row_value_fallback(courier, "status", 10) == "APPROVED")
+    if ally_approved or courier_approved:
+        comandos.append("")
+        comandos.append("• /cambiar_grupo  - Solicitar cambio o eleccion de grupo")
 
     comandos.append("")
     comandos.append("Administrador:")
@@ -8475,6 +8483,259 @@ def cmd_cerrar_semana_contable(update, context):
         )
 
 
+def _clear_change_group_context(context):
+    context.user_data.pop("change_group_target_type", None)
+    context.user_data.pop("change_group_target_id", None)
+    context.user_data.pop("change_group_target_name", None)
+
+
+def _show_change_group_team_selection(update_or_query, context, from_callback=False):
+    target_type = context.user_data.get("change_group_target_type")
+    target_id = context.user_data.get("change_group_target_id")
+    target_name = context.user_data.get("change_group_target_name", "-")
+    if not target_type or not target_id:
+        if from_callback:
+            update_or_query.edit_message_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        else:
+            update_or_query.message.reply_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    teams = get_available_admin_teams()
+    current_link = get_admin_link_for_courier(target_id) if target_type == "COURIER" else get_admin_link_for_ally(target_id)
+    current_team = current_link["team_name"] if current_link and current_link["team_name"] else "-"
+    current_code = current_link["team_code"] if current_link and current_link["team_code"] else "-"
+    current_status = current_link["link_status"] if current_link and current_link["link_status"] else "-"
+
+    buttons = []
+    for row in teams or []:
+        team_name = _row_value_fallback(row, "team_name", 1, "")
+        team_code = _row_value_fallback(row, "team_code", 2, "")
+        admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
+        label = f"{team_name} ({team_code})"
+        if admin_status == "PENDING":
+            label += " [Pendiente]"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"chgteam_pick_{team_code}")])
+
+    buttons.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="chgteam_pick_NONE")])
+    buttons.append([InlineKeyboardButton("Cancelar", callback_data="chgteam_cancel")])
+
+    role_name = "Aliado" if target_type == "ALLY" else "Repartidor"
+    text = (
+        f"Cambio de grupo ({role_name})\n"
+        f"Perfil: {target_name}\n"
+        f"Grupo actual: {current_team} ({current_code}) [{current_status}]\n\n"
+        "Selecciona el nuevo grupo.\n"
+        "La solicitud quedara PENDING hasta aprobacion."
+    )
+    markup = InlineKeyboardMarkup(buttons)
+    if from_callback:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    return CHANGE_GROUP_TEAM
+
+
+def cmd_cambiar_grupo(update, context):
+    """Permite a aliado/repartidor APPROVED solicitar cambio de grupo."""
+    _clear_change_group_context(context)
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    ally = get_ally_by_user_id(user_db_id)
+    courier = get_courier_by_user_id(user_db_id)
+
+    roles = []
+    if ally and _row_value_fallback(ally, "status", 9) == "APPROVED":
+        roles.append(("ALLY", _row_value_fallback(ally, "id", 0), _row_value_fallback(ally, "business_name", 2, "Aliado")))
+    if courier and _row_value_fallback(courier, "status", 10) == "APPROVED":
+        roles.append(("COURIER", _row_value_fallback(courier, "id", 0), _row_value_fallback(courier, "full_name", 2, "Repartidor")))
+
+    if not roles:
+        update.message.reply_text(
+            "Para cambiar de grupo debes tener perfil APPROVED de Aliado o Repartidor."
+        )
+        return ConversationHandler.END
+
+    if len(roles) == 1:
+        role_type, role_id, role_name = roles[0]
+        context.user_data["change_group_target_type"] = role_type
+        context.user_data["change_group_target_id"] = role_id
+        context.user_data["change_group_target_name"] = role_name
+        return _show_change_group_team_selection(update, context, from_callback=False)
+
+    keyboard = []
+    for role_type, role_id, role_name in roles:
+        label = "Aliado: {}".format(role_name) if role_type == "ALLY" else "Repartidor: {}".format(role_name)
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"chgteam_role_{role_type}_{role_id}")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="chgteam_cancel")])
+
+    update.message.reply_text(
+        "Tienes multiples perfiles APPROVED. Selecciona cual perfil cambiar de grupo.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return CHANGE_GROUP_ROLE
+
+
+def change_group_role_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+
+    if data == "chgteam_cancel":
+        _clear_change_group_context(context)
+        query.edit_message_text("Cambio de grupo cancelado.")
+        return ConversationHandler.END
+
+    if not data.startswith("chgteam_role_"):
+        return CHANGE_GROUP_ROLE
+
+    parts = data.replace("chgteam_role_", "").split("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    role_type, role_id_raw = parts
+    try:
+        role_id = int(role_id_raw)
+    except ValueError:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    user_row = ensure_user(update.effective_user.id, update.effective_user.username)
+    user_db_id = user_row["id"]
+    if role_type == "ALLY":
+        row = get_ally_by_user_id(user_db_id)
+        if not row or _row_value_fallback(row, "id", 0) != role_id or _row_value_fallback(row, "status", 9) != "APPROVED":
+            query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        role_name = _row_value_fallback(row, "business_name", 2, "Aliado")
+    elif role_type == "COURIER":
+        row = get_courier_by_user_id(user_db_id)
+        if not row or _row_value_fallback(row, "id", 0) != role_id or _row_value_fallback(row, "status", 10) != "APPROVED":
+            query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        role_name = _row_value_fallback(row, "full_name", 2, "Repartidor")
+    else:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    context.user_data["change_group_target_type"] = role_type
+    context.user_data["change_group_target_id"] = role_id
+    context.user_data["change_group_target_name"] = role_name
+    return _show_change_group_team_selection(query, context, from_callback=True)
+
+
+def change_group_team_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+
+    if data == "chgteam_cancel":
+        _clear_change_group_context(context)
+        query.edit_message_text("Cambio de grupo cancelado.")
+        return ConversationHandler.END
+
+    if not data.startswith("chgteam_pick_"):
+        return CHANGE_GROUP_TEAM
+
+    selected = data.replace("chgteam_pick_", "").strip()
+    target_type = context.user_data.get("change_group_target_type")
+    target_id = context.user_data.get("change_group_target_id")
+    target_name = context.user_data.get("change_group_target_name", "-")
+
+    if not target_type or not target_id:
+        query.edit_message_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    user_row = ensure_user(update.effective_user.id, update.effective_user.username)
+    user_db_id = user_row["id"]
+    if target_type == "ALLY":
+        owned = get_ally_by_user_id(user_db_id)
+        if not owned or _row_value_fallback(owned, "id", 0) != target_id or _row_value_fallback(owned, "status", 9) != "APPROVED":
+            query.edit_message_text("Perfil no valido para cambiar grupo. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+    elif target_type == "COURIER":
+        owned = get_courier_by_user_id(user_db_id)
+        if not owned or _row_value_fallback(owned, "id", 0) != target_id or _row_value_fallback(owned, "status", 10) != "APPROVED":
+            query.edit_message_text("Perfil no valido para cambiar grupo. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+
+    if selected.upper() == "NONE":
+        admin_row = get_admin_by_team_code(PLATFORM_TEAM_CODE)
+    else:
+        admin_row = get_admin_by_team_code(selected)
+
+    if not admin_row:
+        query.edit_message_text("Equipo no disponible. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    admin_id = _row_value_fallback(admin_row, "id", 0)
+    team_name = _row_value_fallback(admin_row, "team_name", 4, "-")
+    team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
+    admin_telegram_id = _row_value_fallback(admin_row, "telegram_id", 6)
+
+    if target_type == "ALLY":
+        current_link = get_admin_link_for_ally(target_id)
+        current_admin_id = current_link["admin_id"] if current_link else None
+        current_status = (current_link["link_status"] or "").upper() if current_link else ""
+        if current_admin_id == admin_id and current_status == "APPROVED":
+            query.edit_message_text(
+                "Ya tienes este grupo aprobado.\n"
+                f"{team_name} ({team_code})"
+            )
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        upsert_admin_ally_link(admin_id, target_id, status="PENDING")
+    else:
+        current_link = get_admin_link_for_courier(target_id)
+        current_admin_id = current_link["admin_id"] if current_link else None
+        current_status = (current_link["link_status"] or "").upper() if current_link else ""
+        if current_admin_id == admin_id and current_status == "APPROVED":
+            query.edit_message_text(
+                "Ya tienes este grupo aprobado.\n"
+                f"{team_name} ({team_code})"
+            )
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        upsert_admin_courier_link(admin_id, target_id, "PENDING", 0)
+
+    try:
+        if admin_telegram_id:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de cambio de grupo.\n\n"
+                    f"Perfil: {target_type}\n"
+                    f"ID perfil: {target_id}\n"
+                    f"Nombre: {target_name}\n"
+                    f"Equipo destino: {team_name} ({team_code})\n\n"
+                    "Revisa /mi_admin para aprobar o rechazar."
+                )
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar cambio de grupo al admin destino:", e)
+
+    query.edit_message_text(
+        "Solicitud de cambio de grupo enviada.\n\n"
+        f"Nuevo grupo solicitado: {team_name} ({team_code})\n"
+        "Estado: PENDING\n\n"
+        "Tu grupo actual seguira vigente hasta que aprueben esta solicitud."
+    )
+    _clear_change_group_context(context)
+    return ConversationHandler.END
+
+
 def cmd_recargar(update, context):
     """
     Comando /recargar - Inicia el flujo de solicitud de recarga.
@@ -10591,6 +10852,20 @@ def main():
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(config_alertas_oferta_conv)  # /config_alertas_oferta (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
+
+    cambiar_grupo_conv = ConversationHandler(
+        entry_points=[CommandHandler("cambiar_grupo", cmd_cambiar_grupo)],
+        states={
+            CHANGE_GROUP_ROLE: [CallbackQueryHandler(change_group_role_callback, pattern=r"^chgteam_")],
+            CHANGE_GROUP_TEAM: [CallbackQueryHandler(change_group_team_callback, pattern=r"^chgteam_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uÃº])\s*$'), cancel_por_texto),
+        ],
+        allow_reentry=True,
+    )
+    dp.add_handler(cambiar_grupo_conv)
 
     # ConversationHandler para /recargar
     recargar_conv = ConversationHandler(
