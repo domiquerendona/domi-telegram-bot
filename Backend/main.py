@@ -104,6 +104,10 @@ from services import (
     check_service_fee_available,
     resolve_location,
     get_smart_distance,
+    _get_important_alert_config,
+    es_admin_plataforma,
+    _get_reference_reviewer,
+    _get_missing_role_commands,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -255,7 +259,6 @@ from db import (
     review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
-    can_admin_validate_references,
 )
 from profile_changes import (
     profile_change_conv,
@@ -286,25 +289,6 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
-
-
-def _get_important_alert_config():
-    enabled = str(get_setting("important_alerts_enabled", "1") or "1").strip() == "1"
-    seconds_raw = str(get_setting("important_alert_seconds", "20,50") or "20,50")
-    seconds = []
-    for chunk in seconds_raw.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        try:
-            sec = int(chunk)
-            if sec > 0:
-                seconds.append(sec)
-        except Exception:
-            continue
-    if not seconds:
-        seconds = [20, 50]
-    return {"enabled": enabled, "seconds": seconds}
 
 
 def _important_alert_job(context):
@@ -356,56 +340,6 @@ def _resolve_important_alert(context, alert_key):
                 pass
 
 
-def es_admin_plataforma(telegram_id: int) -> bool:
-    """
-    Valida si el usuario es Administrador de Plataforma.
-    Verifica que exista en admins con team_code='PLATFORM' y status='APPROVED'.
-    """
-    admin = get_admin_by_telegram_id(telegram_id)
-    if not admin:
-        return False
-
-    # Soportar dict o sqlite3.Row
-    if isinstance(admin, dict):
-        team_code = admin.get("team_code")
-        status = admin.get("status")
-    else:
-        # sqlite3.Row
-        team_code = admin["team_code"] if "team_code" in admin.keys() else None
-        status = admin["status"] if "status" in admin.keys() else None
-
-    return team_code == "PLATFORM" and status == "APPROVED"
-
-
-def _get_reference_reviewer(telegram_id: int):
-    """
-    Retorna contexto de revisor de referencias.
-    - Admin Plataforma: siempre habilitado.
-    - Admin Local: requiere status APPROVED y permiso APPROVED.
-    """
-    user = get_user_by_telegram_id(telegram_id)
-    if not user:
-        return {"ok": False, "message": "No se encontro tu usuario.", "admin_id": None, "is_platform": False}
-
-    admin = get_admin_by_user_id(user["id"])
-    if not admin:
-        return {"ok": False, "message": "No tienes perfil de administrador.", "admin_id": None, "is_platform": False}
-
-    admin_id = admin["id"]
-    admin_status = admin["status"]
-    team_code = admin["team_code"]
-    is_platform = bool(team_code == "PLATFORM" and admin_status == "APPROVED")
-
-    if is_platform:
-        return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": True}
-
-    if admin_status != "APPROVED":
-        return {"ok": False, "message": "Tu admin debe estar APPROVED para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    if not can_admin_validate_references(admin_id):
-        return {"ok": False, "message": "No tienes permiso para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": False}
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
@@ -1330,17 +1264,6 @@ def _get_user_roles(update):
         print("ERROR get_admin_by_user_id en menu:", e)
         admin_local = None
     return ally, courier, admin_local
-
-
-def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma=False):
-    cmds = []
-    if not ally:
-        cmds.append("/soy_aliado")
-    if not courier:
-        cmds.append("/soy_repartidor")
-    if not admin_local and not es_admin_plataforma:
-        cmds.append("/soy_admin")
-    return cmds
 
 
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
