@@ -172,6 +172,8 @@ from db import (
     get_all_approved_links_for_courier,
     get_all_approved_links_for_ally,
     get_admin_balance,
+    get_courier_link_balance,
+    get_ally_link_balance,
     get_platform_admin,
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
@@ -9010,6 +9012,66 @@ def recharge_proof_callback(update, context):
         query.answer("No se pudo enviar el comprobante.", show_alert=True)
 
 
+def _notify_recharge_target_result(context, req: dict, approved: bool):
+    """Notifica al titular de la recarga (COURIER/ALLY/ADMIN) el resultado."""
+    target_type = req.get("target_type")
+    target_id = req.get("target_id")
+    admin_id = req.get("admin_id")
+    amount = int(req.get("amount") or 0)
+
+    try:
+        target_user_id = None
+        role_label = ""
+
+        if target_type == "COURIER":
+            row = get_courier_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Repartidor"
+            balance = get_courier_link_balance(target_id, admin_id) if approved else None
+        elif target_type == "ALLY":
+            row = get_ally_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Aliado"
+            balance = get_ally_link_balance(target_id, admin_id) if approved else None
+        elif target_type == "ADMIN":
+            row = get_admin_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Administrador"
+            balance = get_admin_balance(target_id) if approved else None
+        else:
+            return
+
+        user = get_user_by_id(target_user_id)
+        if not user:
+            return
+        target_telegram_id = user["telegram_id"] if isinstance(user, dict) else user[1]
+
+        if approved:
+            msg = (
+                "Tu recarga ha sido exitosa.\n"
+                f"Perfil: {role_label}\n"
+                f"Monto acreditado: ${amount:,}\n"
+                f"Saldo actual: ${int(balance or 0):,}"
+            )
+        else:
+            msg = (
+                "Tu solicitud de recarga fue rechazada.\n"
+                f"Perfil: {role_label}\n"
+                f"Monto solicitado: ${amount:,}\n"
+                "Si necesitas ayuda, contacta al administrador."
+            )
+
+        context.bot.send_message(chat_id=target_telegram_id, text=msg)
+    except Exception as e:
+        print(f"[WARN] No se pudo notificar resultado de recarga: {e}")
+
+
 def recharge_callback(update, context):
     """
     Callback para aprobar/rechazar solicitudes de recarga.
@@ -9035,7 +9097,7 @@ def recharge_callback(update, context):
 
     if data.startswith("recharge_approve_"):
         request_id = int(data.replace("recharge_approve_", ""))
-        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
         if ownership_error:
             query.answer(ownership_error, show_alert=True)
             return
@@ -9044,6 +9106,7 @@ def recharge_callback(update, context):
 
         if success:
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
+            _notify_recharge_target_result(context, req, approved=True)
             query.answer("Recarga aprobada.")
             suffix = f"\n\nAPROBADA por admin #{admin_id}"
             if query.message.text:
@@ -9057,7 +9120,7 @@ def recharge_callback(update, context):
 
     elif data.startswith("recharge_reject_"):
         request_id = int(data.replace("recharge_reject_", ""))
-        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
         if ownership_error:
             query.answer(ownership_error, show_alert=True)
             return
@@ -9066,6 +9129,7 @@ def recharge_callback(update, context):
 
         if success:
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
+            _notify_recharge_target_result(context, req, approved=False)
             query.answer("Solicitud rechazada.")
             suffix = f"\n\nRECHAZADA por admin #{admin_id}"
             if query.message.text:
