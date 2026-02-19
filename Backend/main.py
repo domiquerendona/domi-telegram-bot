@@ -1800,11 +1800,10 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
     # Botones por equipo disponible
     if teams:
         for row in teams:
-            # row puede venir como sqlite3.Row o tupla
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = row["id"]
+            team_name = row["team_name"]
+            team_code = row["team_code"]
+            admin_status = row["status"]
 
             # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
@@ -1863,7 +1862,7 @@ def ally_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = platform_admin["id"]
 
         try:
             upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
@@ -1893,9 +1892,9 @@ def ally_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
-    team_code = admin_row[5]
+    admin_id = admin_row["id"]
+    team_name = admin_row["team_name"]
+    team_code = admin_row["team_code"]
 
     try:
         upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
@@ -1926,8 +1925,8 @@ def soy_repartidor(update, context):
 
     existing = get_courier_by_user_id(user_db_id)
     if existing:
-        status = existing["status"] if isinstance(existing, dict) else existing[11]
-        courier_id = existing["id"] if isinstance(existing, dict) else existing[0]
+        status = existing["status"]
+        courier_id = existing["id"]
 
         rejection_type = get_courier_rejection_type_by_id(courier_id)
 
@@ -2256,10 +2255,10 @@ def show_courier_team_selection(update, context):
 
     if teams:
         for row in teams:
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = row["id"]
+            team_name = row["team_name"]
+            team_code = row["team_code"]
+            admin_status = row["status"]
 
             label = f"{team_name} ({team_code})"
             if admin_status == 'PENDING':
@@ -2306,7 +2305,7 @@ def courier_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = platform_admin["id"]
 
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
@@ -2332,10 +2331,10 @@ def courier_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    admin_team = admin_row[4]
-    admin_team_code = admin_row[5]
-    admin_telegram_id = admin_row[6]
+    admin_id = admin_row["id"]
+    admin_team = admin_row["team_name"]
+    admin_team_code = admin_row["team_code"]
+    admin_telegram_id = admin_row["telegram_id"]
 
     try:
         create_admin_courier_link(admin_id, courier_id)
