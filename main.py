@@ -8667,6 +8667,13 @@ def recargar_monto(update, context):
                 upsert_admin_courier_link(recover_admin_id, target_id, "APPROVED", 1)
                 link = get_approved_admin_link_for_courier(target_id)
                 approved_links = get_all_approved_links_for_courier(target_id)
+            if courier_status == "APPROVED" and not approved_links:
+                platform = get_platform_admin()
+                if platform:
+                    platform_id = platform["id"]
+                    upsert_admin_courier_link(platform_id, target_id, "APPROVED", 1)
+                    link = get_approved_admin_link_for_courier(target_id)
+                    approved_links = get_all_approved_links_for_courier(target_id)
     else:
         link = get_approved_admin_link_for_ally(target_id)
         approved_links = get_all_approved_links_for_ally(target_id)
@@ -8679,6 +8686,13 @@ def recargar_monto(update, context):
                 upsert_admin_ally_link(recover_admin_id, target_id, status="APPROVED")
                 link = get_approved_admin_link_for_ally(target_id)
                 approved_links = get_all_approved_links_for_ally(target_id)
+            if ally_status == "APPROVED" and not approved_links:
+                platform = get_platform_admin()
+                if platform:
+                    platform_id = platform["id"]
+                    upsert_admin_ally_link(platform_id, target_id, status="APPROVED")
+                    link = get_approved_admin_link_for_ally(target_id)
+                    approved_links = get_all_approved_links_for_ally(target_id)
     approved_admin_ids = {row["admin_id"] for row in approved_links} if approved_links else set()
 
     buttons = []
