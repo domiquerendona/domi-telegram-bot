@@ -8658,9 +8658,27 @@ def recargar_monto(update, context):
     if target_type == "COURIER":
         link = get_approved_admin_link_for_courier(target_id)
         approved_links = get_all_approved_links_for_courier(target_id)
+        if not approved_links:
+            courier = get_courier_by_id(target_id)
+            courier_status = _row_value_fallback(courier, "status", 10) if courier else None
+            current_link = get_admin_link_for_courier(target_id)
+            if courier_status == "APPROVED" and current_link:
+                recover_admin_id = current_link["admin_id"] if isinstance(current_link, dict) else current_link[0]
+                upsert_admin_courier_link(recover_admin_id, target_id, "APPROVED", 1)
+                link = get_approved_admin_link_for_courier(target_id)
+                approved_links = get_all_approved_links_for_courier(target_id)
     else:
         link = get_approved_admin_link_for_ally(target_id)
         approved_links = get_all_approved_links_for_ally(target_id)
+        if not approved_links:
+            ally = get_ally_by_id(target_id)
+            ally_status = _row_value_fallback(ally, "status", 9) if ally else None
+            current_link = get_admin_link_for_ally(target_id)
+            if ally_status == "APPROVED" and current_link:
+                recover_admin_id = current_link["admin_id"] if isinstance(current_link, dict) else current_link[0]
+                upsert_admin_ally_link(recover_admin_id, target_id, status="APPROVED")
+                link = get_approved_admin_link_for_ally(target_id)
+                approved_links = get_all_approved_links_for_ally(target_id)
     approved_admin_ids = {row["admin_id"] for row in approved_links} if approved_links else set()
 
     buttons = []
