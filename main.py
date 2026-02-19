@@ -172,6 +172,7 @@ from db import (
     get_all_approved_links_for_courier,
     get_all_approved_links_for_ally,
     get_admin_balance,
+    update_admin_balance_with_ledger,
     get_courier_link_balance,
     get_ally_link_balance,
     get_platform_admin,
@@ -322,6 +323,39 @@ def es_admin_plataforma(telegram_id: int) -> bool:
         status = admin["status"] if "status" in admin.keys() else None
 
     return team_code == "PLATFORM" and status == "APPROVED"
+
+
+def _get_platform_min_master_balance() -> int:
+    """Retorna el umbral minimo de saldo master para Plataforma."""
+    raw = str(get_setting("platform_min_master_balance", "60000") or "60000").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = 60000
+    return value if value >= 0 else 60000
+
+
+def _get_platform_balance_guard(admin_id: int):
+    """
+    Retorna (is_below_threshold, balance, min_balance) para admin plataforma.
+    Si no es plataforma, siempre retorna (False, balance, min_balance).
+    """
+    admin_full = get_admin_by_id(admin_id)
+    team_code = _row_value_fallback(admin_full, "team_code", 8, "") if admin_full else ""
+    balance = get_admin_balance(admin_id)
+    min_balance = _get_platform_min_master_balance()
+    is_platform = str(team_code or "").upper() == "PLATFORM"
+    return (is_platform and balance < min_balance), balance, min_balance
+
+
+def _platform_balance_guard_message(balance: int, min_balance: int) -> str:
+    faltante = max(0, min_balance - balance)
+    return (
+        "ALERTA: Saldo master de Plataforma por debajo del minimo.\n"
+        f"Saldo actual: ${balance:,}\n"
+        f"Minimo requerido: ${min_balance:,}\n"
+        f"Faltante: ${faltante:,}"
+    )
 
 
 def _get_reference_reviewer(telegram_id: int):
@@ -4859,6 +4893,12 @@ def admin_menu(update, context):
         "Panel de Administración de Plataforma.\n"
         "¿Qué deseas revisar?"
     )
+    platform_admin = get_admin_by_user_id(user_db_id)
+    platform_admin_id = platform_admin["id"] if platform_admin else None
+    if platform_admin_id:
+        is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+        if is_below:
+            texto += "\n\n" + _platform_balance_guard_message(balance, min_balance)
 
     keyboard = [
         [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
@@ -5238,6 +5278,12 @@ def admin_menu_callback(update, context):
             "Panel de Administración de Plataforma.\n"
             "¿Qué deseas revisar?"
         )
+        platform_admin = get_admin_by_telegram_id(user_id)
+        if platform_admin:
+            platform_admin_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+            is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+            if is_below:
+                texto += "\n\n" + _platform_balance_guard_message(balance, min_balance)
         keyboard = [
             [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
             [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
@@ -5716,6 +5762,16 @@ def admin_menu_callback(update, context):
 
     if data == "admin_contab_close_prev":
         query.answer()
+        platform_admin = get_admin_by_telegram_id(user_id)
+        platform_admin_id = platform_admin["id"] if platform_admin else None
+        if platform_admin_id:
+            is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+            if is_below:
+                query.edit_message_text(
+                    _platform_balance_guard_message(balance, min_balance),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+                )
+                return
         week_key = _previous_week_key()
         try:
             closed, summary = close_and_snapshot_accounting_week(
@@ -7935,6 +7991,14 @@ def mi_perfil(update, context):
         mensaje += f"   Equipo: {equipo_admin}\n\n"
         admin_balance = get_admin_balance(admin_id)
         mensaje += f"   Saldo master: ${admin_balance:,}\n\n"
+        if team_code == "PLATFORM":
+            min_balance = _get_platform_min_master_balance()
+            if admin_balance < min_balance:
+                faltante = min_balance - admin_balance
+                mensaje += (
+                    "   ALERTA Plataforma: saldo master bajo minimo.\n"
+                    f"   Minimo: ${min_balance:,} | Faltante: ${faltante:,}\n\n"
+                )
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
@@ -8432,6 +8496,12 @@ def cmd_cerrar_semana_contable(update, context):
             "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
         )
         return
+    platform_admin_id = _admin["id"] if _admin else None
+    if platform_admin_id:
+        is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+        if is_below:
+            update.message.reply_text(_platform_balance_guard_message(balance, min_balance))
+            return
 
     if not context.args:
         update.message.reply_text(
@@ -8479,6 +8549,81 @@ def cmd_cerrar_semana_contable(update, context):
             "La semana ya estaba cerrada o no pudo cerrarse.\n"
             "Semana: {}".format(summary["week_key"])
         )
+
+
+def cmd_acreditar_plataforma(update, context):
+    """
+    /acreditar_plataforma <monto> [nota opcional]
+    Acredita saldo master al admin de plataforma y deja traza en ledger.
+    """
+    telegram_id = update.effective_user.id
+    allowed, platform_admin = _is_platform_admin_actor(telegram_id)
+    if not allowed or not platform_admin:
+        update.message.reply_text("Acceso restringido. Este comando es solo para Admin Plataforma APPROVED.")
+        return
+
+    if not context.args:
+        update.message.reply_text(
+            "Uso: /acreditar_plataforma <monto> [nota]\n"
+            "Ejemplo: /acreditar_plataforma 120000 consignacion bancaria"
+        )
+        return
+
+    monto_raw = str(context.args[0]).strip().replace(".", "").replace(",", "").replace("$", "")
+    try:
+        monto = int(monto_raw)
+    except Exception:
+        update.message.reply_text("Monto invalido. Usa solo numeros enteros.")
+        return
+
+    if monto <= 0:
+        update.message.reply_text("El monto debe ser mayor a 0.")
+        return
+
+    if monto > 100000000:
+        update.message.reply_text("Monto demasiado alto. Limite por operacion: $100,000,000.")
+        return
+
+    note = "Acreditacion manual de saldo plataforma"
+    if len(context.args) > 1:
+        extra_note = " ".join(context.args[1:]).strip()
+        if extra_note:
+            note = f"{note}: {extra_note}"
+
+    platform_admin_id = platform_admin["id"]
+    try:
+        ledger_id = update_admin_balance_with_ledger(
+            admin_id=platform_admin_id,
+            delta=monto,
+            kind="PLATFORM_TOPUP",
+            note=note,
+            ref_type="MANUAL_TOPUP",
+            ref_id=None,
+            from_type="EXTERNAL",
+            from_id=None,
+        )
+        new_balance = get_admin_balance(platform_admin_id)
+    except Exception as e:
+        update.message.reply_text(f"No se pudo acreditar saldo de plataforma: {e}")
+        return
+
+    min_balance = _get_platform_min_master_balance()
+    if new_balance < min_balance:
+        status_msg = (
+            f"Saldo bajo minimo.\n"
+            f"Minimo: ${min_balance:,}\n"
+            f"Faltante: ${max(0, min_balance - new_balance):,}"
+        )
+    else:
+        status_msg = "Saldo en rango operativo."
+
+    update.message.reply_text(
+        "Acreditacion aplicada.\n\n"
+        f"Monto acreditado: ${monto:,}\n"
+        f"Nuevo saldo master plataforma: ${new_balance:,}\n"
+        f"Ledger ID: {ledger_id}\n\n"
+        f"{status_msg}"
+    )
 
 
 def _clear_change_group_context(context):
@@ -9385,8 +9530,14 @@ def recharge_callback(update, context):
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
+    admin_team_code = (admin.get("team_code") or "").strip().upper()
 
     if data.startswith("recharge_approve_"):
+        if admin_team_code == "PLATFORM":
+            is_below, balance, min_balance = _get_platform_balance_guard(admin_id)
+            if is_below:
+                query.answer(_platform_balance_guard_message(balance, min_balance), show_alert=True)
+                return
         request_id = int(data.replace("recharge_approve_", ""))
         req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
         if ownership_error:
@@ -10771,6 +10922,7 @@ def main():
     dp.add_handler(CommandHandler("contabilidad", cmd_contabilidad))
     dp.add_handler(CommandHandler("contabilidad_snapshot", cmd_contabilidad_snapshot))
     dp.add_handler(CommandHandler("cerrar_semana_contable", cmd_cerrar_semana_contable))
+    dp.add_handler(CommandHandler("acreditar_plataforma", cmd_acreditar_plataforma))
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
