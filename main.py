@@ -9763,10 +9763,11 @@ def ally_approval_callback(update, context):
         return
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
-    if nuevo_estado == "APPROVED":
-        link = get_admin_link_for_ally(ally_id)
-        if link:
-            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+    link = get_admin_link_for_ally(ally_id)
+    if link:
+        keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+        upsert_admin_ally_link(keep_admin_id, ally_id, status=nuevo_estado)
+        if nuevo_estado == "APPROVED":
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
 
     ally = get_ally_by_id(ally_id)
