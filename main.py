@@ -1483,6 +1483,8 @@ def menu_button_handler(update, context):
         return mi_aliado(update, context)
     elif text_norm == "mi repartidor":
         return mi_repartidor(update, context)
+    elif text_norm == "mi admin":
+        return mi_admin(update, context)
     elif text_norm == "mi perfil":
         return mi_perfil_safe(update, context)
     elif text_norm == "ayuda":
@@ -7794,13 +7796,9 @@ def mi_admin(update, context):
         update.message.reply_text("No se pudo cargar tu perfil de administrador. Revisa BD.")
         return
 
-    status = admin_full[6]
-    team_name = admin_full[8] or "-"
-    team_code = "-"
-    if isinstance(admin_full, dict):
-        team_code = admin_full.get("team_code") or "-"
-    else:
-        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+    status = _row_value_fallback(admin_full, "status", 9, "PENDING")
+    team_name = _row_value_fallback(admin_full, "team_name", 6, "-") or "-"
+    team_code = _row_value_fallback(admin_full, "team_code", 8, "-") or "-"
 
     header = (
         "Panel Administrador Local\n\n"
@@ -10952,7 +10950,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Ganancias repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Ganancias repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
