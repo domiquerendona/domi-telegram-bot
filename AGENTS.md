@@ -31,29 +31,59 @@ Cambios mínimos obligatorios: un solo objetivo por instrucción.
 
 2. Arquitectura y código
 
-main.py contiene únicamente:
+main.py contiene ÚNICAMENTE:
 
-Orquestación
+- Registro y wiring de handlers (CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler)
+- Funciones handler que solo: validan formato de entrada → llaman a services → retornan next state
+- Helpers de UI e input (teclados, hints, validadores de formato simples)
+- Gestión de estado de flujo (_set_flow_step, _clear_flow_data_from_state)
+- Constantes de UI (_OPTIONS_HINT y similares)
 
-Flujo
+PROHIBIDO en main.py:
 
-Handlers
+- Funciones que llamen directamente a cualquier función de db.py
+- Validaciones de rol o permisos (es_admin_plataforma, _get_reference_reviewer, etc.)
+- Lectores de configuración que consulten BD (get_setting, _get_important_alert_config, etc.)
+- Lógica condicional basada en datos de BD
+- Construcción de listas de comandos según estado de usuario
 
-Toda la lógica de negocio debe vivir en:
+Toda la lógica de negocio debe vivir en services.py u otros módulos dedicados.
 
-services.py
+Regla de trigger — una función DEBE moverse a services.py si:
 
-u otros módulos dedicados
+1. Llama a cualquier función importada de db.py
+2. Valida roles, permisos o estados de usuario
+3. Lee o interpreta configuración desde BD
+4. Tiene lógica condicional basada en datos persistidos
 
-Reglas:
+Reglas generales:
 
 No crear funciones similares o redundantes.
-
 Una función = una sola responsabilidad clara.
-
 Respetar nombres, estructuras y funciones existentes.
-
 No introducir nuevos patrones si ya existe uno funcional.
+
+2B. Patrón oficial de helpers de input en main.py
+
+Cuando 3 o más handlers repiten la misma lógica de validación de campo, se DEBE usar o extender los helpers existentes. No crear nuevas variantes ad-hoc.
+
+Helpers establecidos (main.py):
+
+_handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt)
+    Valida mínimo 7 dígitos. Almacena en context.user_data[storage_key].
+
+_handle_text_field_input(update, context, error_msg, storage_key, current_state, next_state, flow, next_prompt)
+    Valida que el texto no esté vacío. Almacena en context.user_data[storage_key].
+
+_OPTIONS_HINT
+    Constante de texto para opciones de cancelación. SIEMPRE usar esta constante, nunca escribir el hint inline.
+
+Regla: si se necesita un nuevo tipo de validación repetida en 3+ handlers, primero proponer el helper al usuario y esperar aprobación antes de implementarlo.
+
+Handlers que usan estos helpers actualmente:
+ally_phone, ally_city, ally_barrio
+courier_phone, courier_city, courier_barrio
+admin_phone, admin_city, admin_barrio
 
 3. Base de datos (reglas estrictas)
 
