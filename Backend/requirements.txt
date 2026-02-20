@@ -3,3 +3,5 @@ python-dotenv
 urllib3==1.26.18
 six==1.16.0
 psycopg2-binary
+fastapi
+uvicorn
