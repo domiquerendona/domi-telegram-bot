@@ -46,13 +46,7 @@ from services import (
     _get_missing_role_commands,
     get_user_by_id,
     get_available_admin_teams,
-)
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
-from db import (
-    init_db,
-    force_platform_admin,
-    ensure_pricing_defaults,
-    ensure_user,
+    # Funciones de acceso a datos (re-exportadas desde db vía services)
     get_user_by_telegram_id,
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
@@ -68,8 +62,6 @@ from db import (
     deactivate_other_approved_admin_courier_links,
     deactivate_other_approved_admin_ally_links,
     get_local_admins_count,
-
-    # Aliados
     create_ally,
     get_ally_by_user_id,
     get_pending_allies,
@@ -79,8 +71,6 @@ from db import (
     get_all_allies,
     update_ally,
     delete_ally,
-
-    # Admins
     create_admin,
     get_admin_by_user_id,
     get_admin_by_telegram_id,
@@ -89,13 +79,9 @@ from db import (
     get_pending_admins,
     get_admin_by_id,
     update_admin_status_by_id,
-    count_admin_couriers,
-    count_admin_couriers_with_min_balance,
     get_admin_by_team_code,
     update_admin_courier_status,
     upsert_admin_courier_link,
-
-    # Direcciones aliados
     create_ally_location,
     get_ally_locations,
     get_ally_location_by_id,
@@ -106,8 +92,6 @@ from db import (
     delete_ally_location,
     increment_pickup_usage,
     set_frequent_pickup,
-
-    # Repartidores
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
@@ -126,8 +110,6 @@ from db import (
     delete_courier,
     get_admin_link_for_courier,
     get_admin_link_for_ally,
-
-    # Pedidos
     create_order,
     set_order_status,
     assign_order_to_courier,
@@ -136,20 +118,12 @@ from db import (
     get_orders_by_courier,
     get_courier_daily_earnings_history,
     get_courier_earnings_by_date,
-
-    # Herramientas administrativas
     get_totales_registros,
-
-    # Calificaciones
     add_courier_rating,
-
-    # Términos y condiciones
     get_active_terms_version,
     has_accepted_terms,
     save_terms_acceptance,
     save_terms_session_ack,
-
-    # Clientes recurrentes de aliados
     create_ally_customer,
     update_ally_customer,
     archive_ally_customer,
@@ -165,12 +139,8 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
-
-    # Cache de links de ubicación
     get_link_cache,
     upsert_link_cache,
-
-    # Sistema de recargas
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
     get_all_approved_links_for_courier,
@@ -187,8 +157,6 @@ from db import (
     get_admin_payment_info,
     update_admin_payment_info,
     update_recharge_proof,
-
-    # Metodos de pago
     create_payment_method,
     get_payment_method_by_id,
     list_payment_methods,
@@ -200,6 +168,15 @@ from db import (
     review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
+    count_admin_couriers,
+    count_admin_couriers_with_min_balance,
+)
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
+from db import (
+    init_db,
+    force_platform_admin,
+    ensure_pricing_defaults,
+    ensure_user,
 )
 from profile_changes import (
     profile_change_conv,
