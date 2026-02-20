@@ -1,8 +1,17 @@
+# Entorno virtual
+venv/
+
+# Variables de entorno
+.env
+
+# Archivos Python compilados
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.env
-*.egg-info/
-dist/
-build/
+
+# Sistema
+.DS_Store
+
+# Base de datos
+*.db
+*.db-journal
