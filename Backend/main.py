@@ -270,11 +270,6 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 
-def es_admin(user_id: int) -> bool:
-    """Devuelve True si el user_id es el administrador de plataforma."""
-    return user_id == ADMIN_USER_ID
-
-
 def _important_alert_job(context):
     data = context.job.context or {}
     alert_key = data.get("alert_key")
@@ -4521,13 +4516,9 @@ def admin_menu(update, context):
     )
 
     keyboard = [
-        [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
-        [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
-        [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
-        [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+        [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
-        [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
@@ -4555,6 +4546,47 @@ def admin_menu_callback(update, context):
             query.answer("Error de formato.", show_alert=True)
             return
         return admin_orders_panel(update, context, admin_id, is_platform=False)
+
+    # Gestión de usuarios (solo Admin Plataforma)
+    if data == "admin_gestion_usuarios":
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
+            return
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
+            [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
+            [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
+            [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
+            [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
+            [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Gestión de usuarios. ¿Qué deseas hacer?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Configuraciones (Admin Plataforma ve todo; Admin local ve solo Configurar pagos)
+    if data == "admin_config":
+        query.answer()
+        is_platform = user_has_platform_admin(user_id)
+        keyboard = []
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("💰 Tarifas", callback_data="config_tarifas")])
+        keyboard.append([InlineKeyboardButton("💳 Configurar pagos", callback_data="config_pagos")])
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("Solicitudes de cambio", callback_data="config_change_requests")])
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_volver_panel")])
+        else:
+            keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Configuraciones. ¿Qué deseas ajustar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
 
     # Solo el Admin de Plataforma aprobado puede usar estos botones
     if not user_has_platform_admin(user_id):
@@ -4898,12 +4930,9 @@ def admin_menu_callback(update, context):
             "¿Qué deseas revisar?"
         )
         keyboard = [
-            [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
-            [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
-            [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
+            [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
             [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
-            [InlineKeyboardButton("💰 Tarifas", callback_data="admin_tarifas")],
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
@@ -5242,23 +5271,6 @@ def admin_menu_callback(update, context):
         query.answer("No se encontro tu perfil de admin.", show_alert=True)
         return
 
-    if data == "admin_config":
-        query.answer()
-        keyboard = [
-            [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
-            [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
-            [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-        ]
-
-        query.edit_message_text(
-            "Configuraciones de administración. ¿Qué deseas hacer?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    if data == "admin_tarifas":
-        query.answer("La sección de tarifas aún no está implementada.")
-        return
 
     if data == "admin_finanzas":
         query.answer("La sección de finanzas aún no está implementada.")
@@ -7003,7 +7015,7 @@ def tarifas_start(update, context):
         [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
     ]
 
-    update.message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    update.effective_message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
 
@@ -7361,6 +7373,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+        [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
     ]
 
     update.message.reply_text(
@@ -9098,34 +9111,38 @@ def courier_approval_callback(update, context):
         query.edit_message_text("❌ El repartidor '{}' ha sido RECHAZADO.".format(full_name))
 
 
-def admin_configuraciones(update, context):
-    user_tg_id = update.effective_user.id
-
-    # es_admin debe validar por telegram_id (consistente con callbacks)
-    if not es_admin(user_tg_id):
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
-        [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
-        [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
-        [InlineKeyboardButton("Cerrar", callback_data="config_cerrar")],
-    ]
-    update.message.reply_text(
-        "Configuraciones de administración. ¿Qué deseas hacer?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
 def admin_config_callback(update, context):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     query.answer()
 
+    # Configurar pagos: accesible para admin plataforma y admin local
+    if data == "config_pagos":
+        user_tg = query.from_user
+        user_row = ensure_user(user_tg.id, user_tg.username)
+        user_db_id = user_row["id"] if isinstance(user_row, dict) else user_row[0]
+        admin = get_admin_by_user_id(user_db_id)
+        if not admin:
+            query.answer("No tienes perfil de administrador.", show_alert=True)
+            return
+        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        context.user_data["pago_admin_id"] = admin_id
+        mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+        return
+
     if not user_has_platform_admin(user_id):
         query.answer("Solo el Administrador de Plataforma puede usar este menu.", show_alert=True)
         return
+
+    # Tarifas (solo Admin Plataforma)
+    if data == "config_tarifas":
+        tarifas_start(update, context)
+        return
+
+    # Solicitudes de cambio (solo Admin Plataforma)
+    if data == "config_change_requests":
+        return admin_change_requests_list(update, context)
 
     if data == "config_totales":
         total_allies, total_couriers = get_totales_registros()
