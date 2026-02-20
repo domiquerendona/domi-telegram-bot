@@ -40,6 +40,10 @@ from services import (
     build_weekly_accounting_summary,
     get_weekly_accounting_snapshot_summary,
     close_and_snapshot_accounting_week,
+    _get_important_alert_config,
+    es_admin_plataforma,
+    _get_reference_reviewer,
+    _get_missing_role_commands,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -196,7 +200,6 @@ from db import (
     review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
-    can_admin_validate_references,
 )
 from profile_changes import (
     profile_change_conv,
@@ -234,25 +237,6 @@ PLATFORM_TEAM_CODE = "PLATFORM"
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
-
-
-def _get_important_alert_config():
-    enabled = str(get_setting("important_alerts_enabled", "1") or "1").strip() == "1"
-    seconds_raw = str(get_setting("important_alert_seconds", "20,50") or "20,50")
-    seconds = []
-    for chunk in seconds_raw.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        try:
-            sec = int(chunk)
-            if sec > 0:
-                seconds.append(sec)
-        except Exception:
-            continue
-    if not seconds:
-        seconds = [20, 50]
-    return {"enabled": enabled, "seconds": seconds}
 
 
 def _important_alert_job(context):
@@ -304,27 +288,6 @@ def _resolve_important_alert(context, alert_key):
                 pass
 
 
-def es_admin_plataforma(telegram_id: int) -> bool:
-    """
-    Valida si el usuario es Administrador de Plataforma.
-    Verifica que exista en admins con team_code='PLATFORM' y status='APPROVED'.
-    """
-    admin = get_admin_by_telegram_id(telegram_id)
-    if not admin:
-        return False
-
-    # Soportar dict o sqlite3.Row
-    if isinstance(admin, dict):
-        team_code = admin.get("team_code")
-        status = admin.get("status")
-    else:
-        # sqlite3.Row
-        team_code = admin["team_code"] if "team_code" in admin.keys() else None
-        status = admin["status"] if "status" in admin.keys() else None
-
-    return team_code == "PLATFORM" and status == "APPROVED"
-
-
 def _get_platform_min_master_balance() -> int:
     """Retorna el umbral minimo de saldo master para Plataforma."""
     raw = str(get_setting("platform_min_master_balance", "60000") or "60000").strip()
@@ -358,35 +321,6 @@ def _platform_balance_guard_message(balance: int, min_balance: int) -> str:
     )
 
 
-def _get_reference_reviewer(telegram_id: int):
-    """
-    Retorna contexto de revisor de referencias.
-    - Admin Plataforma: siempre habilitado.
-    - Admin Local: requiere status APPROVED y permiso APPROVED.
-    """
-    user = get_user_by_telegram_id(telegram_id)
-    if not user:
-        return {"ok": False, "message": "No se encontro tu usuario.", "admin_id": None, "is_platform": False}
-
-    admin = get_admin_by_user_id(user["id"])
-    if not admin:
-        return {"ok": False, "message": "No tienes perfil de administrador.", "admin_id": None, "is_platform": False}
-
-    admin_id = admin["id"]
-    admin_status = admin["status"]
-    team_code = admin["team_code"]
-    is_platform = bool(team_code == "PLATFORM" and admin_status == "APPROVED")
-
-    if is_platform:
-        return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": True}
-
-    if admin_status != "APPROVED":
-        return {"ok": False, "message": "Tu admin debe estar APPROVED para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    if not can_admin_validate_references(admin_id):
-        return {"ok": False, "message": "No tienes permiso para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": False}
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
@@ -721,6 +655,38 @@ for _flow, _states in FLOW_STATE_ORDER.items():
 def _set_flow_step(context, flow, step):
     context.user_data["_back_flow"] = flow
     context.user_data["_back_step"] = step
+
+
+_OPTIONS_HINT = (
+    "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+)
+
+
+def _handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt):
+    """Helper para validar y almacenar teléfono en flujos de registro."""
+    phone = (update.message.text or "").strip()
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor." + _OPTIONS_HINT
+        )
+        return current_state
+    context.user_data[storage_key] = phone
+    update.message.reply_text(next_prompt + _OPTIONS_HINT)
+    _set_flow_step(context, flow, next_state)
+    return next_state
+
+
+def _handle_text_field_input(update, context, error_msg, storage_key, current_state, next_state, flow, next_prompt):
+    """Helper para validar y almacenar campos de texto simple en flujos de registro."""
+    texto = (update.message.text or "").strip()
+    if not texto:
+        update.message.reply_text(error_msg + _OPTIONS_HINT)
+        return current_state
+    context.user_data[storage_key] = texto
+    update.message.reply_text(next_prompt + _OPTIONS_HINT)
+    _set_flow_step(context, flow, next_state)
+    return next_state
 
 
 def _clear_flow_data_from_state(context, flow, target_state):
@@ -1471,17 +1437,6 @@ def _get_user_roles(update):
     return ally, courier, admin_local
 
 
-def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma=False):
-    cmds = []
-    if not ally:
-        cmds.append("/soy_aliado")
-    if not courier:
-        cmds.append("/soy_repartidor")
-    if not admin_local and not es_admin_plataforma:
-        cmds.append("/soy_admin")
-    return cmds
-
-
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
     """Muestra el menú principal completo."""
     ally, courier, admin_local = _get_user_roles(update)
@@ -1683,59 +1638,32 @@ def ally_document(update, context):
 
 
 def ally_phone(update, context):
-    phone = (update.message.text or "").strip()
-
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_PHONE
-
-    context.user_data["ally_phone"] = phone
-    update.message.reply_text(
-        "Escribe la ciudad del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_CITY)
-    return ALLY_CITY
+    return _handle_phone_input(update, context,
+        storage_key="ally_phone",
+        current_state=ALLY_PHONE,
+        next_state=ALLY_CITY,
+        flow="ally",
+        next_prompt="Escribe la ciudad del negocio:")
 
 
 def ally_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad del negocio no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_CITY
-
-    context.user_data["city"] = texto
-    update.message.reply_text(
-        "Escribe el barrio del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_BARRIO)
-    return ALLY_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad del negocio no puede estar vacía. Escríbela de nuevo:",
+        storage_key="city",
+        current_state=ALLY_CITY,
+        next_state=ALLY_BARRIO,
+        flow="ally",
+        next_prompt="Escribe el barrio del negocio:")
 
 
 def ally_barrio(update, context):
-    text = (update.message.text or "").strip()
-    if not text:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_BARRIO
-
-    context.user_data["barrio"] = text
-    update.message.reply_text(
-        "Escribe la dirección del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_ADDRESS)
-    return ALLY_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="barrio",
+        current_state=ALLY_BARRIO,
+        next_state=ALLY_ADDRESS,
+        flow="ally",
+        next_prompt="Escribe la dirección del negocio:")
 
 
 def ally_address(update, context):
@@ -2183,55 +2111,32 @@ def courier_idnumber(update, context):
 
 
 def courier_phone(update, context):
-    phone = (update.message.text or "").strip()
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_PHONE
-    context.user_data["phone"] = phone
-    update.message.reply_text(
-        "Escribe la ciudad donde trabajas:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_CITY)
-    return COURIER_CITY
+    return _handle_phone_input(update, context,
+        storage_key="phone",
+        current_state=COURIER_PHONE,
+        next_state=COURIER_CITY,
+        flow="courier",
+        next_prompt="Escribe la ciudad donde trabajas:")
 
 
 def courier_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_CITY
-    context.user_data["city"] = texto
-    update.message.reply_text(
-        "Escribe el barrio o sector principal donde trabajas:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_BARRIO)
-    return COURIER_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
+        storage_key="city",
+        current_state=COURIER_CITY,
+        next_state=COURIER_BARRIO,
+        flow="courier",
+        next_prompt="Escribe el barrio o sector principal donde trabajas:")
 
 
 def courier_barrio(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_BARRIO
-    context.user_data["barrio"] = texto
-    update.message.reply_text(
-        "Escribe tu dirección de residencia:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_RESIDENCE_ADDRESS)
-    return COURIER_RESIDENCE_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="barrio",
+        current_state=COURIER_BARRIO,
+        next_state=COURIER_RESIDENCE_ADDRESS,
+        flow="courier",
+        next_prompt="Escribe tu dirección de residencia:")
 
 
 def courier_residence_address(update, context):
@@ -4672,56 +4577,32 @@ def admin_teamname(update, context):
 
 
 def admin_phone(update, context):
-    phone = update.message.text.strip()
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_PHONE
-
-    context.user_data["phone"] = phone
-    update.message.reply_text(
-        "¿En qué ciudad vas a operar como Administrador Local?"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_CITY)
-    return LOCAL_ADMIN_CITY
+    return _handle_phone_input(update, context,
+        storage_key="phone",
+        current_state=LOCAL_ADMIN_PHONE,
+        next_state=LOCAL_ADMIN_CITY,
+        flow="admin",
+        next_prompt="¿En qué ciudad vas a operar como Administrador Local?")
 
 
 def admin_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_CITY
-    context.user_data["admin_city"] = texto
-    update.message.reply_text(
-        "Escribe tu barrio o zona base de operación:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_BARRIO)
-    return LOCAL_ADMIN_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
+        storage_key="admin_city",
+        current_state=LOCAL_ADMIN_CITY,
+        next_state=LOCAL_ADMIN_BARRIO,
+        flow="admin",
+        next_prompt="Escribe tu barrio o zona base de operación:")
 
 
 def admin_barrio(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_BARRIO
-    context.user_data["admin_barrio"] = texto
-    update.message.reply_text(
-        "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_ADDRESS)
-    return LOCAL_ADMIN_RESIDENCE_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="admin_barrio",
+        current_state=LOCAL_ADMIN_BARRIO,
+        next_state=LOCAL_ADMIN_RESIDENCE_ADDRESS,
+        flow="admin",
+        next_prompt="Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301")
 
 
 def admin_residence_address(update, context):
