@@ -108,6 +108,19 @@ from services import (
     es_admin_plataforma,
     _get_reference_reviewer,
     _get_missing_role_commands,
+    # Alertas de oferta
+    get_offer_alerts_config,
+    save_offer_voice,
+    set_offer_reminders_enabled,
+    set_offer_reminder_seconds,
+    set_offer_voice_enabled,
+    clear_offer_voice,
+    save_pricing_setting,
+    # Candidatos de referencias
+    get_pending_reference_candidates,
+    get_reference_candidate,
+    review_reference_candidate,
+    set_reference_candidate_coords,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -120,8 +133,6 @@ from db import (
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
     get_courier_rejection_type_by_id,
-    get_setting,
-    set_setting,
     get_available_admin_teams,
     list_approved_admin_teams,
     list_courier_links_by_admin,
@@ -253,10 +264,6 @@ from db import (
     list_payment_methods,
     toggle_payment_method,
     deactivate_payment_method,
-    list_reference_alias_candidates,
-    get_reference_alias_candidate_by_id,
-    set_reference_alias_candidate_coords,
-    review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
 )
@@ -343,7 +350,7 @@ def _resolve_important_alert(context, alert_key):
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
-    rows = list_reference_alias_candidates(status="PENDING", limit=10, offset=offset)
+    rows = get_pending_reference_candidates(offset=offset, limit=10)
 
     if not rows:
         text = "No hay referencias pendientes por validar."
@@ -405,7 +412,7 @@ def reference_validation_callback(update, context):
             query.answer("Referencia invalida.", show_alert=True)
             return
 
-        row = get_reference_alias_candidate_by_id(candidate_id)
+        row = get_reference_candidate(candidate_id)
         if not row:
             query.edit_message_text(
                 "Referencia no encontrada.",
@@ -468,7 +475,7 @@ def reference_validation_callback(update, context):
             query.answer("Referencia invalida.", show_alert=True)
             return
 
-        row = get_reference_alias_candidate_by_id(candidate_id)
+        row = get_reference_candidate(candidate_id)
         if not row:
             query.edit_message_text(
                 "Referencia no encontrada.",
@@ -496,7 +503,7 @@ def reference_validation_callback(update, context):
             return
 
         new_status = "APPROVED" if approve else "REJECTED"
-        ok, msg = review_reference_alias_candidate(
+        ok, msg = review_reference_candidate(
             candidate_id,
             new_status,
             reviewed_by_admin_id=reviewer["admin_id"],
@@ -527,7 +534,7 @@ def reference_assign_location_handler(update, context):
         update.message.reply_text("Envia un PIN de ubicacion de Telegram para continuar.")
         return
 
-    row = get_reference_alias_candidate_by_id(candidate_id)
+    row = get_reference_candidate(candidate_id)
     if not row:
         update.message.reply_text("Referencia no encontrada. Usa /referencias nuevamente.")
         context.user_data.pop("ref_assign_candidate_id", None)
@@ -535,7 +542,7 @@ def reference_assign_location_handler(update, context):
 
     lat = update.message.location.latitude
     lng = update.message.location.longitude
-    ok = set_reference_alias_candidate_coords(candidate_id, lat, lng, source="manual_pin")
+    ok = set_reference_candidate_coords(candidate_id, lat, lng)
     context.user_data.pop("ref_assign_candidate_id", None)
 
     if not ok:
@@ -7102,11 +7109,7 @@ def tarifas_set_valor(update, context):
         return TARIFAS_VALOR
 
     # Guardar en BD - campos de compras usan prefijo 'buy_', distancia usa 'pricing_'
-    if field.startswith("buy_"):
-        setting_key = field
-    else:
-        setting_key = f"pricing_{field}"
-    set_setting(setting_key, texto)
+    save_pricing_setting(field, texto)
 
     # Recargar config y mostrar
     config = get_pricing_config()
@@ -7147,10 +7150,11 @@ def tarifas_set_valor(update, context):
 
 
 def _offer_alerts_status_text():
-    reminders_enabled = str(get_setting("offer_reminders_enabled", "1") or "1").strip()
-    reminder_seconds = str(get_setting("offer_reminder_seconds", "8,16") or "8,16").strip()
-    voice_enabled = str(get_setting("offer_voice_enabled", "0") or "0").strip()
-    voice_file_id = (get_setting("offer_voice_file_id", "") or "").strip()
+    cfg = get_offer_alerts_config()
+    reminders_enabled = cfg["reminders_enabled"]
+    reminder_seconds = cfg["reminder_seconds"]
+    voice_enabled = cfg["voice_enabled"]
+    voice_file_id = cfg["voice_file_id"]
     voice_state = "ACTIVA" if (voice_enabled == "1" and voice_file_id) else "INACTIVA"
 
     return (
@@ -7198,8 +7202,7 @@ def config_alertas_oferta_input(update, context):
 
     if msg.voice or msg.audio:
         file_id = msg.voice.file_id if msg.voice else msg.audio.file_id
-        set_setting("offer_voice_file_id", file_id)
-        set_setting("offer_voice_enabled", "1")
+        save_offer_voice(file_id)
         update.message.reply_text(
             "Voice file_id guardado y voz activada.\n\n" + _offer_alerts_status_text()
         )
@@ -7217,8 +7220,7 @@ def config_alertas_oferta_input(update, context):
         if value not in ("0", "1", "on", "off"):
             update.message.reply_text("Valor invalido. Usa: recordatorios 1 o recordatorios 0")
             return ALERTAS_OFERTA_INPUT
-        normalized = "1" if value in ("1", "on") else "0"
-        set_setting("offer_reminders_enabled", normalized)
+        set_offer_reminders_enabled(value in ("1", "on"))
         update.message.reply_text("Recordatorios actualizados.\n\n" + _offer_alerts_status_text())
         return ALERTAS_OFERTA_INPUT
 
@@ -7239,7 +7241,7 @@ def config_alertas_oferta_input(update, context):
         if not seconds:
             update.message.reply_text("Debes enviar al menos un segundo. Ejemplo: segundos 8,16")
             return ALERTAS_OFERTA_INPUT
-        set_setting("offer_reminder_seconds", ",".join(str(n) for n in seconds))
+        set_offer_reminder_seconds(seconds)
         update.message.reply_text("Segundos actualizados.\n\n" + _offer_alerts_status_text())
         return ALERTAS_OFERTA_INPUT
 
@@ -7248,22 +7250,21 @@ def config_alertas_oferta_input(update, context):
         if value not in ("0", "1", "on", "off"):
             update.message.reply_text("Valor invalido. Usa: voz 1 o voz 0")
             return ALERTAS_OFERTA_INPUT
-        normalized = "1" if value in ("1", "on") else "0"
-        if normalized == "1":
-            file_id = (get_setting("offer_voice_file_id", "") or "").strip()
-            if not file_id:
+        enable = value in ("1", "on")
+        if enable:
+            cfg = get_offer_alerts_config()
+            if not cfg["voice_file_id"]:
                 update.message.reply_text(
                     "No hay voice_file_id guardado.\n"
                     "Envia una nota de voz o audio primero."
                 )
                 return ALERTAS_OFERTA_INPUT
-        set_setting("offer_voice_enabled", normalized)
+        set_offer_voice_enabled(enable)
         update.message.reply_text("Voz actualizada.\n\n" + _offer_alerts_status_text())
         return ALERTAS_OFERTA_INPUT
 
     if text_lower == "limpiar_voz":
-        set_setting("offer_voice_file_id", "")
-        set_setting("offer_voice_enabled", "0")
+        clear_offer_voice()
         update.message.reply_text("Voice file_id limpiado y voz desactivada.\n\n" + _offer_alerts_status_text())
         return ALERTAS_OFERTA_INPUT
 
@@ -9525,7 +9526,6 @@ def courier_live_location_expired_check(context):
         try:
             courier = get_courier_by_id(cid)
             if courier:
-                from db import get_user_by_id
                 user = get_user_by_id(courier["user_id"])
                 if user:
                     tg_id = user["telegram_id"]

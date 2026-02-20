@@ -4,6 +4,7 @@ import json
 import unicodedata
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
+    set_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, increment_api_usage,
     get_distance_cache, upsert_distance_cache,
@@ -14,6 +15,10 @@ from db import (
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
     upsert_reference_alias_candidate,
+    list_reference_alias_candidates,
+    get_reference_alias_candidate_by_id,
+    review_reference_alias_candidate,
+    set_reference_alias_candidate_coords,
     get_connection,
     get_admin_by_telegram_id,
     get_user_by_telegram_id,
@@ -1281,4 +1286,82 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
     if not admin_local and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
+
+
+# ---------------------------------------------------------------------------
+# Configuración de alertas de oferta
+# ---------------------------------------------------------------------------
+
+def get_offer_alerts_config() -> dict:
+    """Lee la configuración de alertas de oferta desde la BD."""
+    return {
+        "reminders_enabled": str(get_setting("offer_reminders_enabled", "1") or "1").strip(),
+        "reminder_seconds": str(get_setting("offer_reminder_seconds", "8,16") or "8,16").strip(),
+        "voice_enabled": str(get_setting("offer_voice_enabled", "0") or "0").strip(),
+        "voice_file_id": (get_setting("offer_voice_file_id", "") or "").strip(),
+    }
+
+
+def save_offer_voice(file_id: str) -> None:
+    """Guarda el file_id de voz y activa la alerta de voz."""
+    set_setting("offer_voice_file_id", file_id)
+    set_setting("offer_voice_enabled", "1")
+
+
+def set_offer_reminders_enabled(enabled: bool) -> None:
+    set_setting("offer_reminders_enabled", "1" if enabled else "0")
+
+
+def set_offer_reminder_seconds(seconds_list: list) -> None:
+    set_setting("offer_reminder_seconds", ",".join(str(n) for n in seconds_list))
+
+
+def set_offer_voice_enabled(enabled: bool) -> None:
+    set_setting("offer_voice_enabled", "1" if enabled else "0")
+
+
+def clear_offer_voice() -> None:
+    """Limpia el file_id de voz y desactiva la alerta de voz."""
+    set_setting("offer_voice_file_id", "")
+    set_setting("offer_voice_enabled", "0")
+
+
+def save_pricing_setting(field: str, value_str: str) -> None:
+    """Persiste un campo de tarifa.  Los campos de compras usan prefijo 'buy_',
+    los de distancia usan prefijo 'pricing_'."""
+    if field.startswith("buy_"):
+        setting_key = field
+    else:
+        setting_key = f"pricing_{field}"
+    set_setting(setting_key, value_str)
+
+
+# ---------------------------------------------------------------------------
+# Candidatos de referencias (alias de ubicación)
+# ---------------------------------------------------------------------------
+
+def get_pending_reference_candidates(offset: int = 0, limit: int = 10) -> list:
+    """Devuelve la lista de candidatos de referencia en estado PENDING."""
+    return list_reference_alias_candidates(status="PENDING", limit=limit, offset=offset)
+
+
+def get_reference_candidate(candidate_id: int):
+    """Devuelve un candidato de referencia por su id, o None."""
+    return get_reference_alias_candidate_by_id(candidate_id)
+
+
+def review_reference_candidate(candidate_id: int, new_status: str,
+                                reviewed_by_admin_id, note: str = ""):
+    """Aprueba o rechaza un candidato de referencia.  Devuelve (ok, msg)."""
+    return review_reference_alias_candidate(
+        candidate_id,
+        new_status,
+        reviewed_by_admin_id=reviewed_by_admin_id,
+        note=note,
+    )
+
+
+def set_reference_candidate_coords(candidate_id: int, lat: float, lng: float) -> bool:
+    """Asigna coordenadas a un candidato de referencia.  Devuelve True si OK."""
+    return set_reference_alias_candidate_coords(candidate_id, lat, lng, source="manual_pin")
 
