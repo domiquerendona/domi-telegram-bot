@@ -108,18 +108,29 @@ Formato: {dominio}_{accion} o {dominio}_{accion}_{id}
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local
-- config_      → configuración del sistema
-- pedido_      → flujo de pedidos
-- ref_         → validación de referencias
-- pricing_     → configuración de precios
-- pickup_      → selección de punto de recogida
-- pagos_       → sistema de pagos
+- admpedidos_  → panel de pedidos del administrador (listado, filtros por estado)
 - agenda_      → agenda de pedidos
-- recargar_    → sistema de recargas
+- ally_        → acciones específicas del aliado (fuera del flujo de pedido)
+- chgreq_      → solicitudes de cambio de perfil (profile_changes.py)
+- chgteam_     → cambio de equipo/grupo
+- config_      → configuración del sistema
+- cotizar_     → flujo de cotización de envío
 - courier_     → acciones de repartidor
 - cust_        → acciones de cliente
-- chgteam_     → cambio de equipo/grupo
+- dir_         → gestión de direcciones de recogida del aliado
+- guardar_     → guardar dirección de cliente tras un pedido
 - menu_        → navegación de menú
+- order_       → ofertas y entrega de pedidos (order_delivery.py)
+- pagos_       → sistema de pagos
+- pedido_      → flujo de creación de pedidos
+- perfil_      → cambios de perfil de usuarios (profile_changes.py)
+- pickup_      → selección de punto de recogida
+- preview_     → previsualización de pedido antes de confirmar
+- pricing_     → configuración de tarifas
+- recargar_    → sistema de recargas
+- ref_         → validación de referencias
+- terms_       → aceptación de términos y condiciones
+- ubicacion_   → selección de ubicación GPS
 
 Reglas:
 - PROHIBIDO crear un prefijo nuevo sin aprobación explícita del usuario.

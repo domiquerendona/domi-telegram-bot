@@ -24,7 +24,6 @@ from services import (
     get_pricing_config,
     get_buy_pricing_config,
     calc_buy_products_surcharge,
-    quote_order,
     quote_order_by_addresses,
     quote_order_by_coords,
     extract_lat_lng_from_text,
