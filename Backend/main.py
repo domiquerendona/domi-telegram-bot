@@ -1,9 +1,7 @@
 import os
 import hashlib
-
+import os
 from dotenv import load_dotenv
-load_dotenv()
-
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import BadRequest
@@ -15,6 +13,77 @@ from telegram.ext import (
     Filters,
     CallbackQueryHandler,
 )
+
+# Importa la clase principal de FastAPI
+from fastapi import FastAPI
+
+# Importa el router administrativo
+# Router de endpoints administrativos
+from web.api.admin import router as admin_router
+# Router de endpoints de usuarios
+from web.api.users import router as users_router
+# Router de endpoints del dashboard
+from web.api.dashboard import router as dashboard_router
+
+
+
+
+# Se crea la instancia principal de la aplicación FastAPI
+# Esta es la app que se ejecuta con Uvicorn
+app = FastAPI()
+
+
+# Se registran las rutas administrativas dentro de la aplicación
+# Esto habilita endpoints como:
+# POST /admin/users/{user_id}/approve
+
+# Registra las rutas de administración
+app.include_router(admin_router)
+# Registra las rutas de usuarios
+app.include_router(users_router)
+# Registra las rutas del dashboard
+app.include_router(dashboard_router)
+from fastapi.responses import HTMLResponse
+
+# Importa el middleware que permite manejar CORS en FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Lista de orígenes permitidos (frontend autorizado)
+# En este caso, Angular corre en el puerto 4200 en desarrollo
+origins = [
+    "http://localhost:4200",
+]
+
+# Se agrega el middleware CORS a la aplicación
+app.add_middleware(
+    CORSMiddleware,
+
+    # Orígenes que pueden hacer peticiones al backend
+    allow_origins=origins,
+
+    # Permite enviar cookies o credenciales (importante si usas JWT en cookies)
+    allow_credentials=True,
+
+    # Permite todos los métodos HTTP (GET, POST, PUT, DELETE, etc.)
+    allow_methods=["*"],
+
+    # Permite todos los headers en las solicitudes
+    allow_headers=["*"],
+)
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+        <head>
+            <title>Domi App</title>
+        </head>
+        <body>
+            <h1>Panel Web Domi 🚀</h1>
+            <p>Backend funcionando correctamente.</p>
+        </body>
+    </html>
+    """
 
 from services import (
     admin_puede_operar,
@@ -198,28 +267,21 @@ from profile_changes import (
 # ============================================================
 # SEPARACIÓN DEV/PROD - Evitar conflicto getUpdates
 # ============================================================
+
+# Cargar .env SIEMPRE primero
+load_dotenv()
 ENV = os.getenv("ENV", "PROD").upper()
 
-# Solo cargar .env en LOCAL (DEV), NUNCA en PROD
 if ENV == "LOCAL":
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        print(f"[ENV] Ambiente: {ENV} - .env cargado")
-    except ImportError:
-        print(f"[ENV] Ambiente: {ENV} - python-dotenv no instalado, usando variables de sistema")
+    print(f"[ENV] Ambiente: {ENV} - .env cargado")
 else:
     print(f"[ENV] Ambiente: {ENV} - usando variables de entorno del sistema (Railway/PROD)")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Administrador de Plataforma
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
-
-# Constante para equipo de plataforma
-PLATFORM_TEAM_CODE = "PLATFORM"
-
 
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
