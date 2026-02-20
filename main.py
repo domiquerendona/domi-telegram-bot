@@ -170,13 +170,14 @@ from services import (
     set_admin_reference_validator_permission,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
+    ensure_user,
+    get_user_db_id_from_update,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
     init_db,
     force_platform_admin,
     ensure_pricing_defaults,
-    ensure_user,
 )
 from profile_changes import (
     profile_change_conv,
@@ -849,11 +850,6 @@ PAGO_MENU = 964
 ALERTAS_OFERTA_INPUT = 965
 CHANGE_GROUP_ROLE = 966
 CHANGE_GROUP_TEAM = 967
-
-def get_user_db_id_from_update(update):
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    return user_row["id"]                                                         
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""

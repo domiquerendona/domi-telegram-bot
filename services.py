@@ -32,6 +32,7 @@ from db import (
     get_user_by_id,
     get_available_admin_teams,
     # Re-exports para que main.py no acceda a db directamente
+    ensure_user,
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
     get_courier_rejection_type_by_id,
@@ -1606,6 +1607,13 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
     if not admin_local and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
+
+
+def get_user_db_id_from_update(update):
+    """Retorna el users.id interno del usuario de Telegram, creándolo si no existe."""
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    return user_row["id"]
 
 
 
