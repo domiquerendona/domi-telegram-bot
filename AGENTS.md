@@ -85,6 +85,66 @@ ally_phone, ally_city, ally_barrio
 courier_phone, courier_city, courier_barrio
 admin_phone, admin_city, admin_barrio
 
+2C. Convención obligatoria de claves en context.user_data
+
+Cada flujo de registro usa su propio prefijo en TODAS sus claves de user_data.
+No compartir claves entre flujos distintos aunque el campo sea "el mismo".
+
+Prefijos establecidos:
+- Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
+- Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
+- Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
+- Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, etc.
+- Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
+
+Reglas:
+- PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.
+- Si se agrega una clave nueva, documentarla en esta sección en el mismo commit.
+- PROHIBIDO usar claves genéricas ("data", "value", "temp") sin prefijo de flujo.
+
+2D. Estándar obligatorio de callback_data
+
+Formato: {dominio}_{accion} o {dominio}_{accion}_{id}
+
+Prefijos de dominio existentes y sus dueños:
+- admin_       → panel y acciones de administrador local
+- config_      → configuración del sistema
+- pedido_      → flujo de pedidos
+- ref_         → validación de referencias
+- pricing_     → configuración de precios
+- pickup_      → selección de punto de recogida
+- pagos_       → sistema de pagos
+- agenda_      → agenda de pedidos
+- recargar_    → sistema de recargas
+- courier_     → acciones de repartidor
+- cust_        → acciones de cliente
+- chgteam_     → cambio de equipo/grupo
+- menu_        → navegación de menú
+
+Reglas:
+- PROHIBIDO crear un prefijo nuevo sin aprobación explícita del usuario.
+- PROHIBIDO usar callback_data sin prefijo de dominio.
+- El separador es siempre guion bajo (_). No usar guion, punto ni slash.
+- Antes de agregar un callback nuevo, verificar con git grep que no existe uno equivalente.
+
+2E. Regla de módulos adicionales
+
+Módulos existentes y su dominio:
+- db.py           → acceso a base de datos únicamente. Sin lógica de negocio.
+- services.py     → toda la lógica de negocio que no es específica de un dominio grande.
+- order_delivery.py → flujo completo de entrega de pedidos (publicación, callbacks, panel).
+- profile_changes.py → flujo de cambios de perfil de usuarios.
+- main.py         → orquestación, handlers, wiring.
+
+Regla para crear un módulo nuevo:
+Solo se crea un nuevo módulo .py si:
+1. El dominio es claramente independiente del resto.
+2. Agrupa más de 5 funciones cohesivas de ese dominio.
+3. El usuario lo aprueba explícitamente.
+
+PROHIBIDO crear módulos nuevos por conveniencia o para "desahogar" main.py.
+La solución correcta para aliviar main.py es mover lógica a services.py.
+
 3. Base de datos (reglas estrictas)
 
 Usar exclusivamente get_connection() para acceso a BD.
@@ -308,6 +368,11 @@ Después de los cambios
 Ejecutar obligatoriamente:
 
 python -m py_compile main.py services.py db.py
+
+Verificar imports huérfanos tras mover o eliminar funciones:
+Para cada nombre movido o eliminado, ejecutar:
+git grep "nombre_funcion" -- "*.py"
+Si solo aparece en el bloque import y en ningún otro lugar → el import es huérfano y debe eliminarse.
 
 Reportar claramente:
 
