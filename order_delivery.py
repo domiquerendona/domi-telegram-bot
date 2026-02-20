@@ -35,6 +35,7 @@ from db import (
     set_order_status,
     upsert_order_accounting_settlement,
 )
+from services import apply_service_fee, check_service_fee_available
 
 
 OFFER_TIMEOUT_SECONDS = 30
@@ -202,8 +203,6 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     order = get_order_by_id(order_id)
     if not order:
         return 0
-
-    from services import check_service_fee_available
 
     # Verificacion previa de saldo del aliado y del admin antes de ofertar.
     ally_ok, ally_code = check_service_fee_available(
@@ -414,7 +413,6 @@ def _expire_order(order_id, cycle_info, context):
 
     # Cobrar $300 al aliado como comisión por gestión
     try:
-        from services import apply_service_fee
         fee_ok, fee_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
@@ -1238,8 +1236,6 @@ def _handle_delivered(update, context, order_id):
     fee_courier_ok = False
 
     if admin_id:
-        from services import apply_service_fee
-
         ally_ok, ally_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,

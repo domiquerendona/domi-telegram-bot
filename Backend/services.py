@@ -1410,9 +1410,6 @@ def get_weekly_accounting_snapshot_summary(week_key: str) -> Dict[str, Any]:
     return {"week_key": week_key, "platform": platform, "couriers": couriers}
 
 
-# TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
-# Usar apply_service_fee(target_type="COURIER", target_id=courier_id, admin_id=admin_id, ref_type="ORDER", ref_id=order_id)
-
 
 def _get_important_alert_config():
     enabled = str(get_setting("important_alerts_enabled", "1") or "1").strip() == "1"
