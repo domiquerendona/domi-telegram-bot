@@ -91,7 +91,6 @@ from services import (
     get_pricing_config,
     get_buy_pricing_config,
     calc_buy_products_surcharge,
-    quote_order,
     quote_order_by_addresses,
     quote_order_by_coords,
     extract_lat_lng_from_text,
@@ -108,6 +107,8 @@ from services import (
     es_admin_plataforma,
     _get_reference_reviewer,
     _get_missing_role_commands,
+    get_user_by_id,
+    get_available_admin_teams,
     # Alertas de oferta
     get_offer_alerts_config,
     save_offer_voice,
@@ -121,19 +122,13 @@ from services import (
     get_reference_candidate,
     review_reference_candidate,
     set_reference_candidate_coords,
-)
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
-from db import (
-    init_db,
-    force_platform_admin,
-    ensure_pricing_defaults,
+    # Funciones de acceso a datos (re-exportadas desde db vía services)
     ensure_user,
+    get_user_db_id_from_update,
     get_user_by_telegram_id,
-    get_user_by_id,
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
     get_courier_rejection_type_by_id,
-    get_available_admin_teams,
     list_approved_admin_teams,
     list_courier_links_by_admin,
     list_ally_links_by_admin,
@@ -143,8 +138,6 @@ from db import (
     deactivate_other_approved_admin_courier_links,
     deactivate_other_approved_admin_ally_links,
     get_local_admins_count,
-
-    # Aliados
     create_ally,
     get_ally_by_user_id,
     get_pending_allies,
@@ -154,8 +147,6 @@ from db import (
     get_all_allies,
     update_ally,
     delete_ally,
-
-    # Admins
     create_admin,
     get_admin_by_user_id,
     get_admin_by_telegram_id,
@@ -169,8 +160,6 @@ from db import (
     get_admin_by_team_code,
     update_admin_courier_status,
     upsert_admin_courier_link,
-
-    # Direcciones aliados
     create_ally_location,
     get_ally_locations,
     get_ally_location_by_id,
@@ -181,8 +170,6 @@ from db import (
     delete_ally_location,
     increment_pickup_usage,
     set_frequent_pickup,
-
-    # Repartidores
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
@@ -201,28 +188,18 @@ from db import (
     delete_courier,
     get_admin_link_for_courier,
     get_admin_link_for_ally,
-
-    # Pedidos
     create_order,
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
-
-    # Herramientas administrativas
     get_totales_registros,
-
-    # Calificaciones
     add_courier_rating,
-
-    # Términos y condiciones
     get_active_terms_version,
     has_accepted_terms,
     save_terms_acceptance,
     save_terms_session_ack,
-
-    # Clientes recurrentes de aliados
     create_ally_customer,
     update_ally_customer,
     archive_ally_customer,
@@ -238,12 +215,8 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
-
-    # Cache de links de ubicación
     get_link_cache,
     upsert_link_cache,
-
-    # Sistema de recargas
     get_approved_admin_link_for_courier,
     get_approved_admin_link_for_ally,
     get_all_approved_links_for_courier,
@@ -257,8 +230,6 @@ from db import (
     get_admin_payment_info,
     update_admin_payment_info,
     update_recharge_proof,
-
-    # Metodos de pago
     create_payment_method,
     get_payment_method_by_id,
     list_payment_methods,
@@ -266,6 +237,12 @@ from db import (
     deactivate_payment_method,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
+)
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
+from db import (
+    init_db,
+    force_platform_admin,
+    ensure_pricing_defaults,
 )
 from profile_changes import (
     profile_change_conv,
@@ -897,11 +874,6 @@ PAGO_INSTRUCCIONES = 963
 PAGO_MENU = 964
 ALERTAS_OFERTA_INPUT = 965
 
-def get_user_db_id_from_update(update):
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    return user_row["id"]                                                         
-
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
     user_tg = update.effective_user
@@ -922,13 +894,13 @@ def start(update, context):
         print("ERROR get_admin_by_user_id en /start:", e)
         admin_local = None
 
-    es_admin_plataforma = (user_tg.id == ADMIN_USER_ID)
+    es_admin_plataforma_flag = es_admin_plataforma(user_tg.id)
 
     estado_lineas = []
     siguientes_pasos = []
 
     # Admin Plataforma
-    if es_admin_plataforma:
+    if es_admin_plataforma_flag:
         estado_lineas.append("• Administrador de Plataforma: ACTIVO.")
         siguientes_pasos.append("• Usa /admin para abrir el Panel de Plataforma.")
 
@@ -1002,7 +974,7 @@ def start(update, context):
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
 
     # Construir menú agrupado por rol
-    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
     comandos = []
 
     comandos.append("General:")
@@ -1035,7 +1007,7 @@ def start(update, context):
 
     comandos.append("")
     comandos.append("Administrador:")
-    if es_admin_plataforma:
+    if es_admin_plataforma_flag:
         comandos.append("• /admin  - Panel de administración de plataforma")
         comandos.append("• /tarifas  - Configurar tarifas")
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
@@ -1308,8 +1280,8 @@ def _get_user_roles(update):
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
     """Muestra el menú principal completo."""
     ally, courier, admin_local = _get_user_roles(update)
-    es_admin_plataforma = (update.effective_user.id == ADMIN_USER_ID)
-    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma)
+    es_admin_plataforma_flag = es_admin_plataforma(update.effective_user.id)
+    missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
     reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally)
     chat_id = _get_chat_id(update)
     if chat_id:
@@ -1729,7 +1701,7 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
         context.user_data.clear()
         return ConversationHandler.END
 
-    teams = get_available_admin_teams()  # db.py
+    teams = get_available_admin_teams()
     keyboard = []
 
     # Botones por equipo disponible
@@ -4131,11 +4103,11 @@ def repartidores_pendientes(update, context):
 
     # Permisos: admin de plataforma o admin local
     telegram_id = update.effective_user.id
-    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
+    es_admin_plataforma_flag = es_admin_plataforma(telegram_id)
 
     admin_id = None
 
-    if not es_admin_plataforma:
+    if not es_admin_plataforma_flag:
         try:
             user_db_id = get_user_db_id_from_update(update)
             admin = get_admin_by_user_id(user_db_id)
@@ -4154,7 +4126,7 @@ def repartidores_pendientes(update, context):
 
     # Obtener pendientes según rol
     try:
-        if es_admin_plataforma:
+        if es_admin_plataforma_flag:
             pendientes = get_pending_couriers()  # global (tabla couriers)
         else:
             pendientes = get_pending_couriers_by_admin(admin_id)  # por equipo (tabla admin_couriers)
@@ -4194,7 +4166,7 @@ def repartidores_pendientes(update, context):
             f"Barrio: {barrio}"
         )
 
-        if es_admin_plataforma:
+        if es_admin_plataforma_flag:
             keyboard = [[
                 InlineKeyboardButton("✅ Aprobar", callback_data=f"courier_approve_{courier_id}"),
                 InlineKeyboardButton("❌ Rechazar", callback_data=f"courier_reject_{courier_id}")
@@ -5310,7 +5282,7 @@ def admin_menu_callback(update, context):
             admin = get_admin_by_id(admin_id)
             admin_user_db_id = admin[1]  # users.id interno
 
-            u = get_user_by_id(admin_user_db_id)  # debe existir en db.py
+            u = get_user_by_id(admin_user_db_id)
             if u:
                 admin_telegram_id = u["telegram_id"]
 
@@ -5842,9 +5814,9 @@ def pendientes(update, context):
     user_db_id = get_user_db_id_from_update(update)
 
     telegram_id = update.effective_user.id
-    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
+    es_admin_plataforma_flag = es_admin_plataforma(telegram_id)
 
-    if not es_admin_plataforma:
+    if not es_admin_plataforma_flag:
         try:
             user_db_id = get_user_db_id_from_update(update)
             admin = get_admin_by_user_id(user_db_id)
@@ -8781,7 +8753,7 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_couriers_pending_"):
         try:
-            pendientes = get_pending_couriers_by_admin(admin_id)  # db.py
+            pendientes = get_pending_couriers_by_admin(admin_id)
         except Exception as e:
             print("[ERROR] get_pending_couriers_by_admin:", e)
             query.edit_message_text("Error consultando pendientes de tu equipo.")
@@ -8983,7 +8955,7 @@ def ally_approval_callback(update, context):
 
     # Notificar al aliado (si falla, no rompemos el flujo)
     try:
-        u = get_user_by_id(ally_user_id)  # debe existir en db.py
+        u = get_user_by_id(ally_user_id)
         ally_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
 
         context.bot.send_message(
@@ -9015,9 +8987,9 @@ def pendientes_callback(update, context):
     query.answer()
 
     telegram_id = update.effective_user.id
-    es_admin_plataforma = (telegram_id == ADMIN_USER_ID)
+    es_admin_plataforma_flag = es_admin_plataforma(telegram_id)
 
-    if not es_admin_plataforma:
+    if not es_admin_plataforma_flag:
         try:
             user_db_id = get_user_db_id_from_update(update)
             admin = get_admin_by_user_id(user_db_id)
@@ -9105,7 +9077,7 @@ def courier_approval_callback(update, context):
     # Notificar al repartidor si existe get_user_by_id (recomendado).
     # Si no existe, solo omitimos notificación sin romper.
     try:
-        u = get_user_by_id(courier_user_db_id)  # debe existir en db.py
+        u = get_user_by_id(courier_user_db_id)
         courier_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
 
         if accion == "approve":

@@ -1,8 +1,14 @@
+import os
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import ConversationHandler, CallbackQueryHandler, MessageHandler, CommandHandler, Filters
 
 from services import extract_lat_lng_from_text
 from db import (
+    ensure_user,
     get_admin_by_user_id,
     get_courier_by_user_id,
     get_ally_by_user_id,
@@ -69,14 +75,17 @@ FIELD_LABELS = {
 ) = range(600, 604)
 
 
+_ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+
+
 def _get_user_db_id(update):
-    from main import get_user_db_id_from_update
-    return get_user_db_id_from_update(update)
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    return user_row["id"]
 
 
 def _is_platform(update):
-    from main import ADMIN_USER_ID
-    return update.effective_user.id == ADMIN_USER_ID
+    return update.effective_user.id == _ADMIN_USER_ID
 
 
 def _cancel_wrapper(update, context):

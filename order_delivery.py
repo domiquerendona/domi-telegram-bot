@@ -3,6 +3,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from db import (
     assign_order_to_courier,
     cancel_order,
+    get_platform_admin,
     create_offer_queue,
     delete_offer_queue,
     get_all_orders,
@@ -609,7 +610,6 @@ def _admin_orders_list(update, context, data):
         query.edit_message_text("Error: ID de admin invalido.")
         return
 
-    from db import get_platform_admin
     platform_admin = get_platform_admin()
     is_platform = platform_admin and platform_admin["id"] == admin_id
 
