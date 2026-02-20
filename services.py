@@ -29,6 +29,8 @@ from db import (
     get_user_by_telegram_id,
     get_admin_by_user_id,
     can_admin_validate_references,
+    get_user_by_id,
+    get_available_admin_teams,
 )
 import math
 import re
@@ -1494,4 +1496,6 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
     if not admin_local and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
+
+
 

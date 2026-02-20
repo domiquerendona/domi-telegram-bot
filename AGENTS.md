@@ -130,11 +130,12 @@ Reglas:
 2E. Regla de módulos adicionales
 
 Módulos existentes y su dominio:
-- db.py           → acceso a base de datos únicamente. Sin lógica de negocio.
-- services.py     → toda la lógica de negocio que no es específica de un dominio grande.
-- order_delivery.py → flujo completo de entrega de pedidos (publicación, callbacks, panel).
+- db.py              → acceso a base de datos únicamente. Sin lógica de negocio.
+- services.py        → toda la lógica de negocio que no es específica de un dominio grande.
+- order_delivery.py  → flujo completo de entrega de pedidos (publicación, callbacks, panel).
 - profile_changes.py → flujo de cambios de perfil de usuarios.
-- main.py         → orquestación, handlers, wiring.
+- imghdr.py          → shim de compatibilidad para Python 3.13+ (python-telegram-bot lo necesita). NUNCA modificar.
+- main.py            → orquestación, handlers, wiring.
 
 Regla para crear un módulo nuevo:
 Solo se crea un nuevo módulo .py si:
