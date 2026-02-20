@@ -33,7 +33,9 @@ from db import (
     review_order_pickup_confirmation,
     reset_offer_queue,
     set_order_status,
+    upsert_order_accounting_settlement,
 )
+from services import apply_service_fee, check_service_fee_available
 
 
 OFFER_TIMEOUT_SECONDS = 30
@@ -201,8 +203,6 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     order = get_order_by_id(order_id)
     if not order:
         return 0
-
-    from services import check_service_fee_available
 
     # Verificacion previa de saldo del aliado y del admin antes de ofertar.
     ally_ok, ally_code = check_service_fee_available(
@@ -413,7 +413,6 @@ def _expire_order(order_id, cycle_info, context):
 
     # Cobrar $300 al aliado como comisión por gestión
     try:
-        from services import apply_service_fee
         fee_ok, fee_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
@@ -1237,8 +1236,6 @@ def _handle_delivered(update, context, order_id):
     fee_courier_ok = False
 
     if admin_id:
-        from services import apply_service_fee
-
         ally_ok, ally_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
@@ -1277,6 +1274,30 @@ def _handle_delivered(update, context, order_id):
                 except Exception as e:
                     print("[WARN] No se pudo notificar al admin: {}".format(e))
             print("[WARN] No se pudo cobrar fee al courier: {}".format(courier_msg))
+
+    try:
+        ally_fee_charged = 300 if fee_ally_ok else 0
+        courier_fee_charged = 300 if fee_courier_ok else 0
+        settlement_note = (
+            "Fees cobrados OK"
+            if (fee_ally_ok and fee_courier_ok)
+            else "Cobro parcial o pendiente de fees al entregar"
+        )
+        upsert_order_accounting_settlement(
+            order_id=order_id,
+            admin_id=admin_id,
+            ally_id=ally_id,
+            courier_id=courier_id,
+            order_total_fee=int(order["total_fee"] or 0),
+            ally_fee_expected=300,
+            ally_fee_charged=ally_fee_charged,
+            courier_fee_expected=300,
+            courier_fee_charged=courier_fee_charged,
+            note=settlement_note,
+            delivered_at=None,
+        )
+    except Exception as e:
+        print("[WARN] No se pudo registrar liquidacion contable de pedido {}: {}".format(order_id, e))
 
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)

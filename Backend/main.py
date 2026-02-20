@@ -1,6 +1,8 @@
 import os
 import hashlib
-import os
+import re
+from datetime import datetime, timedelta
+
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -104,6 +106,13 @@ from services import (
     check_service_fee_available,
     resolve_location,
     get_smart_distance,
+    build_weekly_accounting_summary,
+    get_weekly_accounting_snapshot_summary,
+    close_and_snapshot_accounting_week,
+    _get_important_alert_config,
+    es_admin_plataforma,
+    _get_reference_reviewer,
+    _get_missing_role_commands,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
 from db import (
@@ -194,6 +203,8 @@ from db import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_daily_earnings_history,
+    get_courier_earnings_by_date,
 
     # Herramientas administrativas
     get_totales_registros,
@@ -234,6 +245,9 @@ from db import (
     get_all_approved_links_for_courier,
     get_all_approved_links_for_ally,
     get_admin_balance,
+    update_admin_balance_with_ledger,
+    get_courier_link_balance,
+    get_ally_link_balance,
     get_platform_admin,
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
@@ -255,7 +269,6 @@ from db import (
     review_reference_alias_candidate,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
-    can_admin_validate_references,
 )
 from profile_changes import (
     profile_change_conv,
@@ -286,25 +299,6 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 def es_admin(user_id: int) -> bool:
     """Devuelve True si el user_id es el administrador de plataforma."""
     return user_id == ADMIN_USER_ID
-
-
-def _get_important_alert_config():
-    enabled = str(get_setting("important_alerts_enabled", "1") or "1").strip() == "1"
-    seconds_raw = str(get_setting("important_alert_seconds", "20,50") or "20,50")
-    seconds = []
-    for chunk in seconds_raw.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        try:
-            sec = int(chunk)
-            if sec > 0:
-                seconds.append(sec)
-        except Exception:
-            continue
-    if not seconds:
-        seconds = [20, 50]
-    return {"enabled": enabled, "seconds": seconds}
 
 
 def _important_alert_job(context):
@@ -356,56 +350,39 @@ def _resolve_important_alert(context, alert_key):
                 pass
 
 
-def es_admin_plataforma(telegram_id: int) -> bool:
+def _get_platform_min_master_balance() -> int:
+    """Retorna el umbral minimo de saldo master para Plataforma."""
+    raw = str(get_setting("platform_min_master_balance", "60000") or "60000").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = 60000
+    return value if value >= 0 else 60000
+
+
+def _get_platform_balance_guard(admin_id: int):
     """
-    Valida si el usuario es Administrador de Plataforma.
-    Verifica que exista en admins con team_code='PLATFORM' y status='APPROVED'.
+    Retorna (is_below_threshold, balance, min_balance) para admin plataforma.
+    Si no es plataforma, siempre retorna (False, balance, min_balance).
     """
-    admin = get_admin_by_telegram_id(telegram_id)
-    if not admin:
-        return False
-
-    # Soportar dict o sqlite3.Row
-    if isinstance(admin, dict):
-        team_code = admin.get("team_code")
-        status = admin.get("status")
-    else:
-        # sqlite3.Row
-        team_code = admin["team_code"] if "team_code" in admin.keys() else None
-        status = admin["status"] if "status" in admin.keys() else None
-
-    return team_code == "PLATFORM" and status == "APPROVED"
+    admin_full = get_admin_by_id(admin_id)
+    team_code = _row_value_fallback(admin_full, "team_code", 8, "") if admin_full else ""
+    balance = get_admin_balance(admin_id)
+    min_balance = _get_platform_min_master_balance()
+    is_platform = str(team_code or "").upper() == "PLATFORM"
+    return (is_platform and balance < min_balance), balance, min_balance
 
 
-def _get_reference_reviewer(telegram_id: int):
-    """
-    Retorna contexto de revisor de referencias.
-    - Admin Plataforma: siempre habilitado.
-    - Admin Local: requiere status APPROVED y permiso APPROVED.
-    """
-    user = get_user_by_telegram_id(telegram_id)
-    if not user:
-        return {"ok": False, "message": "No se encontro tu usuario.", "admin_id": None, "is_platform": False}
+def _platform_balance_guard_message(balance: int, min_balance: int) -> str:
+    faltante = max(0, min_balance - balance)
+    return (
+        "ALERTA: Saldo master de Plataforma por debajo del minimo.\n"
+        f"Saldo actual: ${balance:,}\n"
+        f"Minimo requerido: ${min_balance:,}\n"
+        f"Faltante: ${faltante:,}"
+    )
 
-    admin = get_admin_by_user_id(user["id"])
-    if not admin:
-        return {"ok": False, "message": "No tienes perfil de administrador.", "admin_id": None, "is_platform": False}
 
-    admin_id = admin["id"]
-    admin_status = admin["status"]
-    team_code = admin["team_code"]
-    is_platform = bool(team_code == "PLATFORM" and admin_status == "APPROVED")
-
-    if is_platform:
-        return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": True}
-
-    if admin_status != "APPROVED":
-        return {"ok": False, "message": "Tu admin debe estar APPROVED para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    if not can_admin_validate_references(admin_id):
-        return {"ok": False, "message": "No tienes permiso para validar referencias.", "admin_id": admin_id, "is_platform": False}
-
-    return {"ok": True, "message": "", "admin_id": admin_id, "is_platform": False}
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
@@ -742,6 +719,38 @@ def _set_flow_step(context, flow, step):
     context.user_data["_back_step"] = step
 
 
+_OPTIONS_HINT = (
+    "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+)
+
+
+def _handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt):
+    """Helper para validar y almacenar teléfono en flujos de registro."""
+    phone = (update.message.text or "").strip()
+    digits = "".join([c for c in phone if c.isdigit()])
+    if len(digits) < 7:
+        update.message.reply_text(
+            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor." + _OPTIONS_HINT
+        )
+        return current_state
+    context.user_data[storage_key] = phone
+    update.message.reply_text(next_prompt + _OPTIONS_HINT)
+    _set_flow_step(context, flow, next_state)
+    return next_state
+
+
+def _handle_text_field_input(update, context, error_msg, storage_key, current_state, next_state, flow, next_prompt):
+    """Helper para validar y almacenar campos de texto simple en flujos de registro."""
+    texto = (update.message.text or "").strip()
+    if not texto:
+        update.message.reply_text(error_msg + _OPTIONS_HINT)
+        return current_state
+    context.user_data[storage_key] = texto
+    update.message.reply_text(next_prompt + _OPTIONS_HINT)
+    _set_flow_step(context, flow, next_state)
+    return next_state
+
+
 def _clear_flow_data_from_state(context, flow, target_state):
     states = FLOW_STATE_ORDER.get(flow, [])
     if target_state not in states:
@@ -923,6 +932,8 @@ PAGO_TITULAR = 962
 PAGO_INSTRUCCIONES = 963
 PAGO_MENU = 964
 ALERTAS_OFERTA_INPUT = 965
+CHANGE_GROUP_ROLE = 966
+CHANGE_GROUP_TEAM = 967
 
 def get_user_db_id_from_update(update):
     user_tg = update.effective_user
@@ -1060,6 +1071,12 @@ def start(update, context):
         comandos.append("Repartidor:")
         comandos.append("• /soy_repartidor  - Registrarte como repartidor")
 
+    ally_approved = bool(ally and _row_value_fallback(ally, "status", 9) == "APPROVED")
+    courier_approved = bool(courier and _row_value_fallback(courier, "status", 10) == "APPROVED")
+    if ally_approved or courier_approved:
+        comandos.append("")
+        comandos.append("• /cambiar_grupo  - Solicitar cambio o eleccion de grupo")
+
     comandos.append("")
     comandos.append("Administrador:")
     if es_admin_plataforma:
@@ -1119,6 +1136,19 @@ def _row_value(row, key, default=None):
         return default
     try:
         return row[key]
+    except Exception:
+        return default
+
+
+def _row_value_fallback(row, key, index, default=None):
+    """Lee por clave y, si no existe, usa índice posicional."""
+    if row is None:
+        return default
+    val = _row_value(row, key, None)
+    if val is not None:
+        return val
+    try:
+        return row[index]
     except Exception:
         return default
 
@@ -1184,6 +1214,7 @@ def get_repartidor_menu_keyboard(courier):
     if courier_toggle:
         keyboard.append([courier_toggle])
     keyboard.append(['Mis pedidos repartidor'])
+    keyboard.append(['Ganancias repartidor'])
     keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
     keyboard.append(['Volver al menu'])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1310,6 +1341,142 @@ def courier_orders_history(update, context):
             update.message.reply_text(msg)
 
 
+def courier_earnings_history(update, context):
+    """
+    Muestra historial de ganancias por día del repartidor (últimos 7 días).
+    Formato: pedido, valor bruto, descuento plataforma y neto.
+    """
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    history = get_courier_daily_earnings_history(courier["id"], days=7)
+    if not history:
+        update.message.reply_text(
+            "No tienes ganancias registradas en los últimos 7 días."
+        )
+        return
+
+    grouped = {}
+    for item in history:
+        date_key = item["date_key"]
+        grouped.setdefault(date_key, []).append(item)
+
+    update.message.reply_text(
+        "HISTORIAL DE GANANCIAS\n"
+        "Ganancias diarias por pedido (últimos 7 días)."
+    )
+
+    for date_key in sorted(grouped.keys(), reverse=True):
+        rows = grouped[date_key]
+        total_dia = sum(int(r["net_amount"] or 0) for r in rows)
+        total_bruto = sum(int(r["gross_amount"] or 0) for r in rows)
+        total_desc = sum(int(r["platform_fee"] or 0) for r in rows)
+
+        header = (
+            "Fecha: {date}\n"
+            "Pedidos del día: {n}\n"
+            "Bruto del día: ${bruto:,}\n"
+            "Descuento plataforma del día: ${desc:,}\n"
+            "Ganancia neta del día: ${neto:,}"
+        ).format(
+            date=date_key,
+            n=len(rows),
+            bruto=total_bruto,
+            desc=total_desc,
+            neto=total_dia,
+        )
+        update.message.reply_text(header)
+
+        for r in rows:
+            detail = (
+                "Hora: {hora}\n"
+                "Pedido #{order_id}\n"
+                "Cliente: {cliente}\n"
+                "Valor pedido: ${bruto:,}\n"
+                "Descuento servicio plataforma: ${desc:,}\n"
+                "Ganancia neta: ${neto:,}"
+            ).format(
+                hora=r["hour_key"],
+                order_id=r["order_id"],
+                cliente=r["customer_name"],
+                bruto=int(r["gross_amount"] or 0),
+                desc=int(r["platform_fee"] or 0),
+                neto=int(r["net_amount"] or 0),
+            )
+            update.message.reply_text(detail)
+
+
+def cmd_ganancias_repartidor_fecha(update, context):
+    """
+    /ganancias_repartidor YYYY-MM-DD
+    Consulta ganancias del repartidor en una fecha exacta.
+    """
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    if not context.args:
+        update.message.reply_text(
+            "Uso: /ganancias_repartidor YYYY-MM-DD\n"
+            "Ejemplo: /ganancias_repartidor 2026-02-17"
+        )
+        return
+
+    date_key = (context.args[0] or "").strip()
+    try:
+        rows = get_courier_earnings_by_date(courier["id"], date_key)
+    except ValueError as e:
+        update.message.reply_text(str(e))
+        return
+
+    if not rows:
+        update.message.reply_text(
+            "No tienes ganancias registradas para la fecha {}.".format(date_key)
+        )
+        return
+
+    total_neto = sum(int(r["net_amount"] or 0) for r in rows)
+    total_bruto = sum(int(r["gross_amount"] or 0) for r in rows)
+    total_desc = sum(int(r["platform_fee"] or 0) for r in rows)
+
+    update.message.reply_text(
+        "GANANCIAS DEL REPARTIDOR\n"
+        "Fecha: {date}\n"
+        "Pedidos del dia: {n}\n"
+        "Bruto del dia: ${bruto:,}\n"
+        "Descuento plataforma del dia: ${desc:,}\n"
+        "Ganancia neta del dia: ${neto:,}".format(
+            date=date_key,
+            n=len(rows),
+            bruto=total_bruto,
+            desc=total_desc,
+            neto=total_neto,
+        )
+    )
+
+    for r in rows:
+        update.message.reply_text(
+            "Hora: {hora}\n"
+            "Pedido #{pedido}\n"
+            "Cliente: {cliente}\n"
+            "Valor pedido: ${bruto:,}\n"
+            "Descuento servicio plataforma: ${desc:,}\n"
+            "Ganancia neta: ${neto:,}".format(
+                hora=r["hour_key"],
+                pedido=r["order_id"],
+                cliente=r["customer_name"],
+                bruto=int(r["gross_amount"] or 0),
+                desc=int(r["platform_fee"] or 0),
+                neto=int(r["net_amount"] or 0),
+            )
+        )
+
+
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
     if getattr(update, "callback_query", None) and update.callback_query.message:
@@ -1330,17 +1497,6 @@ def _get_user_roles(update):
         print("ERROR get_admin_by_user_id en menu:", e)
         admin_local = None
     return ally, courier, admin_local
-
-
-def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma=False):
-    cmds = []
-    if not ally:
-        cmds.append("/soy_aliado")
-    if not courier:
-        cmds.append("/soy_repartidor")
-    if not admin_local and not es_admin_plataforma:
-        cmds.append("/soy_admin")
-    return cmds
 
 
 def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:"):
@@ -1371,15 +1527,18 @@ def cmd_id(update, context):
 def menu_button_handler(update, context):
     """Maneja los botones del menú principal y submenús (ReplyKeyboard)."""
     text = update.message.text.strip()
+    text_norm = text.lower()
 
     # --- Botones del menú principal ---
-    if text == "Mi aliado":
+    if text_norm == "mi aliado":
         return mi_aliado(update, context)
-    elif text == "Mi repartidor":
+    elif text_norm == "mi repartidor":
         return mi_repartidor(update, context)
-    elif text == "Mi perfil":
-        return mi_perfil(update, context)
-    elif text == "Ayuda":
+    elif text_norm == "mi admin":
+        return mi_admin(update, context)
+    elif text_norm == "mi perfil":
+        return mi_perfil_safe(update, context)
+    elif text_norm == "ayuda":
         ally, courier, admin_local = _get_user_roles(update)
         missing_cmds = _get_missing_role_commands(ally, courier, admin_local)
         msg = (
@@ -1423,6 +1582,8 @@ def menu_button_handler(update, context):
         return courier_deactivate_from_message(update, context)
     elif text == "Mis pedidos repartidor":
         return courier_orders_history(update, context)
+    elif text == "Ganancias repartidor":
+        return courier_earnings_history(update, context)
     elif text == "Mi saldo repartidor":
         return cmd_saldo(update, context)
 
@@ -1539,59 +1700,32 @@ def ally_document(update, context):
 
 
 def ally_phone(update, context):
-    phone = (update.message.text or "").strip()
-
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_PHONE
-
-    context.user_data["ally_phone"] = phone
-    update.message.reply_text(
-        "Escribe la ciudad del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_CITY)
-    return ALLY_CITY
+    return _handle_phone_input(update, context,
+        storage_key="ally_phone",
+        current_state=ALLY_PHONE,
+        next_state=ALLY_CITY,
+        flow="ally",
+        next_prompt="Escribe la ciudad del negocio:")
 
 
 def ally_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad del negocio no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_CITY
-
-    context.user_data["city"] = texto
-    update.message.reply_text(
-        "Escribe el barrio del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_BARRIO)
-    return ALLY_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad del negocio no puede estar vacía. Escríbela de nuevo:",
+        storage_key="city",
+        current_state=ALLY_CITY,
+        next_state=ALLY_BARRIO,
+        flow="ally",
+        next_prompt="Escribe el barrio del negocio:")
 
 
 def ally_barrio(update, context):
-    text = (update.message.text or "").strip()
-    if not text:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_BARRIO
-
-    context.user_data["barrio"] = text
-    update.message.reply_text(
-        "Escribe la dirección del negocio:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_ADDRESS)
-    return ALLY_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="barrio",
+        current_state=ALLY_BARRIO,
+        next_state=ALLY_ADDRESS,
+        flow="ally",
+        next_prompt="Escribe la dirección del negocio:")
 
 
 def ally_address(update, context):
@@ -1729,47 +1863,30 @@ def ally_confirm(update, context):
         if ally_lat and ally_lng and location_id:
             update_ally_location_coords(location_id, ally_lat, ally_lng)
 
-        try:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=(
-                    "Nuevo registro de ALIADO pendiente:\n\n"
-                    f"Negocio: {business_name}\n"
-                    f"Dueño: {owner_name}\n"
-                    f"Cédula: {ally_document}\n"
-                    f"Teléfono: {phone}\n"
-                    f"Ciudad: {city}\n"
-                    f"Barrio: {barrio}\n\n"
-                    "Usa /aliados_pendientes o /admin para revisarlo."
-                )
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="ally_registration_{}".format(ally_id),
-                chat_id=ADMIN_USER_ID,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "El registro de aliado #{} sigue pendiente.\n"
-                    "Revisa /aliados_pendientes o /admin."
-                ).format(ally_id),
-            )
-        except Exception as e:
-            print("[WARN] No se pudo notificar al admin plataforma:", e)
 
         return show_ally_team_selection(update, context, from_callback=False)
 
     except ValueError as e:
         print(f"[ERROR] Error de validación al crear aliado: {e}")
-        err = str(e)
-        if "cédula ya está registrada con otro teléfono" in err or "cedula ya está registrada con otro teléfono" in err:
-            update.message.reply_text(
-                "No se pudo completar el registro: ese número de cédula ya está registrado con otro teléfono."
-            )
+        err = str(e).lower()
+        err_ascii = err.encode("ascii", "ignore").decode("ascii")
+        if "cedula ya" in err_ascii and "otro telefono" in err_ascii:
+            msg = "No se pudo completar el registro: ese numero de cedula ya esta registrado con otro telefono."
+        elif "telefono ya" in err_ascii and "otra cedula" in err_ascii:
+            msg = "No se pudo completar el registro: ese telefono ya esta registrado con otra cedula."
+        elif "ya existe un registro de aliado" in err_ascii:
+            msg = "Ya existe un registro de aliado para esta cuenta o identidad."
+        elif "telefono es obligatorio" in err_ascii:
+            msg = "No se pudo completar el registro: el telefono es obligatorio."
+        elif "error al crear identidad" in err_ascii:
+            msg = "No se pudo completar el registro por un conflicto de identidad. Revisa cedula y telefono."
+        elif "error al actualizar documento" in err_ascii:
+            msg = "No se pudo completar el registro al validar el documento. Verifica e intenta de nuevo."
         else:
-            update.message.reply_text("No se pudo completar el registro con los datos enviados. Verifica e intenta de nuevo.")
+            msg = "No se pudo completar el registro con los datos enviados. Verifica e intenta de nuevo."
+        update.message.reply_text(msg)
         context.user_data.clear()
         return ConversationHandler.END
-
     except Exception as e:
         print(f"[ERROR] Error al crear aliado: {e}")
         update.message.reply_text("Error técnico al guardar tu registro. Intenta más tarde.")
@@ -1800,11 +1917,10 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
     # Botones por equipo disponible
     if teams:
         for row in teams:
-            # row puede venir como sqlite3.Row o tupla
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = _row_value_fallback(row, "id", 0)
+            team_name = _row_value_fallback(row, "team_name", 1, "")
+            team_code = _row_value_fallback(row, "team_code", 2, "")
+            admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
 
             # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
@@ -1837,22 +1953,20 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
 def ally_team_callback(update, context):
     query = update.callback_query
     data = (query.data or "").strip()
-    print(f"[DEBUG] ally_team_callback recibió data={data}")
+    print(f"[DEBUG] ally_team_callback recibio data={data}")
     query.answer()
 
-    # Validación básica
     if not data.startswith("ally_team:"):
         return ALLY_TEAM
 
     ally_id = context.user_data.get("ally_id")
     if not ally_id:
-        query.edit_message_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
+        query.edit_message_text("Error tecnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
     selected = data.split("ally_team:", 1)[1].strip()
 
-    # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
@@ -1863,60 +1977,119 @@ def ally_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = _row_value_fallback(platform_admin, "id", 0)
 
         try:
             upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
-            print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
+            print(f"[DEBUG] ally_team_callback: vinculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
         except Exception as e:
-            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-            query.edit_message_text(
-                "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-            )
+            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link fallo: {e}")
+            query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_aliado de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
 
+        business_name = context.user_data.get("business_name", "").strip()
+        owner_name = context.user_data.get("owner_name", "").strip()
+        ally_document = context.user_data.get("ally_document", "").strip()
+        phone = context.user_data.get("ally_phone", "").strip()
+        city = context.user_data.get("city", "").strip()
+        barrio = context.user_data.get("barrio", "").strip()
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de ALIADO pendiente:\n\n"
+                    f"Negocio: {business_name}\n"
+                    f"Dueno: {owner_name}\n"
+                    f"Cedula: {ally_document}\n"
+                    f"Telefono: {phone}\n"
+                    f"Ciudad: {city}\n"
+                    f"Barrio: {barrio}\n\n"
+                    "Usa /aliados_pendientes o /admin para revisarlo."
+                )
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="ally_registration_{}".format(ally_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de aliado #{} sigue pendiente.\n"
+                    "Revisa /aliados_pendientes o /admin."
+                ).format(ally_id),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin plataforma:", e)
+
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
+            "Tu vinculo quedo en estado PENDING hasta aprobacion."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    # 2) Si selecciona un TEAM_CODE real
     admin_row = get_admin_by_team_code(selected)
     if not admin_row:
         query.edit_message_text(
-            "Ese TEAM_CODE no existe o no está disponible.\n"
+            "Ese TEAM_CODE no existe o no esta disponible.\n"
             "Vuelve a intentar /soy_aliado."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    team_name = admin_row[4]  # según tu función: COALESCE(team_name, full_name) AS team_name
-    team_code = admin_row[5]
+    admin_id = _row_value_fallback(admin_row, "id", 0)
+    team_name = _row_value_fallback(admin_row, "team_name", 4, "-")
+    team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
 
     try:
         upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
-        print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
+        print(f"[DEBUG] ally_team_callback: vinculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
     except Exception as e:
-        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-        query.edit_message_text(
-            "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-        )
+        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link fallo: {e}")
+        query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
+
+    business_name = context.user_data.get("business_name", "").strip()
+    owner_name = context.user_data.get("owner_name", "").strip()
+    ally_document = context.user_data.get("ally_document", "").strip()
+    phone = context.user_data.get("ally_phone", "").strip()
+    city = context.user_data.get("city", "").strip()
+    barrio = context.user_data.get("barrio", "").strip()
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ALIADO pendiente:\n\n"
+                f"Negocio: {business_name}\n"
+                f"Dueno: {owner_name}\n"
+                f"Cedula: {ally_document}\n"
+                f"Telefono: {phone}\n"
+                f"Ciudad: {city}\n"
+                f"Barrio: {barrio}\n\n"
+                "Usa /aliados_pendientes o /admin para revisarlo."
+            )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="ally_registration_{}".format(ally_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de aliado #{} sigue pendiente.\n"
+                "Revisa /aliados_pendientes o /admin."
+            ).format(ally_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
         f"{team_name} ({team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Tu vinculo quedo en estado PENDING hasta aprobacion."
     )
     context.user_data.clear()
     return ConversationHandler.END
-
-
 
 # ----- REGISTRO DE REPARTIDOR (flujo unificado) -----
 
@@ -2000,55 +2173,32 @@ def courier_idnumber(update, context):
 
 
 def courier_phone(update, context):
-    phone = (update.message.text or "").strip()
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_PHONE
-    context.user_data["phone"] = phone
-    update.message.reply_text(
-        "Escribe la ciudad donde trabajas:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_CITY)
-    return COURIER_CITY
+    return _handle_phone_input(update, context,
+        storage_key="phone",
+        current_state=COURIER_PHONE,
+        next_state=COURIER_CITY,
+        flow="courier",
+        next_prompt="Escribe la ciudad donde trabajas:")
 
 
 def courier_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_CITY
-    context.user_data["city"] = texto
-    update.message.reply_text(
-        "Escribe el barrio o sector principal donde trabajas:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_BARRIO)
-    return COURIER_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
+        storage_key="city",
+        current_state=COURIER_CITY,
+        next_state=COURIER_BARRIO,
+        flow="courier",
+        next_prompt="Escribe el barrio o sector principal donde trabajas:")
 
 
 def courier_barrio(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_BARRIO
-    context.user_data["barrio"] = texto
-    update.message.reply_text(
-        "Escribe tu dirección de residencia:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_RESIDENCE_ADDRESS)
-    return COURIER_RESIDENCE_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="barrio",
+        current_state=COURIER_BARRIO,
+        next_state=COURIER_RESIDENCE_ADDRESS,
+        flow="courier",
+        next_prompt="Escribe tu dirección de residencia:")
 
 
 def courier_residence_address(update, context):
@@ -2197,33 +2347,6 @@ def courier_confirm(update, context):
 
     courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
 
-    try:
-        context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de REPARTIDOR pendiente:\n\n"
-                "Nombre: {}\n"
-                "Cedula: {}\n"
-                "Telefono: {}\n"
-                "Ciudad: {}\n"
-                "Barrio: {}\n"
-                "Placa: {}\n"
-                "Tipo de moto: {}\n\n"
-                "Usa /admin para revisarlo."
-            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
-        )
-        _schedule_important_alerts(
-            context,
-            alert_key="courier_registration_{}".format(courier_id),
-            chat_id=ADMIN_USER_ID,
-            reminder_text=(
-                "Recordatorio importante:\n"
-                "El registro de repartidor #{} sigue pendiente.\n"
-                "Revisa /repartidores_pendientes o /admin."
-            ).format(courier_id),
-        )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     context.user_data["new_courier_id"] = courier_id
 
@@ -2256,10 +2379,10 @@ def show_courier_team_selection(update, context):
 
     if teams:
         for row in teams:
-            admin_id = row[0]
-            team_name = row[1]
-            team_code = row[2]
-            admin_status = row[3] if len(row) > 3 else 'APPROVED'
+            admin_id = _row_value_fallback(row, "id", 0)
+            team_name = _row_value_fallback(row, "team_name", 1, "")
+            team_code = _row_value_fallback(row, "team_code", 2, "")
+            admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
 
             label = f"{team_name} ({team_code})"
             if admin_status == 'PENDING':
@@ -2280,7 +2403,7 @@ def show_courier_team_selection(update, context):
 
 
 def courier_team_callback(update, context):
-    """Maneja la selección de equipo del repartidor (botones)."""
+    """Maneja la seleccion de equipo del repartidor (botones)."""
     query = update.callback_query
     data = (query.data or "").strip()
     query.answer()
@@ -2290,7 +2413,7 @@ def courier_team_callback(update, context):
 
     courier_id = context.user_data.get("new_courier_id")
     if not courier_id:
-        query.edit_message_text("Error técnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
+        query.edit_message_text("Error tecnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -2306,19 +2429,54 @@ def courier_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        platform_admin_id = platform_admin[0]
+        platform_admin_id = _row_value_fallback(platform_admin, "id", 0)
 
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
         except Exception as e:
-            print(f"[ERROR] courier_team_callback: create_admin_courier_link falló: {e}")
-            query.edit_message_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
+            print(f"[ERROR] courier_team_callback: create_admin_courier_link fallo: {e}")
+            query.edit_message_text("Error tecnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
             context.user_data.clear()
             return ConversationHandler.END
 
+        full_name = context.user_data.get("full_name", "")
+        id_number = context.user_data.get("id_number", "")
+        phone = context.user_data.get("phone", "")
+        city = context.user_data.get("city", "")
+        barrio = context.user_data.get("barrio", "")
+        plate = context.user_data.get("plate", "")
+        bike_type = context.user_data.get("bike_type", "")
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                    "Nombre: {}\n"
+                    "Cedula: {}\n"
+                    "Telefono: {}\n"
+                    "Ciudad: {}\n"
+                    "Barrio: {}\n"
+                    "Placa: {}\n"
+                    "Tipo de moto: {}\n\n"
+                    "Usa /admin para revisarlo."
+                ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="courier_registration_{}".format(courier_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de repartidor #{} sigue pendiente.\n"
+                    "Revisa /repartidores_pendientes o /admin."
+                ).format(courier_id),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin plataforma:", e)
+
         query.edit_message_text(
             "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
+            "Tu vinculo quedo en estado PENDING hasta aprobacion."
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -2326,22 +2484,22 @@ def courier_team_callback(update, context):
     admin_row = get_admin_by_team_code(selected)
     if not admin_row:
         query.edit_message_text(
-            "Ese código de equipo no existe o no está disponible.\n"
+            "Ese codigo de equipo no existe o no esta disponible.\n"
             "Vuelve a intentar /soy_repartidor."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_id = admin_row[0]
-    admin_team = admin_row[4]
-    admin_team_code = admin_row[5]
-    admin_telegram_id = admin_row[6]
+    admin_id = _row_value_fallback(admin_row, "id", 0)
+    admin_team = _row_value_fallback(admin_row, "team_name", 4, "-")
+    admin_team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
+    admin_telegram_id = _row_value_fallback(admin_row, "telegram_id", 6)
 
     try:
         create_admin_courier_link(admin_id, courier_id)
     except Exception as e:
         print("[ERROR] create_admin_courier_link:", e)
-        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        query.edit_message_text("Ocurrio un error creando la solicitud. Intenta mas tarde.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -2352,7 +2510,7 @@ def courier_team_callback(update, context):
                 "Nueva solicitud de repartidor para tu equipo.\n\n"
                 f"Repartidor ID: {courier_id}\n"
                 f"Equipo: {admin_team}\n"
-                f"Código: {admin_team_code}\n\n"
+                f"Codigo: {admin_team_code}\n\n"
                 "Entra a /mi_admin para aprobar o rechazar."
             )
         )
@@ -2369,10 +2527,45 @@ def courier_team_callback(update, context):
     except Exception as e:
         print("[WARN] No se pudo notificar al admin local:", e)
 
+    full_name = context.user_data.get("full_name", "")
+    id_number = context.user_data.get("id_number", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("city", "")
+    barrio = context.user_data.get("barrio", "")
+    plate = context.user_data.get("plate", "")
+    bike_type = context.user_data.get("bike_type", "")
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(full_name, id_number, phone, city, barrio, plate, bike_type)
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="courier_registration_{}".format(courier_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de repartidor #{} sigue pendiente.\n"
+                "Revisa /repartidores_pendientes o /admin."
+            ).format(courier_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
         f"{admin_team} ({admin_team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Tu vinculo quedo en estado PENDING hasta aprobacion."
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -4193,7 +4386,14 @@ def aliados_pendientes(update, context):
         return
 
     for ally in allies:
-        ally_id, business_name, owner_name, address, city, barrio, phone, status = ally
+        ally_id = _row_value_fallback(ally, "id", 0)
+        business_name = _row_value_fallback(ally, "business_name", 1, "")
+        owner_name = _row_value_fallback(ally, "owner_name", 2, "")
+        address = _row_value_fallback(ally, "address", 3, "")
+        city = _row_value_fallback(ally, "city", 4, "")
+        barrio = _row_value_fallback(ally, "barrio", 5, "")
+        phone = _row_value_fallback(ally, "phone", 6, "")
+        status = _row_value_fallback(ally, "status", 7, "PENDING")
 
         texto = (
             "Aliado pendiente:\n"
@@ -4439,56 +4639,32 @@ def admin_teamname(update, context):
 
 
 def admin_phone(update, context):
-    phone = update.message.text.strip()
-    digits = "".join([c for c in phone if c.isdigit()])
-    if len(digits) < 7:
-        update.message.reply_text(
-            "Ese teléfono no parece válido. Escríbelo de nuevo, por favor."
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_PHONE
-
-    context.user_data["phone"] = phone
-    update.message.reply_text(
-        "¿En qué ciudad vas a operar como Administrador Local?"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_CITY)
-    return LOCAL_ADMIN_CITY
+    return _handle_phone_input(update, context,
+        storage_key="phone",
+        current_state=LOCAL_ADMIN_PHONE,
+        next_state=LOCAL_ADMIN_CITY,
+        flow="admin",
+        next_prompt="¿En qué ciudad vas a operar como Administrador Local?")
 
 
 def admin_city(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La ciudad no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_CITY
-    context.user_data["admin_city"] = texto
-    update.message.reply_text(
-        "Escribe tu barrio o zona base de operación:"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_BARRIO)
-    return LOCAL_ADMIN_BARRIO
+    return _handle_text_field_input(update, context,
+        error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
+        storage_key="admin_city",
+        current_state=LOCAL_ADMIN_CITY,
+        next_state=LOCAL_ADMIN_BARRIO,
+        flow="admin",
+        next_prompt="Escribe tu barrio o zona base de operación:")
 
 
 def admin_barrio(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "El barrio no puede estar vacío. Escríbelo de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_BARRIO
-    context.user_data["admin_barrio"] = texto
-    update.message.reply_text(
-        "Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_ADDRESS)
-    return LOCAL_ADMIN_RESIDENCE_ADDRESS
+    return _handle_text_field_input(update, context,
+        error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
+        storage_key="admin_barrio",
+        current_state=LOCAL_ADMIN_BARRIO,
+        next_state=LOCAL_ADMIN_RESIDENCE_ADDRESS,
+        flow="admin",
+        next_prompt="Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301")
 
 
 def admin_residence_address(update, context):
@@ -4660,6 +4836,12 @@ def admin_menu(update, context):
         "Panel de Administración de Plataforma.\n"
         "¿Qué deseas revisar?"
     )
+    platform_admin = get_admin_by_user_id(user_db_id)
+    platform_admin_id = platform_admin["id"] if platform_admin else None
+    if platform_admin_id:
+        is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+        if is_below:
+            texto += "\n\n" + _platform_balance_guard_message(balance, min_balance)
 
     keyboard = [
         [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
@@ -4672,6 +4854,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
     ]
 
     update.message.reply_text(
@@ -5038,6 +5221,12 @@ def admin_menu_callback(update, context):
             "Panel de Administración de Plataforma.\n"
             "¿Qué deseas revisar?"
         )
+        platform_admin = get_admin_by_telegram_id(user_id)
+        if platform_admin:
+            platform_admin_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+            is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+            if is_below:
+                texto += "\n\n" + _platform_balance_guard_message(balance, min_balance)
         keyboard = [
             [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
             [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
@@ -5048,6 +5237,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+            [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
         ]
 
         query.edit_message_text(
@@ -5399,6 +5589,161 @@ def admin_menu_callback(update, context):
 
     if data == "admin_tarifas":
         query.answer("La sección de tarifas aún no está implementada.")
+        return
+
+    if data == "admin_contab_panel":
+        query.answer()
+        current_wk = _current_week_key()
+        prev_wk = _previous_week_key()
+        keyboard = [
+            [InlineKeyboardButton("Ver semana actual ({})".format(current_wk), callback_data="admin_contab_view_current")],
+            [InlineKeyboardButton("Ver semana anterior ({})".format(prev_wk), callback_data="admin_contab_view_prev")],
+            [InlineKeyboardButton("Ver snapshot anterior ({})".format(prev_wk), callback_data="admin_contab_snapshot_prev")],
+            [InlineKeyboardButton("Cerrar semana anterior ({})".format(prev_wk), callback_data="admin_contab_close_prev")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Contabilidad semanal.\nSelecciona una opción:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    if data.startswith("admin_contab_view_"):
+        query.answer()
+        week_key = _current_week_key() if data.endswith("_current") else _previous_week_key()
+        try:
+            summary = build_weekly_accounting_summary(week_key=week_key)
+        except Exception as e:
+            query.edit_message_text(
+                "No se pudo construir resumen de {}: {}".format(week_key, e),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+            )
+            return
+
+        platform = summary["platform"]
+        couriers = summary["couriers"]
+        text = (
+            "CONTABILIDAD SEMANAL\n\n"
+            "Semana: {wk}\n"
+            "Rango: {start} a {end}\n"
+            "Estado: {status}\n\n"
+            "Plataforma:\n"
+            "- Fee directo: ${direct:,}\n"
+            "- Comisiones: ${comm:,}\n"
+            "- Total: ${total:,}\n\n"
+            "Repartidores con actividad: {n}\n"
+        ).format(
+            wk=summary["week_key"],
+            start=summary["week_start_at"],
+            end=summary["week_end_at"],
+            status=summary["week_status"],
+            direct=platform["direct_fee_income"],
+            comm=platform["commission_income"],
+            total=platform["total_income"],
+            n=len(couriers),
+        )
+        for idx, row in enumerate(couriers[:8], start=1):
+            text += "{}. #{} | Pedidos {} | Bruto ${:,} | Neto ${:,}\n".format(
+                idx,
+                row["courier_id"],
+                row["delivered_orders"],
+                row["gross_income"],
+                row["net_estimated_income"],
+            )
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
+        return
+
+    if data == "admin_contab_snapshot_prev":
+        query.answer()
+        week_key = _previous_week_key()
+        try:
+            snap = get_weekly_accounting_snapshot_summary(week_key=week_key)
+        except Exception as e:
+            query.edit_message_text(
+                "No se pudo consultar snapshot de {}: {}".format(week_key, e),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+            )
+            return
+
+        platform = snap.get("platform", {})
+        couriers = snap.get("couriers", [])
+        if not platform and not couriers:
+            text = "No hay snapshot congelado para {}.".format(week_key)
+        else:
+            text = (
+                "SNAPSHOT CONTABLE\n\n"
+                "Semana: {wk}\n"
+                "Plataforma total: ${total:,}\n"
+                "Fee directo: ${direct:,}\n"
+                "Comisiones: ${comm:,}\n"
+                "Repartidores en snapshot: {n}\n"
+            ).format(
+                wk=week_key,
+                total=int(platform.get("total_income", 0)),
+                direct=int(platform.get("direct_fee_income", 0)),
+                comm=int(platform.get("commission_income", 0)),
+                n=len(couriers),
+            )
+            for idx, row in enumerate(couriers[:8], start=1):
+                text += "{}. #{} | Pedidos {} | Bruto ${:,} | Neto ${:,}\n".format(
+                    idx,
+                    int(row.get("courier_id", 0)),
+                    int(row.get("delivered_orders", 0)),
+                    int(row.get("gross_income", 0)),
+                    int(row.get("net_estimated_income", 0)),
+                )
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
+        return
+
+    if data == "admin_contab_close_prev":
+        query.answer()
+        platform_admin = get_admin_by_telegram_id(user_id)
+        platform_admin_id = platform_admin["id"] if platform_admin else None
+        if platform_admin_id:
+            is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+            if is_below:
+                query.edit_message_text(
+                    _platform_balance_guard_message(balance, min_balance),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+                )
+                return
+        week_key = _previous_week_key()
+        try:
+            closed, summary = close_and_snapshot_accounting_week(
+                week_key=week_key,
+                closed_by="tg:{}".format(user_id),
+            )
+            platform = summary["platform"]
+            if closed:
+                text = (
+                    "Semana cerrada correctamente.\n\n"
+                    "Semana: {wk}\n"
+                    "Total plataforma: ${total:,}\n"
+                    "Fee directo: ${direct:,}\n"
+                    "Comisiones: ${comm:,}"
+                ).format(
+                    wk=summary["week_key"],
+                    total=platform["total_income"],
+                    direct=platform["direct_fee_income"],
+                    comm=platform["commission_income"],
+                )
+            else:
+                text = "La semana {} ya estaba cerrada o no pudo cerrarse.".format(week_key)
+        except Exception as e:
+            text = "No se pudo cerrar semana {}: {}".format(week_key, e)
+
+        query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="admin_contab_panel")]]),
+        )
         return
 
     if data == "admin_finanzas":
@@ -5825,9 +6170,9 @@ def admins_pendientes(update, context):
 
     keyboard = []
     for admin in admins:
-        admin_id = admin[0]
-        full_name = admin[2]
-        city = admin[4]
+        admin_id = _row_value_fallback(admin, "id", 0)
+        full_name = _row_value_fallback(admin, "full_name", 2, "")
+        city = _row_value_fallback(admin, "city", 4, "")
 
         keyboard.append([
             InlineKeyboardButton(
@@ -5860,9 +6205,17 @@ def admin_ver_pendiente(update, context):
         return
 
     # id, user_id, full_name, phone, city, barrio, team_name, document_number, team_code, status, created_at, residence_address, residence_lat, residence_lng
-    residence_address = admin[11] if len(admin) > 11 else None
-    residence_lat = admin[12] if len(admin) > 12 else None
-    residence_lng = admin[13] if len(admin) > 13 else None
+    admin_id_row = _row_value_fallback(admin, "id", 0)
+    full_name = _row_value_fallback(admin, "full_name", 2, "")
+    phone = _row_value_fallback(admin, "phone", 3, "")
+    city = _row_value_fallback(admin, "city", 4, "")
+    barrio = _row_value_fallback(admin, "barrio", 5, "")
+    team_code = _row_value_fallback(admin, "team_code", 8, "-")
+    document_number = _row_value_fallback(admin, "document_number", 7, "-")
+    status = _row_value_fallback(admin, "status", 9, "PENDING")
+    residence_address = _row_value_fallback(admin, "residence_address", 11)
+    residence_lat = _row_value_fallback(admin, "residence_lat", 12)
+    residence_lng = _row_value_fallback(admin, "residence_lng", 13)
     if residence_lat is not None and residence_lng is not None:
         residence_location = "{}, {}".format(residence_lat, residence_lng)
         maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -5872,14 +6225,14 @@ def admin_ver_pendiente(update, context):
 
     texto = (
         "Administrador pendiente:\n\n"
-        f"ID: {admin[0]}\n"
-        f"Nombre: {admin[2]}\n"
-        f"Teléfono: {admin[3]}\n"
-        f"Ciudad: {admin[4]}\n"
-        f"Barrio: {admin[5]}\n"
-        f"Equipo: {admin[8] or '-'}\n"
-        f"Documento: {admin[7] or '-'}\n"
-        f"Estado: {admin[9]}\n"
+        f"ID: {admin_id_row}\n"
+        f"Nombre: {full_name}\n"
+        f"Teléfono: {phone}\n"
+        f"Ciudad: {city}\n"
+        f"Barrio: {barrio}\n"
+        f"Equipo: {team_code or '-'}\n"
+        f"Documento: {document_number or '-'}\n"
+        f"Estado: {status}\n"
         "Residencia: {}\n"
         "Ubicación residencia: {}\n"
         "{}"
@@ -7442,13 +7795,9 @@ def mi_admin(update, context):
         update.message.reply_text("No se pudo cargar tu perfil de administrador. Revisa BD.")
         return
 
-    status = admin_full[6]
-    team_name = admin_full[8] or "-"
-    team_code = "-"
-    if isinstance(admin_full, dict):
-        team_code = admin_full.get("team_code") or "-"
-    else:
-        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+    status = _row_value_fallback(admin_full, "status", 9, "PENDING")
+    team_name = _row_value_fallback(admin_full, "team_name", 6, "-") or "-"
+    team_code = _row_value_fallback(admin_full, "team_code", 8, "-") or "-"
 
     header = (
         "Panel Administrador Local\n\n"
@@ -7464,6 +7813,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("🧾 Contabilidad semanal", callback_data="admin_contab_panel")],
             [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
         update.message.reply_text(
@@ -7584,6 +7934,14 @@ def mi_perfil(update, context):
         mensaje += f"   Equipo: {equipo_admin}\n\n"
         admin_balance = get_admin_balance(admin_id)
         mensaje += f"   Saldo master: ${admin_balance:,}\n\n"
+        if team_code == "PLATFORM":
+            min_balance = _get_platform_min_master_balance()
+            if admin_balance < min_balance:
+                faltante = min_balance - admin_balance
+                mensaje += (
+                    "   ALERTA Plataforma: saldo master bajo minimo.\n"
+                    f"   Minimo: ${min_balance:,} | Faltante: ${faltante:,}\n\n"
+                )
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)
@@ -7750,6 +8108,23 @@ def mi_perfil(update, context):
         update.message.reply_text(mensaje)
 
 
+def mi_perfil_safe(update, context):
+    """Wrapper defensivo para evitar silencio si /mi_perfil falla internamente."""
+    try:
+        return mi_perfil(update, context)
+    except Exception as e:
+        telegram_id = update.effective_user.id if update.effective_user else "unknown"
+        print(f"[ERROR] mi_perfil falló para telegram_id={telegram_id}: {e}")
+        if update.message:
+            update.message.reply_text("Error tecnico al cargar tu perfil. Intenta de nuevo en unos segundos.")
+        elif update.effective_chat:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Error tecnico al cargar tu perfil. Intenta de nuevo en unos segundos."
+            )
+        return
+
+
 # ============================================================
 # SISTEMA DE RECARGAS
 # ============================================================
@@ -7865,6 +8240,586 @@ def cmd_saldo(update, context):
         mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
 
     update.message.reply_text(mensaje)
+
+
+def _is_platform_admin_actor(telegram_id: int):
+    """Valida acceso contable: solo Admin Plataforma."""
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        return False, None
+    team_code = (admin.get("team_code") or "").strip().upper()
+    status = (admin.get("status") or "").strip().upper()
+    if team_code != "PLATFORM":
+        return False, admin
+    if status != "APPROVED":
+        return False, admin
+    return True, admin
+
+
+def _parse_week_key_or_none(raw_value: str):
+    if not raw_value:
+        return None
+    wk = raw_value.strip().upper()
+    if not re.match(r"^\d{4}-W\d{2}$", wk):
+        return None
+    return wk
+
+
+def _current_week_key():
+    now = datetime.utcnow()
+    year, week, _ = now.isocalendar()
+    return "{}-W{:02d}".format(year, week)
+
+
+def _previous_week_key():
+    ref = datetime.utcnow() - timedelta(days=7)
+    year, week, _ = ref.isocalendar()
+    return "{}-W{:02d}".format(year, week)
+
+
+def cmd_contabilidad(update, context):
+    """
+    /contabilidad [YYYY-Www]
+    Muestra resumen semanal contable.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+
+    week_key = None
+    if context.args:
+        week_key = _parse_week_key_or_none(context.args[0])
+        if not week_key:
+            update.message.reply_text(
+                "Formato invalido. Usa: /contabilidad YYYY-Www. Ejemplo: /contabilidad 2026-W08"
+            )
+            return
+
+    try:
+        summary = build_weekly_accounting_summary(week_key=week_key)
+    except ValueError as e:
+        update.message.reply_text("Error de semana contable: {}".format(e))
+        return
+    except Exception as e:
+        update.message.reply_text("No se pudo construir el resumen contable: {}".format(e))
+        return
+
+    platform = summary["platform"]
+    couriers = summary["couriers"]
+    text = (
+        "CONTABILIDAD SEMANAL\n\n"
+        "Semana: {wk}\n"
+        "Rango: {start} a {end}\n"
+        "Estado: {status}\n\n"
+        "Plataforma:\n"
+        "- Ingreso fee directo: ${direct:,}\n"
+        "- Ingreso comisiones: ${comm:,}\n"
+        "- Total ingreso: ${total:,}\n\n"
+        "Repartidores con actividad: {n}\n"
+    ).format(
+        wk=summary["week_key"],
+        start=summary["week_start_at"],
+        end=summary["week_end_at"],
+        status=summary["week_status"],
+        direct=platform["direct_fee_income"],
+        comm=platform["commission_income"],
+        total=platform["total_income"],
+        n=len(couriers),
+    )
+
+    top = couriers[:10]
+    if top:
+        text += "\nTop 10 repartidores por ingreso bruto:\n"
+        for idx, row in enumerate(top, start=1):
+            text += (
+                "{}. Courier #{cid} | Pedidos: {orders} | Bruto: ${gross:,} | "
+                "Fee cobrado: ${fee:,} | Neto estimado: ${net:,}\n"
+            ).format(
+                idx,
+                cid=row["courier_id"],
+                orders=row["delivered_orders"],
+                gross=row["gross_income"],
+                fee=row["platform_fee_charged"],
+                net=row["net_estimated_income"],
+            )
+
+    update.message.reply_text(text)
+
+
+def cmd_contabilidad_snapshot(update, context):
+    """
+    /contabilidad_snapshot [YYYY-Www]
+    Muestra snapshot congelado semanal.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+
+    week_key = _current_week_key()
+    if context.args:
+        parsed = _parse_week_key_or_none(context.args[0])
+        if not parsed:
+            update.message.reply_text(
+                "Formato invalido. Usa: /contabilidad_snapshot YYYY-Www. Ejemplo: /contabilidad_snapshot 2026-W08"
+            )
+            return
+        week_key = parsed
+
+    try:
+        summary = get_weekly_accounting_snapshot_summary(week_key=week_key)
+    except Exception as e:
+        update.message.reply_text("No se pudo consultar snapshot: {}".format(e))
+        return
+
+    platform = summary.get("platform", {})
+    couriers = summary.get("couriers", [])
+    if not platform and not couriers:
+        update.message.reply_text(
+            "No hay snapshot congelado para la semana {}.\n"
+            "Cierra la semana con /cerrar_semana_contable {}.".format(week_key, week_key)
+        )
+        return
+
+    direct = int(platform.get("direct_fee_income", 0))
+    comm = int(platform.get("commission_income", 0))
+    total = int(platform.get("total_income", direct + comm))
+
+    text = (
+        "SNAPSHOT CONTABLE\n\n"
+        "Semana: {wk}\n\n"
+        "Plataforma:\n"
+        "- Ingreso fee directo: ${direct:,}\n"
+        "- Ingreso comisiones: ${comm:,}\n"
+        "- Total ingreso: ${total:,}\n\n"
+        "Repartidores en snapshot: {n}\n"
+    ).format(
+        wk=week_key,
+        direct=direct,
+        comm=comm,
+        total=total,
+        n=len(couriers),
+    )
+
+    top = couriers[:10]
+    if top:
+        text += "\nTop 10 snapshot (bruto):\n"
+        for idx, row in enumerate(top, start=1):
+            text += (
+                "{}. Courier #{cid} | Pedidos: {orders} | Bruto: ${gross:,} | "
+                "Fee cobrado: ${fee:,} | Neto estimado: ${net:,}\n"
+            ).format(
+                idx,
+                cid=int(row.get("courier_id", 0)),
+                orders=int(row.get("delivered_orders", 0)),
+                gross=int(row.get("gross_income", 0)),
+                fee=int(row.get("platform_fee_charged", 0)),
+                net=int(row.get("net_estimated_income", 0)),
+            )
+
+    update.message.reply_text(text)
+
+
+def cmd_cerrar_semana_contable(update, context):
+    """
+    /cerrar_semana_contable YYYY-Www
+    Cierra la semana y congela snapshots.
+    """
+    telegram_id = update.effective_user.id
+    allowed, _admin = _is_platform_admin_actor(telegram_id)
+    if not allowed:
+        update.message.reply_text(
+            "Acceso restringido. Este comando es solo para Admin Plataforma APPROVED."
+        )
+        return
+    platform_admin_id = _admin["id"] if _admin else None
+    if platform_admin_id:
+        is_below, balance, min_balance = _get_platform_balance_guard(platform_admin_id)
+        if is_below:
+            update.message.reply_text(_platform_balance_guard_message(balance, min_balance))
+            return
+
+    if not context.args:
+        update.message.reply_text(
+            "Debes indicar la semana. Ejemplo: /cerrar_semana_contable 2026-W08"
+        )
+        return
+
+    week_key = _parse_week_key_or_none(context.args[0])
+    if not week_key:
+        update.message.reply_text(
+            "Formato invalido. Usa YYYY-Www. Ejemplo: 2026-W08"
+        )
+        return
+
+    try:
+        closed, summary = close_and_snapshot_accounting_week(
+            week_key=week_key,
+            closed_by="tg:{}".format(telegram_id),
+        )
+    except ValueError as e:
+        update.message.reply_text("Error de semana contable: {}".format(e))
+        return
+    except Exception as e:
+        update.message.reply_text("No se pudo cerrar la semana contable: {}".format(e))
+        return
+
+    platform = summary["platform"]
+    if closed:
+        update.message.reply_text(
+            "Semana cerrada correctamente.\n\n"
+            "Semana: {wk}\n"
+            "Total plataforma: ${total:,}\n"
+            "Fee directo: ${direct:,}\n"
+            "Comisiones: ${comm:,}\n"
+            "Repartidores con actividad: {n}".format(
+                wk=summary["week_key"],
+                total=platform["total_income"],
+                direct=platform["direct_fee_income"],
+                comm=platform["commission_income"],
+                n=len(summary["couriers"]),
+            )
+        )
+    else:
+        update.message.reply_text(
+            "La semana ya estaba cerrada o no pudo cerrarse.\n"
+            "Semana: {}".format(summary["week_key"])
+        )
+
+
+def cmd_acreditar_plataforma(update, context):
+    """
+    /acreditar_plataforma <monto> [nota opcional]
+    Acredita saldo master al admin de plataforma y deja traza en ledger.
+    """
+    telegram_id = update.effective_user.id
+    allowed, platform_admin = _is_platform_admin_actor(telegram_id)
+    if not allowed or not platform_admin:
+        update.message.reply_text("Acceso restringido. Este comando es solo para Admin Plataforma APPROVED.")
+        return
+
+    if not context.args:
+        update.message.reply_text(
+            "Uso: /acreditar_plataforma <monto> [nota]\n"
+            "Ejemplo: /acreditar_plataforma 120000 consignacion bancaria"
+        )
+        return
+
+    monto_raw = str(context.args[0]).strip().replace(".", "").replace(",", "").replace("$", "")
+    try:
+        monto = int(monto_raw)
+    except Exception:
+        update.message.reply_text("Monto invalido. Usa solo numeros enteros.")
+        return
+
+    if monto <= 0:
+        update.message.reply_text("El monto debe ser mayor a 0.")
+        return
+
+    if monto > 100000000:
+        update.message.reply_text("Monto demasiado alto. Limite por operacion: $100,000,000.")
+        return
+
+    note = "Acreditacion manual de saldo plataforma"
+    if len(context.args) > 1:
+        extra_note = " ".join(context.args[1:]).strip()
+        if extra_note:
+            note = f"{note}: {extra_note}"
+
+    platform_admin_id = platform_admin["id"]
+    try:
+        ledger_id = update_admin_balance_with_ledger(
+            admin_id=platform_admin_id,
+            delta=monto,
+            kind="PLATFORM_TOPUP",
+            note=note,
+            ref_type="MANUAL_TOPUP",
+            ref_id=None,
+            from_type="EXTERNAL",
+            from_id=None,
+        )
+        new_balance = get_admin_balance(platform_admin_id)
+    except Exception as e:
+        update.message.reply_text(f"No se pudo acreditar saldo de plataforma: {e}")
+        return
+
+    min_balance = _get_platform_min_master_balance()
+    if new_balance < min_balance:
+        status_msg = (
+            f"Saldo bajo minimo.\n"
+            f"Minimo: ${min_balance:,}\n"
+            f"Faltante: ${max(0, min_balance - new_balance):,}"
+        )
+    else:
+        status_msg = "Saldo en rango operativo."
+
+    update.message.reply_text(
+        "Acreditacion aplicada.\n\n"
+        f"Monto acreditado: ${monto:,}\n"
+        f"Nuevo saldo master plataforma: ${new_balance:,}\n"
+        f"Ledger ID: {ledger_id}\n\n"
+        f"{status_msg}"
+    )
+
+
+def _clear_change_group_context(context):
+    context.user_data.pop("change_group_target_type", None)
+    context.user_data.pop("change_group_target_id", None)
+    context.user_data.pop("change_group_target_name", None)
+
+
+def _show_change_group_team_selection(update_or_query, context, from_callback=False):
+    target_type = context.user_data.get("change_group_target_type")
+    target_id = context.user_data.get("change_group_target_id")
+    target_name = context.user_data.get("change_group_target_name", "-")
+    if not target_type or not target_id:
+        if from_callback:
+            update_or_query.edit_message_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        else:
+            update_or_query.message.reply_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    teams = get_available_admin_teams()
+    current_link = get_admin_link_for_courier(target_id) if target_type == "COURIER" else get_admin_link_for_ally(target_id)
+    current_team = current_link["team_name"] if current_link and current_link["team_name"] else "-"
+    current_code = current_link["team_code"] if current_link and current_link["team_code"] else "-"
+    current_status = current_link["link_status"] if current_link and current_link["link_status"] else "-"
+
+    buttons = []
+    for row in teams or []:
+        team_name = _row_value_fallback(row, "team_name", 1, "")
+        team_code = _row_value_fallback(row, "team_code", 2, "")
+        admin_status = _row_value_fallback(row, "status", 3, "APPROVED")
+        label = f"{team_name} ({team_code})"
+        if admin_status == "PENDING":
+            label += " [Pendiente]"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"chgteam_pick_{team_code}")])
+
+    buttons.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="chgteam_pick_NONE")])
+    buttons.append([InlineKeyboardButton("Cancelar", callback_data="chgteam_cancel")])
+
+    role_name = "Aliado" if target_type == "ALLY" else "Repartidor"
+    text = (
+        f"Cambio de grupo ({role_name})\n"
+        f"Perfil: {target_name}\n"
+        f"Grupo actual: {current_team} ({current_code}) [{current_status}]\n\n"
+        "Selecciona el nuevo grupo.\n"
+        "La solicitud quedara PENDING hasta aprobacion."
+    )
+    markup = InlineKeyboardMarkup(buttons)
+    if from_callback:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    return CHANGE_GROUP_TEAM
+
+
+def cmd_cambiar_grupo(update, context):
+    """Permite a aliado/repartidor APPROVED solicitar cambio de grupo."""
+    _clear_change_group_context(context)
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"]
+
+    ally = get_ally_by_user_id(user_db_id)
+    courier = get_courier_by_user_id(user_db_id)
+
+    roles = []
+    if ally and _row_value_fallback(ally, "status", 9) == "APPROVED":
+        roles.append(("ALLY", _row_value_fallback(ally, "id", 0), _row_value_fallback(ally, "business_name", 2, "Aliado")))
+    if courier and _row_value_fallback(courier, "status", 10) == "APPROVED":
+        roles.append(("COURIER", _row_value_fallback(courier, "id", 0), _row_value_fallback(courier, "full_name", 2, "Repartidor")))
+
+    if not roles:
+        update.message.reply_text(
+            "Para cambiar de grupo debes tener perfil APPROVED de Aliado o Repartidor."
+        )
+        return ConversationHandler.END
+
+    if len(roles) == 1:
+        role_type, role_id, role_name = roles[0]
+        context.user_data["change_group_target_type"] = role_type
+        context.user_data["change_group_target_id"] = role_id
+        context.user_data["change_group_target_name"] = role_name
+        return _show_change_group_team_selection(update, context, from_callback=False)
+
+    keyboard = []
+    for role_type, role_id, role_name in roles:
+        label = "Aliado: {}".format(role_name) if role_type == "ALLY" else "Repartidor: {}".format(role_name)
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"chgteam_role_{role_type}_{role_id}")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="chgteam_cancel")])
+
+    update.message.reply_text(
+        "Tienes multiples perfiles APPROVED. Selecciona cual perfil cambiar de grupo.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return CHANGE_GROUP_ROLE
+
+
+def change_group_role_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+
+    if data == "chgteam_cancel":
+        _clear_change_group_context(context)
+        query.edit_message_text("Cambio de grupo cancelado.")
+        return ConversationHandler.END
+
+    if not data.startswith("chgteam_role_"):
+        return CHANGE_GROUP_ROLE
+
+    parts = data.replace("chgteam_role_", "").split("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    role_type, role_id_raw = parts
+    try:
+        role_id = int(role_id_raw)
+    except ValueError:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    user_row = ensure_user(update.effective_user.id, update.effective_user.username)
+    user_db_id = user_row["id"]
+    if role_type == "ALLY":
+        row = get_ally_by_user_id(user_db_id)
+        if not row or _row_value_fallback(row, "id", 0) != role_id or _row_value_fallback(row, "status", 9) != "APPROVED":
+            query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        role_name = _row_value_fallback(row, "business_name", 2, "Aliado")
+    elif role_type == "COURIER":
+        row = get_courier_by_user_id(user_db_id)
+        if not row or _row_value_fallback(row, "id", 0) != role_id or _row_value_fallback(row, "status", 10) != "APPROVED":
+            query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        role_name = _row_value_fallback(row, "full_name", 2, "Repartidor")
+    else:
+        query.edit_message_text("Seleccion invalida. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    context.user_data["change_group_target_type"] = role_type
+    context.user_data["change_group_target_id"] = role_id
+    context.user_data["change_group_target_name"] = role_name
+    return _show_change_group_team_selection(query, context, from_callback=True)
+
+
+def change_group_team_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+
+    if data == "chgteam_cancel":
+        _clear_change_group_context(context)
+        query.edit_message_text("Cambio de grupo cancelado.")
+        return ConversationHandler.END
+
+    if not data.startswith("chgteam_pick_"):
+        return CHANGE_GROUP_TEAM
+
+    selected = data.replace("chgteam_pick_", "").strip()
+    target_type = context.user_data.get("change_group_target_type")
+    target_id = context.user_data.get("change_group_target_id")
+    target_name = context.user_data.get("change_group_target_name", "-")
+
+    if not target_type or not target_id:
+        query.edit_message_text("Error: datos incompletos. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    user_row = ensure_user(update.effective_user.id, update.effective_user.username)
+    user_db_id = user_row["id"]
+    if target_type == "ALLY":
+        owned = get_ally_by_user_id(user_db_id)
+        if not owned or _row_value_fallback(owned, "id", 0) != target_id or _row_value_fallback(owned, "status", 9) != "APPROVED":
+            query.edit_message_text("Perfil no valido para cambiar grupo. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+    elif target_type == "COURIER":
+        owned = get_courier_by_user_id(user_db_id)
+        if not owned or _row_value_fallback(owned, "id", 0) != target_id or _row_value_fallback(owned, "status", 10) != "APPROVED":
+            query.edit_message_text("Perfil no valido para cambiar grupo. Usa /cambiar_grupo nuevamente.")
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+
+    if selected.upper() == "NONE":
+        admin_row = get_admin_by_team_code(PLATFORM_TEAM_CODE)
+    else:
+        admin_row = get_admin_by_team_code(selected)
+
+    if not admin_row:
+        query.edit_message_text("Equipo no disponible. Usa /cambiar_grupo nuevamente.")
+        _clear_change_group_context(context)
+        return ConversationHandler.END
+
+    admin_id = _row_value_fallback(admin_row, "id", 0)
+    team_name = _row_value_fallback(admin_row, "team_name", 4, "-")
+    team_code = _row_value_fallback(admin_row, "team_code", 5, "-")
+    admin_telegram_id = _row_value_fallback(admin_row, "telegram_id", 6)
+
+    if target_type == "ALLY":
+        current_link = get_admin_link_for_ally(target_id)
+        current_admin_id = current_link["admin_id"] if current_link else None
+        current_status = (current_link["link_status"] or "").upper() if current_link else ""
+        if current_admin_id == admin_id and current_status == "APPROVED":
+            query.edit_message_text(
+                "Ya tienes este grupo aprobado.\n"
+                f"{team_name} ({team_code})"
+            )
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        upsert_admin_ally_link(admin_id, target_id, status="PENDING")
+    else:
+        current_link = get_admin_link_for_courier(target_id)
+        current_admin_id = current_link["admin_id"] if current_link else None
+        current_status = (current_link["link_status"] or "").upper() if current_link else ""
+        if current_admin_id == admin_id and current_status == "APPROVED":
+            query.edit_message_text(
+                "Ya tienes este grupo aprobado.\n"
+                f"{team_name} ({team_code})"
+            )
+            _clear_change_group_context(context)
+            return ConversationHandler.END
+        upsert_admin_courier_link(admin_id, target_id, "PENDING", 0)
+
+    try:
+        if admin_telegram_id:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de cambio de grupo.\n\n"
+                    f"Perfil: {target_type}\n"
+                    f"ID perfil: {target_id}\n"
+                    f"Nombre: {target_name}\n"
+                    f"Equipo destino: {team_name} ({team_code})\n\n"
+                    "Revisa /mi_admin para aprobar o rechazar."
+                )
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar cambio de grupo al admin destino:", e)
+
+    query.edit_message_text(
+        "Solicitud de cambio de grupo enviada.\n\n"
+        f"Nuevo grupo solicitado: {team_name} ({team_code})\n"
+        "Estado: PENDING\n\n"
+        "Tu grupo actual seguira vigente hasta que aprueben esta solicitud."
+    )
+    _clear_change_group_context(context)
+    return ConversationHandler.END
 
 
 def cmd_recargar(update, context):
@@ -8050,9 +9005,41 @@ def recargar_monto(update, context):
     if target_type == "COURIER":
         link = get_approved_admin_link_for_courier(target_id)
         approved_links = get_all_approved_links_for_courier(target_id)
+        if not approved_links:
+            courier = get_courier_by_id(target_id)
+            courier_status = _row_value_fallback(courier, "status", 10) if courier else None
+            current_link = get_admin_link_for_courier(target_id)
+            if courier_status == "APPROVED" and current_link:
+                recover_admin_id = current_link["admin_id"] if isinstance(current_link, dict) else current_link[0]
+                upsert_admin_courier_link(recover_admin_id, target_id, "APPROVED", 1)
+                link = get_approved_admin_link_for_courier(target_id)
+                approved_links = get_all_approved_links_for_courier(target_id)
+            if courier_status == "APPROVED" and not approved_links:
+                platform = get_platform_admin()
+                if platform:
+                    platform_id = platform["id"]
+                    upsert_admin_courier_link(platform_id, target_id, "APPROVED", 1)
+                    link = get_approved_admin_link_for_courier(target_id)
+                    approved_links = get_all_approved_links_for_courier(target_id)
     else:
         link = get_approved_admin_link_for_ally(target_id)
         approved_links = get_all_approved_links_for_ally(target_id)
+        if not approved_links:
+            ally = get_ally_by_id(target_id)
+            ally_status = _row_value_fallback(ally, "status", 9) if ally else None
+            current_link = get_admin_link_for_ally(target_id)
+            if ally_status == "APPROVED" and current_link:
+                recover_admin_id = current_link["admin_id"] if isinstance(current_link, dict) else current_link[0]
+                upsert_admin_ally_link(recover_admin_id, target_id, status="APPROVED")
+                link = get_approved_admin_link_for_ally(target_id)
+                approved_links = get_all_approved_links_for_ally(target_id)
+            if ally_status == "APPROVED" and not approved_links:
+                platform = get_platform_admin()
+                if platform:
+                    platform_id = platform["id"]
+                    upsert_admin_ally_link(platform_id, target_id, status="APPROVED")
+                    link = get_approved_admin_link_for_ally(target_id)
+                    approved_links = get_all_approved_links_for_ally(target_id)
     approved_admin_ids = {row["admin_id"] for row in approved_links} if approved_links else set()
 
     buttons = []
@@ -8404,6 +9391,66 @@ def recharge_proof_callback(update, context):
         query.answer("No se pudo enviar el comprobante.", show_alert=True)
 
 
+def _notify_recharge_target_result(context, req: dict, approved: bool):
+    """Notifica al titular de la recarga (COURIER/ALLY/ADMIN) el resultado."""
+    target_type = req.get("target_type")
+    target_id = req.get("target_id")
+    admin_id = req.get("admin_id")
+    amount = int(req.get("amount") or 0)
+
+    try:
+        target_user_id = None
+        role_label = ""
+
+        if target_type == "COURIER":
+            row = get_courier_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Repartidor"
+            balance = get_courier_link_balance(target_id, admin_id) if approved else None
+        elif target_type == "ALLY":
+            row = get_ally_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Aliado"
+            balance = get_ally_link_balance(target_id, admin_id) if approved else None
+        elif target_type == "ADMIN":
+            row = get_admin_by_id(target_id)
+            if not row:
+                return
+            target_user_id = _row_value_fallback(row, "user_id", 1)
+            role_label = "Administrador"
+            balance = get_admin_balance(target_id) if approved else None
+        else:
+            return
+
+        user = get_user_by_id(target_user_id)
+        if not user:
+            return
+        target_telegram_id = user["telegram_id"] if isinstance(user, dict) else user[1]
+
+        if approved:
+            msg = (
+                "Tu recarga ha sido exitosa.\n"
+                f"Perfil: {role_label}\n"
+                f"Monto acreditado: ${amount:,}\n"
+                f"Saldo actual: ${int(balance or 0):,}"
+            )
+        else:
+            msg = (
+                "Tu solicitud de recarga fue rechazada.\n"
+                f"Perfil: {role_label}\n"
+                f"Monto solicitado: ${amount:,}\n"
+                "Si necesitas ayuda, contacta al administrador."
+            )
+
+        context.bot.send_message(chat_id=target_telegram_id, text=msg)
+    except Exception as e:
+        print(f"[WARN] No se pudo notificar resultado de recarga: {e}")
+
+
 def recharge_callback(update, context):
     """
     Callback para aprobar/rechazar solicitudes de recarga.
@@ -8426,10 +9473,16 @@ def recharge_callback(update, context):
     if admin_status != "APPROVED":
         query.answer("No autorizado.", show_alert=True)
         return
+    admin_team_code = (admin.get("team_code") or "").strip().upper()
 
     if data.startswith("recharge_approve_"):
+        if admin_team_code == "PLATFORM":
+            is_below, balance, min_balance = _get_platform_balance_guard(admin_id)
+            if is_below:
+                query.answer(_platform_balance_guard_message(balance, min_balance), show_alert=True)
+                return
         request_id = int(data.replace("recharge_approve_", ""))
-        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
         if ownership_error:
             query.answer(ownership_error, show_alert=True)
             return
@@ -8438,6 +9491,7 @@ def recharge_callback(update, context):
 
         if success:
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
+            _notify_recharge_target_result(context, req, approved=True)
             query.answer("Recarga aprobada.")
             suffix = f"\n\nAPROBADA por admin #{admin_id}"
             if query.message.text:
@@ -8451,7 +9505,7 @@ def recharge_callback(update, context):
 
     elif data.startswith("recharge_reject_"):
         request_id = int(data.replace("recharge_reject_", ""))
-        _req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
+        req, ownership_error = _get_owned_recharge_request_or_error(request_id, admin_id, user_tg.id)
         if ownership_error:
             query.answer(ownership_error, show_alert=True)
             return
@@ -8460,6 +9514,7 @@ def recharge_callback(update, context):
 
         if success:
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
+            _notify_recharge_target_result(context, req, approved=False)
             query.answer("Solicitud rechazada.")
             suffix = f"\n\nRECHAZADA por admin #{admin_id}"
             if query.message.text:
@@ -8786,12 +9841,12 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_check_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
+        status = _row_value_fallback(admin_full, "status", 9, "PENDING")
         team_code = "-"
         if isinstance(admin_full, dict):
             team_code = admin_full.get("team_code") or "-"
         else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+            team_code = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
 
         # Administrador de Plataforma: siempre operativo
         if team_code == "PLATFORM":
@@ -8860,12 +9915,12 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_status_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
+        status = _row_value_fallback(admin_full, "status", 9, "PENDING")
         team_code = "-"
         if isinstance(admin_full, dict):
             team_code = admin_full.get("team_code") or "-"
         else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+            team_code = admin_full[8] if len(admin_full) > 8 and admin_full[8] else "-"
 
         # Administrador de Plataforma: mensaje especial
         if team_code == "PLATFORM":
@@ -8917,8 +9972,8 @@ def admin_local_callback(update, context):
 
         keyboard = []
         for c in pendientes:
-            courier_id = c[0]
-            full_name = c[1] if len(c) > 1 else ""
+            courier_id = _row_value_fallback(c, "courier_id", 0)
+            full_name = _row_value_fallback(c, "full_name", 1, "")
             keyboard.append([
                 InlineKeyboardButton(
                     f"ID {courier_id} - {full_name}",
@@ -8942,9 +9997,17 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
 
-        residence_address = courier[11] if len(courier) > 11 else None
-        residence_lat = courier[12] if len(courier) > 12 else None
-        residence_lng = courier[13] if len(courier) > 13 else None
+        courier_id_row = _row_value_fallback(courier, "id", 0)
+        full_name = _row_value_fallback(courier, "full_name", 2, "")
+        id_number = _row_value_fallback(courier, "id_number", 3, "")
+        phone = _row_value_fallback(courier, "phone", 4, "")
+        city = _row_value_fallback(courier, "city", 5, "")
+        barrio = _row_value_fallback(courier, "barrio", 6, "")
+        plate = _row_value_fallback(courier, "plate", 7, "-")
+        bike_type = _row_value_fallback(courier, "bike_type", 8, "-")
+        residence_address = _row_value_fallback(courier, "residence_address", 11)
+        residence_lat = _row_value_fallback(courier, "residence_lat", 12)
+        residence_lng = _row_value_fallback(courier, "residence_lng", 13)
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -8954,17 +10017,17 @@ def admin_local_callback(update, context):
 
         texto = (
             "REPARTIDOR (pendiente de tu equipo)\n\n"
-            f"ID: {courier[0]}\n"
-            f"Nombre: {courier[2]}\n"
-            f"Documento: {courier[3]}\n"
-            f"Teléfono: {courier[4]}\n"
-            f"Ciudad: {courier[5]}\n"
-            f"Barrio: {courier[6]}\n"
+            f"ID: {courier_id_row}\n"
+            f"Nombre: {full_name}\n"
+            f"Documento: {id_number}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}\n"
             "Dirección residencia: {}\n"
             "Ubicación residencia: {}\n"
             "{}"
-            f"Placa: {courier[7] or '-'}\n"
-            f"Moto: {courier[8] or '-'}\n"
+            f"Placa: {plate or '-'}\n"
+            f"Moto: {bike_type or '-'}\n"
         ).format(
             residence_address or "No registrada",
             residence_location,
@@ -8986,7 +10049,7 @@ def admin_local_callback(update, context):
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
     if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
         admin_full = get_admin_by_id(admin_id)
-        admin_status = admin_full[9] if admin_full else None
+        admin_status = _row_value_fallback(admin_full, "status", 9) if admin_full else None
         if admin_status != "APPROVED":
             query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
             return
@@ -9085,10 +10148,11 @@ def ally_approval_callback(update, context):
         return
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
-    if nuevo_estado == "APPROVED":
-        link = get_admin_link_for_ally(ally_id)
-        if link:
-            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+    link = get_admin_link_for_ally(ally_id)
+    if link:
+        keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+        upsert_admin_ally_link(keep_admin_id, ally_id, status=nuevo_estado)
+        if nuevo_estado == "APPROVED":
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
 
     ally = get_ally_by_id(ally_id)
@@ -9096,9 +10160,8 @@ def ally_approval_callback(update, context):
         query.edit_message_text("No se encontró el aliado después de actualizar.")
         return
 
-    # Estructura esperada: id, user_id(telegram_id), business_name, owner_name, phone, address, city, barrio, status
-    ally_user_id = ally[1]       # EN TU DISEÑO ACTUAL ESTO ES telegram_id (porque create_ally usa user_id=telegram_id)
-    business_name = ally[2]
+    ally_user_id = _row_value_fallback(ally, "user_id", 1)
+    business_name = _row_value_fallback(ally, "business_name", 2, "Aliado")
 
     # Notificar al aliado (si falla, no rompemos el flujo)
     try:
@@ -9217,9 +10280,8 @@ def courier_approval_callback(update, context):
         query.edit_message_text("No se encontró el repartidor después de actualizar.")
         return
 
-    # courier esperado: id, user_id(users.id), full_name, id_number, phone, city, barrio, plate, bike_type, code, status
-    courier_user_db_id = courier[1]   # users.id
-    full_name = courier[2]
+    courier_user_db_id = _row_value_fallback(courier, "user_id", 1)
+    full_name = _row_value_fallback(courier, "full_name", 2, "Repartidor")
 
     # Notificar al repartidor si existe get_user_by_id (recomendado).
     # Si no existe, solo omitimos notificación sin romper.
@@ -9795,10 +10857,15 @@ def main():
     dp.add_handler(CommandHandler("referencias", cmd_referencias))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
-    dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
+    dp.add_handler(CommandHandler("mi_perfil", mi_perfil_safe))
 
     # Sistema de recargas
     dp.add_handler(CommandHandler("saldo", cmd_saldo))
+    dp.add_handler(CommandHandler("ganancias_repartidor", cmd_ganancias_repartidor_fecha))
+    dp.add_handler(CommandHandler("contabilidad", cmd_contabilidad))
+    dp.add_handler(CommandHandler("contabilidad_snapshot", cmd_contabilidad_snapshot))
+    dp.add_handler(CommandHandler("cerrar_semana_contable", cmd_cerrar_semana_contable))
+    dp.add_handler(CommandHandler("acreditar_plataforma", cmd_acreditar_plataforma))
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
@@ -9878,6 +10945,20 @@ def main():
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(config_alertas_oferta_conv)  # /config_alertas_oferta (Admin Plataforma)
     dp.add_handler(CallbackQueryHandler(terms_callback, pattern=r"^terms_"))  # /ternimos y condiciones
+
+    cambiar_grupo_conv = ConversationHandler(
+        entry_points=[CommandHandler("cambiar_grupo", cmd_cambiar_grupo)],
+        states={
+            CHANGE_GROUP_ROLE: [CallbackQueryHandler(change_group_role_callback, pattern=r"^chgteam_")],
+            CHANGE_GROUP_TEAM: [CallbackQueryHandler(change_group_team_callback, pattern=r"^chgteam_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uÃº])\s*$'), cancel_por_texto),
+        ],
+        allow_reentry=True,
+    )
+    dp.add_handler(cambiar_grupo_conv)
 
     # ConversationHandler para /recargar
     recargar_conv = ConversationHandler(
@@ -9964,7 +11045,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'(?i)^(Mi aliado|Mi repartidor|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Ganancias repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
@@ -10003,3 +11084,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
