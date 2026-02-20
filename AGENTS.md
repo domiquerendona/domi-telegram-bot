@@ -156,6 +156,37 @@ Solo se crea un nuevo módulo .py si:
 PROHIBIDO crear módulos nuevos por conveniencia o para "desahogar" main.py.
 La solución correcta para aliviar main.py es mover lógica a services.py.
 
+2F. Patrón oficial de re-exportación en services.py
+
+main.py NUNCA importa directamente de db.py.
+Todo acceso a funciones de db.py desde main.py debe pasar por services.py.
+
+Estructura obligatoria:
+
+db.py          → define funciones de acceso a BD
+services.py    → importa de db.py y re-exporta lo necesario para main.py
+main.py        → importa exclusivamente de services.py (salvo 3 excepciones de arranque)
+
+Excepciones permitidas en main.py (SOLO estas 3):
+- from db import init_db
+- from db import force_platform_admin
+- from db import ensure_pricing_defaults
+
+Cualquier otra importación directa de db.py en main.py es una violación de arquitectura.
+
+Regla de re-exportación:
+Si main.py necesita una función de db.py que aún no está en services.py:
+1. Agregarla al bloque de re-exports en services.py (marcado # Re-exports para que main.py no acceda a db directamente)
+2. Importarla en main.py desde services.py
+3. PROHIBIDO importarla directamente desde db.py
+
+Regla anti-importación circular:
+Si un módulo secundario (profile_changes.py, order_delivery.py, etc.) necesita funciones de main.py
+→ PROHIBIDO importar desde main en el módulo superior del archivo
+→ Solución: mover la función a services.py y que ambos importen desde services.py
+→ Solo permitida la importación lazy dentro de función (dentro del cuerpo) si es por dependencia circular confirmada
+→ Documentar explícitamente por qué es lazy en un comentario inline
+
 3. Base de datos (reglas estrictas)
 
 Usar exclusivamente get_connection() para acceso a BD.
@@ -378,7 +409,7 @@ Después de los cambios
 
 Ejecutar obligatoriamente:
 
-python -m py_compile main.py services.py db.py
+python -m py_compile Backend/main.py Backend/services.py Backend/db.py order_delivery.py profile_changes.py
 
 Verificar imports huérfanos tras mover o eliminar funciones:
 Para cada nombre movido o eliminado, ejecutar:
@@ -498,6 +529,53 @@ Acción que toque BD
 4. Evidencia obligatoria
 
 Debe existir evidencia documentada antes de merge.
+
+7D. Ramas protegidas y ramas de colaboradores
+
+Las siguientes ramas son PERMANENTES y NUNCA deben borrarse:
+
+- luisa-web   → rama de trabajo de la colaboradora Luisa (activa)
+
+Regla general para ramas de colaboradores:
+- PROHIBIDO borrar ramas cuyo nombre no sea del prefijo claude/ o verify/
+- Antes de borrar cualquier rama, verificar que pertenece a un agente IA o es una rama temporal propia
+- En caso de duda, preguntar al usuario antes de borrar
+
+Cómo identificar ramas seguras para borrar:
+1. Ejecutar: git branch -r --merged origin/main
+2. Solo borrar ramas con prefijo claude/ o verify/ que estén en esa lista
+3. NUNCA borrar ramas que no tengan esos prefijos sin confirmación explícita del usuario
+
+7E. Regla de compatibilidad estructural antes de merge
+
+PROHIBIDO hacer merge de una rama si su estructura de archivos no es compatible con main.
+
+Señales de incompatibilidad estructural:
+- La rama tiene archivos en el directorio raíz que en main están en Backend/
+- La rama tiene archivos en Backend/ que en main están en el raíz
+- La rama tiene paths diferentes para los mismos archivos lógicos
+
+Procedimiento obligatorio antes de hacer merge:
+1. Verificar que la rama fue creada a partir de origin/main (no de una versión antigua)
+   git log --oneline origin/main..nombre-rama
+2. Comparar la estructura de archivos clave:
+   git diff origin/main nombre-rama -- --name-only
+3. Si los paths difieren → ABORTAR el merge con git merge --abort
+
+Procedimiento cuando hay incompatibilidad estructural:
+1. Abortar: git merge --abort
+2. Crear nueva rama desde origin/main: git checkout -b claude/apply-[nombre]-[ID] origin/main
+3. Analizar los commits de la rama incompatible uno por uno: git show [hash]
+4. Aplicar los cambios manualmente sobre los paths correctos de main
+5. Verificar compilación: python -m py_compile Backend/main.py Backend/services.py Backend/db.py
+6. Commitear y mergear normalmente
+
+Regla de creación de ramas:
+Toda nueva rama de trabajo DEBE crearse desde origin/main actualizado:
+  git fetch origin
+  git checkout -b claude/[nombre]-[ID] origin/main
+
+PROHIBIDO crear ramas desde branches locales sin sincronizar o desde ramas que no sean origin/main.
 
 8. Reglas específicas para agentes tipo Codex
 
