@@ -4642,33 +4642,42 @@ def admin_menu_callback(update, context):
     # Submenú admins: listar administradores registrados
     if data == "admin_admins_registrados":
         query.answer()
-        admins = get_all_admins()
+        try:
+            admins = get_all_admins()
 
-        if not admins:
+            if not admins:
+                query.edit_message_text(
+                    "No hay administradores registrados en este momento.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+                    ])
+                )
+                return
+
+            keyboard = []
+            for a in admins:
+                adm_id = a['id']
+                full_name = a['full_name']
+                team_name = a['team_name'] or "-"
+                status = a['status']
+                keyboard.append([InlineKeyboardButton(
+                    "ID {} - {} | {} ({})".format(adm_id, full_name, team_name, status),
+                    callback_data="admin_ver_admin_{}".format(adm_id)
+                )])
+
+            keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
             query.edit_message_text(
-                "No hay administradores registrados en este momento.",
+                "Administradores registrados:\n\nToca un admin para ver detalles.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            print("[ERROR] admin_admins_registrados:", e)
+            query.edit_message_text(
+                "Error al cargar administradores. Revisa los logs.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
                 ])
             )
-            return
-
-        keyboard = []
-        for a in admins:
-            adm_id = a[0]
-            full_name = a[2]
-            team_name = a[8] or "-"
-            status = a[6]
-            keyboard.append([InlineKeyboardButton(
-                "ID {} - {} | {} ({})".format(adm_id, full_name, team_name, status),
-                callback_data="admin_ver_admin_{}".format(adm_id)
-            )])
-
-        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
-        query.edit_message_text(
-            "Administradores registrados:\n\nToca un admin para ver detalles.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
         return
 
     # Ver detalle de un admin
