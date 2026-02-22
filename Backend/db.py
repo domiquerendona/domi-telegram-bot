@@ -3,7 +3,10 @@ import os
 import re
 import json
 import time
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -269,7 +272,10 @@ def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str,
             changed_by or "UNKNOWN",
         ))
     except Exception as e:
-        print("[WARN] No se pudo registrar status_audit_log:", e)
+        logger.error(
+            "[AUDIT] status_audit_log falló: entity_type=%s entity_id=%s %s→%s source=%s changed_by=%s error=%s",
+            entity_type, entity_id, old_status, new_status, source, changed_by, e,
+        )
 
 
 def init_db():
