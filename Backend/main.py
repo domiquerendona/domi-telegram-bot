@@ -6979,21 +6979,9 @@ cotizar_conv = ConversationHandler(
 
 # ----- CONFIGURACION DE TARIFAS (ADMIN PLATAFORMA) -----
 
-def tarifas_start(update, context):
-    """Comando /tarifas - Solo Admin Plataforma."""
-    user = update.effective_user
-
-    # Validar que es Admin de Plataforma
-    if not es_admin_plataforma(user.id):
-        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
-        return ConversationHandler.END
-
-    # Cargar configuracion actual
-    config = get_pricing_config()
-    buy_config = get_buy_pricing_config()
-
-    # Mostrar valores actuales
-    mensaje = (
+def _build_tarifas_texto(config, buy_config):
+    """Construye el texto con los valores actuales de ambas tarifas."""
+    return (
         "CONFIGURACION DE TARIFAS\n\n"
         "TARIFAS POR DISTANCIA:\n"
         f"1. Precio 0-2 km: ${config['precio_0_2km']:,}\n"
@@ -7008,19 +6996,26 @@ def tarifas_start(update, context):
         f"9. Productos {buy_config['tier1_max']+buy_config['tier2_max']+1}+: ${buy_config['tier3_fee']:,} c/u\n"
     )
 
-    # Botones para editar
+
+def tarifas_start(update, context):
+    """Comando /tarifas - Solo Admin Plataforma."""
+    user = update.effective_user
+
+    # Validar que es Admin de Plataforma
+    if not es_admin_plataforma(user.id):
+        update.message.reply_text("No autorizado. Este comando es solo para el Administrador de Plataforma.")
+        return ConversationHandler.END
+
+    # Cargar configuracion actual
+    config = get_pricing_config()
+    buy_config = get_buy_pricing_config()
+
+    mensaje = _build_tarifas_texto(config, buy_config)
+
+    # Menu principal: dos secciones separadas
     keyboard = [
-        [InlineKeyboardButton("Cambiar 0-2 km", callback_data="pricing_edit_precio_0_2km")],
-        [InlineKeyboardButton("Cambiar 2-3 km", callback_data="pricing_edit_precio_2_3km")],
-        [InlineKeyboardButton("Cambiar base distancia", callback_data="pricing_edit_base_distance_km")],
-        [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
-        [InlineKeyboardButton("Cambiar umbral largo", callback_data="pricing_edit_umbral_km_largo")],
-        [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
-        [InlineKeyboardButton("Compras: max tier1", callback_data="pricing_edit_buy_tier1_max")],
-        [InlineKeyboardButton("Compras: fee tier1", callback_data="pricing_edit_buy_tier1_fee")],
-        [InlineKeyboardButton("Compras: max tier2", callback_data="pricing_edit_buy_tier2_max")],
-        [InlineKeyboardButton("Compras: fee tier2", callback_data="pricing_edit_buy_tier2_fee")],
-        [InlineKeyboardButton("Compras: fee tier3", callback_data="pricing_edit_buy_tier3_fee")],
+        [InlineKeyboardButton("📏 Editar tarifas por distancia", callback_data="pricing_menu_distancia")],
+        [InlineKeyboardButton("🛒 Editar tarifas compras", callback_data="pricing_menu_compras")],
         [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
     ]
 
@@ -7042,6 +7037,62 @@ def tarifas_edit_callback(update, context):
 
     if data == "pricing_exit":
         query.edit_message_text("Configuracion de tarifas cerrada.")
+        return ConversationHandler.END
+
+    # Volver al menu principal de tarifas
+    if data == "pricing_volver":
+        config = get_pricing_config()
+        buy_config = get_buy_pricing_config()
+        mensaje = _build_tarifas_texto(config, buy_config)
+        keyboard = [
+            [InlineKeyboardButton("📏 Editar tarifas por distancia", callback_data="pricing_menu_distancia")],
+            [InlineKeyboardButton("🛒 Editar tarifas compras", callback_data="pricing_menu_compras")],
+            [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
+        ]
+        query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    # Submenu: editar tarifas por distancia
+    if data == "pricing_menu_distancia":
+        keyboard = [
+            [InlineKeyboardButton("Cambiar precio 0-2 km", callback_data="pricing_edit_precio_0_2km")],
+            [InlineKeyboardButton("Cambiar precio 2-3 km", callback_data="pricing_edit_precio_2_3km")],
+            [InlineKeyboardButton("Cambiar base distancia (km)", callback_data="pricing_edit_base_distance_km")],
+            [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
+            [InlineKeyboardButton("Cambiar umbral km largo", callback_data="pricing_edit_umbral_km_largo")],
+            [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="pricing_volver")],
+        ]
+        query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    # Submenu: editar tarifas compras
+    if data == "pricing_menu_compras":
+        buy_config = get_buy_pricing_config()
+        keyboard = [
+            [InlineKeyboardButton(
+                f"Max productos tier1 (actual: {buy_config['tier1_max']})",
+                callback_data="pricing_edit_buy_tier1_max"
+            )],
+            [InlineKeyboardButton(
+                f"Recargo tier1 c/u (actual: ${buy_config['tier1_fee']:,})",
+                callback_data="pricing_edit_buy_tier1_fee"
+            )],
+            [InlineKeyboardButton(
+                f"Max productos tier2 (actual: {buy_config['tier2_max']})",
+                callback_data="pricing_edit_buy_tier2_max"
+            )],
+            [InlineKeyboardButton(
+                f"Recargo tier2 c/u (actual: ${buy_config['tier2_fee']:,})",
+                callback_data="pricing_edit_buy_tier2_fee"
+            )],
+            [InlineKeyboardButton(
+                f"Recargo tier3 c/u (actual: ${buy_config['tier3_fee']:,})",
+                callback_data="pricing_edit_buy_tier3_fee"
+            )],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="pricing_volver")],
+        ]
+        query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
 
     # Extraer el campo a editar
