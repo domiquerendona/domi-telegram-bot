@@ -3084,14 +3084,14 @@ def get_local_admins_count():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS total
         FROM admins
         WHERE is_deleted = 0
           AND team_code IS NOT NULL
           AND TRIM(team_code) <> ''
     """)
 
-    count = cur.fetchone()[0]
+    count = cur.fetchone()["total"]
     conn.close()
     return count
     
