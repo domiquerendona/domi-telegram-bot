@@ -717,10 +717,30 @@ def get_buy_pricing_config():
 
     Modelo: los primeros 'free_threshold' productos no tienen recargo.
     Los productos adicionales cobran 'extra_fee' c/u.
+
+    Si buy_free_threshold/buy_extra_fee no existen en BD pero existen claves
+    legacy buy_tier*, calcula valores equivalentes minimos como fallback de
+    lectura (no hace migracion destructiva).
     """
+    raw_threshold = get_setting("buy_free_threshold", None)
+    raw_extra_fee = get_setting("buy_extra_fee", None)
+
+    if raw_threshold is None and raw_extra_fee is None:
+        # Fallback legacy: si existen las claves del modelo anterior de tres tramos
+        tier1_fee_raw = get_setting("buy_tier1_fee", None)
+        tier3_fee_raw = get_setting("buy_tier3_fee", None)
+        if tier1_fee_raw is not None or tier3_fee_raw is not None:
+            # Sin productos gratis; recargo = tarifa minima de los tramos existentes
+            fees = [
+                _to_int(tier1_fee_raw, 1000) if tier1_fee_raw is not None else None,
+                _to_int(tier3_fee_raw, 500) if tier3_fee_raw is not None else None,
+            ]
+            min_fee = min(f for f in fees if f is not None)
+            return {"free_threshold": 0, "extra_fee": min_fee}
+
     return {
-        "free_threshold": _to_int(get_setting("buy_free_threshold", "2"), 2),
-        "extra_fee": _to_int(get_setting("buy_extra_fee", "1000"), 1000),
+        "free_threshold": _to_int(raw_threshold if raw_threshold is not None else "2", 2),
+        "extra_fee": _to_int(raw_extra_fee if raw_extra_fee is not None else "1000", 1000),
     }
 
 
@@ -751,8 +771,8 @@ def calc_buy_products_surcharge(n_products: int, config: dict = None) -> int:
     if config is None:
         config = get_buy_pricing_config()
 
-    free_threshold = config.get("free_threshold", 2)
-    extra_fee = config.get("extra_fee", 1000)
+    free_threshold = max(0, config.get("free_threshold", 2))
+    extra_fee = max(0, config.get("extra_fee", 1000))
 
     extra_products = max(0, n_products - free_threshold)
     return extra_products * extra_fee
@@ -1435,6 +1455,13 @@ def clear_offer_voice() -> None:
 def save_pricing_setting(field: str, value_str: str) -> None:
     """Persiste un campo de tarifa.  Los campos de compras usan prefijo 'buy_',
     los de distancia usan prefijo 'pricing_'."""
+    if field in ("buy_free_threshold", "buy_extra_fee"):
+        try:
+            int_val = int(float(value_str))
+        except (ValueError, TypeError):
+            raise ValueError(f"El campo '{field}' debe ser un número entero.")
+        if int_val < 0:
+            raise ValueError(f"El campo '{field}' no puede ser negativo (valor: {int_val}).")
     if field.startswith("buy_"):
         setting_key = field
     else:

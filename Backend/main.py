@@ -2681,6 +2681,8 @@ def _parsear_lista_productos(texto):
         if m:
             qty = int(m.group(1))
             name = m.group(2).strip()
+            if not name:
+                continue
             items.append((qty, name))
             total += qty
             continue
@@ -2688,6 +2690,8 @@ def _parsear_lista_productos(texto):
         m = re.match(r'^(.+?)\s+[xX]?(\d+)$', parte)
         if m:
             name = m.group(1).strip()
+            if not name:
+                continue
             qty = int(m.group(2))
             items.append((qty, name))
             total += qty
