@@ -182,10 +182,16 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
         conn.commit()
         conn.close()
         return identity_id
-    except _IntegrityError as e:
+    except _IntegrityError:
+        # Race condition: otro proceso insertó la misma identidad concurrentemente.
+        # Releer determinísticamente en lugar de fallar.
         conn.rollback()
+        cur.execute(f"SELECT id FROM identities WHERE phone = {P} LIMIT 1", (phone_n,))
+        row_retry = cur.fetchone()
         conn.close()
-        raise ValueError("Error al crear identidad.") from e
+        if row_retry:
+            return _row_value(row_retry, "id", 0)
+        raise ValueError("Error al crear identidad: conflicto de unicidad no recuperable.")
 
 
 def ensure_user_person_id(user_id: int, person_id: int) -> None:
