@@ -1628,7 +1628,7 @@ def get_admin_by_id(admin_id: int):
             residence_lat,      -- 12
             residence_lng       -- 13
         FROM admins
-        WHERE id = {P}
+        WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC
         LIMIT 1
     """, (admin_id,))
@@ -2806,11 +2806,11 @@ def get_ally_by_user_id(user_id: int):
 
     
 def get_ally_by_id(ally_id: int):
-    """Devuelve un aliado por su ID (o None si no existe)."""
+    """Devuelve un aliado por su ID (no eliminado, o None si no existe)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT * FROM allies WHERE id = {P} LIMIT 1;",
+        f"SELECT * FROM allies WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0) LIMIT 1;",
         (ally_id,),
     )
     row = cur.fetchone()
@@ -2818,7 +2818,7 @@ def get_ally_by_id(ally_id: int):
     return row
 
 def get_pending_allies():
-    """Devuelve todos los aliados con estado PENDING."""
+    """Devuelve todos los aliados con estado PENDING (no eliminados)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2833,6 +2833,7 @@ def get_pending_allies():
             status
         FROM allies
         WHERE status = 'PENDING'
+          AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY created_at ASC;
     """)
     rows = cur.fetchall()
@@ -2855,6 +2856,7 @@ def get_all_allies():
             barrio,
             status
         FROM allies
+        WHERE (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
     """)
     rows = cur.fetchall()
@@ -2882,6 +2884,7 @@ def get_all_couriers():
             residence_lat,
             residence_lng
         FROM couriers
+        WHERE (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
     """)
     rows = cur.fetchall()
@@ -3082,7 +3085,7 @@ def get_local_admins_count():
     
 
 def get_pending_couriers():
-    """Devuelve todos los repartidores con estado PENDING."""
+    """Devuelve todos los repartidores con estado PENDING (no eliminados)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -3101,6 +3104,7 @@ def get_pending_couriers():
             status
         FROM couriers
         WHERE status = 'PENDING'
+          AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
         """
     )
@@ -3125,6 +3129,7 @@ def get_pending_couriers_by_admin(admin_id):
         WHERE ac.admin_id = {P}
           AND ac.status = 'PENDING'
           AND c.status != 'REJECTED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
         ORDER BY ac.created_at ASC
     """, (admin_id,))
 
@@ -3153,6 +3158,7 @@ def get_couriers_by_admin_and_status(admin_id, status):
         JOIN couriers c ON c.id = ac.courier_id
         WHERE ac.admin_id = {P}
           AND ac.status = {P}
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
         ORDER BY c.full_name ASC
     """, (admin_id, status))
 
@@ -3795,7 +3801,8 @@ def get_courier_by_id(courier_id: int):
             live_location_updated_at, -- 19
             COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
         FROM couriers
-        WHERE id = {P};
+        WHERE id = {P}
+          AND (is_deleted IS NULL OR is_deleted = 0);
     """, (courier_id,))
     row = cur.fetchone()
     conn.close()
