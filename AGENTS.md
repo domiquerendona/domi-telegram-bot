@@ -591,11 +591,77 @@ Mostrar evidencia si ejecuta comandos
 
 9. Reglas del sistema de recargas (CRÍTICAS)
 
-(Se mantiene íntegra la sección previamente definida en el proyecto.)
+El sistema de recargas transfiere saldo del Admin hacia Repartidores/Aliados. Es el componente financiero más crítico del sistema.
+
+Reglas de integridad:
+
+Toda aprobación/rechazo de recarga DEBE ser idempotente.
+
+PROHIBIDO aprobar o rechazar dos veces la misma solicitud.
+
+En concurrencia (approve vs reject simultáneos), solo una operación gana.
+
+Toda operación de recarga DEBE generar un registro en el ledger.
+
+La actualización de balance y el registro en ledger deben ser atómicos (misma transacción).
+
+Estados de recarga:
+
+PENDING → APPROVED: balance transferido, ledger registrado.
+
+PENDING → REJECTED: balance no cambia, ledger no registra movimiento.
+
+APPROVED / REJECTED → estado terminal. PROHIBIDO cambiar a otro estado.
+
+Reglas de validación:
+
+Solo el Admin propietario del balance puede aprobar una recarga a su equipo.
+
+PROHIBIDO modificar el balance de un admin sin registro en ledger.
+
+Los estados de recarga usan normalize_role_status() antes de persistir.
+
+Verificación obligatoria antes de aprobar:
+
+Verificar que el estado sigue siendo PENDING (con SELECT FOR UPDATE en Postgres).
+
+Si el estado ya cambió: retornar (False, "Ya procesado") sin modificar nada.
 
 X. Cotizador y uso de APIs (CRÍTICO: control de costos)
 
-(Se mantiene íntegra la sección previamente definida en el proyecto.)
+El cotizador usa la API de Google Maps (Distance Matrix / Places) para calcular distancias y geocodificar direcciones.
+
+Regla de cuota diaria:
+
+PROHIBIDO llamar a la API de Google Maps sin verificar api_usage_daily primero.
+
+Si api_usage_daily >= límite configurado: retornar error informativo, NO llamar a la API.
+
+Toda llamada a la API DEBE incrementar api_usage_daily en la misma operación (atómico).
+
+Regla de caché:
+
+Los resultados de distancia entre pares de coordenadas DEBEN cachearse.
+
+PROHIBIDO recalcular una distancia ya cacheada para la misma consulta.
+
+El caché vive en base de datos (tabla settings o equivalente).
+
+Regla de geocodificación:
+
+Las coordenadas de usuarios (lat/lng) se capturan vía Telegram (compartir ubicación GPS).
+
+La API solo se usa para geocodificación inversa o búsqueda de direcciones escritas.
+
+PROHIBIDO usar la API para validar ubicaciones que ya tienen coordenadas GPS válidas.
+
+Regla de errores:
+
+Si la API falla (timeout, error de red, cuota agotada): el cotizador retorna error claro al usuario.
+
+PROHIBIDO propagar excepciones de la API sin capturar.
+
+PROHIBIDO reintentar automáticamente sin informar al usuario.
 
 10. Veracidad técnica y evidencia (OBLIGATORIA)
 
@@ -630,3 +696,5 @@ es detallista
 quiere control total del sistema
 
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
+
+Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.

@@ -141,6 +141,7 @@ main.py  ──importa──►  services.py  ──importa──►  db.py
 - Contiene toda la lógica de negocio que no es específica de un módulo grande.
 - Importa desde `db.py` y re-exporta funciones para que `main.py` no acceda a `db.py` directamente.
 - El bloque de re-exports está marcado con el comentario: `# Re-exports para que main.py no acceda a db directamente`.
+- Si `main.py` necesita una función de `db.py` que aún no está en `services.py`: agregarla al bloque de re-exports, luego importarla en `main.py` desde `services.py`. **PROHIBIDO** importarla directamente desde `db.py`.
 
 ### `main.py` — Orquestador
 - Solo contiene: registro de handlers, funciones handler (validar → llamar services → retornar estado), helpers de UI, gestión de estado de flujo, constantes de UI.
@@ -155,6 +156,13 @@ main.py  ──importa──►  services.py  ──importa──►  db.py
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
 - **`profile_changes.py`**: flujo de solicitudes de cambio de perfil de usuarios.
+
+### Regla Anti-Importación Circular
+
+Si un módulo secundario (`profile_changes.py`, `order_delivery.py`, etc.) necesita una función de `main.py`:
+- **PROHIBIDO** importar desde `main` en el encabezado del módulo.
+- **Solución**: mover la función a `services.py` y que ambos importen desde `services.py`.
+- Solo se permite el import lazy (dentro del cuerpo de la función) si la dependencia circular está confirmada y es inevitable. En ese caso, documentar el motivo con un comentario inline.
 
 ---
 
@@ -503,6 +511,28 @@ git branch --show-current
 git diff origin/main nombre-rama -- --name-only
 ```
 
+### Verificación de Compatibilidad Estructural (Obligatorio Antes de Merge)
+
+**PROHIBIDO** hacer merge si la rama tiene paths de archivos incompatibles con `main`.
+
+```bash
+# 1. Verificar que la rama fue creada desde origin/main
+git log --oneline origin/main..nombre-rama
+
+# 2. Comparar estructura de archivos
+git diff origin/main nombre-rama -- --name-only
+
+# 3. Si los paths difieren → ABORTAR
+git merge --abort
+```
+
+Si hay incompatibilidad estructural:
+1. Abortar el merge.
+2. Crear nueva rama desde `origin/main`: `git checkout -b claude/apply-[nombre]-[ID] origin/main`
+3. Analizar commits de la rama incompatible uno por uno: `git show [hash]`
+4. Aplicar los cambios manualmente sobre los paths correctos de `main`.
+5. Compilar y merge normal.
+
 ### Checklist Pre-merge a `main`
 
 Obligatorio cuando el cambio afecta BD, migraciones, `init_db()`, flujos críticos o sistema de recargas:
@@ -512,6 +542,7 @@ Obligatorio cuando el cambio afecta BD, migraciones, `init_db()`, flujos crític
 3. Arranque sin crash, tablas creadas, inserciones reales funcionan
 4. `DATABASE_URL` presente en PROD
 5. Verificación funcional: `/start`, `/menu`, registro real, cambio de estado
+6. Evidencia documentada antes de merge (cuando afecte BD o flujos críticos)
 
 ---
 
@@ -552,6 +583,112 @@ Guards disponibles en `web/auth/guards.py`:
 - Prettier configurado: `printWidth: 100`, `singleQuote: true`
 - Tests con vitest (no Jest ni Karma)
 - Separación en: `core/` (guards, interceptors, services) y `features/` (vistas)
+
+---
+
+## Sistema de Recargas (Reglas Críticas)
+
+El sistema de recargas transfiere saldo del Admin hacia Repartidores/Aliados. Es el componente financiero más crítico.
+
+### Reglas de Integridad
+- Toda aprobación/rechazo es **idempotente**: no se puede procesar dos veces la misma solicitud.
+- En concurrencia (approve vs reject simultáneos), **solo una operación gana**.
+- Actualización de balance + registro en ledger son **atómicos** (misma transacción).
+- Solo el Admin propietario puede aprobar recargas a su equipo.
+
+### Estados de Recarga
+
+| Transición | Efecto |
+|-----------|--------|
+| `PENDING` → `APPROVED` | Balance transferido, ledger registrado |
+| `PENDING` → `REJECTED` | Sin cambio de balance ni ledger |
+| `APPROVED` / `REJECTED` | Estado terminal. **PROHIBIDO** cambiar. |
+
+### Verificación Obligatoria Antes de Aprobar
+```python
+# Verificar que el estado sigue siendo PENDING (SELECT FOR UPDATE en Postgres)
+# Si ya cambió: retornar (False, "Ya procesado") sin tocar nada
+```
+
+Los estados usan `normalize_role_status()` antes de persistir. **PROHIBIDO** modificar balance sin registro en ledger.
+
+---
+
+## Cotizador y Uso de APIs (Control de Costos)
+
+El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota diaria limitada.
+
+### Regla de Cuota
+- **PROHIBIDO** llamar a la API sin verificar `api_usage_daily` primero.
+- Si `api_usage_daily >= límite`: retornar error informativo, **no llamar** a la API.
+- Toda llamada debe incrementar `api_usage_daily` de forma atómica.
+
+### Regla de Caché
+- Distancias entre pares de coordenadas **deben cachearse** en base de datos.
+- **PROHIBIDO** recalcular una distancia ya cacheada para la misma consulta.
+
+### Regla de Geocodificación
+- Coordenadas (lat/lng) se capturan vía Telegram (ubicación GPS). La API solo se usa para geocodificación inversa o búsqueda de direcciones escritas.
+- **PROHIBIDO** usar la API para validar ubicaciones que ya tienen GPS válido.
+
+### Manejo de Errores de API
+- Si la API falla: retornar error claro al usuario. **PROHIBIDO** propagar excepciones sin capturar ni reintentar automáticamente.
+
+---
+
+## Flujo de Trabajo con IA
+
+Estas reglas aplican a cualquier agente que trabaje en este repositorio.
+
+### Antes de Cambiar Código
+1. Mostrar el **bloque exacto** que se va a modificar.
+2. Explicar brevemente **qué** se cambia y **por qué**.
+3. Confirmar: rama activa + archivo exacto.
+
+### Durante el Trabajo
+- No asumir errores solo por ver diffs.
+- No repetir pasos ya completados.
+- No reescribir archivos completos sin autorización.
+- Trabajar **solo** en el objetivo indicado. **PROHIBIDO** ampliar alcance sin aprobación.
+- Cambios mínimos: un solo objetivo por instrucción.
+
+### Después de los Cambios
+
+Ejecutar siempre:
+```bash
+cd Backend/
+python -m py_compile main.py services.py db.py order_delivery.py profile_changes.py
+```
+
+Verificar imports huérfanos tras mover o eliminar funciones:
+```bash
+git grep "nombre_funcion" -- "*.py"
+# Si solo aparece en el bloque import y en ningún otro lugar → importación huérfana, eliminar
+```
+
+Reportar claramente: qué cambió, qué se eliminó, por qué.
+
+### Veracidad Técnica
+
+Siempre separar entre:
+- **IMPLEMENTADO**: existe en el código hoy. Indicar `archivo:función`.
+- **PROPUESTA / FUTURO**: no existe aún. Indicarlo explícitamente.
+
+**PROHIBIDO** afirmar que algo existe sin verificarlo primero.
+
+### Protocolo de Decisiones
+
+```
+Exponer opciones → preguntar → esperar confirmación → ejecutar
+```
+
+**PROHIBIDO** cerrar decisiones de cambio por iniciativa propia.
+
+### Estilo de Colaboración
+
+- Priorizar **estabilidad** sobre velocidad.
+- Preguntar antes de decidir. No improvisar soluciones.
+- Asumir que el usuario es técnico, detallista y quiere **control total** del sistema.
 
 ---
 
