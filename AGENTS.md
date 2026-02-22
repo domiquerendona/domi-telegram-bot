@@ -534,7 +534,22 @@ Debe existir evidencia documentada antes de merge.
 
 Las siguientes ramas son PERMANENTES y NUNCA deben borrarse:
 
-- luisa-web   → rama de trabajo de la colaboradora Luisa (activa)
+- main       → producción (Railway PROD). NUNCA trabajar directamente aquí.
+- staging    → integración/pruebas previas a producción. Toda rama claude/* y verify/* se mergea aquí primero.
+- luisa-web  → rama de trabajo de la colaboradora Luisa (activa).
+
+Flujo oficial de ramas:
+
+  claude/*  ──merge──►  staging  ──(validado)──►  main
+  verify/*  ──merge──►  staging                  (PROD)
+                         (entorno DEV:
+                          BOT_TOKEN DEV
+                          DATABASE_URL separada)
+
+Reglas de flujo:
+- PROHIBIDO mergear claude/* o verify/* directamente a main sin pasar por staging.
+- Un cambio puede ir de staging a main solo cuando fue validado funcionalmente en staging.
+- staging siempre se crea desde origin/main y debe mantenerse al día con main.
 
 Regla general para ramas de colaboradores:
 - PROHIBIDO borrar ramas cuyo nombre no sea del prefijo claude/ o verify/
@@ -542,7 +557,7 @@ Regla general para ramas de colaboradores:
 - En caso de duda, preguntar al usuario antes de borrar
 
 Cómo identificar ramas seguras para borrar:
-1. Ejecutar: git branch -r --merged origin/main
+1. Ejecutar: git branch -r --merged origin/staging
 2. Solo borrar ramas con prefijo claude/ o verify/ que estén en esa lista
 3. NUNCA borrar ramas que no tengan esos prefijos sin confirmación explícita del usuario
 

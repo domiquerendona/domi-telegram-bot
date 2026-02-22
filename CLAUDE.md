@@ -490,14 +490,23 @@ CORS configurado para permitir `http://localhost:4200` en desarrollo.
 
 ### Estructura de Ramas
 
-| Prefijo | Uso |
-|---------|-----|
-| `main` | Producción. **Nunca trabajar directamente aquí.** |
-| `claude/` | Ramas de trabajo de agentes IA |
-| `verify/` | Ramas para validar cambios estructurales de BD antes de merge a main |
-| `luisa-web` | Rama permanente de la colaboradora Luisa. **NUNCA borrar.** |
+| Rama/Prefijo | Tipo | Uso |
+|---|---|---|
+| `main` | Permanente | Producción (Railway PROD). **Nunca trabajar directamente aquí.** |
+| `staging` | Permanente | Integración y pruebas previas a producción. **Nunca borrar.** |
+| `claude/` | Temporal | Ramas de trabajo de agentes IA. Se borran tras merge a staging. |
+| `verify/` | Temporal | Validar cambios estructurales de BD antes de merge a staging/main. |
+| `luisa-web` | Permanente | Rama de la colaboradora Luisa. **NUNCA borrar.** |
 
 ### Flujo de Trabajo
+
+```
+claude/*  ──merge──►  staging  ──(validado)──►  main
+verify/*  ──merge──►  staging                  (PROD)
+                       (entorno DEV:
+                        BOT_TOKEN DEV
+                        DATABASE_URL separada)
+```
 
 ```bash
 # 1. Siempre crear ramas desde origin/main actualizado
@@ -507,8 +516,17 @@ git checkout -b claude/nombre-tarea-ID origin/main
 # 2. Verificar rama activa antes de cualquier cambio
 git branch --show-current
 
-# 3. Antes de merge a main, verificar compatibilidad estructural
-git diff origin/main nombre-rama -- --name-only
+# 3. Mergear a staging primero (NUNCA directo a main)
+git checkout staging
+git merge claude/nombre-tarea-ID --no-ff -m "merge: descripción"
+git push origin staging
+
+# 4. Validar funcionalmente en staging
+
+# 5. Solo cuando esté validado, mergear staging a main
+git checkout main
+git merge staging --no-ff -m "release: descripción"
+git push origin main
 ```
 
 ### Verificación de Compatibilidad Estructural (Obligatorio Antes de Merge)
