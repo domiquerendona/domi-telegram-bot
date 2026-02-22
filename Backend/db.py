@@ -3849,11 +3849,11 @@ def get_totales_registros():
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) FROM allies;")
-    total_allies = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS total FROM allies WHERE (is_deleted IS NULL OR is_deleted = 0);")
+    total_allies = cur.fetchone()["total"]
 
-    cur.execute("SELECT COUNT(*) FROM couriers;")
-    total_couriers = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS total FROM couriers WHERE (is_deleted IS NULL OR is_deleted = 0);")
+    total_couriers = cur.fetchone()["total"]
 
     conn.close()
     return total_allies, total_couriers
