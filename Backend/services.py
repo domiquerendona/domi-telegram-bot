@@ -713,13 +713,14 @@ def get_pricing_config():
 
 
 def get_buy_pricing_config():
-    """Carga la configuracion de recargos por productos (Compras) desde BD."""
+    """Carga la configuracion de recargos por productos (Compras) desde BD.
+
+    Modelo: los primeros 'free_threshold' productos no tienen recargo.
+    Los productos adicionales cobran 'extra_fee' c/u.
+    """
     return {
-        "tier1_max": _to_int(get_setting("buy_tier1_max", "5"), 5),
-        "tier1_fee": _to_int(get_setting("buy_tier1_fee", "1000"), 1000),
-        "tier2_max": _to_int(get_setting("buy_tier2_max", "5"), 5),
-        "tier2_fee": _to_int(get_setting("buy_tier2_fee", "700"), 700),
-        "tier3_fee": _to_int(get_setting("buy_tier3_fee", "500"), 500),
+        "free_threshold": _to_int(get_setting("buy_free_threshold", "2"), 2),
+        "extra_fee": _to_int(get_setting("buy_extra_fee", "1000"), 1000),
     }
 
 
@@ -727,13 +728,18 @@ def calc_buy_products_surcharge(n_products: int, config: dict = None) -> int:
     """
     Calcula el recargo por productos para servicio de Compras.
 
-    Tramos:
-    - 1 a tier1_max (default 5): +tier1_fee c/u
-    - tier1_max+1 a tier1_max+tier2_max (default 6-10): +tier2_fee c/u
-    - tier1_max+tier2_max+1 en adelante (default 11+): +tier3_fee c/u
+    Modelo:
+    - Primeros 'free_threshold' productos (default 2): sin recargo
+    - Productos adicionales: +extra_fee c/u (default $1.000)
+
+    Ejemplo con free_threshold=2, extra_fee=1000:
+    - 1-2 productos: $0
+    - 3 productos:   $1.000  (1 adicional)
+    - 5 productos:   $3.000  (3 adicionales)
+    - 10 productos:  $8.000  (8 adicionales)
 
     Args:
-        n_products: Numero de productos
+        n_products: Numero total de productos
         config: Dict con configuracion. Si None, carga desde BD.
 
     Returns:
@@ -745,17 +751,11 @@ def calc_buy_products_surcharge(n_products: int, config: dict = None) -> int:
     if config is None:
         config = get_buy_pricing_config()
 
-    tier1_max = config["tier1_max"]
-    tier1_fee = config["tier1_fee"]
-    tier2_max = config["tier2_max"]
-    tier2_fee = config["tier2_fee"]
-    tier3_fee = config["tier3_fee"]
+    free_threshold = config.get("free_threshold", 2)
+    extra_fee = config.get("extra_fee", 1000)
 
-    tier1 = min(n_products, tier1_max) * tier1_fee
-    tier2 = min(max(n_products - tier1_max, 0), tier2_max) * tier2_fee
-    tier3 = max(n_products - tier1_max - tier2_max, 0) * tier3_fee
-
-    return tier1 + tier2 + tier3
+    extra_products = max(0, n_products - free_threshold)
+    return extra_products * extra_fee
 
 
 def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:

@@ -798,7 +798,7 @@ def volver_paso_anterior(update, context):
     PEDIDO_VALOR_BASE,            # Capturar valor de base
     PEDIDO_CONFIRMACION,
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
-    PEDIDO_COMPRAS_CANTIDAD,      # Capturar cantidad de productos
+    PEDIDO_COMPRAS_CANTIDAD,      # Capturar lista de productos con cantidades
 ) = range(14, 33)
 
 
@@ -2621,13 +2621,19 @@ def pedido_tipo_servicio_callback(update, context):
 
     context.user_data["service_type"] = tipos_map[data]
 
-    # Si es Compras, pedir cantidad de productos
+    # Si es Compras, pedir lista de productos
     if data == "pedido_tipo_compras":
+        buy_config = get_buy_pricing_config()
+        free_th = buy_config.get("free_threshold", 2)
+        extra_fee = buy_config.get("extra_fee", 1000)
+        extra_fee_fmt = f"${extra_fee:,}".replace(",", ".")
         query.edit_message_text(
             "🛒 COMPRAS\n\n"
-            "Cuantos productos son en total?\n\n"
-            "(Cada 3 unidades de un producto = 1 producto.\n"
-            "Unidades adicionales cuentan como producto extra)"
+            "Escribe la lista de productos con sus cantidades.\n\n"
+            "Ejemplo:\n"
+            "3 platanos, 2 bolsas de leche, 1 jabon\n\n"
+            f"Los primeros {free_th} productos no tienen recargo.\n"
+            f"Cada producto adicional: +{extra_fee_fmt}"
         )
         return PEDIDO_COMPRAS_CANTIDAD
 
@@ -2648,29 +2654,73 @@ def pedido_tipo_servicio_callback(update, context):
         return PEDIDO_NOMBRE
 
 
+def _parsear_lista_productos(texto):
+    """Parsea una lista de productos con cantidades.
+
+    Acepta separadores: coma, punto y coma, salto de linea.
+    Acepta formatos por item:
+      - "3 platanos"   (cantidad al inicio)
+      - "platanos 3"   (cantidad al final)
+      - "platanos x3"  (cantidad al final con prefijo x)
+      - "platanos"     (sin cantidad → cuenta como 1)
+
+    Returns:
+        (items, total) donde items = [(qty, nombre), ...], total = suma de cantidades
+        Si la lista esta vacia, retorna ([], 0).
+    """
+    import re
+    items = []
+    total = 0
+    partes = re.split(r'[,;\n]+', texto)
+    for parte in partes:
+        parte = parte.strip()
+        if not parte:
+            continue
+        # Cantidad al inicio: "3 platanos"
+        m = re.match(r'^(\d+)\s+(.+)$', parte)
+        if m:
+            qty = int(m.group(1))
+            name = m.group(2).strip()
+            items.append((qty, name))
+            total += qty
+            continue
+        # Cantidad al final con x opcional: "platanos x3" o "platanos 3"
+        m = re.match(r'^(.+?)\s+[xX]?(\d+)$', parte)
+        if m:
+            name = m.group(1).strip()
+            qty = int(m.group(2))
+            items.append((qty, name))
+            total += qty
+            continue
+        # Sin cantidad explicita → 1 unidad
+        items.append((1, parte))
+        total += 1
+    return items, total
+
+
 def pedido_compras_cantidad_handler(update, context):
-    """Captura la cantidad de productos para Compras."""
+    """Captura y parsea la lista de productos para Compras."""
     texto = update.message.text.strip()
 
-    try:
-        cantidad = int(texto)
-        if cantidad <= 0:
-            update.message.reply_text(
-                "Cantidad invalida. Escribe un numero mayor a 0:"
-            )
-            return PEDIDO_COMPRAS_CANTIDAD
-        if cantidad > 50:
-            update.message.reply_text(
-                "Maximo 50 productos. Escribe una cantidad valida:"
-            )
-            return PEDIDO_COMPRAS_CANTIDAD
-    except ValueError:
+    items, total = _parsear_lista_productos(texto)
+
+    if not items or total <= 0:
         update.message.reply_text(
-            "Valor invalido. Escribe un numero entero:"
+            "No pude leer la lista. Escribe la cantidad y el nombre de cada producto.\n\n"
+            "Ejemplo:\n"
+            "3 platanos, 2 bolsas de leche, 1 jabon"
         )
         return PEDIDO_COMPRAS_CANTIDAD
 
-    context.user_data["buy_products_count"] = cantidad
+    if total > 50:
+        update.message.reply_text(
+            f"El total de unidades ({total}) supera el maximo de 50.\n"
+            "Ajusta la lista e intentalo de nuevo:"
+        )
+        return PEDIDO_COMPRAS_CANTIDAD
+
+    context.user_data["buy_products_list"] = texto
+    context.user_data["buy_products_count"] = total
 
     # Continuar con el flujo normal
     has_name = context.user_data.get("customer_name")
@@ -2681,7 +2731,7 @@ def pedido_compras_cantidad_handler(update, context):
         return mostrar_pregunta_base(update, context, edit=False)
     else:
         update.message.reply_text(
-            f"Productos: {cantidad}\n\n"
+            f"Lista registrada ({total} unidad(es) en total).\n\n"
             "Ahora escribe el nombre del cliente:"
         )
         return PEDIDO_NOMBRE
@@ -3643,12 +3693,17 @@ def construir_resumen_pedido(context):
         f"Distancia: {distancia:.1f} km\n"
     )
 
-    # Si es Compras, mostrar desglose
-    if tipo_servicio == "Compras" and buy_products > 0:
-        tarifa_distancia = precio - buy_surcharge
-        resumen += f"Tarifa distancia: ${tarifa_distancia:,}".replace(",", ".") + "\n"
-        resumen += f"Productos: {buy_products}\n"
-        resumen += f"Recargo productos: ${buy_surcharge:,}".replace(",", ".") + "\n"
+    # Si es Compras, mostrar lista y desglose de precio
+    if tipo_servicio == "Compras":
+        buy_list = context.user_data.get("buy_products_list", "")
+        if buy_list:
+            resumen += f"Lista de productos:\n{buy_list}\n"
+        if buy_products > 0:
+            tarifa_distancia = precio - buy_surcharge
+            resumen += f"Tarifa distancia: ${tarifa_distancia:,}".replace(",", ".") + "\n"
+            resumen += f"Total unidades: {buy_products}\n"
+            if buy_surcharge > 0:
+                resumen += f"Recargo productos: ${buy_surcharge:,}".replace(",", ".") + "\n"
 
     resumen += f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
 
@@ -3846,6 +3901,16 @@ def pedido_confirmacion_callback(update, context):
         dropoff_lng = context.user_data.get("dropoff_lng")
         quote_source = context.user_data.get("quote_source", "text")
 
+        # Preparar instrucciones (para Compras, incluir lista de productos)
+        base_instructions = context.user_data.get("instructions", "")
+        buy_products_list = context.user_data.get("buy_products_list", "")
+        if service_type == "Compras" and buy_products_list:
+            instructions_final = f"[Lista Compras: {buy_products_list}]"
+            if base_instructions:
+                instructions_final += f"\n{base_instructions}"
+        else:
+            instructions_final = base_instructions
+
         # Crear pedido en BD
         try:
             order_id = create_order(
@@ -3865,7 +3930,7 @@ def pedido_confirmacion_callback(update, context):
                 night_extra=0,
                 additional_incentive=0,
                 total_fee=quote_price,
-                instructions=context.user_data.get("instructions", ""),
+                instructions=instructions_final,
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
                 pickup_lat=pickup_lat,
@@ -3896,7 +3961,8 @@ def pedido_confirmacion_callback(update, context):
             # Construir preview de oferta para repartidor
             preview = construir_preview_oferta(
                 order_id, service_type, pickup_text, customer_address,
-                distance_km, quote_price, requires_cash, cash_required_amount
+                distance_km, quote_price, requires_cash, cash_required_amount,
+                products_list=context.user_data.get("buy_products_list", "")
             )
 
             # Preguntar guardar cliente cuando el telefono no exista en recurrentes.
@@ -3965,7 +4031,8 @@ def pedido_confirmacion_callback(update, context):
 
 
 def construir_preview_oferta(order_id, service_type, pickup_text, customer_address,
-                              distance_km, price, requires_cash, cash_amount):
+                              distance_km, price, requires_cash, cash_amount,
+                              products_list=""):
     """Construye el preview de la oferta que vera el repartidor."""
     preview = (
         "PREVIEW: ASI VERA EL REPARTIDOR LA OFERTA\n"
@@ -3977,6 +4044,9 @@ def construir_preview_oferta(order_id, service_type, pickup_text, customer_addre
         f"Distancia: {distance_km:.1f} km\n"
         f"Pago: ${price:,}".replace(",", ".") + "\n"
     )
+
+    if service_type == "Compras" and products_list:
+        preview += f"Lista de productos:\n{products_list}\n"
 
     if requires_cash and cash_amount > 0:
         preview += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
@@ -6991,9 +7061,9 @@ def _build_tarifas_texto(config, buy_config):
         f"5. Umbral km largo: {config['umbral_km_largo']} km\n"
         f"6. Precio km extra largo (>10km): ${config['precio_km_extra_largo']:,}\n"
         "\nTARIFAS COMPRAS (recargo por productos):\n"
-        f"7. Productos 1-{buy_config['tier1_max']}: ${buy_config['tier1_fee']:,} c/u\n"
-        f"8. Productos {buy_config['tier1_max']+1}-{buy_config['tier1_max']+buy_config['tier2_max']}: ${buy_config['tier2_fee']:,} c/u\n"
-        f"9. Productos {buy_config['tier1_max']+buy_config['tier2_max']+1}+: ${buy_config['tier3_fee']:,} c/u\n"
+        f"7. Productos incluidos gratis: {buy_config['free_threshold']}\n"
+        f"8. Recargo por producto adicional: ${buy_config['extra_fee']:,} c/u\n"
+        f"   (Ej: {buy_config['free_threshold']+3} productos -> ${3*buy_config['extra_fee']:,} de recargo)\n"
     )
 
 
@@ -7071,24 +7141,12 @@ def tarifas_edit_callback(update, context):
         buy_config = get_buy_pricing_config()
         keyboard = [
             [InlineKeyboardButton(
-                f"Max productos tier1 (actual: {buy_config['tier1_max']})",
-                callback_data="pricing_edit_buy_tier1_max"
+                f"Productos incluidos gratis (actual: {buy_config['free_threshold']})",
+                callback_data="pricing_edit_buy_free_threshold"
             )],
             [InlineKeyboardButton(
-                f"Recargo tier1 c/u (actual: ${buy_config['tier1_fee']:,})",
-                callback_data="pricing_edit_buy_tier1_fee"
-            )],
-            [InlineKeyboardButton(
-                f"Max productos tier2 (actual: {buy_config['tier2_max']})",
-                callback_data="pricing_edit_buy_tier2_max"
-            )],
-            [InlineKeyboardButton(
-                f"Recargo tier2 c/u (actual: ${buy_config['tier2_fee']:,})",
-                callback_data="pricing_edit_buy_tier2_fee"
-            )],
-            [InlineKeyboardButton(
-                f"Recargo tier3 c/u (actual: ${buy_config['tier3_fee']:,})",
-                callback_data="pricing_edit_buy_tier3_fee"
+                f"Recargo por producto adicional (actual: ${buy_config['extra_fee']:,})".replace(",", "."),
+                callback_data="pricing_edit_buy_extra_fee"
             )],
             [InlineKeyboardButton("⬅️ Volver", callback_data="pricing_volver")],
         ]
@@ -7111,11 +7169,8 @@ def tarifas_edit_callback(update, context):
         "precio_km_extra_normal": "Precio km extra normal",
         "umbral_km_largo": "Umbral km largo",
         "precio_km_extra_largo": "Precio km extra largo",
-        "buy_tier1_max": "Compras: max productos tier1 (default 5)",
-        "buy_tier1_fee": "Compras: recargo tier1 c/u (default 1000)",
-        "buy_tier2_max": "Compras: max productos tier2 (default 5)",
-        "buy_tier2_fee": "Compras: recargo tier2 c/u (default 700)",
-        "buy_tier3_fee": "Compras: recargo tier3+ c/u (default 500)",
+        "buy_free_threshold": "Compras: productos incluidos gratis (default 2)",
+        "buy_extra_fee": "Compras: recargo por producto adicional en $ (default 1000)",
     }
 
     field_name = field_names.get(field, field)
@@ -7162,9 +7217,10 @@ def tarifas_set_valor(update, context):
     # Pruebas rapidas
     test_31 = calcular_precio_distancia(3.1)
     test_111 = calcular_precio_distancia(11.1)
-    test_buy_3 = calc_buy_products_surcharge(3)
-    test_buy_8 = calc_buy_products_surcharge(8)
-    test_buy_15 = calc_buy_products_surcharge(15)
+    free_th = buy_config.get("free_threshold", 2)
+    test_buy_3 = calc_buy_products_surcharge(free_th, buy_config)
+    test_buy_8 = calc_buy_products_surcharge(free_th + 3, buy_config)
+    test_buy_15 = calc_buy_products_surcharge(free_th + 8, buy_config)
 
     mensaje = (
         "Guardado.\n\n"
@@ -7176,16 +7232,15 @@ def tarifas_set_valor(update, context):
         f"- Umbral largo: {config['umbral_km_largo']} km\n"
         f"- Precio km extra largo: ${config['precio_km_extra_largo']:,}\n\n"
         f"TARIFAS COMPRAS:\n"
-        f"- Tier1 (1-{buy_config['tier1_max']}): ${buy_config['tier1_fee']:,} c/u\n"
-        f"- Tier2 ({buy_config['tier1_max']+1}-{buy_config['tier1_max']+buy_config['tier2_max']}): ${buy_config['tier2_fee']:,} c/u\n"
-        f"- Tier3 ({buy_config['tier1_max']+buy_config['tier2_max']+1}+): ${buy_config['tier3_fee']:,} c/u\n\n"
+        f"- Productos gratis: {buy_config['free_threshold']}\n"
+        f"- Recargo adicional: ${buy_config['extra_fee']:,} c/u\n\n"
         f"Prueba rapida distancia:\n"
         f"3.1 km -> ${test_31:,}\n"
         f"11.1 km -> ${test_111:,}\n\n"
         f"Prueba rapida compras:\n"
-        f"3 productos -> ${test_buy_3:,}\n"
-        f"8 productos -> ${test_buy_8:,}\n"
-        f"15 productos -> ${test_buy_15:,}"
+        f"{buy_config['free_threshold']} productos -> ${test_buy_3:,}\n"
+        f"{buy_config['free_threshold']+3} productos -> ${test_buy_8:,}\n"
+        f"{buy_config['free_threshold']+8} productos -> ${test_buy_15:,}"
     )
 
     update.message.reply_text(mensaje)
