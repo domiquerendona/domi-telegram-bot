@@ -1477,3 +1477,24 @@ def get_user_db_id_from_update(update) -> int:
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     return user_row["id"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers de estado de courier (evitan confusión entre status y availability_status)
+# ---------------------------------------------------------------------------
+
+def courier_role_is_approved(courier) -> bool:
+    """True si el courier tiene su ROL aprobado (couriers.status == 'APPROVED').
+    Usar para saber si el courier fue validado y puede operar en el sistema."""
+    if not courier:
+        return False
+    return _row_value(courier, "status", 10) == "APPROVED"
+
+
+def courier_is_operational(courier) -> bool:
+    """True si el courier está disponible en turno (couriers.availability_status == 'APPROVED').
+    Usar para saber si el courier está activo en el momento actual para recibir pedidos.
+    Requiere que courier_role_is_approved() también sea True para que tenga sentido."""
+    if not courier:
+        return False
+    return _row_value(courier, "availability_status", 20) == "APPROVED"
