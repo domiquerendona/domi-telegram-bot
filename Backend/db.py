@@ -3084,14 +3084,14 @@ def get_local_admins_count():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS total
         FROM admins
         WHERE is_deleted = 0
           AND team_code IS NOT NULL
           AND TRIM(team_code) <> ''
     """)
 
-    count = cur.fetchone()[0]
+    count = cur.fetchone()["total"]
     conn.close()
     return count
     
@@ -3849,11 +3849,11 @@ def get_totales_registros():
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) FROM allies;")
-    total_allies = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS total FROM allies WHERE (is_deleted IS NULL OR is_deleted = 0);")
+    total_allies = cur.fetchone()["total"]
 
-    cur.execute("SELECT COUNT(*) FROM couriers;")
-    total_couriers = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS total FROM couriers WHERE (is_deleted IS NULL OR is_deleted = 0);")
+    total_couriers = cur.fetchone()["total"]
 
     conn.close()
     return total_allies, total_couriers
