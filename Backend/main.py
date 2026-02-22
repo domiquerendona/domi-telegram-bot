@@ -2681,6 +2681,8 @@ def _parsear_lista_productos(texto):
         if m:
             qty = int(m.group(1))
             name = m.group(2).strip()
+            if not name:
+                continue
             items.append((qty, name))
             total += qty
             continue
@@ -2688,6 +2690,8 @@ def _parsear_lista_productos(texto):
         m = re.match(r'^(.+?)\s+[xX]?(\d+)$', parte)
         if m:
             name = m.group(1).strip()
+            if not name:
+                continue
             qty = int(m.group(2))
             items.append((qty, name))
             total += qty
@@ -7208,7 +7212,13 @@ def tarifas_set_valor(update, context):
         return TARIFAS_VALOR
 
     # Guardar en BD - campos de compras usan prefijo 'buy_', distancia usa 'pricing_'
-    save_pricing_setting(field, texto)
+    try:
+        save_pricing_setting(field, texto)
+    except ValueError as e:
+        update.message.reply_text(
+            f"Valor rechazado: {e}\n\nIntenta de nuevo o usa /cancel."
+        )
+        return TARIFAS_VALOR
 
     # Recargar config y mostrar
     config = get_pricing_config()

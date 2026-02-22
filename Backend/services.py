@@ -717,10 +717,33 @@ def get_buy_pricing_config():
 
     Modelo: los primeros 'free_threshold' productos no tienen recargo.
     Los productos adicionales cobran 'extra_fee' c/u.
+
+    Si buy_free_threshold/buy_extra_fee no existen en BD pero existen claves
+    legacy buy_tier*, calcula valores equivalentes minimos como fallback de
+    lectura (no hace migracion destructiva).
     """
+    raw_threshold = get_setting("buy_free_threshold", None)
+    raw_extra_fee = get_setting("buy_extra_fee", None)
+
+    if raw_threshold is None and raw_extra_fee is None:
+        # Fallback legacy: si existen las claves del modelo anterior de tres tramos
+        tier1_fee_raw = get_setting("buy_tier1_fee", None)
+        tier2_fee_raw = get_setting("buy_tier2_fee", None)
+        tier3_fee_raw = get_setting("buy_tier3_fee", None)
+        if tier1_fee_raw is not None or tier2_fee_raw is not None or tier3_fee_raw is not None:
+            # Preferencia: tier2 (tramo intermedio) > tier1 > tier3
+            # Sin productos gratis; cada producto tiene recargo desde el primero
+            if tier2_fee_raw is not None:
+                extra_fee = _to_int(tier2_fee_raw, 700)
+            elif tier1_fee_raw is not None:
+                extra_fee = _to_int(tier1_fee_raw, 1000)
+            else:
+                extra_fee = _to_int(tier3_fee_raw, 500)
+            return {"free_threshold": 0, "extra_fee": extra_fee}
+
     return {
-        "free_threshold": _to_int(get_setting("buy_free_threshold", "2"), 2),
-        "extra_fee": _to_int(get_setting("buy_extra_fee", "1000"), 1000),
+        "free_threshold": _to_int(raw_threshold if raw_threshold is not None else "2", 2),
+        "extra_fee": _to_int(raw_extra_fee if raw_extra_fee is not None else "1000", 1000),
     }
 
 
@@ -751,8 +774,8 @@ def calc_buy_products_surcharge(n_products: int, config: dict = None) -> int:
     if config is None:
         config = get_buy_pricing_config()
 
-    free_threshold = config.get("free_threshold", 2)
-    extra_fee = config.get("extra_fee", 1000)
+    free_threshold = max(0, config.get("free_threshold", 2))
+    extra_fee = max(0, config.get("extra_fee", 1000))
 
     extra_products = max(0, n_products - free_threshold)
     return extra_products * extra_fee
@@ -1435,6 +1458,13 @@ def clear_offer_voice() -> None:
 def save_pricing_setting(field: str, value_str: str) -> None:
     """Persiste un campo de tarifa.  Los campos de compras usan prefijo 'buy_',
     los de distancia usan prefijo 'pricing_'."""
+    if field in ("buy_free_threshold", "buy_extra_fee"):
+        import re as _re
+        if not _re.fullmatch(r'\d+', (value_str or "").strip()):
+            raise ValueError(f"El campo '{field}' debe ser un entero mayor o igual a 0.")
+        int_val = int(value_str.strip())
+        if int_val < 0:
+            raise ValueError(f"El campo '{field}' no puede ser negativo (valor: {int_val}).")
     if field.startswith("buy_"):
         setting_key = field
     else:
@@ -1477,3 +1507,24 @@ def get_user_db_id_from_update(update) -> int:
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     return user_row["id"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers de estado de courier (evitan confusión entre status y availability_status)
+# ---------------------------------------------------------------------------
+
+def courier_role_is_approved(courier) -> bool:
+    """True si el courier tiene su ROL aprobado (couriers.status == 'APPROVED').
+    Usar para saber si el courier fue validado y puede operar en el sistema."""
+    if not courier:
+        return False
+    return _row_value(courier, "status", 10) == "APPROVED"
+
+
+def courier_is_operational(courier) -> bool:
+    """True si el courier está disponible en turno (couriers.availability_status == 'APPROVED').
+    Usar para saber si el courier está activo en el momento actual para recibir pedidos.
+    Requiere que courier_role_is_approved() también sea True para que tenga sentido."""
+    if not courier:
+        return False
+    return _row_value(courier, "availability_status", 20) == "APPROVED"

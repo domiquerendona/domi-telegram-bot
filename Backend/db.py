@@ -3,7 +3,10 @@ import os
 import re
 import json
 import time
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 # Detectar motor de base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -179,10 +182,16 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
         conn.commit()
         conn.close()
         return identity_id
-    except _IntegrityError as e:
+    except _IntegrityError:
+        # Race condition: otro proceso insertó la misma identidad concurrentemente.
+        # Releer determinísticamente en lugar de fallar.
         conn.rollback()
+        cur.execute(f"SELECT id FROM identities WHERE phone = {P} LIMIT 1", (phone_n,))
+        row_retry = cur.fetchone()
         conn.close()
-        raise ValueError("Error al crear identidad.") from e
+        if row_retry:
+            return _row_value(row_retry, "id", 0)
+        raise ValueError("Error al crear identidad: conflicto de unicidad no recuperable.")
 
 
 def ensure_user_person_id(user_id: int, person_id: int) -> None:
@@ -269,7 +278,10 @@ def _audit_status_change(cur, entity_type: str, entity_id: int, old_status: str,
             changed_by or "UNKNOWN",
         ))
     except Exception as e:
-        print("[WARN] No se pudo registrar status_audit_log:", e)
+        logger.error(
+            "[AUDIT] status_audit_log falló: entity_type=%s entity_id=%s %s→%s source=%s changed_by=%s error=%s",
+            entity_type, entity_id, old_status, new_status, source, changed_by, e,
+        )
 
 
 def init_db():
@@ -1628,7 +1640,7 @@ def get_admin_by_id(admin_id: int):
             residence_lat,      -- 12
             residence_lng       -- 13
         FROM admins
-        WHERE id = {P}
+        WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC
         LIMIT 1
     """, (admin_id,))
@@ -2806,11 +2818,11 @@ def get_ally_by_user_id(user_id: int):
 
     
 def get_ally_by_id(ally_id: int):
-    """Devuelve un aliado por su ID (o None si no existe)."""
+    """Devuelve un aliado por su ID (no eliminado, o None si no existe)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT * FROM allies WHERE id = {P} LIMIT 1;",
+        f"SELECT * FROM allies WHERE id = {P} AND (is_deleted IS NULL OR is_deleted = 0) LIMIT 1;",
         (ally_id,),
     )
     row = cur.fetchone()
@@ -2818,7 +2830,7 @@ def get_ally_by_id(ally_id: int):
     return row
 
 def get_pending_allies():
-    """Devuelve todos los aliados con estado PENDING."""
+    """Devuelve todos los aliados con estado PENDING (no eliminados)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -2833,6 +2845,7 @@ def get_pending_allies():
             status
         FROM allies
         WHERE status = 'PENDING'
+          AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY created_at ASC;
     """)
     rows = cur.fetchall()
@@ -2855,6 +2868,7 @@ def get_all_allies():
             barrio,
             status
         FROM allies
+        WHERE (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
     """)
     rows = cur.fetchall()
@@ -2882,6 +2896,7 @@ def get_all_couriers():
             residence_lat,
             residence_lng
         FROM couriers
+        WHERE (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
     """)
     rows = cur.fetchall()
@@ -3082,7 +3097,7 @@ def get_local_admins_count():
     
 
 def get_pending_couriers():
-    """Devuelve todos los repartidores con estado PENDING."""
+    """Devuelve todos los repartidores con estado PENDING (no eliminados)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -3101,6 +3116,7 @@ def get_pending_couriers():
             status
         FROM couriers
         WHERE status = 'PENDING'
+          AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY id ASC;
         """
     )
@@ -3125,6 +3141,7 @@ def get_pending_couriers_by_admin(admin_id):
         WHERE ac.admin_id = {P}
           AND ac.status = 'PENDING'
           AND c.status != 'REJECTED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
         ORDER BY ac.created_at ASC
     """, (admin_id,))
 
@@ -3153,6 +3170,7 @@ def get_couriers_by_admin_and_status(admin_id, status):
         JOIN couriers c ON c.id = ac.courier_id
         WHERE ac.admin_id = {P}
           AND ac.status = {P}
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
         ORDER BY c.full_name ASC
     """, (admin_id, status))
 
@@ -3795,7 +3813,8 @@ def get_courier_by_id(courier_id: int):
             live_location_updated_at, -- 19
             COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
         FROM couriers
-        WHERE id = {P};
+        WHERE id = {P}
+          AND (is_deleted IS NULL OR is_deleted = 0);
     """, (courier_id,))
     row = cur.fetchone()
     conn.close()
