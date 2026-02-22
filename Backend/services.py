@@ -728,15 +728,18 @@ def get_buy_pricing_config():
     if raw_threshold is None and raw_extra_fee is None:
         # Fallback legacy: si existen las claves del modelo anterior de tres tramos
         tier1_fee_raw = get_setting("buy_tier1_fee", None)
+        tier2_fee_raw = get_setting("buy_tier2_fee", None)
         tier3_fee_raw = get_setting("buy_tier3_fee", None)
-        if tier1_fee_raw is not None or tier3_fee_raw is not None:
-            # Sin productos gratis; recargo = tarifa minima de los tramos existentes
-            fees = [
-                _to_int(tier1_fee_raw, 1000) if tier1_fee_raw is not None else None,
-                _to_int(tier3_fee_raw, 500) if tier3_fee_raw is not None else None,
-            ]
-            min_fee = min(f for f in fees if f is not None)
-            return {"free_threshold": 0, "extra_fee": min_fee}
+        if tier1_fee_raw is not None or tier2_fee_raw is not None or tier3_fee_raw is not None:
+            # Preferencia: tier2 (tramo intermedio) > tier1 > tier3
+            # Sin productos gratis; cada producto tiene recargo desde el primero
+            if tier2_fee_raw is not None:
+                extra_fee = _to_int(tier2_fee_raw, 700)
+            elif tier1_fee_raw is not None:
+                extra_fee = _to_int(tier1_fee_raw, 1000)
+            else:
+                extra_fee = _to_int(tier3_fee_raw, 500)
+            return {"free_threshold": 0, "extra_fee": extra_fee}
 
     return {
         "free_threshold": _to_int(raw_threshold if raw_threshold is not None else "2", 2),
@@ -1456,10 +1459,10 @@ def save_pricing_setting(field: str, value_str: str) -> None:
     """Persiste un campo de tarifa.  Los campos de compras usan prefijo 'buy_',
     los de distancia usan prefijo 'pricing_'."""
     if field in ("buy_free_threshold", "buy_extra_fee"):
-        try:
-            int_val = int(float(value_str))
-        except (ValueError, TypeError):
-            raise ValueError(f"El campo '{field}' debe ser un número entero.")
+        import re as _re
+        if not _re.fullmatch(r'\d+', (value_str or "").strip()):
+            raise ValueError(f"El campo '{field}' debe ser un número entero positivo (sin decimales ni signos).")
+        int_val = int(value_str.strip())
         if int_val < 0:
             raise ValueError(f"El campo '{field}' no puede ser negativo (valor: {int_val}).")
     if field.startswith("buy_"):

@@ -7212,7 +7212,13 @@ def tarifas_set_valor(update, context):
         return TARIFAS_VALOR
 
     # Guardar en BD - campos de compras usan prefijo 'buy_', distancia usa 'pricing_'
-    save_pricing_setting(field, texto)
+    try:
+        save_pricing_setting(field, texto)
+    except ValueError as e:
+        update.message.reply_text(
+            f"Valor rechazado: {e}\n\nIntenta de nuevo o usa /cancel."
+        )
+        return TARIFAS_VALOR
 
     # Recargar config y mostrar
     config = get_pricing_config()
