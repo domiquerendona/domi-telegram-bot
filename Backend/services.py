@@ -1461,7 +1461,7 @@ def save_pricing_setting(field: str, value_str: str) -> None:
     if field in ("buy_free_threshold", "buy_extra_fee"):
         import re as _re
         if not _re.fullmatch(r'\d+', (value_str or "").strip()):
-            raise ValueError(f"El campo '{field}' debe ser un número entero positivo (sin decimales ni signos).")
+            raise ValueError(f"El campo '{field}' debe ser un entero mayor o igual a 0.")
         int_val = int(value_str.strip())
         if int_val < 0:
             raise ValueError(f"El campo '{field}' no puede ser negativo (valor: {int_val}).")
