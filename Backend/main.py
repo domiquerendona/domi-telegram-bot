@@ -4955,10 +4955,10 @@ def admin_menu_callback(update, context):
         if not target:
             query.answer("Admin no encontrado", show_alert=True)
             return
-        if target[8] == "PLATFORM":
+        if target["team_code"] == "PLATFORM":
             query.answer("No aplica para Admin Plataforma", show_alert=True)
             return
-        if new_status == "APPROVED" and target[9] != "APPROVED":
+        if new_status == "APPROVED" and target["status"] != "APPROVED":
             query.answer("Solo admins locales APPROVED pueden recibir este permiso.", show_alert=True)
             return
 
@@ -5450,7 +5450,7 @@ def admin_menu_callback(update, context):
         # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
         try:
             admin = get_admin_by_id(admin_id)
-            admin_user_db_id = admin[1]  # users.id interno
+            admin_user_db_id = admin["user_id"]
 
             u = get_user_by_id(admin_user_db_id)
             if u:

@@ -4093,8 +4093,8 @@ def soft_delete_admin_by_id(admin_id: int):
 def count_admins():
     conn = conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM admins WHERE is_deleted=0")
-    n = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM admins WHERE is_deleted=0")
+    n = cur.fetchone()["n"]
     conn.close()
     return n
     
@@ -4118,11 +4118,11 @@ def count_admin_couriers(admin_id: int):
     conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS n
         FROM admin_couriers
         WHERE admin_id={P}
     """, (admin_id,))
-    n = cur.fetchone()[0]
+    n = cur.fetchone()["n"]
     conn.close()
     return n
 
@@ -4135,12 +4135,12 @@ def count_admin_couriers_with_min_balance(admin_id: int, min_balance: int = 5000
     conn = conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS n
         FROM admin_couriers
         WHERE admin_id={P}
           AND balance >= {P}
     """, (admin_id, min_balance))
-    n = cur.fetchone()[0]
+    n = cur.fetchone()["n"]
     conn.close()
     return n
 
@@ -4150,11 +4150,11 @@ def count_admin_allies(admin_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS n
         FROM admin_allies
         WHERE admin_id = {P}
     """, (admin_id,))
-    n = cur.fetchone()[0]
+    n = cur.fetchone()["n"]
     conn.close()
     return n
 
@@ -4164,12 +4164,12 @@ def count_admin_allies_with_min_balance(admin_id: int, min_balance: int = 5000):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT COUNT(*)
+        SELECT COUNT(*) AS n
         FROM admin_allies
         WHERE admin_id = {P}
           AND balance >= {P}
     """, (admin_id, min_balance))
-    n = cur.fetchone()[0]
+    n = cur.fetchone()["n"]
     conn.close()
     return n
 
