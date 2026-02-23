@@ -8574,6 +8574,22 @@ def cmd_configurar_pagos(update, context):
     return mostrar_menu_pagos(update, context, admin_id, es_mensaje=True)
 
 
+def cmd_configurar_pagos_callback(update, context):
+    """Entry point del ConversationHandler de pagos desde el boton config_pagos."""
+    query = update.callback_query
+    query.answer()
+    user_tg = query.from_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    user_db_id = user_row["id"] if isinstance(user_row, dict) else user_row[0]
+    admin = get_admin_by_user_id(user_db_id)
+    if not admin:
+        query.edit_message_text("Este menu es solo para administradores.")
+        return ConversationHandler.END
+    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    context.user_data["pago_admin_id"] = admin_id
+    return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
+
+
 def mostrar_menu_pagos(update, context, admin_id, es_mensaje=False):
     """Muestra el menu de cuentas de pago."""
     methods = list_payment_methods(admin_id, only_active=False)
@@ -9322,20 +9338,6 @@ def admin_config_callback(update, context):
     user_id = query.from_user.id
     query.answer()
 
-    # Configurar pagos: accesible para admin plataforma y admin local
-    if data == "config_pagos":
-        user_tg = query.from_user
-        user_row = ensure_user(user_tg.id, user_tg.username)
-        user_db_id = user_row["id"] if isinstance(user_row, dict) else user_row[0]
-        admin = get_admin_by_user_id(user_db_id)
-        if not admin:
-            query.answer("No tienes perfil de administrador.", show_alert=True)
-            return
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-        context.user_data["pago_admin_id"] = admin_id
-        mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
-        return
-
     if not user_has_platform_admin(user_id):
         query.answer("Solo el Administrador de Plataforma puede usar este menu.", show_alert=True)
         return
@@ -9908,7 +9910,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern=r"^menu_"))
 
     # Configuraciones (botones config_*)
-    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_"))
+    dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
     # Aprobación / rechazo Aliados (botones ally_approve_ID / ally_reject_ID o similar)
@@ -9999,7 +10001,10 @@ def main():
 
     # ConversationHandler para /configurar_pagos
     configurar_pagos_conv = ConversationHandler(
-        entry_points=[CommandHandler("configurar_pagos", cmd_configurar_pagos)],
+        entry_points=[
+            CommandHandler("configurar_pagos", cmd_configurar_pagos),
+            CallbackQueryHandler(cmd_configurar_pagos_callback, pattern=r"^config_pagos$"),
+        ],
         states={
             PAGO_MENU: [CallbackQueryHandler(pagos_callback, pattern=r"^pagos_")],
             PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
