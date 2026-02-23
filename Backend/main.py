@@ -9162,10 +9162,16 @@ def ally_approval_callback(update, context):
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
     if nuevo_estado == "APPROVED":
-        link = get_admin_link_for_ally(ally_id)
-        if link:
-            keep_admin_id = link["admin_id"]
+        try:
+            link = get_admin_link_for_ally(ally_id)
+            if link:
+                keep_admin_id = link["admin_id"]
+            else:
+                keep_admin_id = get_platform_admin_id()
+            upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
+        except Exception as e:
+            print(f"[ERROR] asegurar vinculo APPROVED de ally {ally_id}: {e}")
 
     ally = get_ally_by_id(ally_id)
     if not ally:
