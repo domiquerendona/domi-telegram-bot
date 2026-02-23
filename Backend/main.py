@@ -912,15 +912,10 @@ def start(update, context):
 
     # Admin Local
     if admin_local:
-        if isinstance(admin_local, dict):
-            admin_status = admin_local.get("status", "PENDING")
-            team_name = admin_local.get("team_name") or "-"
-            team_code = admin_local.get("team_code") or "-"
-        else:
-            # id, user_id, full_name, phone, city, barrio, status, created_at, team_name, document_number, team_code
-            admin_status = admin_local[6]
-            team_name = admin_local[8] or "-"
-            team_code = admin_local[10] if len(admin_local) > 10 and admin_local[10] else "-"
+        admin_status = admin_local.get("status", "PENDING") if isinstance(admin_local, dict) else admin_local["status"]
+        admin_status = admin_status or "PENDING"
+        team_name = (admin_local.get("team_name") if isinstance(admin_local, dict) else admin_local["team_name"]) or "-"
+        team_code = (admin_local.get("team_code") if isinstance(admin_local, dict) else admin_local["team_code"]) or "-"
 
         estado_lineas.append(f"• Administrador Local: equipo {team_name} (estado: {admin_status}).")
 
@@ -1020,7 +1015,7 @@ def start(update, context):
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
     elif admin_local:
         comandos.append("• /mi_admin  - Ver tu panel de administrador local")
-        admin_status = admin_local["status"] if isinstance(admin_local, dict) else admin_local[6]
+        admin_status = admin_local["status"]
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
@@ -1147,8 +1142,8 @@ def mi_aliado(update, context):
     if not ally:
         update.message.reply_text("No tienes perfil de aliado. Usa /soy_aliado para registrarte.")
         return
-    status = ally["status"] if isinstance(ally, dict) else ally[8]
-    business_name = ally["business_name"] if isinstance(ally, dict) else ally[2]
+    status = ally["status"]
+    business_name = ally["business_name"]
     msg = (
         "🍕 GESTION DE ALIADO\n\n"
         f"Negocio: {business_name}\n"
@@ -1385,8 +1380,8 @@ def soy_aliado(update, context):
     # Validación anti-duplicados
     existing = get_ally_by_user_id(user_db_id)
     if existing:
-        status = existing["status"] if isinstance(existing, dict) else existing[8]
-        ally_id = existing["id"] if isinstance(existing, dict) else existing[0]
+        status = existing["status"]
+        ally_id = existing["id"]
 
         rejection_type = get_ally_rejection_type_by_id(ally_id)
 
@@ -2135,7 +2130,7 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    courier_id = courier["id"] if isinstance(courier, dict) else courier[0]
+    courier_id = courier["id"]
 
     try:
         context.bot.send_message(
@@ -4250,7 +4245,7 @@ def repartidores_pendientes(update, context):
             message.reply_text("No tienes permisos para ver repartidores pendientes.")
             return
 
-        admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+        admin_id = admin["id"]
         if not admin_id:
             message.reply_text("No se pudo validar tu rol de administrador.")
             return
@@ -4272,18 +4267,11 @@ def repartidores_pendientes(update, context):
 
     for c in pendientes:
         # Ideal: que ambas funciones de DB devuelvan (courier_id, full_name, phone, city, barrio)
-        if isinstance(c, dict):
-            courier_id = c.get("courier_id") or c.get("id")
-            full_name = c.get("full_name", "")
-            phone = c.get("phone", "")
-            city = c.get("city", "")
-            barrio = c.get("barrio", "")
-        else:
-            courier_id = c[0]
-            full_name = c[1] if len(c) > 1 else ""
-            phone = c[2] if len(c) > 2 else ""
-            city = c[3] if len(c) > 3 else ""
-            barrio = c[4] if len(c) > 4 else ""
+        courier_id = c.get("courier_id") or c.get("id")
+        full_name = c.get("full_name", "")
+        phone = c.get("phone", "")
+        city = c.get("city", "")
+        barrio = c.get("barrio", "")
 
         if not courier_id:
             continue
@@ -4336,8 +4324,8 @@ def soy_admin(update, context):
 
     existing = get_admin_by_user_id(user_db_id)
     if existing:
-        status = existing.get("status") if isinstance(existing, dict) else existing[7]
-        admin_id = existing.get("id") if isinstance(existing, dict) else existing[0]
+        status = existing["status"]
+        admin_id = existing["id"]
 
         rejection_type = get_admin_rejection_type_by_id(admin_id)
 
@@ -4365,12 +4353,12 @@ def soy_admin(update, context):
             )
             return ConversationHandler.END
 
-        team_name = existing.get("team_name") if isinstance(existing, dict) else (existing[9] if len(existing) > 9 and existing[9] else existing[3])
-        doc = existing.get("document_number") if isinstance(existing, dict) else (existing[10] if len(existing) > 10 and existing[10] else "No registrado")
-        full_name = existing.get("full_name") if isinstance(existing, dict) else existing[3]
-        phone = existing.get("phone") if isinstance(existing, dict) else existing[4]
-        city = existing.get("city") if isinstance(existing, dict) else existing[5]
-        barrio = existing.get("barrio") if isinstance(existing, dict) else existing[6]
+        team_name = existing["team_name"] or existing["full_name"]
+        doc = existing["document_number"] or "No registrado"
+        full_name = existing["full_name"]
+        phone = existing["phone"]
+        city = existing["city"]
+        barrio = existing["barrio"]
 
         update.message.reply_text(
             "Ya tienes un registro como Administrador Local.\n"
@@ -5133,9 +5121,9 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for t in teams:
-            admin_id = t[0]
-            team_name = t[1] or "-"
-            team_code = t[2] or "-"
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(admin_id, team_name, team_code),
                 callback_data="admin_saldos_team_couriers_{}_0".format(admin_id)
@@ -5162,9 +5150,9 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for t in teams:
-            admin_id = t[0]
-            team_name = t[1] or "-"
-            team_code = t[2] or "-"
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(admin_id, team_name, team_code),
                 callback_data="admin_saldos_team_allies_{}_0".format(admin_id)
@@ -5196,9 +5184,9 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for t in page:
-            admin_id = t[0]
-            team_name = t[1] or "-"
-            team_code = t[2] or "-"
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(admin_id, team_name, team_code),
                 callback_data="admin_saldos_member_admin_{}_{}".format(admin_id, offset)
@@ -5239,9 +5227,9 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for idx, r in enumerate(links):
-            courier_id = r[1]
-            courier_name = r[2] or "-"
-            balance = r[6] or 0
+            courier_id = r["courier_id"]
+            courier_name = r["full_name"] or "-"
+            balance = r["balance"] or 0
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} | saldo {}".format(courier_id, courier_name, balance),
                 callback_data="admin_saldos_member_courier_{}_{}_{}".format(admin_id, offset, idx)
@@ -5282,9 +5270,9 @@ def admin_menu_callback(update, context):
 
         keyboard = []
         for idx, r in enumerate(links):
-            ally_id = r[1]
-            business_name = r[2] or "-"
-            balance = r[7] or 0
+            ally_id = r["ally_id"]
+            business_name = r["business_name"] or "-"
+            balance = r["balance"] or 0
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} | saldo {}".format(ally_id, business_name, balance),
                 callback_data="admin_saldos_member_ally_{}_{}_{}".format(admin_id, offset, idx)
@@ -5324,12 +5312,12 @@ def admin_menu_callback(update, context):
             return
 
         r = links[idx]
-        courier_id = r[1]
-        courier_name = r[2] or "-"
-        phone = r[3] or "-"
-        city = r[4] or "-"
-        barrio = r[5] or "-"
-        balance = r[6] or 0
+        courier_id = r["courier_id"]
+        courier_name = r["full_name"] or "-"
+        phone = r["phone"] or "-"
+        city = r["city"] or "-"
+        barrio = r["barrio"] or "-"
+        balance = r["balance"] or 0
         texto = (
             "Repartidor ID: {}\n"
             "Nombre: {}\n"
@@ -5362,13 +5350,13 @@ def admin_menu_callback(update, context):
             return
 
         r = links[idx]
-        ally_id = r[1]
-        business_name = r[2] or "-"
-        owner_name = r[3] or "-"
-        phone = r[4] or "-"
-        city = r[5] or "-"
-        barrio = r[6] or "-"
-        balance = r[7] or 0
+        ally_id = r["ally_id"]
+        business_name = r["business_name"] or "-"
+        owner_name = r["owner_name"] or "-"
+        phone = r["phone"] or "-"
+        city = r["city"] or "-"
+        barrio = r["barrio"] or "-"
+        balance = r["balance"] or 0
         texto = (
             "Aliado ID: {}\n"
             "Negocio: {}\n"
@@ -5425,7 +5413,7 @@ def admin_menu_callback(update, context):
         user_db_id = get_user_db_id_from_update(update)
         admin = get_admin_by_user_id(user_db_id)
         if admin:
-            admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+            admin_id = admin["id"]
             return admin_orders_panel(update, context, admin_id, is_platform=True)
         query.answer("No se encontro tu perfil de admin.", show_alert=True)
         return
@@ -5721,7 +5709,7 @@ def courier_pick_admin_callback(update, context):
             context.user_data.clear()
             return
 
-        platform_admin_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+        platform_admin_id = platform_admin["id"]
         try:
             create_admin_courier_link(platform_admin_id, courier_id)
         except Exception as e:
@@ -5774,11 +5762,7 @@ def courier_pick_admin_callback(update, context):
         # Heurística:
         # - si admin[1] parece un Telegram ID (muy grande), lo usamos como chat_id
         # - si no, NO rompemos el flujo (solo omitimos notificación)
-        admin_user_field = None
-        if isinstance(admin, dict):
-            admin_user_field = admin.get("user_id")
-        else:
-            admin_user_field = admin[1] if len(admin) > 1 else None
+        admin_user_field = admin.get("user_id") if isinstance(admin, dict) else admin["user_id"]
 
         if admin_user_field is not None:
             try:
@@ -5855,9 +5839,9 @@ def admins_pendientes(update, context):
 
     keyboard = []
     for admin in admins:
-        admin_id = admin[0]
-        full_name = admin[2]
-        city = admin[4]
+        admin_id = admin["id"]
+        full_name = admin["full_name"]
+        city = admin["city"]
 
         keyboard.append([
             InlineKeyboardButton(
@@ -5901,14 +5885,14 @@ def admin_ver_pendiente(update, context):
 
     texto = (
         "Administrador pendiente:\n\n"
-        f"ID: {admin[0]}\n"
-        f"Nombre: {admin[2]}\n"
-        f"Teléfono: {admin[3]}\n"
-        f"Ciudad: {admin[4]}\n"
-        f"Barrio: {admin[5]}\n"
-        f"Equipo: {admin[8] or '-'}\n"
-        f"Documento: {admin[7] or '-'}\n"
-        f"Estado: {admin[9]}\n"
+        f"ID: {admin['id']}\n"
+        f"Nombre: {admin['full_name']}\n"
+        f"Teléfono: {admin['phone']}\n"
+        f"Ciudad: {admin['city']}\n"
+        f"Barrio: {admin['barrio']}\n"
+        f"Equipo: {admin['team_name'] or '-'}\n"
+        f"Documento: {admin['document_number'] or '-'}\n"
+        f"Estado: {admin['status']}\n"
         "Residencia: {}\n"
         "Ubicación residencia: {}\n"
         "{}"
@@ -6555,7 +6539,7 @@ def agenda_cmd(update, context):
         )
         return ConversationHandler.END
 
-    status = ally[8] if isinstance(ally, (list, tuple)) else ally.get("status")
+    status = ally["status"]
     if status != "APPROVED":
         update.message.reply_text(
             "Tu cuenta de aliado no esta aprobada.\n"
@@ -6564,7 +6548,7 @@ def agenda_cmd(update, context):
         return ConversationHandler.END
 
     context.user_data.clear()
-    ally_id = ally[0] if isinstance(ally, (list, tuple)) else ally.get("id")
+    ally_id = ally["id"]
     context.user_data["active_ally_id"] = ally_id
     context.user_data["ally"] = {"id": ally_id}
 
@@ -7510,8 +7494,7 @@ def mi_admin(update, context):
         update.message.reply_text("No tienes perfil de Administrador Local registrado.")
         return
 
-    # Soportar dict/tupla
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_id = admin["id"]
 
     # Traer detalle completo (incluye team_code)
     admin_full = get_admin_by_id(admin_id)
@@ -8568,7 +8551,7 @@ def cmd_configurar_pagos(update, context):
         update.message.reply_text("Este comando es solo para administradores.")
         return ConversationHandler.END
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_id = admin["id"]
     context.user_data["pago_admin_id"] = admin_id
 
     return mostrar_menu_pagos(update, context, admin_id, es_mensaje=True)
@@ -8580,12 +8563,12 @@ def cmd_configurar_pagos_callback(update, context):
     query.answer()
     user_tg = query.from_user
     user_row = ensure_user(user_tg.id, user_tg.username)
-    user_db_id = user_row["id"] if isinstance(user_row, dict) else user_row[0]
+    user_db_id = user_row["id"]
     admin = get_admin_by_user_id(user_db_id)
     if not admin:
         query.edit_message_text("Este menu es solo para administradores.")
         return ConversationHandler.END
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_id = admin["id"]
     context.user_data["pago_admin_id"] = admin_id
     return mostrar_menu_pagos(update, context, admin_id, es_mensaje=False)
 
@@ -8638,7 +8621,7 @@ def pagos_callback(update, context):
         query.edit_message_text("No autorizado.")
         return ConversationHandler.END
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
+    admin_id = admin["id"]
     context.user_data["pago_admin_id"] = admin_id
 
     if data == "pagos_cerrar":
@@ -8865,8 +8848,7 @@ def admin_local_callback(update, context):
         query.edit_message_text("No autorizado.")
         return
 
-    admin_id = admin["id"] if isinstance(admin, dict) else admin[0]
-
+    admin_id = admin["id"]
 
     # Seguridad extra SOLO para callbacks que terminan en admin_id
     if data.startswith(("local_check_", "local_status_", "local_couriers_pending_")):
@@ -9004,8 +8986,8 @@ def admin_local_callback(update, context):
 
         keyboard = []
         for c in pendientes:
-            courier_id = c[0]
-            full_name = c[1] if len(c) > 1 else ""
+            courier_id = c["courier_id"]
+            full_name = c["full_name"] or ""
             keyboard.append([
                 InlineKeyboardButton(
                     f"ID {courier_id} - {full_name}",
@@ -9029,9 +9011,9 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
 
-        residence_address = courier[11] if len(courier) > 11 else None
-        residence_lat = courier[12] if len(courier) > 12 else None
-        residence_lng = courier[13] if len(courier) > 13 else None
+        residence_address = courier.get("residence_address")
+        residence_lat = courier.get("residence_lat")
+        residence_lng = courier.get("residence_lng")
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -9041,17 +9023,17 @@ def admin_local_callback(update, context):
 
         texto = (
             "REPARTIDOR (pendiente de tu equipo)\n\n"
-            f"ID: {courier[0]}\n"
-            f"Nombre: {courier[2]}\n"
-            f"Documento: {courier[3]}\n"
-            f"Teléfono: {courier[4]}\n"
-            f"Ciudad: {courier[5]}\n"
-            f"Barrio: {courier[6]}\n"
+            f"ID: {courier['id']}\n"
+            f"Nombre: {courier['full_name']}\n"
+            f"Documento: {courier['id_number']}\n"
+            f"Teléfono: {courier['phone']}\n"
+            f"Ciudad: {courier['city']}\n"
+            f"Barrio: {courier['barrio']}\n"
             "Dirección residencia: {}\n"
             "Ubicación residencia: {}\n"
             "{}"
-            f"Placa: {courier[7] or '-'}\n"
-            f"Moto: {courier[8] or '-'}\n"
+            f"Placa: {courier['plate'] or '-'}\n"
+            f"Moto: {courier['bike_type'] or '-'}\n"
         ).format(
             residence_address or "No registrada",
             residence_location,
@@ -9175,7 +9157,7 @@ def ally_approval_callback(update, context):
     if nuevo_estado == "APPROVED":
         link = get_admin_link_for_ally(ally_id)
         if link:
-            keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+            keep_admin_id = link["admin_id"]
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
 
     ally = get_ally_by_id(ally_id)
@@ -9189,7 +9171,7 @@ def ally_approval_callback(update, context):
     # Notificar al aliado (si falla, no rompemos el flujo)
     try:
         u = get_user_by_id(ally_user_id)
-        ally_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
+        ally_telegram_id = u["telegram_id"]
 
         context.bot.send_message(
             chat_id=ally_telegram_id,
@@ -9288,7 +9270,7 @@ def courier_approval_callback(update, context):
         try:
             link = get_admin_link_for_courier(courier_id)
             if link:
-                keep_admin_id = link["admin_id"] if isinstance(link, dict) else link[0]
+                keep_admin_id = link["admin_id"]
             else:
                 keep_admin_id = get_platform_admin_id()
                 create_admin_courier_link(keep_admin_id, courier_id)
@@ -9303,15 +9285,14 @@ def courier_approval_callback(update, context):
         query.edit_message_text("No se encontró el repartidor después de actualizar.")
         return
 
-    # courier esperado: id, user_id(users.id), full_name, id_number, phone, city, barrio, plate, bike_type, code, status
-    courier_user_db_id = courier[1]   # users.id
-    full_name = courier[2]
+    courier_user_db_id = courier["user_id"]
+    full_name = courier["full_name"]
 
     # Notificar al repartidor si existe get_user_by_id (recomendado).
     # Si no existe, solo omitimos notificación sin romper.
     try:
         u = get_user_by_id(courier_user_db_id)
-        courier_telegram_id = u["telegram_id"] if isinstance(u, dict) else u[1]
+        courier_telegram_id = u["telegram_id"]
 
         if accion == "approve":
             msg = "Tu registro como repartidor ha sido APROBADO. Bienvenido, {}.".format(full_name)
@@ -9373,9 +9354,9 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for ally in allies:
-            ally_id = ally[0]
-            business_name = ally[2]
-            status = ally[8]
+            ally_id = ally["id"]
+            business_name = ally["business_name"]
+            status = ally["status"]
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(ally_id, business_name, status),
                 callback_data="config_ver_ally_{}".format(ally_id)
@@ -9423,19 +9404,19 @@ def admin_config_callback(update, context):
             "Ubicación: {loc}\n"
             "{maps}"
         ).format(
-            id=ally[0],
-            business_name=ally[2],
-            owner_name=ally[3],
-            phone=ally[4],
-            address=ally[5],
-            city=ally[6],
-            barrio=ally[7],
-            status=ally[8],
+            id=ally["id"],
+            business_name=ally["business_name"],
+            owner_name=ally["owner_name"],
+            phone=ally["phone"],
+            address=ally["address"],
+            city=ally["city"],
+            barrio=ally["barrio"],
+            status=ally["status"],
             loc=loc_text,
             maps=maps_text,
         )
 
-        status = ally[8]
+        status = ally["status"]
         keyboard = []
 
         if status == "PENDING":
@@ -9455,9 +9436,9 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for courier in couriers:
-            courier_id = courier[0]
-            full_name = courier[2]
-            status = courier[10]
+            courier_id = courier["id"]
+            full_name = courier["full_name"]
+            status = courier["status"]
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(courier_id, full_name, status),
                 callback_data="config_ver_courier_{}".format(courier_id)
@@ -9489,18 +9470,18 @@ def admin_config_callback(update, context):
             "Tipo de moto: {bike_type}\n"
             "Estado: {status}"
         ).format(
-            id=courier[0],
-            full_name=courier[2],
-            id_number=courier[3],
-            phone=courier[4],
-            city=courier[5],
-            barrio=courier[6],
-            plate=courier[7],
-            bike_type=courier[8],
-            status=courier[10],
+            id=courier["id"],
+            full_name=courier["full_name"],
+            id_number=courier["id_number"],
+            phone=courier["phone"],
+            city=courier["city"],
+            barrio=courier["barrio"],
+            plate=courier["plate"],
+            bike_type=courier["bike_type"],
+            status=courier["status"],
         )
 
-        status = courier[10]
+        status = courier["status"]
         keyboard = []
 
         if status == "PENDING":
@@ -9530,9 +9511,9 @@ def admin_config_callback(update, context):
 
         keyboard = []
         for courier in couriers:
-            courier_id = courier[0]
-            full_name = courier[2]
-            status = courier[10]
+            courier_id = courier["id"]
+            full_name = courier["full_name"]
+            status = courier["status"]
             keyboard.append([InlineKeyboardButton(
                 "ID {} - {} ({})".format(courier_id, full_name, status),
                 callback_data="config_ver_courier_{}".format(courier_id)
