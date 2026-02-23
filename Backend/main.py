@@ -8343,6 +8343,11 @@ def recargar_comprobante(update, context):
 
 def recargar_comprobante_texto(update, context):
     """Evita silencio cuando el flujo espera foto y el usuario envia texto."""
+    texto = (update.message.text or "").strip().lower()
+    if texto == "cancelar":
+        context.user_data.clear()
+        update.message.reply_text("Recarga cancelada.")
+        return ConversationHandler.END
     update.message.reply_text(
         "Aun falta el comprobante.\n"
         "Envia una FOTO del comprobante o escribe Cancelar."
