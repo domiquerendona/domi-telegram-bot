@@ -4202,7 +4202,14 @@ def aliados_pendientes(update, context):
         return
 
     for ally in allies:
-        ally_id, business_name, owner_name, address, city, barrio, phone, status = ally
+        ally_id = ally["id"]
+        business_name = ally["business_name"]
+        owner_name = ally["owner_name"]
+        address = ally["address"]
+        city = ally["city"]
+        barrio = ally["barrio"]
+        phone = ally["phone"]
+        status = ally["status"]
 
         texto = (
             "Aliado pendiente:\n"
