@@ -1344,6 +1344,9 @@ def _init_db_postgres():
         ("residence_address", "TEXT"),
         ("residence_lat", "REAL"),
         ("residence_lng", "REAL"),
+        ("cedula_front_file_id", "TEXT"),
+        ("cedula_back_file_id", "TEXT"),
+        ("selfie_file_id", "TEXT"),
     ]:
         _pg_add_col("couriers", col, ctype)
 
