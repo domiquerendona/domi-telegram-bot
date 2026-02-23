@@ -9183,9 +9183,8 @@ def ally_approval_callback(update, context):
         query.edit_message_text("No se encontró el aliado después de actualizar.")
         return
 
-    # Estructura esperada: id, user_id(telegram_id), business_name, owner_name, phone, address, city, barrio, status
-    ally_user_id = ally[1]       # EN TU DISEÑO ACTUAL ESTO ES telegram_id (porque create_ally usa user_id=telegram_id)
-    business_name = ally[2]
+    ally_user_id = ally["user_id"]
+    business_name = ally["business_name"]
 
     # Notificar al aliado (si falla, no rompemos el flujo)
     try:
