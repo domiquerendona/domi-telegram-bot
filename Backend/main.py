@@ -8220,10 +8220,10 @@ def recargar_admin_callback(update, context):
         pago_texto += "Cuentas disponibles:\n\n"
 
         for m in methods:
-            pago_texto += f"{m[2]}: {m[3]}\n"
-            pago_texto += f"   Titular: {m[4]}\n"
-            if m[5]:
-                pago_texto += f"   {m[5]}\n"
+            pago_texto += f"{m['method_name']}: {m['account_number']}\n"
+            pago_texto += f"   Titular: {m['account_holder']}\n"
+            if m["instructions"]:
+                pago_texto += f"   {m['instructions']}\n"
             pago_texto += "\n"
 
         pago_texto += "Realiza la transferencia y envia una FOTO del comprobante."
@@ -8598,8 +8598,8 @@ def mostrar_menu_pagos(update, context, admin_id, es_mensaje=False):
 
     if methods:
         for m in methods:
-            estado = "ON" if m[6] == 1 else "OFF"
-            texto += f"{'🟢' if m[6] == 1 else '🔴'} {m[2]} - {m[3]} ({estado})\n"
+            estado = "ON" if m["is_active"] == 1 else "OFF"
+            texto += f"{'🟢' if m['is_active'] == 1 else '🔴'} {m['method_name']} - {m['account_number']} ({estado})\n"
         texto += "\n"
     else:
         texto += "(No tienes cuentas configuradas)\n\n"
@@ -8664,11 +8664,11 @@ def pagos_callback(update, context):
 
         buttons = []
         for m in methods:
-            estado = "ON" if m[6] == 1 else "OFF"
-            emoji = "🟢" if m[6] == 1 else "🔴"
+            estado = "ON" if m["is_active"] == 1 else "OFF"
+            emoji = "🟢" if m["is_active"] == 1 else "🔴"
             buttons.append([InlineKeyboardButton(
-                f"{emoji} {m[2]} - {m[3]} ({estado})",
-                callback_data=f"pagos_ver_{m[0]}"
+                f"{emoji} {m['method_name']} - {m['account_number']} ({estado})",
+                callback_data=f"pagos_ver_{m['id']}"
             )])
 
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
@@ -8687,19 +8687,19 @@ def pagos_callback(update, context):
             query.edit_message_text("Cuenta no encontrada.")
             return
 
-        estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
-        emoji = "🟢" if method[6] == 1 else "🔴"
+        estado = "ACTIVA" if method["is_active"] == 1 else "INACTIVA"
+        emoji = "🟢" if method["is_active"] == 1 else "🔴"
 
         texto = (
             f"{emoji} Cuenta {estado}\n\n"
-            f"Banco/Billetera: {method[2]}\n"
-            f"Numero: {method[3]}\n"
-            f"Titular: {method[4]}\n"
-            f"Instrucciones: {method[5] or '-'}\n"
+            f"Banco/Billetera: {method['method_name']}\n"
+            f"Numero: {method['account_number']}\n"
+            f"Titular: {method['account_holder']}\n"
+            f"Instrucciones: {method['instructions'] or '-'}\n"
         )
 
         buttons = []
-        if method[6] == 1:
+        if method["is_active"] == 1:
             buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
         else:
             buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
@@ -8723,19 +8723,19 @@ def pagos_callback(update, context):
         # Volver a mostrar la cuenta
         method = get_payment_method_by_id(method_id)
         if method:
-            estado = "ACTIVA" if method[6] == 1 else "INACTIVA"
-            emoji = "🟢" if method[6] == 1 else "🔴"
+            estado = "ACTIVA" if method["is_active"] == 1 else "INACTIVA"
+            emoji = "🟢" if method["is_active"] == 1 else "🔴"
 
             texto = (
                 f"{emoji} Cuenta {estado}\n\n"
-                f"Banco/Billetera: {method[2]}\n"
-                f"Numero: {method[3]}\n"
-                f"Titular: {method[4]}\n"
-                f"Instrucciones: {method[5] or '-'}\n"
+                f"Banco/Billetera: {method['method_name']}\n"
+                f"Numero: {method['account_number']}\n"
+                f"Titular: {method['account_holder']}\n"
+                f"Instrucciones: {method['instructions'] or '-'}\n"
             )
 
             buttons = []
-            if method[6] == 1:
+            if method["is_active"] == 1:
                 buttons.append([InlineKeyboardButton("Desactivar", callback_data=f"pagos_toggle_{method_id}_0")])
             else:
                 buttons.append([InlineKeyboardButton("Activar", callback_data=f"pagos_toggle_{method_id}_1")])
@@ -8761,11 +8761,11 @@ def pagos_callback(update, context):
 
         buttons = []
         for m in methods:
-            estado = "ON" if m[6] == 1 else "OFF"
-            emoji = "🟢" if m[6] == 1 else "🔴"
+            estado = "ON" if m["is_active"] == 1 else "OFF"
+            emoji = "🟢" if m["is_active"] == 1 else "🔴"
             buttons.append([InlineKeyboardButton(
-                f"{emoji} {m[2]} - {m[3]} ({estado})",
-                callback_data=f"pagos_ver_{m[0]}"
+                f"{emoji} {m['method_name']} - {m['account_number']} ({estado})",
+                callback_data=f"pagos_ver_{m['id']}"
             )])
 
         buttons.append([InlineKeyboardButton("Volver", callback_data="pagos_volver")])
