@@ -70,6 +70,58 @@ def _insert_returning_id(cur, sql, params=()):
     return cur.lastrowid
 
 
+def _sync_ally_link_status(cur, ally_id: int, status: str, now_sql: str):
+    """Sincroniza admin_allies.status con el nuevo estado del aliado."""
+    if status == "APPROVED":
+        cur.execute(
+            f"SELECT id FROM admin_allies WHERE ally_id = {P} ORDER BY created_at DESC LIMIT 1",
+            (ally_id,),
+        )
+        link_row = cur.fetchone()
+        if link_row:
+            link_id = _row_value(link_row, "id", 0)
+            cur.execute(
+                f"UPDATE admin_allies SET status = 'APPROVED', updated_at = {now_sql} WHERE id = {P}",
+                (link_id,),
+            )
+            cur.execute(
+                f"UPDATE admin_allies SET status = 'INACTIVE', updated_at = {now_sql}"
+                f" WHERE ally_id = {P} AND id != {P}",
+                (ally_id, link_id),
+            )
+    else:
+        cur.execute(
+            f"UPDATE admin_allies SET status = 'INACTIVE', updated_at = {now_sql} WHERE ally_id = {P}",
+            (ally_id,),
+        )
+
+
+def _sync_courier_link_status(cur, courier_id: int, status: str, now_sql: str):
+    """Sincroniza admin_couriers.status con el nuevo estado del repartidor."""
+    if status == "APPROVED":
+        cur.execute(
+            f"SELECT id FROM admin_couriers WHERE courier_id = {P} ORDER BY created_at DESC LIMIT 1",
+            (courier_id,),
+        )
+        link_row = cur.fetchone()
+        if link_row:
+            link_id = _row_value(link_row, "id", 0)
+            cur.execute(
+                f"UPDATE admin_couriers SET status = 'APPROVED', updated_at = {now_sql} WHERE id = {P}",
+                (link_id,),
+            )
+            cur.execute(
+                f"UPDATE admin_couriers SET status = 'INACTIVE', updated_at = {now_sql}"
+                f" WHERE courier_id = {P} AND id != {P}",
+                (courier_id, link_id),
+            )
+    else:
+        cur.execute(
+            f"UPDATE admin_couriers SET status = 'INACTIVE', updated_at = {now_sql} WHERE courier_id = {P}",
+            (courier_id,),
+        )
+
+
 def _row_value(row, key, index=0, default=None):
     """Lee un campo por clave (dict/Row) y fallback por índice."""
     if row is None:
@@ -3030,7 +3082,7 @@ def update_courier_status_by_id(courier_id: int, new_status: str, rejection_type
             source="update_courier_status_by_id",
             changed_by=changed_by,
         )
-
+    _sync_courier_link_status(cur, courier_id, new_status, now_sql)
     conn.commit()
     conn.close()
 
@@ -3074,7 +3126,7 @@ def update_ally_status_by_id(ally_id: int, new_status: str, rejection_type: str 
             source="update_ally_status_by_id",
             changed_by=changed_by,
         )
-
+    _sync_ally_link_status(cur, ally_id, new_status, now_sql)
     conn.commit()
     conn.close()
 
@@ -3248,8 +3300,9 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
     
 
 def update_ally_status(ally_id: int, status: str, changed_by: str = None):
-    """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED)."""
+    """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED) y sincroniza admin_allies."""
     status = normalize_role_status(status)
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM allies WHERE id = {P}", (ally_id,))
@@ -3273,6 +3326,7 @@ def update_ally_status(ally_id: int, status: str, changed_by: str = None):
             source="update_ally_status",
             changed_by=changed_by,
         )
+    _sync_ally_link_status(cur, ally_id, status, now_sql)
     conn.commit()
     conn.close()
 
@@ -3866,8 +3920,9 @@ def get_courier_by_id(courier_id: int):
     return row
 
 def update_courier_status(courier_id: int, new_status: str, changed_by: str = None):
-    """Actualiza el estado de un repartidor (APPROVED / REJECTED)."""
+    """Actualiza el estado de un repartidor (APPROVED / REJECTED) y sincroniza admin_couriers."""
     new_status = normalize_role_status(new_status)
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"SELECT status FROM couriers WHERE id = {P}", (courier_id,))
@@ -3887,6 +3942,7 @@ def update_courier_status(courier_id: int, new_status: str, changed_by: str = No
             source="update_courier_status",
             changed_by=changed_by,
         )
+    _sync_courier_link_status(cur, courier_id, new_status, now_sql)
     conn.commit()
     conn.close()
 
