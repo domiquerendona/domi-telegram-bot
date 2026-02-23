@@ -1655,7 +1655,7 @@ def get_admin_by_id(admin_id: int):
     """, (admin_id,))
     row = cur.fetchone()
     conn.close()
-    return row
+    return dict(row) if row else None
 
 
 def get_admin_by_team_code(team_code: str):

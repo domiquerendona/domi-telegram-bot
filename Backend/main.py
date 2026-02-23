@@ -4848,17 +4848,14 @@ def admin_menu_callback(update, context):
             return
 
         # Datos del admin objetivo
-        # get_admin_by_id: id[0], user_id[1], full_name[2], phone[3], city[4], barrio[5],
-        #                  team_name[6], document_number[7], team_code[8], status[9], created_at[10],
-        #                  residence_address[11], residence_lat[12], residence_lng[13]
-        adm_full_name = admin_obj[2] or "-"
-        adm_phone = admin_obj[3] or "-"
-        adm_city = admin_obj[4] or "-"
-        adm_barrio = admin_obj[5] or "-"
-        adm_team_name = admin_obj[6] or "-"
-        adm_document = admin_obj[7] or "-"
-        adm_team_code = admin_obj[8] or "-"
-        adm_status = admin_obj[9] or "-"
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_phone = admin_obj.get("phone") or "-"
+        adm_city = admin_obj.get("city") or "-"
+        adm_barrio = admin_obj.get("barrio") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_document = admin_obj.get("document_number") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
 
         # Tipo de admin
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
@@ -4869,9 +4866,9 @@ def admin_menu_callback(update, context):
         perm = get_admin_reference_validator_permission(adm_id)
         perm_status = perm["status"] if perm else "INACTIVE"
 
-        residence_address = admin_obj[11] if len(admin_obj) > 11 else None
-        residence_lat = admin_obj[12] if len(admin_obj) > 12 else None
-        residence_lng = admin_obj[13] if len(admin_obj) > 13 else None
+        residence_address = admin_obj.get("residence_address")
+        residence_lat = admin_obj.get("residence_lat")
+        residence_lng = admin_obj.get("residence_lng")
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -5014,7 +5011,7 @@ def admin_menu_callback(update, context):
             query.answer("Admin no encontrado")
             return
 
-        if admin_obj[8] == "PLATFORM":
+        if admin_obj.get("team_code") == "PLATFORM":
             query.answer("No puedes modificar a un admin de plataforma")
             return
 
@@ -5024,14 +5021,14 @@ def admin_menu_callback(update, context):
 
         # Recargar el detalle
         admin_obj = get_admin_by_id(adm_id)
-        adm_full_name = admin_obj[2] or "-"
-        adm_phone = admin_obj[3] or "-"
-        adm_city = admin_obj[4] or "-"
-        adm_barrio = admin_obj[5] or "-"
-        adm_team_name = admin_obj[6] or "-"
-        adm_document = admin_obj[7] or "-"
-        adm_team_code = admin_obj[8] or "-"
-        adm_status = admin_obj[9] or "-"
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_phone = admin_obj.get("phone") or "-"
+        adm_city = admin_obj.get("city") or "-"
+        adm_barrio = admin_obj.get("barrio") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_document = admin_obj.get("document_number") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
 
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
         num_couriers = count_admin_couriers(adm_id)
@@ -5402,10 +5399,10 @@ def admin_menu_callback(update, context):
             )
             return
 
-        adm_full_name = admin_obj[2] or "-"
-        adm_team_name = admin_obj[6] or "-"
-        adm_team_code = admin_obj[8] or "-"
-        adm_status = admin_obj[9] or "-"
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
         balance = get_admin_balance(admin_id)
         texto = (
             "ADMIN ID: {}\n"
@@ -5891,10 +5888,9 @@ def admin_ver_pendiente(update, context):
         query.edit_message_text("Administrador no encontrado.")
         return
 
-    # id, user_id, full_name, phone, city, barrio, team_name, document_number, team_code, status, created_at, residence_address, residence_lat, residence_lng
-    residence_address = admin[11] if len(admin) > 11 else None
-    residence_lat = admin[12] if len(admin) > 12 else None
-    residence_lng = admin[13] if len(admin) > 13 else None
+    residence_address = admin.get("residence_address")
+    residence_lat = admin.get("residence_lat")
+    residence_lng = admin.get("residence_lng")
     if residence_lat is not None and residence_lng is not None:
         residence_location = "{}, {}".format(residence_lat, residence_lng)
         maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -7522,13 +7518,9 @@ def mi_admin(update, context):
         update.message.reply_text("No se pudo cargar tu perfil de administrador. Revisa BD.")
         return
 
-    status = admin_full[6]
-    team_name = admin_full[8] or "-"
-    team_code = "-"
-    if isinstance(admin_full, dict):
-        team_code = admin_full.get("team_code") or "-"
-    else:
-        team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+    status = admin_full.get("status") or "-"
+    team_name = admin_full.get("team_name") or "-"
+    team_code = admin_full.get("team_code") or "-"
 
     header = (
         "Panel Administrador Local\n\n"
@@ -8867,12 +8859,8 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_check_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
-        team_code = "-"
-        if isinstance(admin_full, dict):
-            team_code = admin_full.get("team_code") or "-"
-        else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+        status = admin_full.get("status") or "-"
+        team_code = admin_full.get("team_code") or "-"
 
         # Administrador de Plataforma: siempre operativo
         if team_code == "PLATFORM":
@@ -8941,12 +8929,8 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_status_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full[6]
-        team_code = "-"
-        if isinstance(admin_full, dict):
-            team_code = admin_full.get("team_code") or "-"
-        else:
-            team_code = admin_full[10] if len(admin_full) > 10 and admin_full[10] else "-"
+        status = admin_full.get("status") or "-"
+        team_code = admin_full.get("team_code") or "-"
 
         # Administrador de Plataforma: mensaje especial
         if team_code == "PLATFORM":
@@ -9067,7 +9051,7 @@ def admin_local_callback(update, context):
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
     if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
         admin_full = get_admin_by_id(admin_id)
-        admin_status = admin_full[9] if admin_full else None
+        admin_status = admin_full.get("status") if admin_full else None
         if admin_status != "APPROVED":
             query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
             return
