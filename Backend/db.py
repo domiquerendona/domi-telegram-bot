@@ -1902,7 +1902,7 @@ def get_blocked_courier_ids_for_ally(ally_id: int) -> set:
     cur.execute(f"SELECT courier_id FROM ally_courier_blocks WHERE ally_id = {P};", (ally_id,))
     rows = cur.fetchall()
     conn.close()
-    return {row[0] for row in rows}
+    return {row["courier_id"] for row in rows}
 
 
 def create_offer_queue(order_id: int, courier_ids: list):
@@ -1936,11 +1936,11 @@ def get_next_pending_offer(order_id: int):
     if not row:
         return None
     return {
-        "queue_id": row[0],
-        "courier_id": row[1],
-        "position": row[2],
-        "full_name": row[3],
-        "telegram_id": row[4],
+        "queue_id": row["id"],
+        "courier_id": row["courier_id"],
+        "position": row["position"],
+        "full_name": row["full_name"],
+        "telegram_id": row["telegram_id"],
     }
 
 
@@ -1988,10 +1988,10 @@ def get_current_offer_for_order(order_id: int):
     if not row:
         return None
     return {
-        "queue_id": row[0],
-        "courier_id": row[1],
-        "position": row[2],
-        "telegram_id": row[3],
+        "queue_id": row["id"],
+        "courier_id": row["courier_id"],
+        "position": row["position"],
+        "telegram_id": row["telegram_id"],
     }
 
 
@@ -2209,7 +2209,7 @@ def get_active_courier_cash(courier_id: int) -> int:
     cur.execute(f"SELECT available_cash FROM couriers WHERE id = {P};", (courier_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return row["available_cash"] if row else 0
 
 
 def get_active_orders_by_ally(ally_id: int):
@@ -3329,20 +3329,20 @@ def get_ally_locations(ally_id: int):
     conn.close()
     return [
         {
-            "id": row[0],
-            "ally_id": row[1],
-            "label": row[2],
-            "address": row[3],
-            "city": row[4],
-            "barrio": row[5],
-            "phone": row[6],
-            "is_default": row[7],
-            "created_at": row[8],
-            "lat": row[9],
-            "lng": row[10],
-            "use_count": row[11] or 0,
-            "is_frequent": row[12] or 0,
-            "last_used_at": row[13],
+            "id": row["id"],
+            "ally_id": row["ally_id"],
+            "label": row["label"],
+            "address": row["address"],
+            "city": row["city"],
+            "barrio": row["barrio"],
+            "phone": row["phone"],
+            "is_default": row["is_default"],
+            "created_at": row["created_at"],
+            "lat": row["lat"],
+            "lng": row["lng"],
+            "use_count": row["use_count"] or 0,
+            "is_frequent": row["is_frequent"] or 0,
+            "last_used_at": row["last_used_at"],
         }
         for row in rows
     ]
@@ -3369,20 +3369,20 @@ def get_default_ally_location(ally_id: int):
     if not row:
         return None
     return {
-        "id": row[0],
-        "ally_id": row[1],
-        "label": row[2],
-        "address": row[3],
-        "city": row[4],
-        "barrio": row[5],
-        "phone": row[6],
-        "is_default": row[7],
-        "created_at": row[8],
-        "lat": row[9],
-        "lng": row[10],
-        "use_count": row[11] or 0,
-        "is_frequent": row[12] or 0,
-        "last_used_at": row[13],
+        "id": row["id"],
+        "ally_id": row["ally_id"],
+        "label": row["label"],
+        "address": row["address"],
+        "city": row["city"],
+        "barrio": row["barrio"],
+        "phone": row["phone"],
+        "is_default": row["is_default"],
+        "created_at": row["created_at"],
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "use_count": row["use_count"] or 0,
+        "is_frequent": row["is_frequent"] or 0,
+        "last_used_at": row["last_used_at"],
     }
 
 
@@ -3418,20 +3418,20 @@ def get_ally_location_by_id(location_id: int, ally_id: int):
     if not row:
         return None
     return {
-        "id": row[0],
-        "ally_id": row[1],
-        "label": row[2],
-        "address": row[3],
-        "city": row[4],
-        "barrio": row[5],
-        "phone": row[6],
-        "is_default": row[7],
-        "created_at": row[8],
-        "lat": row[9],
-        "lng": row[10],
-        "use_count": row[11] or 0,
-        "is_frequent": row[12] or 0,
-        "last_used_at": row[13],
+        "id": row["id"],
+        "ally_id": row["ally_id"],
+        "label": row["label"],
+        "address": row["address"],
+        "city": row["city"],
+        "barrio": row["barrio"],
+        "phone": row["phone"],
+        "is_default": row["is_default"],
+        "created_at": row["created_at"],
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "use_count": row["use_count"] or 0,
+        "is_frequent": row["is_frequent"] or 0,
+        "last_used_at": row["last_used_at"],
     }
 
 
@@ -4848,13 +4848,13 @@ def get_link_cache(raw_link: str):
     conn.close()
     if row:
         return {
-            "raw_link": row[0],
-            "expanded_link": row[1],
-            "lat": row[2],
-            "lng": row[3],
-            "formatted_address": row[4],
-            "provider": row[5],
-            "place_id": row[6],
+            "raw_link": row["raw_link"],
+            "expanded_link": row["expanded_link"],
+            "lat": row["lat"],
+            "lng": row["lng"],
+            "formatted_address": row["formatted_address"],
+            "provider": row["provider"],
+            "place_id": row["place_id"],
         }
     return None
 
@@ -4894,8 +4894,8 @@ def get_distance_cache(origin_key: str, destination_key: str, mode: str):
     if not row:
         return None
     return {
-        "distance_km": row[0],
-        "provider": row[1],
+        "distance_km": row["distance_km"],
+        "provider": row["provider"],
     }
 
 
@@ -5629,10 +5629,10 @@ def get_admin_payment_info(admin_id: int):
     conn.close()
     if row:
         return {
-            "payment_phone": row[0],
-            "payment_bank": row[1],
-            "payment_holder": row[2],
-            "payment_instructions": row[3]
+            "payment_phone": row["payment_phone"],
+            "payment_bank": row["payment_bank"],
+            "payment_holder": row["payment_holder"],
+            "payment_instructions": row["payment_instructions"],
         }
     return None
 
