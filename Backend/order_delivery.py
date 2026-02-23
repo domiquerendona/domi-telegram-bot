@@ -35,6 +35,7 @@ from db import (
     reset_offer_queue,
     set_order_status,
     upsert_order_accounting_settlement,
+    get_courier_link_balance,
 )
 from services import apply_service_fee, check_service_fee_available
 
@@ -1257,6 +1258,13 @@ def _handle_delivered(update, context, order_id):
         )
         if courier_ok:
             fee_courier_ok = True
+            # Notificar al courier si su saldo quedo insuficiente para el proximo servicio
+            try:
+                new_balance = get_courier_link_balance(courier_id, admin_id)
+                if new_balance < 300:
+                    _notify_recharge_needed_to_courier(context, courier_id)
+            except Exception as e:
+                print("[WARN] No se pudo verificar saldo post-fee del courier {}: {}".format(courier_id, e))
         else:
             if courier_msg == "ADMIN_SIN_SALDO":
                 try:

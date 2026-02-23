@@ -188,6 +188,7 @@ from services import (
     delete_courier,
     get_admin_link_for_courier,
     get_admin_link_for_ally,
+    get_courier_link_balance,
     create_order,
     set_order_status,
     assign_order_to_courier,
@@ -9737,6 +9738,25 @@ def _courier_activate_common(update, context, reply_func):
     courier = get_courier_by_user_id(user["id"])
     if not courier or courier["status"] != "APPROVED":
         reply_func("No tienes perfil de repartidor activo.")
+        return
+
+    # Verificar que tiene equipo activo y saldo suficiente para activarse
+    admin_link = get_admin_link_for_courier(courier["id"])
+    if not admin_link or admin_link.get("link_status") != "APPROVED":
+        reply_func(
+            "No puedes activarte porque no tienes un equipo activo asignado. "
+            "Contacta a tu administrador."
+        )
+        return
+
+    saldo = get_courier_link_balance(courier["id"], admin_link["admin_id"])
+    if saldo < 300:
+        reply_func(
+            "No puedes activarte porque tu saldo es insuficiente.\n\n"
+            "Saldo actual: ${:,}\n"
+            "Minimo requerido: $300\n\n"
+            "Solicita una recarga a tu administrador para poder conectarte.".format(saldo)
+        )
         return
 
     reply_func(
