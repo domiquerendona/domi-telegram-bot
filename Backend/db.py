@@ -533,6 +533,12 @@ def init_db():
         cur.execute("ALTER TABLE couriers ADD COLUMN rejection_reason TEXT")
     if "rejected_at" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN rejected_at TEXT")
+    if "cedula_front_file_id" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN cedula_front_file_id TEXT")
+    if "cedula_back_file_id" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN cedula_back_file_id TEXT")
+    if "selfie_file_id" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN selfie_file_id TEXT")
 
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
@@ -3754,6 +3760,9 @@ def create_courier(
     residence_address=None,
     residence_lat=None,
     residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
 ):
     """Crea un repartidor en estado PENDING y devuelve su id."""
 
@@ -3780,8 +3789,11 @@ def create_courier(
                 balance,
                 residence_address,
                 residence_lat,
-                residence_lng
-            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P});
+                residence_lng,
+                cedula_front_file_id,
+                cedula_back_file_id,
+                selfie_file_id
+            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P}, {P}, {P}, {P});
         """, (
             user_id,
             person_id,
@@ -3796,6 +3808,9 @@ def create_courier(
             residence_address,
             residence_lat,
             residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
         ))
         conn.commit()
 
@@ -3835,7 +3850,10 @@ def get_courier_by_id(courier_id: int):
             live_lng,          -- 17
             live_location_active, -- 18
             live_location_updated_at, -- 19
-            COALESCE(availability_status, 'INACTIVE') AS availability_status -- 20
+            COALESCE(availability_status, 'INACTIVE') AS availability_status, -- 20
+            cedula_front_file_id,  -- 21
+            cedula_back_file_id,   -- 22
+            selfie_file_id         -- 23
         FROM couriers
         WHERE id = {P}
           AND (is_deleted IS NULL OR is_deleted = 0);
