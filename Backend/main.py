@@ -9542,6 +9542,12 @@ def admin_config_callback(update, context):
     if data.startswith("config_ally_disable_"):
         ally_id = int(data.split("_")[-1])
         update_ally_status_by_id(ally_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            link = get_admin_link_for_ally(ally_id)
+            if link:
+                upsert_admin_ally_link(link["admin_id"], ally_id, "INACTIVE")
+        except Exception as e:
+            print(f"[ERROR] config_ally_disable_ upsert link: {e}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -9549,6 +9555,12 @@ def admin_config_callback(update, context):
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
         update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            link = get_admin_link_for_ally(ally_id)
+            keep_admin_id = link["admin_id"] if link else get_platform_admin_id()
+            upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
+        except Exception as e:
+            print(f"[ERROR] config_ally_enable_ upsert link: {e}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
