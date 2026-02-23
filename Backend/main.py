@@ -566,9 +566,12 @@ def reference_assign_location_handler(update, context):
     COURIER_RESIDENCE_LOCATION,
     COURIER_PLATE,
     COURIER_BIKETYPE,
+    COURIER_CEDULA_FRONT,
+    COURIER_CEDULA_BACK,
+    COURIER_SELFIE,
     COURIER_CONFIRM,
     COURIER_TEAM,
-) = range(100, 111)
+) = range(100, 114)
 
 
 # =========================
@@ -596,6 +599,7 @@ FLOW_STATE_ORDER = {
         COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE,
         COURIER_CITY, COURIER_BARRIO, COURIER_RESIDENCE_ADDRESS,
         COURIER_RESIDENCE_LOCATION, COURIER_PLATE, COURIER_BIKETYPE,
+        COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK, COURIER_SELFIE,
         COURIER_CONFIRM,
     ],
     "admin": [
@@ -628,6 +632,9 @@ FLOW_STATE_KEYS = {
         COURIER_RESIDENCE_LOCATION: ["residence_lat", "residence_lng"],
         COURIER_PLATE: ["plate"],
         COURIER_BIKETYPE: ["bike_type"],
+        COURIER_CEDULA_FRONT: ["cedula_front_file_id"],
+        COURIER_CEDULA_BACK: ["cedula_back_file_id"],
+        COURIER_SELFIE: ["selfie_file_id"],
         COURIER_CONFIRM: [],
     },
     "admin": {
@@ -722,6 +729,9 @@ def _send_back_prompt(update, flow, state):
             COURIER_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
             COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
             COURIER_BIKETYPE: "Escribe el tipo de moto:",
+            COURIER_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
+            COURIER_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
+            COURIER_SELFIE: "Envía una foto de tu cara (selfie):",
             COURIER_CONFIRM: "Escribe SI para confirmar tu registro.",
         },
         "admin": {
@@ -1987,6 +1997,52 @@ def courier_plate(update, context):
 
 def courier_biketype(update, context):
     context.user_data["bike_type"] = update.message.text.strip()
+    update.message.reply_text(
+        "Perfecto. Ahora necesitamos verificar tu identidad.\n\n"
+        "Envía una foto del FRENTE de tu cédula de ciudadanía:"
+        + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "courier", COURIER_CEDULA_FRONT)
+    return COURIER_CEDULA_FRONT
+
+
+def courier_cedula_front(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del frente de tu cédula." + _OPTIONS_HINT
+        )
+        return COURIER_CEDULA_FRONT
+    context.user_data["cedula_front_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del frente recibida.\n\n"
+        "Ahora envía una foto del REVERSO de tu cédula:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "courier", COURIER_CEDULA_BACK)
+    return COURIER_CEDULA_BACK
+
+
+def courier_cedula_back(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del reverso de tu cédula." + _OPTIONS_HINT
+        )
+        return COURIER_CEDULA_BACK
+    context.user_data["cedula_back_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del reverso recibida.\n\n"
+        "Por último, envía una SELFIE (foto de tu cara) tomada en este momento:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "courier", COURIER_SELFIE)
+    return COURIER_SELFIE
+
+
+def courier_selfie(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una selfie (foto de tu cara)." + _OPTIONS_HINT
+        )
+        return COURIER_SELFIE
+    context.user_data["selfie_file_id"] = update.message.photo[-1].file_id
 
     full_name = context.user_data.get("full_name", "")
     id_number = context.user_data.get("id_number", "")
@@ -2004,7 +2060,7 @@ def courier_biketype(update, context):
         residence_location = "No disponible"
 
     resumen = (
-        "Verifica tus datos de repartidor:\n\n"
+        "Fotos recibidas. Verifica tus datos de repartidor:\n\n"
         f"Nombre: {full_name}\n"
         f"Cédula: {id_number}\n"
         f"Teléfono: {phone}\n"
@@ -2017,7 +2073,6 @@ def courier_biketype(update, context):
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_repartidor"
     )
-
     update.message.reply_text(resumen)
     _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
@@ -2046,6 +2101,9 @@ def courier_confirm(update, context):
     residence_address = context.user_data.get("residence_address", "")
     residence_lat = context.user_data.get("residence_lat")
     residence_lng = context.user_data.get("residence_lng")
+    cedula_front_file_id = context.user_data.get("cedula_front_file_id")
+    cedula_back_file_id = context.user_data.get("cedula_back_file_id")
+    selfie_file_id = context.user_data.get("selfie_file_id")
 
     code = f"R-{db_user['id']:04d}"
 
@@ -2062,6 +2120,9 @@ def courier_confirm(update, context):
         residence_address=residence_address,
         residence_lat=residence_lat,
         residence_lng=residence_lng,
+        cedula_front_file_id=cedula_front_file_id,
+        cedula_back_file_id=cedula_back_file_id,
+        selfie_file_id=selfie_file_id,
     )
 
     courier = get_courier_by_user_id(db_user["id"])
@@ -4249,6 +4310,23 @@ def repartidores_pendientes(update, context):
             ]]
 
         message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        # Enviar fotos de verificación de identidad si están disponibles
+        courier_full = get_courier_by_id(courier_id)
+        if courier_full:
+            cedula_front = courier_full.get("cedula_front_file_id") if isinstance(courier_full, dict) else None
+            cedula_back = courier_full.get("cedula_back_file_id") if isinstance(courier_full, dict) else None
+            selfie = courier_full.get("selfie_file_id") if isinstance(courier_full, dict) else None
+            if cedula_front or cedula_back or selfie:
+                try:
+                    if cedula_front:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=cedula_front, caption="Cédula frente")
+                    if cedula_back:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                    if selfie:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=selfie, caption="Selfie")
+                except Exception as e:
+                    print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
 
         
 def soy_admin(update, context):
@@ -6915,6 +6993,18 @@ courier_conv = ConversationHandler(
         ],
         COURIER_BIKETYPE: [
             MessageHandler(Filters.text & ~Filters.command, courier_biketype)
+        ],
+        COURIER_CEDULA_FRONT: [
+            MessageHandler(Filters.photo, courier_cedula_front),
+            MessageHandler(Filters.text & ~Filters.command, courier_cedula_front),
+        ],
+        COURIER_CEDULA_BACK: [
+            MessageHandler(Filters.photo, courier_cedula_back),
+            MessageHandler(Filters.text & ~Filters.command, courier_cedula_back),
+        ],
+        COURIER_SELFIE: [
+            MessageHandler(Filters.photo, courier_selfie),
+            MessageHandler(Filters.text & ~Filters.command, courier_selfie),
         ],
         COURIER_CONFIRM: [
             MessageHandler(Filters.text & ~Filters.command, courier_confirm)
