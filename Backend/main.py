@@ -86,6 +86,7 @@ def home():
     """
 
 from services import (
+    register_platform_income,
     admin_puede_operar,
     calcular_precio_distancia,
     get_pricing_config,
@@ -879,6 +880,11 @@ PAGO_TITULAR = 962
 PAGO_INSTRUCCIONES = 963
 PAGO_MENU = 964
 ALERTAS_OFERTA_INPUT = 965
+
+# Estados para el flujo de registro de ingreso externo (Admin Plataforma)
+INGRESO_MONTO = 970
+INGRESO_METODO = 971
+INGRESO_NOTA = 972
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -5427,7 +5433,23 @@ def admin_menu_callback(update, context):
 
 
     if data == "admin_finanzas":
-        query.answer("La sección de finanzas aún no está implementada.")
+        query.answer()
+        admin = get_admin_by_user_id(get_user_db_id_from_update(update))
+        if not admin:
+            query.edit_message_text("No se encontro tu perfil de administrador.")
+            return
+        balance = get_admin_balance(admin["id"])
+        keyboard = [
+            [InlineKeyboardButton("Registrar ingreso externo", callback_data="ingreso_iniciar")],
+            [InlineKeyboardButton("Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Finanzas de Plataforma.\n\n"
+            "Saldo disponible: ${:,}\n\n"
+            "Registra cada pago recibido (efectivo, Nequi, transferencia) "
+            "antes de aprobar recargas.".format(balance),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         return
 
     # Ver admin pendiente (detalle)
@@ -9208,6 +9230,124 @@ def ally_approval_callback(update, context):
         query.edit_message_text("❌ El aliado '{}' ha sido RECHAZADO.".format(business_name))
 
 
+# ============================================================
+# REGISTRAR INGRESO EXTERNO (Admin Plataforma)
+# ============================================================
+
+def ingreso_iniciar_callback(update, context):
+    """Punto de entrada al flujo de registro de ingreso externo."""
+    query = update.callback_query
+    query.answer()
+    if not user_has_platform_admin(query.from_user.id):
+        query.edit_message_text("Acceso restringido al Administrador de Plataforma.")
+        return ConversationHandler.END
+    query.edit_message_text(
+        "Registro de ingreso externo.\n\n"
+        "Escribe el monto recibido (solo numeros).\n"
+        "Ejemplo: 50000\n\n"
+        "Escribe Cancelar para salir."
+    )
+    return INGRESO_MONTO
+
+
+def ingreso_monto_handler(update, context):
+    """Captura y valida el monto."""
+    texto = (update.message.text or "").strip()
+    if texto.lower() == "cancelar":
+        context.user_data.pop("ingreso_monto", None)
+        update.message.reply_text("Registro de ingreso cancelado.")
+        return ConversationHandler.END
+    try:
+        monto = int(texto.replace(",", "").replace(".", "").replace(" ", ""))
+    except ValueError:
+        update.message.reply_text("Monto invalido. Escribe solo numeros. Ejemplo: 50000")
+        return INGRESO_MONTO
+    if monto < 1000:
+        update.message.reply_text("El monto minimo es $1,000.")
+        return INGRESO_MONTO
+    if monto > 50000000:
+        update.message.reply_text("El monto maximo por registro es $50,000,000.")
+        return INGRESO_MONTO
+    context.user_data["ingreso_monto"] = monto
+    keyboard = [
+        [InlineKeyboardButton("Efectivo", callback_data="ingreso_metodo_Efectivo")],
+        [InlineKeyboardButton("Nequi", callback_data="ingreso_metodo_Nequi")],
+        [InlineKeyboardButton("Transferencia bancaria", callback_data="ingreso_metodo_Transferencia")],
+        [InlineKeyboardButton("Cancelar", callback_data="ingreso_cancelar")],
+    ]
+    update.message.reply_text(
+        "Monto: ${:,}\n\nSelecciona el metodo de pago recibido:".format(monto),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return INGRESO_METODO
+
+
+def ingreso_metodo_callback(update, context):
+    """Captura el metodo y pide una nota opcional."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    if data == "ingreso_cancelar":
+        context.user_data.pop("ingreso_monto", None)
+        query.edit_message_text("Registro de ingreso cancelado.")
+        return ConversationHandler.END
+    if not data.startswith("ingreso_metodo_"):
+        return INGRESO_METODO
+    metodo = data.replace("ingreso_metodo_", "")
+    context.user_data["ingreso_metodo"] = metodo
+    monto = context.user_data.get("ingreso_monto", 0)
+    query.edit_message_text(
+        "Monto: ${:,}\n"
+        "Metodo: {}\n\n"
+        "Escribe una nota o referencia (quien pago, numero de transaccion, etc.).\n"
+        "O escribe 'sin nota' para omitirla.".format(monto, metodo)
+    )
+    return INGRESO_NOTA
+
+
+def ingreso_nota_handler(update, context):
+    """Registra el ingreso y confirma al admin."""
+    user_tg = update.effective_user
+    nota_texto = (update.message.text or "").strip()
+    if nota_texto.lower() == "cancelar":
+        context.user_data.pop("ingreso_monto", None)
+        context.user_data.pop("ingreso_metodo", None)
+        update.message.reply_text("Registro de ingreso cancelado.")
+        return ConversationHandler.END
+    nota = None if nota_texto.lower() == "sin nota" else nota_texto
+    monto = context.user_data.get("ingreso_monto")
+    metodo = context.user_data.get("ingreso_metodo")
+    if not monto or not metodo:
+        update.message.reply_text("Error en el flujo. Vuelve a intentarlo desde el panel.")
+        return ConversationHandler.END
+    admin = get_admin_by_telegram_id(user_tg.id)
+    if not admin:
+        update.message.reply_text("No se encontro tu perfil de administrador.")
+        return ConversationHandler.END
+    admin_id = admin["id"]
+    try:
+        register_platform_income(admin_id=admin_id, amount=monto, method=metodo, note=nota)
+    except Exception as e:
+        print("[ERROR] register_platform_income: {}".format(e))
+        update.message.reply_text("Error al registrar el ingreso. Revisa los logs.")
+        return ConversationHandler.END
+    context.user_data.pop("ingreso_monto", None)
+    context.user_data.pop("ingreso_metodo", None)
+    nuevo_balance = get_admin_balance(admin_id)
+    update.message.reply_text(
+        "Ingreso registrado correctamente.\n\n"
+        "Monto: ${:,}\n"
+        "Metodo: {}\n"
+        "{}Nuevo saldo disponible: ${:,}".format(
+            monto,
+            metodo,
+            "Nota: {}\n".format(nota) if nota else "",
+            nuevo_balance,
+        )
+    )
+    return ConversationHandler.END
+
+
 def pendientes_callback(update, context):
     query = update.callback_query
     data = query.data
@@ -10023,6 +10163,26 @@ def main():
         ],
     )
     dp.add_handler(configurar_pagos_conv)
+
+    # -------------------------
+    # Registrar ingreso externo (Admin Plataforma)
+    # -------------------------
+    ingreso_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(ingreso_iniciar_callback, pattern=r"^ingreso_iniciar$"),
+        ],
+        states={
+            INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command, ingreso_monto_handler)],
+            INGRESO_METODO: [CallbackQueryHandler(ingreso_metodo_callback, pattern=r"^ingreso_")],
+            INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command, ingreso_nota_handler)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversacion),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        ],
+        allow_reentry=True,
+    )
+    dp.add_handler(ingreso_conv)
 
     # -------------------------
     # Registro de Administradores Locales

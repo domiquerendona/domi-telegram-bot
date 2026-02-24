@@ -5068,6 +5068,29 @@ def update_admin_balance_with_ledger(
     return ledger_id
 
 
+def register_platform_income(admin_id: int, amount: int, method: str, note: str = None) -> int:
+    """
+    Registra un ingreso externo recibido por el Admin de Plataforma
+    (efectivo, Nequi, transferencia bancaria, etc.).
+    Incrementa admins.balance y genera entrada en ledger:
+        kind=INCOME, from_type=EXTERNAL, from_id=0, to_type=ADMIN, to_id=admin_id
+    Retorna: ledger_id
+    """
+    full_note = "Ingreso externo registrado manualmente. Metodo: {}".format(method)
+    if note:
+        full_note += ". Nota: {}".format(note)
+    return update_admin_balance_with_ledger(
+        admin_id=admin_id,
+        delta=amount,
+        kind="INCOME",
+        note=full_note,
+        ref_type=None,
+        ref_id=None,
+        from_type="EXTERNAL",
+        from_id=0,
+    )
+
+
 def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
     """Retorna el saldo del vínculo courier-admin."""
     conn = get_connection()

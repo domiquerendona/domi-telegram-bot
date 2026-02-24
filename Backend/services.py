@@ -10,6 +10,7 @@ from db import (
     get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
+    register_platform_income,
     update_courier_link_balance, update_ally_link_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
@@ -1076,9 +1077,9 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
 def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple[bool, str]:
     """
     Aprueba una solicitud de recarga.
-    - Si el admin asignado es LOCAL: valida saldo y descuenta del admin.
-    - Si el admin asignado es PLATAFORMA: acredita sin validar saldo.
-    Registra el movimiento en ledger.
+    - Todos los admins (LOCAL y PLATAFORMA) deben tener saldo suficiente.
+    - El saldo se descuenta del admin aprobador y se acredita al destinatario.
+    - Registra el movimiento completo en ledger (doble entrada).
 
     Retorna: (success, message)
     """
@@ -1118,28 +1119,28 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         if DB_ENGINE == "sqlite":
             cur.execute("BEGIN IMMEDIATE")
 
-        if not is_platform:
-            cur.execute("SELECT balance FROM admins WHERE id = " + P, (admin_id,))
-            row = cur.fetchone()
-            current_admin_balance = row["balance"] if row else 0
-            if current_admin_balance < amount:
-                conn.rollback()
-                return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
+        cur.execute("SELECT balance FROM admins WHERE id = " + P, (admin_id,))
+        row = cur.fetchone()
+        current_admin_balance = row["balance"] if row else 0
+        if current_admin_balance < amount:
+            conn.rollback()
+            return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
 
-            cur.execute(
-                "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
-                (amount, admin_id),
-            )
-            cur.execute(
-                "INSERT INTO ledger"
-                "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
-                " VALUES (" + ", ".join([P] * 9) + ")",
-                (
-                    "RECHARGE", "ADMIN", admin_id, "ADMIN", admin_id, amount,
-                    "RECHARGE_REQUEST", request_id,
-                    f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
-                ),
-            )
+        cur.execute(
+            "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
+            (amount, admin_id),
+        )
+        from_type_label = "PLATFORM" if is_platform else "ADMIN"
+        cur.execute(
+            "INSERT INTO ledger"
+            "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
+            " VALUES (" + ", ".join([P] * 9) + ")",
+            (
+                "RECHARGE", from_type_label, admin_id, from_type_label, admin_id, amount,
+                "RECHARGE_REQUEST", request_id,
+                f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
+            ),
+        )
 
         if target_type == "ADMIN":
             cur.execute(
