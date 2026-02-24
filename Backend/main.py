@@ -6003,6 +6003,21 @@ def admin_ver_pendiente(update, context):
 
     query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
+    # Enviar fotos de verificación de identidad si están disponibles
+    cedula_front = admin.get("cedula_front_file_id")
+    cedula_back = admin.get("cedula_back_file_id")
+    selfie = admin.get("selfie_file_id")
+    if cedula_front or cedula_back or selfie:
+        try:
+            if cedula_front:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+            if cedula_back:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+            if selfie:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+        except Exception as e:
+            print(f"[WARN] No se pudieron enviar fotos del admin {admin_id}: {e}")
+
 def admin_aprobar_rechazar_callback(update, context):
     query = update.callback_query
     data = query.data

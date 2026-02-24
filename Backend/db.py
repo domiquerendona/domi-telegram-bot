@@ -1699,20 +1699,23 @@ def get_admin_by_id(admin_id: int):
     cur = conn.cursor()
     cur.execute(f"""
         SELECT
-            id,                 -- 0
-            user_id,            -- 1
-            full_name,          -- 2
-            phone,              -- 3
-            city,               -- 4
-            barrio,             -- 5
-            team_name,          -- 6
-            document_number,    -- 7
-            team_code,          -- 8
-            status,             -- 9
-            created_at,         -- 10
-            residence_address,  -- 11
-            residence_lat,      -- 12
-            residence_lng       -- 13
+            id,                    -- 0
+            user_id,               -- 1
+            full_name,             -- 2
+            phone,                 -- 3
+            city,                  -- 4
+            barrio,                -- 5
+            team_name,             -- 6
+            document_number,       -- 7
+            team_code,             -- 8
+            status,                -- 9
+            created_at,            -- 10
+            residence_address,     -- 11
+            residence_lat,         -- 12
+            residence_lng,         -- 13
+            cedula_front_file_id,  -- 14
+            cedula_back_file_id,   -- 15
+            selfie_file_id         -- 16
         FROM admins
         WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC
