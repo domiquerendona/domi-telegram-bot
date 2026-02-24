@@ -588,8 +588,11 @@ def reference_assign_location_handler(update, context):
     LOCAL_ADMIN_BARRIO,
     LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
+    LOCAL_ADMIN_CEDULA_FRONT,
+    LOCAL_ADMIN_CEDULA_BACK,
+    LOCAL_ADMIN_SELFIE,
     LOCAL_ADMIN_CONFIRM,
-) = range(300, 309)
+) = range(300, 312)
 
 
 FLOW_STATE_ORDER = {
@@ -608,6 +611,7 @@ FLOW_STATE_ORDER = {
         LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
         LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
         LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_CEDULA_FRONT, LOCAL_ADMIN_CEDULA_BACK, LOCAL_ADMIN_SELFIE,
         LOCAL_ADMIN_CONFIRM,
     ],
 }
@@ -648,6 +652,9 @@ FLOW_STATE_KEYS = {
         LOCAL_ADMIN_BARRIO: ["admin_barrio"],
         LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
         LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
+        LOCAL_ADMIN_CEDULA_FRONT: ["admin_cedula_front_file_id"],
+        LOCAL_ADMIN_CEDULA_BACK: ["admin_cedula_back_file_id"],
+        LOCAL_ADMIN_SELFIE: ["admin_selfie_file_id"],
         LOCAL_ADMIN_CONFIRM: [],
     },
 }
@@ -745,6 +752,9 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
             LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
             LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
+            LOCAL_ADMIN_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
+            LOCAL_ADMIN_SELFIE: "Envía una foto de tu cara (selfie):",
             LOCAL_ADMIN_CONFIRM: "Escribe ACEPTAR para finalizar o volver para corregir.",
         },
     }
@@ -2078,6 +2088,76 @@ def courier_selfie(update, context):
     update.message.reply_text(resumen)
     _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
+
+
+def admin_cedula_front(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del frente de tu cédula." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_CEDULA_FRONT
+    context.user_data["admin_cedula_front_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del frente recibida.\n\n"
+        "Ahora envía una foto del REVERSO de tu cédula:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_BACK)
+    return LOCAL_ADMIN_CEDULA_BACK
+
+
+def admin_cedula_back(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del reverso de tu cédula." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_CEDULA_BACK
+    context.user_data["admin_cedula_back_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del reverso recibida.\n\n"
+        "Por último, envía una SELFIE (foto de tu cara) tomada en este momento:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_SELFIE)
+    return LOCAL_ADMIN_SELFIE
+
+
+def admin_selfie(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una selfie (foto de tu cara)." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_SELFIE
+    context.user_data["admin_selfie_file_id"] = update.message.photo[-1].file_id
+
+    full_name = context.user_data.get("admin_name", "")
+    document_number = context.user_data.get("admin_document", "")
+    team_name = context.user_data.get("admin_team_name", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("admin_city", "")
+    barrio = context.user_data.get("admin_barrio", "")
+    residence_address = context.user_data.get("admin_residence_address", "")
+    lat = context.user_data.get("admin_residence_lat")
+    lng = context.user_data.get("admin_residence_lng")
+
+    resumen = (
+        "Fotos recibidas. Verifica tus datos de Administrador Local:\n\n"
+        "Nombre: {}\n"
+        "Cédula: {}\n"
+        "Equipo: {}\n"
+        "Teléfono: {}\n"
+        "Ciudad: {}\n"
+        "Barrio: {}\n"
+        "Dirección: {}\n"
+        "Ubicación: {}, {}\n\n"
+        "Condiciones para Administrador Local:\n"
+        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
+        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
+        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
+        "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
+        "Si quieres corregir, escribe 'volver' o usa /cancel."
+    ).format(full_name, document_number, team_name, phone, city, barrio, residence_address, lat, lng)
+    update.message.reply_text(resumen)
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CONFIRM)
+    return LOCAL_ADMIN_CONFIRM
 
 
 def courier_confirm(update, context):
@@ -4537,37 +4617,13 @@ def admin_residence_location(update, context):
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
-    update.message.reply_text("Ubicación guardada.")
-
-    # Mostrar resumen completo + requisitos + pedir ACEPTAR
-    full_name = context.user_data.get("admin_name", "")
-    document_number = context.user_data.get("admin_document", "")
-    team_name = context.user_data.get("admin_team_name", "")
-    phone = context.user_data.get("phone", "")
-    city = context.user_data.get("admin_city", "")
-    barrio = context.user_data.get("admin_barrio", "")
-    residence_address = context.user_data.get("admin_residence_address", "")
-
-    resumen = (
-        "Verifica tus datos de Administrador Local:\n\n"
-        f"Nombre: {full_name}\n"
-        f"Cédula: {document_number}\n"
-        f"Equipo: {team_name}\n"
-        f"Teléfono: {phone}\n"
-        f"Ciudad: {city}\n"
-        f"Barrio: {barrio}\n"
-        f"Dirección: {residence_address}\n"
-        f"Ubicación: {lat}, {lng}\n\n"
-        "Condiciones para Administrador Local:\n"
-        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
-        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
-        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
-        "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
-        "Si quieres corregir, escribe 'volver' o usa /cancel."
+    update.message.reply_text(
+        "Ubicación guardada.\n\n"
+        "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
+        "Envía una foto del FRENTE de tu cédula:" + _OPTIONS_HINT
     )
-    update.message.reply_text(resumen)
-    _set_flow_step(context, "admin", LOCAL_ADMIN_CONFIRM)
-    return LOCAL_ADMIN_CONFIRM
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
+    return LOCAL_ADMIN_CEDULA_FRONT
 
 
 def admin_confirm(update, context):
@@ -4588,6 +4644,9 @@ def admin_confirm(update, context):
     residence_address = (context.user_data.get("admin_residence_address") or "").strip()
     residence_lat = context.user_data.get("admin_residence_lat")
     residence_lng = context.user_data.get("admin_residence_lng")
+    cedula_front_file_id = context.user_data.get("admin_cedula_front_file_id")
+    cedula_back_file_id = context.user_data.get("admin_cedula_back_file_id")
+    selfie_file_id = context.user_data.get("admin_selfie_file_id")
 
     try:
         admin_id, team_code = create_admin(
@@ -4601,6 +4660,9 @@ def admin_confirm(update, context):
             residence_address,
             residence_lat,
             residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
         )
     except ValueError as e:
         update.message.reply_text(str(e))
@@ -10204,6 +10266,18 @@ def main():
             LOCAL_ADMIN_RESIDENCE_LOCATION: [
                 MessageHandler(Filters.location, admin_residence_location),
                 MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
+            ],
+            LOCAL_ADMIN_CEDULA_FRONT: [
+                MessageHandler(Filters.photo, admin_cedula_front),
+                MessageHandler(Filters.text & ~Filters.command, admin_cedula_front),
+            ],
+            LOCAL_ADMIN_CEDULA_BACK: [
+                MessageHandler(Filters.photo, admin_cedula_back),
+                MessageHandler(Filters.text & ~Filters.command, admin_cedula_back),
+            ],
+            LOCAL_ADMIN_SELFIE: [
+                MessageHandler(Filters.photo, admin_selfie),
+                MessageHandler(Filters.text & ~Filters.command, admin_selfie),
             ],
             LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, admin_confirm)],
         },

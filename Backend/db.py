@@ -1233,6 +1233,16 @@ def init_db():
     if "payment_instructions" not in admins_pay_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN payment_instructions TEXT")
 
+    # Migración: agregar columnas de fotos a admins si no existen
+    cur.execute("PRAGMA table_info(admins)")
+    admins_photo_cols = [r[1] for r in cur.fetchall()]
+    if "cedula_front_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN cedula_front_file_id TEXT")
+    if "cedula_back_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN cedula_back_file_id TEXT")
+    if "selfie_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN selfie_file_id TEXT")
+
     # Tabla: ledger (movimientos contables)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ledger (
@@ -1386,6 +1396,9 @@ def _init_db_postgres():
         ("payment_bank", "TEXT"),
         ("payment_holder", "TEXT"),
         ("payment_instructions", "TEXT"),
+        ("cedula_front_file_id", "TEXT"),
+        ("cedula_back_file_id", "TEXT"),
+        ("selfie_file_id", "TEXT"),
     ]:
         _pg_add_col("admins", col, ctype)
 
@@ -4054,6 +4067,9 @@ def create_admin(
     residence_address=None,
     residence_lat=None,
     residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
 ):
     # 1) Identidad global
     person_id = get_or_create_identity(phone, document_number, full_name=full_name)
@@ -4068,9 +4084,10 @@ def create_admin(
             INSERT INTO admins (
                 user_id, person_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number,
-                residence_address, residence_lat, residence_lng
+                residence_address, residence_lat, residence_lng,
+                cedula_front_file_id, cedula_back_file_id, selfie_file_id
             )
-            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql}, {P}, {P}, {P}, {P}, {P})
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
         """, (
             user_id,
             person_id,
@@ -4083,6 +4100,9 @@ def create_admin(
             residence_address,
             residence_lat,
             residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
         ))
 
         # TEAM_CODE automático y único
