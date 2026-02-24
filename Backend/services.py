@@ -10,6 +10,7 @@ from db import (
     get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
+    register_platform_income,
     update_courier_link_balance, update_ally_link_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
@@ -20,6 +21,8 @@ from db import (
     review_reference_alias_candidate,
     set_reference_alias_candidate_coords,
     get_connection,
+    P,
+    DB_ENGINE,
     get_admin_by_telegram_id,
     get_user_by_telegram_id,
     get_admin_by_user_id,
@@ -86,6 +89,7 @@ from db import (
     delete_courier,
     get_admin_link_for_courier,
     get_admin_link_for_ally,
+    get_courier_link_balance,
     create_order,
     set_order_status,
     assign_order_to_courier,
@@ -1073,9 +1077,9 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
 def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple[bool, str]:
     """
     Aprueba una solicitud de recarga.
-    - Si el admin asignado es LOCAL: valida saldo y descuenta del admin.
-    - Si el admin asignado es PLATAFORMA: acredita sin validar saldo.
-    Registra el movimiento en ledger.
+    - Todos los admins (LOCAL y PLATAFORMA) deben tener saldo suficiente.
+    - El saldo se descuenta del admin aprobador y se acredita al destinatario.
+    - Registra el movimiento completo en ledger (doble entrada).
 
     Retorna: (success, message)
     """
@@ -1107,92 +1111,102 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     else:
         return False, f"Tipo de destino desconocido: {target_type}"
 
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("BEGIN IMMEDIATE")
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
 
-        if not is_platform:
-            cur.execute("SELECT balance FROM admins WHERE id = ?", (admin_id,))
-            row = cur.fetchone()
-            current_admin_balance = row["balance"] if row else 0
-            if current_admin_balance < amount:
-                conn.rollback()
-                return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
+        cur.execute("SELECT balance FROM admins WHERE id = " + P, (admin_id,))
+        row = cur.fetchone()
+        current_admin_balance = row["balance"] if row else 0
+        if current_admin_balance < amount:
+            conn.rollback()
+            return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
 
-            cur.execute(
-                "UPDATE admins SET balance = balance - ? WHERE id = ?",
-                (amount, admin_id),
-            )
-            cur.execute("""
-                INSERT INTO ledger
-                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                "RECHARGE", "ADMIN", admin_id, "ADMIN", admin_id, amount,
+        cur.execute(
+            "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
+            (amount, admin_id),
+        )
+        from_type_label = "PLATFORM" if is_platform else "ADMIN"
+        cur.execute(
+            "INSERT INTO ledger"
+            "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
+            " VALUES (" + ", ".join([P] * 9) + ")",
+            (
+                "RECHARGE", from_type_label, admin_id, from_type_label, admin_id, amount,
                 "RECHARGE_REQUEST", request_id,
                 f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
-            ))
+            ),
+        )
 
         if target_type == "ADMIN":
             cur.execute(
-                "UPDATE admins SET balance = balance + ? WHERE id = ?",
+                "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P,
                 (amount, target_id),
             )
-            cur.execute("""
-                INSERT INTO ledger
-                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                "RECHARGE", "PLATFORM", admin_id, "ADMIN", target_id, amount,
-                "RECHARGE_REQUEST", request_id,
-                f"Recarga de admin local aprobada por plataforma admin_id={decided_by_admin_id}",
-            ))
+            cur.execute(
+                "INSERT INTO ledger"
+                "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
+                " VALUES (" + ", ".join([P] * 9) + ")",
+                (
+                    "RECHARGE", "PLATFORM", admin_id, "ADMIN", target_id, amount,
+                    "RECHARGE_REQUEST", request_id,
+                    f"Recarga de admin local aprobada por plataforma admin_id={decided_by_admin_id}",
+                ),
+            )
         elif target_type == "COURIER":
-            cur.execute("""
-                UPDATE admin_couriers
-                SET balance = balance + ?, updated_at = datetime('now')
-                WHERE courier_id = ? AND admin_id = ? AND status = 'APPROVED'
-            """, (amount, target_id, admin_id))
+            cur.execute(
+                "UPDATE admin_couriers"
+                " SET balance = balance + " + P + ", updated_at = " + now_sql +
+                " WHERE courier_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
+                (amount, target_id, admin_id),
+            )
             if cur.rowcount != 1:
                 conn.rollback()
                 return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-            cur.execute("""
-                INSERT INTO ledger
-                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "COURIER", target_id, amount,
-                "RECHARGE_REQUEST", request_id,
-                f"Recarga aprobada por admin_id={decided_by_admin_id}",
-            ))
+            cur.execute(
+                "INSERT INTO ledger"
+                "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
+                " VALUES (" + ", ".join([P] * 9) + ")",
+                (
+                    "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "COURIER", target_id, amount,
+                    "RECHARGE_REQUEST", request_id,
+                    f"Recarga aprobada por admin_id={decided_by_admin_id}",
+                ),
+            )
         elif target_type == "ALLY":
-            cur.execute("""
-                UPDATE admin_allies
-                SET balance = balance + ?, updated_at = datetime('now')
-                WHERE ally_id = ? AND admin_id = ? AND status = 'APPROVED'
-            """, (amount, target_id, admin_id))
+            cur.execute(
+                "UPDATE admin_allies"
+                " SET balance = balance + " + P + ", updated_at = " + now_sql +
+                " WHERE ally_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
+                (amount, target_id, admin_id),
+            )
             if cur.rowcount != 1:
                 conn.rollback()
                 return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-            cur.execute("""
-                INSERT INTO ledger
-                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "ALLY", target_id, amount,
-                "RECHARGE_REQUEST", request_id,
-                f"Recarga aprobada por admin_id={decided_by_admin_id}",
-            ))
+            cur.execute(
+                "INSERT INTO ledger"
+                "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
+                " VALUES (" + ", ".join([P] * 9) + ")",
+                (
+                    "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "ALLY", target_id, amount,
+                    "RECHARGE_REQUEST", request_id,
+                    f"Recarga aprobada por admin_id={decided_by_admin_id}",
+                ),
+            )
         else:
             conn.rollback()
             return False, f"Tipo de destino desconocido: {target_type}"
 
-        cur.execute("""
-            UPDATE recharge_requests
-            SET status = 'APPROVED', decided_by_admin_id = ?, decided_at = datetime('now')
-            WHERE id = ? AND status = 'PENDING'
-        """, (decided_by_admin_id, request_id))
+        cur.execute(
+            "UPDATE recharge_requests"
+            " SET status = 'APPROVED', decided_by_admin_id = " + P + ", decided_at = " + now_sql +
+            " WHERE id = " + P + " AND status = 'PENDING'",
+            (decided_by_admin_id, request_id),
+        )
         if cur.rowcount != 1:
             conn.rollback()
             return False, "Solicitud ya procesada."
@@ -1222,14 +1236,17 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
     if status != "PENDING":
         return False, f"Solicitud ya procesada (status: {status})."
 
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("""
-            UPDATE recharge_requests
-            SET status = 'REJECTED', decided_by_admin_id = ?, decided_at = datetime('now')
-            WHERE id = ? AND status = 'PENDING'
-        """, (decided_by_admin_id, request_id))
+        cur.execute(
+            "UPDATE recharge_requests"
+            " SET status = 'REJECTED', decided_by_admin_id = " + P + ", decided_at = " + now_sql +
+            " WHERE id = " + P + " AND status = 'PENDING'",
+            (decided_by_admin_id, request_id),
+        )
         if cur.rowcount != 1:
             conn.rollback()
             return False, "Solicitud ya procesada."
