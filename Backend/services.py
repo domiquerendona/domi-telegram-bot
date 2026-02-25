@@ -1049,16 +1049,24 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
 
     # 5. Geocoding por texto (ultimo recurso, cuesta API)
     normalized_text = _normalize_reference_key(text)
-    if can_call_google_today() and not is_url_like:
+    try:
+        quota_ok = can_call_google_today()
+    except Exception:
+        quota_ok = False
+
+    if quota_ok and not is_url_like:
         geo = google_geocode_forward(text)
         if geo and geo.get("lat") and geo.get("lng"):
-            upsert_reference_alias_candidate(
-                raw_text=text,
-                normalized_text=normalized_text,
-                suggested_lat=geo["lat"],
-                suggested_lng=geo["lng"],
-                source="geocode",
-            )
+            try:
+                upsert_reference_alias_candidate(
+                    raw_text=text,
+                    normalized_text=normalized_text,
+                    suggested_lat=geo["lat"],
+                    suggested_lng=geo["lng"],
+                    source="geocode",
+                )
+            except Exception:
+                pass
             return {
                 "lat": geo["lat"],
                 "lng": geo["lng"],
@@ -1067,11 +1075,14 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
             }
 
     if not is_url_like:
-        upsert_reference_alias_candidate(
-            raw_text=text,
-            normalized_text=normalized_text,
-            source="unresolved",
-        )
+        try:
+            upsert_reference_alias_candidate(
+                raw_text=text,
+                normalized_text=normalized_text,
+                source="unresolved",
+            )
+        except Exception:
+            pass
     return None
 
 
