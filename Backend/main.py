@@ -6245,12 +6245,17 @@ def cotizar_recogida(update, context):
         )
         return COTIZAR_RECOGIDA
 
-    context.user_data["cotizar_pickup"] = loc
-    dir_encontrada = ""
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
-        dir_encontrada = f"Direccion encontrada: {loc['formatted_address']}\n\n"
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            loc["formatted_address"], loc["lat"], loc["lng"],
+            "cotizar_recogida_geo_si", "cotizar_recogida_geo_no",
+        )
+        return COTIZAR_RECOGIDA
+
+    context.user_data["cotizar_pickup"] = loc
     update.message.reply_text(
-        f"{dir_encontrada}Recogida registrada.\n\n"
+        "Recogida registrada.\n\n"
         "Ahora enviame el punto de ENTREGA.\n"
         "Puedes enviar:\n"
         "- Un PIN de ubicacion de Telegram\n"
@@ -6266,6 +6271,40 @@ def cotizar_recogida_location(update, context):
     return cotizar_recogida(update, context)
 
 
+def cotizar_recogida_geo_callback(update, context):
+    """Maneja confirmacion de geocoding en recogida del cotizador."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_recogida_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
+            return COTIZAR_RECOGIDA
+        context.user_data["cotizar_pickup"] = {"lat": lat, "lng": lng, "method": "geocode"}
+        query.edit_message_text(
+            "Recogida confirmada.\n\n"
+            "Ahora enviame el punto de ENTREGA.\n"
+            "Puedes enviar:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Una direccion de texto"
+        )
+        return COTIZAR_ENTREGA
+    else:  # cotizar_recogida_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otro modo:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return COTIZAR_RECOGIDA
+
+
 def cotizar_entrega(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
@@ -6275,24 +6314,24 @@ def cotizar_entrega(update, context):
         )
         return COTIZAR_ENTREGA
 
-    context.user_data["cotizar_dropoff"] = loc
-    pickup = context.user_data.get("cotizar_pickup")
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            loc["formatted_address"], loc["lat"], loc["lng"],
+            "cotizar_entrega_geo_si", "cotizar_entrega_geo_no",
+        )
+        return COTIZAR_ENTREGA
 
+    pickup = context.user_data.get("cotizar_pickup")
     if not pickup:
         update.message.reply_text("Error: no se encontro el punto de recogida. Usa /cotizar de nuevo.")
         return ConversationHandler.END
 
-    # Calcular distancia con estrategia inteligente
-    result = get_smart_distance(
-        pickup["lat"], pickup["lng"],
-        loc["lat"], loc["lng"]
-    )
-
+    result = get_smart_distance(pickup["lat"], pickup["lng"], loc["lat"], loc["lng"])
     distance_km = result["distance_km"]
     config = get_pricing_config()
     precio = calcular_precio_distancia(distance_km, config)
 
-    # Indicar fuente de distancia
     source = result["source"]
     if "google" in source:
         nota_fuente = "Distancia por ruta (Google Maps)"
@@ -6301,18 +6340,12 @@ def cotizar_entrega(update, context):
     else:
         nota_fuente = f"Distancia desde cache ({source})"
 
-    dir_entrega = ""
-    if loc.get("method") == "geocode" and loc.get("formatted_address"):
-        dir_entrega = f"Entrega: {loc['formatted_address']}\n"
     update.message.reply_text(
         f"COTIZACION\n\n"
-        f"{dir_entrega}"
         f"Distancia: {distance_km:.1f} km\n"
         f"Precio: ${precio:,}\n\n".replace(",", ".")
         + f"{nota_fuente}"
     )
-
-    # Limpiar datos
     context.user_data.pop("cotizar_pickup", None)
     context.user_data.pop("cotizar_dropoff", None)
     context.user_data.pop("cotizar_ally_id", None)
@@ -6322,6 +6355,56 @@ def cotizar_entrega(update, context):
 def cotizar_entrega_location(update, context):
     """Handler para PIN de Telegram en entrega."""
     return cotizar_entrega(update, context)
+
+
+def cotizar_entrega_geo_callback(update, context):
+    """Maneja confirmacion de geocoding en entrega del cotizador."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_entrega_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        pickup = context.user_data.get("cotizar_pickup")
+        if not pickup:
+            query.edit_message_text("Error: no se encontro recogida. Usa /cotizar de nuevo.")
+            return ConversationHandler.END
+
+        result = get_smart_distance(pickup["lat"], pickup["lng"], lat, lng)
+        distance_km = result["distance_km"]
+        config = get_pricing_config()
+        precio = calcular_precio_distancia(distance_km, config)
+
+        source = result["source"]
+        if "google" in source:
+            nota_fuente = "Distancia por ruta (Google Maps)"
+        elif "haversine" in source:
+            nota_fuente = "Distancia estimada (calculo local)"
+        else:
+            nota_fuente = f"Distancia desde cache ({source})"
+
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        query.edit_message_text(
+            f"COTIZACION\n\n"
+            f"Distancia: {distance_km:.1f} km\n"
+            f"Precio: ${precio:,}\n\n".replace(",", ".")
+            + f"{nota_fuente}"
+        )
+        return ConversationHandler.END
+    else:  # cotizar_entrega_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otro modo:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return COTIZAR_ENTREGA
 
 
 def courier_pick_admin_callback(update, context):
@@ -7798,10 +7881,12 @@ cotizar_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, cotizar_distancia),
         ],
         COTIZAR_RECOGIDA: [
+            CallbackQueryHandler(cotizar_recogida_geo_callback, pattern=r"^cotizar_recogida_geo_"),
             MessageHandler(Filters.location, cotizar_recogida_location),
             MessageHandler(Filters.text & ~Filters.command, cotizar_recogida),
         ],
         COTIZAR_ENTREGA: [
+            CallbackQueryHandler(cotizar_entrega_geo_callback, pattern=r"^cotizar_entrega_geo_"),
             MessageHandler(Filters.location, cotizar_entrega_location),
             MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
         ],
