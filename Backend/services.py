@@ -1059,7 +1059,12 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                 suggested_lng=geo["lng"],
                 source="geocode",
             )
-            return {"lat": geo["lat"], "lng": geo["lng"], "method": "geocode"}
+            return {
+                "lat": geo["lat"],
+                "lng": geo["lng"],
+                "method": "geocode",
+                "formatted_address": geo.get("formatted_address", ""),
+            }
 
     if not is_url_like:
         upsert_reference_alias_candidate(

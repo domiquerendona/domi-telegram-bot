@@ -1550,15 +1550,24 @@ def ally_ubicacion_handler(update, context):
     if coords:
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
-        update.message.reply_text("Ubicación guardada.")
-    else:
-        update.message.reply_text(
-            "No se pudo extraer la ubicación del texto.\n"
-            "Envía un pin de Telegram o pega un link de Google Maps."
+        update.message.reply_text("Ubicacion guardada.")
+        return _show_ally_confirm(update, context)
+
+    # Geocoding: intentar como direccion escrita
+    geo = resolve_location(texto)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            geo["formatted_address"], geo["lat"], geo["lng"],
+            "ally_geo_si", "ally_geo_no",
         )
         return ALLY_UBICACION
 
-    return _show_ally_confirm(update, context)
+    update.message.reply_text(
+        "No se pudo extraer la ubicacion del texto.\n"
+        "Envia un pin de Telegram o pega un link de Google Maps."
+    )
+    return ALLY_UBICACION
 
 
 def ally_ubicacion_location_handler(update, context):
@@ -1566,8 +1575,35 @@ def ally_ubicacion_location_handler(update, context):
     loc = update.message.location
     context.user_data["ally_lat"] = loc.latitude
     context.user_data["ally_lng"] = loc.longitude
-    update.message.reply_text("Ubicación guardada.")
+    update.message.reply_text("Ubicacion guardada.")
     return _show_ally_confirm(update, context)
+
+
+def ally_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de aliado."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "ally_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return ALLY_UBICACION
+        context.user_data["ally_lat"] = lat
+        context.user_data["ally_lng"] = lng
+        query.edit_message_text("Ubicacion confirmada.")
+        return _show_ally_confirm(update, context)
+    else:  # ally_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return ALLY_UBICACION
 
 
 def _show_ally_confirm(update, context):
@@ -1985,22 +2021,64 @@ def courier_residence_location(update, context):
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+        else:
+            # Geocoding: intentar como direccion escrita
+            geo = resolve_location(text)
+            if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                _mostrar_confirmacion_geocode(
+                    update.message, context,
+                    geo["formatted_address"], geo["lat"], geo["lng"],
+                    "courier_geo_si", "courier_geo_no",
+                )
+                return COURIER_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
         update.message.reply_text(
-            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
         return COURIER_RESIDENCE_LOCATION
 
     context.user_data["residence_lat"] = lat
     context.user_data["residence_lng"] = lng
     update.message.reply_text(
-        "Ubicación guardada.\n\n"
+        "Ubicacion guardada.\n\n"
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "courier", COURIER_PLATE)
     return COURIER_PLATE
+
+
+def courier_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de repartidor."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "courier_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return COURIER_RESIDENCE_LOCATION
+        context.user_data["residence_lat"] = lat
+        context.user_data["residence_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        _set_flow_step(context, "courier", COURIER_PLATE)
+        return COURIER_PLATE
+    else:  # courier_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return COURIER_RESIDENCE_LOCATION
 
 
 def courier_plate(update, context):
@@ -3165,6 +3243,22 @@ def pedido_telefono_cliente(update, context):
     return PEDIDO_UBICACION
 
 
+def _mostrar_confirmacion_geocode(message, context, formatted_address, lat, lng, cb_si, cb_no):
+    """Muestra resultado del geocoding con botones de confirmacion."""
+    context.user_data["pending_geo_lat"] = lat
+    context.user_data["pending_geo_lng"] = lng
+    keyboard = [[
+        InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+        InlineKeyboardButton("No, enviar GPS", callback_data=cb_no),
+    ]]
+    message.reply_text(
+        "Encontre esta ubicacion:\n\n"
+        f"{formatted_address}\n\n"
+        "Es correcta?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
 def pedido_ubicacion_handler(update, context):
     """Maneja texto de ubicación (link o coords) con cache + Google place_id only."""
     texto = update.message.text.strip()
@@ -3226,7 +3320,18 @@ def pedido_ubicacion_handler(update, context):
             )
             return PEDIDO_DIRECCION
 
-    # 5) No se pudo resolver: la ubicacion es obligatoria
+    # 5) Geocoding: si el texto no es URL, intentar como direccion escrita
+    if "http" not in texto:
+        geo = resolve_location(texto)
+        if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+            _mostrar_confirmacion_geocode(
+                update.message, context,
+                geo["formatted_address"], geo["lat"], geo["lng"],
+                "pedido_geo_si", "pedido_geo_no",
+            )
+            return PEDIDO_UBICACION
+
+    # 6) No se pudo resolver: la ubicacion es obligatoria
     es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
 
     if es_link_corto_google:
@@ -3267,6 +3372,37 @@ def pedido_ubicacion_location_handler(update, context):
         "barrio, conjunto, torre, apto, referencias."
     )
     return PEDIDO_DIRECCION
+
+
+def pedido_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el flujo de pedido."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "pedido_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return PEDIDO_UBICACION
+        context.user_data["dropoff_lat"] = lat
+        context.user_data["dropoff_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Ahora escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
+    else:  # pedido_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return PEDIDO_UBICACION
 
 
 def pedido_ubicacion_copiar_msg_callback(update, context):
@@ -3616,9 +3752,11 @@ def ally_locs_add_coords(update, context):
 
     context.user_data["ally_locs_new_lat"] = loc["lat"]
     context.user_data["ally_locs_new_lng"] = loc["lng"]
+    dir_encontrada = ""
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        dir_encontrada = f"Ubicacion encontrada: {loc['formatted_address']}\n\n"
     update.message.reply_text(
-        "Ubicacion guardada.\n\n"
-        "Dale un nombre a este punto de recogida:\n"
+        f"{dir_encontrada}Dale un nombre a este punto de recogida:\n"
         "(ej: Tienda centro, Bodega norte, Casa)"
     )
     return ALLY_LOCS_ADD_LABEL
@@ -4817,22 +4955,64 @@ def admin_residence_location(update, context):
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+        else:
+            # Geocoding: intentar como direccion escrita
+            geo = resolve_location(text)
+            if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                _mostrar_confirmacion_geocode(
+                    update.message, context,
+                    geo["formatted_address"], geo["lat"], geo["lng"],
+                    "admin_geo_si", "admin_geo_no",
+                )
+                return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
         update.message.reply_text(
-            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
         return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
     update.message.reply_text(
-        "Ubicación guardada.\n\n"
+        "Ubicacion guardada.\n\n"
         "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
-        "Envía una foto del FRENTE de tu cédula:" + _OPTIONS_HINT
+        "Envia una foto del FRENTE de tu cedula:" + _OPTIONS_HINT
     )
     _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
     return LOCAL_ADMIN_CEDULA_FRONT
+
+
+def admin_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de admin local."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "admin_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return LOCAL_ADMIN_RESIDENCE_LOCATION
+        context.user_data["admin_residence_lat"] = lat
+        context.user_data["admin_residence_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
+            "Envia una foto del FRENTE de tu cedula:" + _OPTIONS_HINT
+        )
+        _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
+        return LOCAL_ADMIN_CEDULA_FRONT
+    else:  # admin_geo_no
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "Entendido. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+        return LOCAL_ADMIN_RESIDENCE_LOCATION
 
 
 def admin_confirm(update, context):
@@ -6066,8 +6246,11 @@ def cotizar_recogida(update, context):
         return COTIZAR_RECOGIDA
 
     context.user_data["cotizar_pickup"] = loc
+    dir_encontrada = ""
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        dir_encontrada = f"Direccion encontrada: {loc['formatted_address']}\n\n"
     update.message.reply_text(
-        "Recogida registrada.\n\n"
+        f"{dir_encontrada}Recogida registrada.\n\n"
         "Ahora enviame el punto de ENTREGA.\n"
         "Puedes enviar:\n"
         "- Un PIN de ubicacion de Telegram\n"
@@ -6118,8 +6301,12 @@ def cotizar_entrega(update, context):
     else:
         nota_fuente = f"Distancia desde cache ({source})"
 
+    dir_entrega = ""
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        dir_entrega = f"Entrega: {loc['formatted_address']}\n"
     update.message.reply_text(
         f"COTIZACION\n\n"
+        f"{dir_entrega}"
         f"Distancia: {distance_km:.1f} km\n"
         f"Precio: ${precio:,}\n\n".replace(",", ".")
         + f"{nota_fuente}"
@@ -7399,6 +7586,7 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
         ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
         ALLY_UBICACION: [
+            CallbackQueryHandler(ally_geo_ubicacion_callback, pattern=r"^ally_geo_"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
             MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler),
         ],
@@ -7436,6 +7624,7 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, courier_residence_address)
         ],
         COURIER_RESIDENCE_LOCATION: [
+            CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
             MessageHandler(Filters.location, courier_residence_location),
             MessageHandler(Filters.text & ~Filters.command, courier_residence_location),
         ],
@@ -7512,6 +7701,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
+            CallbackQueryHandler(pedido_geo_ubicacion_callback, pattern=r"^pedido_geo_"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
@@ -10675,6 +10865,7 @@ def main():
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
             LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, admin_residence_address)],
             LOCAL_ADMIN_RESIDENCE_LOCATION: [
+                CallbackQueryHandler(admin_geo_ubicacion_callback, pattern=r"^admin_geo_"),
                 MessageHandler(Filters.location, admin_residence_location),
                 MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
             ],
