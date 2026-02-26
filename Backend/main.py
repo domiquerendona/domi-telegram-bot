@@ -1558,7 +1558,7 @@ def ally_ubicacion_handler(update, context):
     if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
         _mostrar_confirmacion_geocode(
             update.message, context,
-            geo["formatted_address"], geo["lat"], geo["lng"],
+            geo.get("candidates", [geo]),
             "ally_geo_si", "ally_geo_no",
         )
         return ALLY_UBICACION
@@ -1587,6 +1587,8 @@ def ally_geo_ubicacion_callback(update, context):
     if query.data == "ally_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return ALLY_UBICACION
@@ -1595,15 +1597,7 @@ def ally_geo_ubicacion_callback(update, context):
         query.edit_message_text("Ubicacion confirmada.")
         return _show_ally_confirm(update, context)
     else:  # ally_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otra forma:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return ALLY_UBICACION
+        return _geo_siguiente_o_gps(query, context, "ally_geo_si", "ally_geo_no", ALLY_UBICACION)
 
 
 def _show_ally_confirm(update, context):
@@ -2027,7 +2021,7 @@ def courier_residence_location(update, context):
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 _mostrar_confirmacion_geocode(
                     update.message, context,
-                    geo["formatted_address"], geo["lat"], geo["lng"],
+                    geo.get("candidates", [geo]),
                     "courier_geo_si", "courier_geo_no",
                 )
                 return COURIER_RESIDENCE_LOCATION
@@ -2057,6 +2051,8 @@ def courier_geo_ubicacion_callback(update, context):
     if query.data == "courier_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return COURIER_RESIDENCE_LOCATION
@@ -2070,15 +2066,7 @@ def courier_geo_ubicacion_callback(update, context):
         _set_flow_step(context, "courier", COURIER_PLATE)
         return COURIER_PLATE
     else:  # courier_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otra forma:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return COURIER_RESIDENCE_LOCATION
+        return _geo_siguiente_o_gps(query, context, "courier_geo_si", "courier_geo_no", COURIER_RESIDENCE_LOCATION)
 
 
 def courier_plate(update, context):
@@ -3243,23 +3231,74 @@ def pedido_telefono_cliente(update, context):
     return PEDIDO_UBICACION
 
 
-def _mostrar_confirmacion_geocode(message, context, formatted_address, lat, lng, cb_si, cb_no):
-    """Muestra resultado del geocoding con pin de Telegram, link de Maps y botones de confirmacion."""
+def _mostrar_confirmacion_geocode(message, context, candidates, cb_si, cb_no):
+    """Muestra el primer candidato de geocoding con pin, link de Maps y botones de confirmacion.
+    candidates: lista de dicts {lat, lng, formatted_address}."""
+    context.user_data["pending_geo_candidates"] = candidates
+    context.user_data["pending_geo_index"] = 0
+    candidate = candidates[0]
+    lat = candidate["lat"]
+    lng = candidate["lng"]
+    formatted_address = candidate.get("formatted_address", "")
     context.user_data["pending_geo_lat"] = lat
     context.user_data["pending_geo_lng"] = lng
     message.reply_location(latitude=lat, longitude=lng)
     maps_link = f"https://maps.google.com/?q={lat},{lng}"
+    total = len(candidates)
+    label_no = "No, esta no es" if total > 1 else "No, enviar GPS"
+    header = f"Opcion 1 de {total}:\n\n" if total > 1 else "Encontre esta ubicacion:\n\n"
     keyboard = [[
         InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
-        InlineKeyboardButton("No, enviar GPS", callback_data=cb_no),
+        InlineKeyboardButton(label_no, callback_data=cb_no),
     ]]
     message.reply_text(
-        "Encontre esta ubicacion:\n\n"
-        f"{formatted_address}\n\n"
+        f"{header}{formatted_address}\n\n"
         f"Ver en mapa: {maps_link}\n\n"
         "Es correcta?",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+def _geo_siguiente_o_gps(query, context, cb_si, cb_no, estado):
+    """Si hay mas candidatos de geocoding los muestra; si no, pide GPS. Retorna el estado."""
+    candidates = context.user_data.get("pending_geo_candidates", [])
+    idx = context.user_data.get("pending_geo_index", 0)
+    next_idx = idx + 1
+    if next_idx < len(candidates):
+        candidate = candidates[next_idx]
+        context.user_data["pending_geo_index"] = next_idx
+        context.user_data["pending_geo_lat"] = candidate["lat"]
+        context.user_data["pending_geo_lng"] = candidate["lng"]
+        lat = candidate["lat"]
+        lng = candidate["lng"]
+        maps_link = f"https://maps.google.com/?q={lat},{lng}"
+        total = len(candidates)
+        label_no = "No, esta no es" if next_idx < total - 1 else "No, enviar GPS"
+        keyboard = [[
+            InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+            InlineKeyboardButton(label_no, callback_data=cb_no),
+        ]]
+        query.edit_message_text("Buscando otra opcion...")
+        query.message.reply_location(latitude=lat, longitude=lng)
+        query.message.reply_text(
+            f"Opcion {next_idx + 1} de {total}:\n\n"
+            f"{candidate.get('formatted_address', '')}\n\n"
+            f"Ver en mapa: {maps_link}\n\n"
+            "Es correcta?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        query.edit_message_text(
+            "No encontre mas opciones. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+    return estado
 
 
 def pedido_ubicacion_handler(update, context):
@@ -3329,7 +3368,7 @@ def pedido_ubicacion_handler(update, context):
         if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
             _mostrar_confirmacion_geocode(
                 update.message, context,
-                geo["formatted_address"], geo["lat"], geo["lng"],
+                geo.get("candidates", [geo]),
                 "pedido_geo_si", "pedido_geo_no",
             )
             return PEDIDO_UBICACION
@@ -3385,6 +3424,8 @@ def pedido_geo_ubicacion_callback(update, context):
     if query.data == "pedido_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return PEDIDO_UBICACION
@@ -3397,15 +3438,7 @@ def pedido_geo_ubicacion_callback(update, context):
         )
         return PEDIDO_DIRECCION
     else:  # pedido_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otra forma:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return PEDIDO_UBICACION
+        return _geo_siguiente_o_gps(query, context, "pedido_geo_si", "pedido_geo_no", PEDIDO_UBICACION)
 
 
 def pedido_ubicacion_copiar_msg_callback(update, context):
@@ -4968,7 +5001,7 @@ def admin_residence_location(update, context):
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 _mostrar_confirmacion_geocode(
                     update.message, context,
-                    geo["formatted_address"], geo["lat"], geo["lng"],
+                    geo.get("candidates", [geo]),
                     "admin_geo_si", "admin_geo_no",
                 )
                 return LOCAL_ADMIN_RESIDENCE_LOCATION
@@ -4998,6 +5031,8 @@ def admin_geo_ubicacion_callback(update, context):
     if query.data == "admin_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return LOCAL_ADMIN_RESIDENCE_LOCATION
@@ -5011,15 +5046,7 @@ def admin_geo_ubicacion_callback(update, context):
         _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
         return LOCAL_ADMIN_CEDULA_FRONT
     else:  # admin_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otra forma:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return LOCAL_ADMIN_RESIDENCE_LOCATION
+        return _geo_siguiente_o_gps(query, context, "admin_geo_si", "admin_geo_no", LOCAL_ADMIN_RESIDENCE_LOCATION)
 
 
 def admin_confirm(update, context):
@@ -6259,7 +6286,7 @@ def cotizar_recogida(update, context):
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
         _mostrar_confirmacion_geocode(
             update.message, context,
-            loc["formatted_address"], loc["lat"], loc["lng"],
+            loc.get("candidates", [loc]),
             "cotizar_recogida_geo_si", "cotizar_recogida_geo_no",
         )
         return COTIZAR_RECOGIDA
@@ -6290,6 +6317,8 @@ def cotizar_recogida_geo_callback(update, context):
     if query.data == "cotizar_recogida_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
             return COTIZAR_RECOGIDA
@@ -6305,15 +6334,7 @@ def cotizar_recogida_geo_callback(update, context):
         )
         return COTIZAR_ENTREGA
     else:  # cotizar_recogida_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otro modo:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return COTIZAR_RECOGIDA
+        return _geo_siguiente_o_gps(query, context, "cotizar_recogida_geo_si", "cotizar_recogida_geo_no", COTIZAR_RECOGIDA)
 
 
 def cotizar_entrega(update, context):
@@ -6332,7 +6353,7 @@ def cotizar_entrega(update, context):
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
         _mostrar_confirmacion_geocode(
             update.message, context,
-            loc["formatted_address"], loc["lat"], loc["lng"],
+            loc.get("candidates", [loc]),
             "cotizar_entrega_geo_si", "cotizar_entrega_geo_no",
         )
         return COTIZAR_ENTREGA
@@ -6380,6 +6401,8 @@ def cotizar_entrega_geo_callback(update, context):
     if query.data == "cotizar_entrega_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_candidates", None)
+        context.user_data.pop("pending_geo_index", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
             return ConversationHandler.END
@@ -6411,15 +6434,7 @@ def cotizar_entrega_geo_callback(update, context):
         )
         return ConversationHandler.END
     else:  # cotizar_entrega_geo_no
-        context.user_data.pop("pending_geo_lat", None)
-        context.user_data.pop("pending_geo_lng", None)
-        query.edit_message_text(
-            "Entendido. Envia la ubicacion de otro modo:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
-        )
-        return COTIZAR_ENTREGA
+        return _geo_siguiente_o_gps(query, context, "cotizar_entrega_geo_si", "cotizar_entrega_geo_no", COTIZAR_ENTREGA)
 
 
 def courier_pick_admin_callback(update, context):

@@ -1132,56 +1132,67 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
             f"{text}, Dosquebradas, Risaralda, Colombia",
             f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
         ]
+        _candidates = []
+        _seen_places = set()
+
         for _q in _queries:
+            if len(_candidates) >= 3:
+                break
             # Geocoding API (preciso)
             geo = google_geocode_forward(_q)
             if geo and geo.get("lat") and geo.get("lng"):
-                if not _is_allowed_city(geo.get("formatted_address", "")):
-                    continue
-                try:
-                    upsert_reference_alias_candidate(
-                        raw_text=text,
-                        normalized_text=normalized_text,
-                        suggested_lat=geo["lat"],
-                        suggested_lng=geo["lng"],
-                        source="geocode",
-                    )
-                except Exception:
-                    pass
-                return {
-                    "lat": geo["lat"],
-                    "lng": geo["lng"],
-                    "method": "geocode",
-                    "formatted_address": geo.get("formatted_address", ""),
-                }
+                if _is_allowed_city(geo.get("formatted_address", "")):
+                    _pid = geo.get("place_id") or f"{geo['lat']},{geo['lng']}"
+                    if _pid not in _seen_places:
+                        _seen_places.add(_pid)
+                        _candidates.append({
+                            "lat": geo["lat"],
+                            "lng": geo["lng"],
+                            "formatted_address": geo.get("formatted_address", ""),
+                        })
 
-            # Places Text Search (flexible, como buscar en Google Maps)
+            if len(_candidates) >= 3:
+                break
+
             try:
                 quota_ok2 = can_call_google_today()
             except Exception:
                 quota_ok2 = False
             if not quota_ok2:
                 break
+
+            # Places Text Search (flexible, como buscar en Google Maps)
             places = google_places_text_search(_q)
             if places and places.get("lat") and places.get("lng"):
-                if not _is_allowed_city(places.get("formatted_address", "")):
-                    continue
-                try:
-                    upsert_reference_alias_candidate(
-                        raw_text=text,
-                        normalized_text=normalized_text,
-                        suggested_lat=places["lat"],
-                        suggested_lng=places["lng"],
-                        source="textsearch",
-                    )
-                except Exception:
-                    pass
-                return {
-                    "lat": places["lat"],
-                    "lng": places["lng"],
-                    "method": "geocode",
-                    "formatted_address": places.get("formatted_address", ""),
-                }
+                if _is_allowed_city(places.get("formatted_address", "")):
+                    _pid = places.get("place_id") or f"{places['lat']},{places['lng']}"
+                    if _pid not in _seen_places:
+                        _seen_places.add(_pid)
+                        _candidates.append({
+                            "lat": places["lat"],
+                            "lng": places["lng"],
+                            "formatted_address": places.get("formatted_address", ""),
+                        })
+
+        if _candidates:
+            best = _candidates[0]
+            try:
+                upsert_reference_alias_candidate(
+                    raw_text=text,
+                    normalized_text=normalized_text,
+                    suggested_lat=best["lat"],
+                    suggested_lng=best["lng"],
+                    source="geocode",
+                )
+            except Exception:
+                pass
+            return {
+                "lat": best["lat"],
+                "lng": best["lng"],
+                "method": "geocode",
+                "formatted_address": best["formatted_address"],
+                "candidates": _candidates,
+            }
 
     if not is_url_like:
         try:
