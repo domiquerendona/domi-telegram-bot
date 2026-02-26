@@ -376,6 +376,8 @@ def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
         params = {
             "query": query,
             "region": "CO",
+            "location": "4.8133,-75.6961",  # Centro de Pereira (sesgo, no filtro duro)
+            "radius": 30000,                 # 30 km cubre Pereira, Dosquebradas, Santa Rosa
             "key": GOOGLE_MAPS_API_KEY,
         }
         r = requests.get(url, params=params, timeout=10)
@@ -1034,6 +1036,17 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
 
 # ---------- RESOLVER UBICACION INTELIGENTE ----------
 
+def _is_allowed_city(formatted_address: str) -> bool:
+    """True si la direccion corresponde a Pereira, Dosquebradas o Santa Rosa de Cabal."""
+    if not formatted_address:
+        return False
+    import unicodedata
+    normalized = unicodedata.normalize("NFD", formatted_address.lower())
+    normalized = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    allowed = ("pereira", "dosquebradas", "santa rosa de cabal")
+    return any(city in normalized for city in allowed)
+
+
 def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     """
     Intenta extraer lat/lng de cualquier entrada del usuario:
@@ -1089,34 +1102,47 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         quota_ok = False
 
     if quota_ok and not is_url_like:
-        # Intento 1: Geocoding API (preciso, sesgado a Colombia)
-        geo = google_geocode_forward(text)
-        if geo and geo.get("lat") and geo.get("lng"):
-            try:
-                upsert_reference_alias_candidate(
-                    raw_text=text,
-                    normalized_text=normalized_text,
-                    suggested_lat=geo["lat"],
-                    suggested_lng=geo["lng"],
-                    source="geocode",
-                )
-            except Exception:
-                pass
-            return {
-                "lat": geo["lat"],
-                "lng": geo["lng"],
-                "method": "geocode",
-                "formatted_address": geo.get("formatted_address", ""),
-            }
+        # Cascada de consultas: texto original + sufijos de ciudad
+        _queries = [
+            text,
+            f"{text}, Pereira, Risaralda, Colombia",
+            f"{text}, Dosquebradas, Risaralda, Colombia",
+            f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
+        ]
+        for _q in _queries:
+            # Geocoding API (preciso)
+            geo = google_geocode_forward(_q)
+            if geo and geo.get("lat") and geo.get("lng"):
+                if not _is_allowed_city(geo.get("formatted_address", "")):
+                    continue
+                try:
+                    upsert_reference_alias_candidate(
+                        raw_text=text,
+                        normalized_text=normalized_text,
+                        suggested_lat=geo["lat"],
+                        suggested_lng=geo["lng"],
+                        source="geocode",
+                    )
+                except Exception:
+                    pass
+                return {
+                    "lat": geo["lat"],
+                    "lng": geo["lng"],
+                    "method": "geocode",
+                    "formatted_address": geo.get("formatted_address", ""),
+                }
 
-        # Intento 2: Places Text Search (más flexible, como buscar en Google Maps)
-        try:
-            quota_ok2 = can_call_google_today()
-        except Exception:
-            quota_ok2 = False
-        if quota_ok2:
-            places = google_places_text_search(text)
+            # Places Text Search (flexible, como buscar en Google Maps)
+            try:
+                quota_ok2 = can_call_google_today()
+            except Exception:
+                quota_ok2 = False
+            if not quota_ok2:
+                break
+            places = google_places_text_search(_q)
             if places and places.get("lat") and places.get("lng"):
+                if not _is_allowed_city(places.get("formatted_address", "")):
+                    continue
                 try:
                     upsert_reference_alias_candidate(
                         raw_text=text,
