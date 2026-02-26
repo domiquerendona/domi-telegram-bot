@@ -1,7 +1,10 @@
 from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
+import logging
 import unicodedata
+
+logger = logging.getLogger(__name__)
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     set_setting,
@@ -283,7 +286,9 @@ def haversine_road_km(lat1: float, lng1: float, lat2: float, lng2: float) -> flo
 def can_call_google_today() -> bool:
     """Verifica si podemos hacer más llamadas a Google hoy (fusible)."""
     usage = get_api_usage_today("google_maps")
-    return usage < GOOGLE_LOOKUP_DAILY_LIMIT
+    result = usage < GOOGLE_LOOKUP_DAILY_LIMIT
+    logger.warning("[QUOTA] usage=%s limit=%s can_call=%s", usage, GOOGLE_LOOKUP_DAILY_LIMIT, result)
+    return result
 
 
 def extract_place_id_from_url(url: str) -> Optional[str]:
@@ -335,7 +340,10 @@ def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
 
 def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
     """Geocodifica una dirección de texto usando Geocoding API (sesgado a Colombia)."""
-    if not GOOGLE_MAPS_API_KEY or not query:
+    if not GOOGLE_MAPS_API_KEY:
+        logger.warning("[GEOCODE] GOOGLE_MAPS_API_KEY no configurada")
+        return None
+    if not query:
         return None
     try:
         import requests
@@ -348,19 +356,25 @@ def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data.get("status") == "OK" and data.get("results"):
+        status = data.get("status")
+        logger.warning("[GEOCODE] query=%r status=%s", query, status)
+        if status == "OK" and data.get("results"):
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
+            fa = result.get("formatted_address")
+            logger.warning("[GEOCODE] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
             increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
-                "formatted_address": result.get("formatted_address"),
+                "formatted_address": fa,
                 "place_id": result.get("place_id"),
                 "provider": "google_geocode",
             }
-    except Exception:
-        pass
+        else:
+            logger.warning("[GEOCODE] no results: %s", data.get("error_message", ""))
+    except Exception as e:
+        logger.warning("[GEOCODE] excepcion: %s", e)
     return None
 
 
@@ -368,7 +382,10 @@ def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
     """Busca un lugar por texto libre usando Places Text Search API.
     Equivale a escribir en el buscador de Google Maps — encuentra barrios,
     establecimientos y puntos informales que Geocoding no siempre encuentra."""
-    if not GOOGLE_MAPS_API_KEY or not query:
+    if not GOOGLE_MAPS_API_KEY:
+        logger.warning("[PLACES] GOOGLE_MAPS_API_KEY no configurada")
+        return None
+    if not query:
         return None
     try:
         import requests
@@ -382,19 +399,25 @@ def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data.get("status") == "OK" and data.get("results"):
+        status = data.get("status")
+        logger.warning("[PLACES] query=%r status=%s", query, status)
+        if status == "OK" and data.get("results"):
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
+            fa = result.get("formatted_address") or result.get("name", "")
+            logger.warning("[PLACES] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
             increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
-                "formatted_address": result.get("formatted_address") or result.get("name", ""),
+                "formatted_address": fa,
                 "place_id": result.get("place_id"),
                 "provider": "google_textsearch",
             }
-    except Exception:
-        pass
+        else:
+            logger.warning("[PLACES] no results: %s", data.get("error_message", ""))
+    except Exception as e:
+        logger.warning("[PLACES] excepcion: %s", e)
     return None
 
 
