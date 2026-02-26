@@ -3745,8 +3745,12 @@ def ally_locs_add_coords(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
         update.message.reply_text(
-            "No pude obtener la ubicacion.\n"
-            "Intenta con un PIN de Telegram, link de Google Maps o coordenadas (ej: 4.81,-75.69)."
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
         )
         return ALLY_LOCS_ADD_COORDS
 
@@ -6240,8 +6244,12 @@ def cotizar_recogida(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
         update.message.reply_text(
-            "No pude obtener la ubicacion.\n"
-            "Intenta con un PIN, link de Google Maps, o coordenadas."
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
         )
         return COTIZAR_RECOGIDA
 
@@ -6309,8 +6317,12 @@ def cotizar_entrega(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
         update.message.reply_text(
-            "No pude obtener la ubicacion.\n"
-            "Intenta con un PIN, link de Google Maps, o coordenadas."
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
         )
         return COTIZAR_ENTREGA
 

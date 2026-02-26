@@ -334,7 +334,7 @@ def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
 
 
 def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
-    """Geocodifica una dirección de texto usando Geocoding API."""
+    """Geocodifica una dirección de texto usando Geocoding API (sesgado a Colombia)."""
     if not GOOGLE_MAPS_API_KEY or not query:
         return None
     try:
@@ -342,7 +342,9 @@ def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
         url = "https://maps.googleapis.com/maps/api/geocode/json"
         params = {
             "address": query,
-            "key": GOOGLE_MAPS_API_KEY
+            "region": "CO",
+            "components": "country:CO",
+            "key": GOOGLE_MAPS_API_KEY,
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
@@ -355,7 +357,39 @@ def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
                 "lng": geo.get("lng"),
                 "formatted_address": result.get("formatted_address"),
                 "place_id": result.get("place_id"),
-                "provider": "google_geocode"
+                "provider": "google_geocode",
+            }
+    except Exception:
+        pass
+    return None
+
+
+def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
+    """Busca un lugar por texto libre usando Places Text Search API.
+    Equivale a escribir en el buscador de Google Maps — encuentra barrios,
+    establecimientos y puntos informales que Geocoding no siempre encuentra."""
+    if not GOOGLE_MAPS_API_KEY or not query:
+        return None
+    try:
+        import requests
+        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+        params = {
+            "query": query,
+            "region": "CO",
+            "key": GOOGLE_MAPS_API_KEY,
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        if data.get("status") == "OK" and data.get("results"):
+            result = data["results"][0]
+            geo = result.get("geometry", {}).get("location", {})
+            increment_api_usage("google_maps")
+            return {
+                "lat": geo.get("lat"),
+                "lng": geo.get("lng"),
+                "formatted_address": result.get("formatted_address") or result.get("name", ""),
+                "place_id": result.get("place_id"),
+                "provider": "google_textsearch",
             }
     except Exception:
         pass
@@ -1055,6 +1089,7 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         quota_ok = False
 
     if quota_ok and not is_url_like:
+        # Intento 1: Geocoding API (preciso, sesgado a Colombia)
         geo = google_geocode_forward(text)
         if geo and geo.get("lat") and geo.get("lng"):
             try:
@@ -1073,6 +1108,31 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                 "method": "geocode",
                 "formatted_address": geo.get("formatted_address", ""),
             }
+
+        # Intento 2: Places Text Search (más flexible, como buscar en Google Maps)
+        try:
+            quota_ok2 = can_call_google_today()
+        except Exception:
+            quota_ok2 = False
+        if quota_ok2:
+            places = google_places_text_search(text)
+            if places and places.get("lat") and places.get("lng"):
+                try:
+                    upsert_reference_alias_candidate(
+                        raw_text=text,
+                        normalized_text=normalized_text,
+                        suggested_lat=places["lat"],
+                        suggested_lng=places["lng"],
+                        source="textsearch",
+                    )
+                except Exception:
+                    pass
+                return {
+                    "lat": places["lat"],
+                    "lng": places["lng"],
+                    "method": "geocode",
+                    "formatted_address": places.get("formatted_address", ""),
+                }
 
     if not is_url_like:
         try:
