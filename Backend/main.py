@@ -3244,9 +3244,11 @@ def pedido_telefono_cliente(update, context):
 
 
 def _mostrar_confirmacion_geocode(message, context, formatted_address, lat, lng, cb_si, cb_no):
-    """Muestra resultado del geocoding con botones de confirmacion."""
+    """Muestra resultado del geocoding con pin de Telegram, link de Maps y botones de confirmacion."""
     context.user_data["pending_geo_lat"] = lat
     context.user_data["pending_geo_lng"] = lng
+    message.reply_location(latitude=lat, longitude=lng)
+    maps_link = f"https://maps.google.com/?q={lat},{lng}"
     keyboard = [[
         InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
         InlineKeyboardButton("No, enviar GPS", callback_data=cb_no),
@@ -3254,6 +3256,7 @@ def _mostrar_confirmacion_geocode(message, context, formatted_address, lat, lng,
     message.reply_text(
         "Encontre esta ubicacion:\n\n"
         f"{formatted_address}\n\n"
+        f"Ver en mapa: {maps_link}\n\n"
         "Es correcta?",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
