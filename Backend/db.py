@@ -4999,12 +4999,12 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
 
 def get_api_usage_today(api_name: str) -> int:
     """Retorna el número de llamadas hoy para una API."""
-    today = "CURRENT_DATE" if DB_ENGINE == "postgres" else "date('now')"
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
         SELECT call_count FROM api_usage_daily
-        WHERE api_name = {P} AND usage_date = {today}
+        WHERE api_name = {P} AND usage_date = {today_sql}
     """, (api_name,))
     row = cur.fetchone()
     conn.close()
@@ -5013,12 +5013,12 @@ def get_api_usage_today(api_name: str) -> int:
 
 def increment_api_usage(api_name: str):
     """Incrementa el contador de uso diario para una API."""
-    today = "CURRENT_DATE" if DB_ENGINE == "postgres" else "date('now')"
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
         INSERT INTO api_usage_daily (api_name, usage_date, call_count)
-        VALUES ({P}, {today}, 1)
+        VALUES ({P}, {today_sql}, 1)
         ON CONFLICT(api_name, usage_date) DO UPDATE SET
           call_count = api_usage_daily.call_count + 1
     """, (api_name,))
