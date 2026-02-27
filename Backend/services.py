@@ -137,6 +137,23 @@ from db import (
     deactivate_payment_method,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
+    # Re-exports rutas multi-parada
+    create_route,
+    create_route_destination,
+    get_route_by_id,
+    get_route_destinations,
+    get_pending_route_stops,
+    update_route_status,
+    assign_route_to_courier,
+    deliver_route_stop,
+    cancel_route,
+    create_route_offer_queue,
+    get_next_pending_route_offer,
+    mark_route_offer_as_offered,
+    mark_route_offer_response,
+    get_current_route_offer,
+    delete_route_offer_queue,
+    reset_route_offer_queue,
 )
 import math
 import re
@@ -772,6 +789,7 @@ def get_pricing_config():
         "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
         "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
         "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
+        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "4000"), 4000),
     }
 
 
@@ -920,6 +938,57 @@ def quote_order(distance_km: float) -> dict:
         "price": price,
         "config": config
     }
+
+
+def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict = None) -> dict:
+    """
+    Calcula el precio de una ruta multi-parada.
+
+    - distance_fee: precio de la distancia total (fórmula existente de calcular_precio_distancia)
+    - additional_stops_fee: (num_stops - 1) * tarifa_parada_adicional (default 4000)
+    - total_fee: suma de ambos
+
+    Args:
+        total_distance_km: Distancia total de la ruta en km (suma secuencial de segmentos)
+        num_stops: Número total de paradas de entrega
+        config: Dict de configuración de precios. Si None, carga desde BD.
+
+    Returns:
+        dict con: distance_fee, additional_stops_fee, total_fee, total_distance_km, num_stops
+    """
+    if config is None:
+        config = get_pricing_config()
+    tarifa_parada_adicional = config.get("tarifa_parada_adicional", 4000)
+    distance_fee = calcular_precio_distancia(total_distance_km, config)
+    additional_fee = (num_stops - 1) * tarifa_parada_adicional
+    return {
+        "distance_fee": distance_fee,
+        "additional_stops_fee": additional_fee,
+        "total_fee": distance_fee + additional_fee,
+        "total_distance_km": total_distance_km,
+        "num_stops": num_stops,
+    }
+
+
+def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
+    """
+    Calcula la distancia total de una ruta de forma secuencial usando Haversine:
+    pickup->stop1 + stop1->stop2 + ...
+
+    Retorna el total en km o None si algún punto carece de GPS.
+    """
+    if not pickup_lat or not pickup_lng:
+        return None
+    total = 0.0
+    prev_lat, prev_lng = float(pickup_lat), float(pickup_lng)
+    for p in paradas:
+        lat = p.get("lat")
+        lng = p.get("lng")
+        if not lat or not lng:
+            return None
+        total += haversine_road_km(prev_lat, prev_lng, float(lat), float(lng))
+        prev_lat, prev_lng = float(lat), float(lng)
+    return round(total, 2)
 
 
 def get_distance_from_api(origin: str, destination: str, city_hint: str = "Pereira, Colombia") -> Optional[float]:

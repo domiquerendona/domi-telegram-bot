@@ -1358,6 +1358,66 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_payment_methods_admin ON admin_payment_methods(admin_id, is_active)")
 
+    # Tablas: rutas multi-parada
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            ally_admin_id_snapshot INTEGER,
+            courier_id INTEGER,
+            courier_admin_id_snapshot INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            pickup_location_id INTEGER,
+            pickup_address TEXT NOT NULL,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            total_distance_km REAL DEFAULT 0,
+            distance_fee INTEGER DEFAULT 0,
+            additional_stops_fee INTEGER DEFAULT 0,
+            total_fee INTEGER DEFAULT 0,
+            instructions TEXT,
+            canceled_by TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            published_at TEXT,
+            accepted_at TEXT,
+            delivered_at TEXT,
+            canceled_at TEXT
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS route_destinations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id INTEGER NOT NULL,
+            sequence INTEGER NOT NULL,
+            customer_name TEXT NOT NULL,
+            customer_phone TEXT NOT NULL,
+            customer_address TEXT NOT NULL,
+            customer_city TEXT NOT NULL,
+            customer_barrio TEXT NOT NULL,
+            dropoff_lat REAL,
+            dropoff_lng REAL,
+            status TEXT DEFAULT 'PENDING',
+            delivered_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS route_offer_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            offered_at TEXT,
+            responded_at TEXT,
+            response TEXT
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_routes_ally_id ON routes(ally_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_route_destinations_route_id ON route_destinations(route_id, sequence)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_route_offer_queue_route_id ON route_offer_queue(route_id, status)")
+
     conn.commit()
     conn.close()
 
@@ -5999,6 +6059,267 @@ def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_
             rejection_reason = {P}
         WHERE id = {P}
     """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
+    conn.commit()
+    conn.close()
+
+
+# ===== RUTAS MULTI-PARADA =====
+
+
+def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+                 total_distance_km, distance_fee, additional_stops_fee, total_fee,
+                 instructions, ally_admin_id_snapshot):
+    """Crea una ruta. Retorna el route_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(
+        cur, conn,
+        f"""
+        INSERT INTO routes (
+            ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+            total_distance_km, distance_fee, additional_stops_fee, total_fee,
+            instructions, ally_admin_id_snapshot, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+        """,
+        (ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+         total_distance_km, distance_fee, additional_stops_fee, total_fee,
+         instructions, ally_admin_id_snapshot),
+    )
+
+
+def create_route_destination(route_id, sequence, customer_name, customer_phone,
+                              customer_address, customer_city, customer_barrio,
+                              dropoff_lat=None, dropoff_lng=None):
+    """Inserta una parada de ruta. Retorna el destination_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(
+        cur, conn,
+        f"""
+        INSERT INTO route_destinations (
+            route_id, sequence, customer_name, customer_phone,
+            customer_address, customer_city, customer_barrio,
+            dropoff_lat, dropoff_lng, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+        """,
+        (route_id, sequence, customer_name, customer_phone,
+         customer_address, customer_city, customer_barrio,
+         dropoff_lat, dropoff_lng),
+    )
+
+
+def get_route_by_id(route_id):
+    """Retorna la ruta o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT * FROM routes WHERE id = {P}", (route_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_route_destinations(route_id):
+    """Lista todas las paradas de la ruta ordenadas por sequence."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM route_destinations WHERE route_id = {P} ORDER BY sequence ASC",
+        (route_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_pending_route_stops(route_id):
+    """Lista las paradas PENDING de la ruta, ordenadas por sequence."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM route_destinations WHERE route_id = {P} AND status = 'PENDING' ORDER BY sequence ASC",
+        (route_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_route_status(route_id, status, timestamp_field=None):
+    """Actualiza el status de una ruta y opcionalmente un campo timestamp."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if timestamp_field:
+        cur.execute(
+            f"UPDATE routes SET status = {P}, {timestamp_field} = {now_sql} WHERE id = {P}",
+            (status, route_id)
+        )
+    else:
+        cur.execute(f"UPDATE routes SET status = {P} WHERE id = {P}", (status, route_id))
+    conn.commit()
+    conn.close()
+
+
+def assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot):
+    """Asigna un courier a la ruta y la marca como ACCEPTED."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET courier_id = {P}, courier_admin_id_snapshot = {P},
+            status = 'ACCEPTED', accepted_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (courier_id, courier_admin_id_snapshot, route_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def deliver_route_stop(route_id, sequence):
+    """Marca una parada como DELIVERED."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_destinations
+        SET status = 'DELIVERED', delivered_at = {now_sql}
+        WHERE route_id = {P} AND sequence = {P}
+        """,
+        (route_id, sequence)
+    )
+    conn.commit()
+    conn.close()
+
+
+def cancel_route(route_id, canceled_by):
+    """Cancela una ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        WHERE id = {P}
+        """,
+        (canceled_by, route_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def create_route_offer_queue(route_id, courier_ids):
+    """Crea entradas en la cola de ofertas de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for pos, courier_id in enumerate(courier_ids, start=1):
+        cur.execute(
+            f"""
+            INSERT INTO route_offer_queue (route_id, courier_id, position, status)
+            VALUES ({P}, {P}, {P}, 'PENDING')
+            """,
+            (route_id, courier_id, pos)
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_next_pending_route_offer(route_id):
+    """Retorna el proximo courier pendiente en la cola de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT q.id AS queue_id, q.courier_id, q.position, u.telegram_id
+        FROM route_offer_queue q
+        JOIN couriers c ON c.id = q.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE q.route_id = {P} AND q.status = 'PENDING'
+        ORDER BY q.position ASC
+        LIMIT 1
+        """,
+        (route_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_route_offer_as_offered(queue_id):
+    """Marca una oferta de ruta como enviada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE route_offer_queue SET status = 'OFFERED', offered_at = {now_sql} WHERE id = {P}",
+        (queue_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_route_offer_response(queue_id, response):
+    """Marca la respuesta de una oferta de ruta (ACCEPTED, REJECTED, EXPIRED, BUSY)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_offer_queue
+        SET status = {P}, response = {P}, responded_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (response, response, queue_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_current_route_offer(route_id):
+    """Retorna la oferta activa (OFFERED) de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT q.id AS queue_id, q.courier_id, q.position, u.telegram_id
+        FROM route_offer_queue q
+        JOIN couriers c ON c.id = q.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE q.route_id = {P} AND q.status = 'OFFERED'
+        LIMIT 1
+        """,
+        (route_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_route_offer_queue(route_id):
+    """Borra toda la cola de ofertas de una ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM route_offer_queue WHERE route_id = {P}", (route_id,))
+    conn.commit()
+    conn.close()
+
+
+def reset_route_offer_queue(route_id):
+    """Reinicia todos los estados de la cola a PENDING para un nuevo ciclo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE route_offer_queue
+        SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
+        WHERE route_id = {P}
+        """,
+        (route_id,)
+    )
     conn.commit()
     conn.close()
 

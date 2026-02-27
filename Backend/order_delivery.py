@@ -36,6 +36,21 @@ from db import (
     set_order_status,
     upsert_order_accounting_settlement,
     get_courier_link_balance,
+    # Rutas multi-parada
+    get_route_by_id,
+    get_route_destinations,
+    get_pending_route_stops,
+    update_route_status,
+    assign_route_to_courier,
+    deliver_route_stop,
+    cancel_route,
+    create_route_offer_queue,
+    get_next_pending_route_offer,
+    mark_route_offer_as_offered,
+    mark_route_offer_response,
+    get_current_route_offer,
+    delete_route_offer_queue,
+    reset_route_offer_queue,
 )
 from services import apply_service_fee, check_service_fee_available
 
@@ -1602,3 +1617,478 @@ def _notify_ally_order_released(context, order):
         )
     except Exception as e:
         print("[WARN] No se pudo notificar liberacion al aliado: {}".format(e))
+
+
+# ===== FLUJO DE RUTAS MULTI-PARADA =====
+
+ROUTE_OFFER_TIMEOUT_SECONDS = 30
+ROUTE_MAX_CYCLE_SECONDS = 420  # 7 minutos
+
+
+def _route_offer_reply_markup(route_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Aceptar", callback_data="ruta_aceptar_{}".format(route_id)),
+            InlineKeyboardButton("Rechazar", callback_data="ruta_rechazar_{}".format(route_id)),
+        ],
+        [InlineKeyboardButton("Estoy ocupado", callback_data="ruta_ocupado_{}".format(route_id))],
+    ])
+
+
+def _build_route_offer_text(route, destinations):
+    """Construye el texto de oferta de ruta para el courier."""
+    pickup_address = route.get("pickup_address") or "No disponible"
+    total_km = float(route.get("total_distance_km") or 0)
+    total_fee = int(route.get("total_fee") or 0)
+
+    text = "RUTA DISPONIBLE\n\nRuta #{}\nRecoge en: {}\n\n".format(route["id"], pickup_address)
+
+    for dest in destinations:
+        text += "Parada {}: {} - {}\n".format(
+            dest["sequence"],
+            dest.get("customer_name") or "Sin nombre",
+            dest.get("customer_address") or "Sin direccion",
+        )
+
+    text += "\nDistancia total: {:.1f} km\n".format(total_km)
+    text += "Pago: ${:,}\n".format(total_fee)
+
+    instructions = route.get("instructions") or ""
+    if instructions.strip():
+        text += "\nInstrucciones: {}\n".format(instructions.strip())
+
+    return text
+
+
+def _cancel_route_offer_jobs(context, route_id, queue_id):
+    timeout_jobs = context.job_queue.get_jobs_by_name(
+        "route_offer_timeout_{}_{}".format(route_id, queue_id)
+    )
+    for job in timeout_jobs:
+        job.schedule_removal()
+
+
+def _route_offer_timeout_job(context):
+    """Job ejecutado cuando expira el timeout de oferta de ruta."""
+    job_data = context.job.context
+    route_id = job_data["route_id"]
+    queue_id = job_data["queue_id"]
+
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    current = get_current_route_offer(route_id)
+    if not current or current["queue_id"] != queue_id:
+        return
+
+    _cancel_route_offer_jobs(context, route_id, queue_id)
+    mark_route_offer_response(queue_id, "EXPIRED")
+
+    msg_info = context.bot_data.get("route_offer_messages", {}).get(route_id)
+    if msg_info:
+        try:
+            context.bot.edit_message_text(
+                chat_id=msg_info["chat_id"],
+                message_id=msg_info["message_id"],
+                text="Ruta #{} expirada. No respondiste a tiempo.".format(route_id),
+            )
+        except Exception:
+            pass
+
+    _send_next_route_offer(route_id, context)
+
+
+def _try_restart_route_cycle(route_id, context):
+    cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id)
+    if not cycle_info:
+        return
+
+    import time
+    elapsed = time.time() - cycle_info["started_at"]
+
+    if elapsed >= ROUTE_MAX_CYCLE_SECONDS:
+        _expire_route(route_id, cycle_info, context)
+        return
+
+    reset_route_offer_queue(route_id)
+    _send_next_route_offer(route_id, context)
+
+
+def _expire_route(route_id, cycle_info, context):
+    """Nadie acepto la ruta en 7 minutos. Cancela la ruta."""
+    cancel_route(route_id, "SYSTEM")
+    delete_route_offer_queue(route_id)
+
+    context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+    context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+
+    ally_id = cycle_info.get("ally_id")
+    try:
+        ally = get_ally_by_id(ally_id)
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user.get("telegram_id"):
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text=(
+                        "Tu ruta #{} fue cancelada porque ningun repartidor "
+                        "la acepto en 7 minutos."
+                    ).format(route_id),
+                )
+    except Exception as e:
+        print("[WARN] No se pudo notificar expiracion de ruta al aliado: {}".format(e))
+
+
+def _send_next_route_offer(route_id, context):
+    """Envia la oferta de ruta al siguiente courier en la cola."""
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    next_offer = get_next_pending_route_offer(route_id)
+    if not next_offer:
+        _try_restart_route_cycle(route_id, context)
+        return
+
+    mark_route_offer_as_offered(next_offer["queue_id"])
+
+    destinations = get_route_destinations(route_id)
+    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_route_offer_text(route, destinations)
+    reply_markup = _route_offer_reply_markup(route_id)
+
+    try:
+        msg = context.bot.send_message(
+            chat_id=next_offer["telegram_id"],
+            text=offer_text,
+            reply_markup=reply_markup,
+        )
+        context.bot_data.setdefault("route_offer_messages", {})[route_id] = {
+            "chat_id": next_offer["telegram_id"],
+            "message_id": msg.message_id,
+        }
+    except Exception as e:
+        print("[WARN] No se pudo enviar oferta de ruta a courier {}: {}".format(next_offer["courier_id"], e))
+        mark_route_offer_response(next_offer["queue_id"], "EXPIRED")
+        _send_next_route_offer(route_id, context)
+        return
+
+    context.job_queue.run_once(
+        _route_offer_timeout_job,
+        ROUTE_OFFER_TIMEOUT_SECONDS,
+        context={"route_id": route_id, "queue_id": next_offer["queue_id"]},
+        name="route_offer_timeout_{}_{}".format(route_id, next_offer["queue_id"]),
+    )
+
+
+def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None):
+    """Publica una ruta a la cola de couriers. Retorna cantidad de couriers en cola."""
+    if admin_id_override:
+        admin_id = admin_id_override
+    else:
+        link = get_approved_admin_link_for_ally(ally_id)
+        if not link:
+            return 0
+        admin_id = link["admin_id"]
+
+    route = get_route_by_id(route_id)
+    if not route:
+        return 0
+
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=False,
+        cash_required_amount=0,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+    )
+
+    if not eligible:
+        return 0
+
+    courier_ids = [c["courier_id"] for c in eligible]
+    create_route_offer_queue(route_id, courier_ids)
+    update_route_status(route_id, "PUBLISHED", "published_at")
+
+    import time
+    context.bot_data.setdefault("route_offer_cycles", {})[route_id] = {
+        "started_at": time.time(),
+        "admin_id": admin_id,
+        "ally_id": ally_id,
+    }
+
+    _send_next_route_offer(route_id, context)
+    return len(courier_ids)
+
+
+def _send_route_stop_to_courier(context, chat_id, route, stop):
+    """Envia los detalles de una parada al courier."""
+    route_id = route["id"]
+    seq = stop["sequence"]
+    lat = stop.get("dropoff_lat")
+    lng = stop.get("dropoff_lng")
+    total_stops = len(get_route_destinations(route_id))
+
+    keyboard = []
+    keyboard.extend(_build_navigation_rows(lat, lng))
+    keyboard.append([
+        InlineKeyboardButton(
+            "Confirmar entrega parada {}".format(seq),
+            callback_data="ruta_entregar_{}_{}".format(route_id, seq)
+        )
+    ])
+
+    stop_instructions = stop.get("instructions") or ""
+    instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
+
+    context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Parada {} de {}:\n\n"
+            "Cliente: {}\n"
+            "Telefono: {}\n"
+            "Direccion: {}\n"
+            "{}"
+            "\nDirigete a la parada y confirma la entrega cuando termines."
+        ).format(
+            seq,
+            total_stops,
+            stop.get("customer_name") or "Sin nombre",
+            stop.get("customer_phone") or "Sin telefono",
+            stop.get("customer_address") or "Sin direccion",
+            instr_line,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+    if lat is not None and lng is not None:
+        try:
+            context.bot.send_location(chat_id=chat_id, latitude=float(lat), longitude=float(lng))
+        except Exception:
+            pass
+
+
+def _handle_route_accept(update, context, route_id):
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route["status"] != "PUBLISHED":
+        query.edit_message_text("Esta oferta ya no esta disponible.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        query.edit_message_text("No se encontro tu perfil de repartidor.")
+        return
+
+    current = get_current_route_offer(route_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+    mark_route_offer_response(current["queue_id"], "ACCEPTED")
+
+    courier_id = courier["id"]
+    courier_admin_link = get_approved_admin_link_for_courier(courier_id)
+    courier_admin_id_snapshot = courier_admin_link["admin_id"] if courier_admin_link else None
+    assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot)
+
+    context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+    context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+
+    route = get_route_by_id(route_id)
+    destinations = get_route_destinations(route_id)
+    total_stops = len(destinations)
+    pickup_address = route.get("pickup_address") or "No disponible"
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+
+    keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
+
+    query.edit_message_text(
+        "Ruta #{} aceptada.\n\n"
+        "Recoge en: {}\n"
+        "Total de paradas: {}\n\n"
+        "Dirigete al punto de recogida. "
+        "Recibes los detalles de cada parada a medida que avanzas.".format(
+            route_id,
+            pickup_address,
+            total_stops,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+    )
+
+    if pickup_lat is not None and pickup_lng is not None:
+        try:
+            context.bot.send_location(
+                chat_id=query.message.chat_id,
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+        except Exception:
+            pass
+
+    if destinations:
+        _send_route_stop_to_courier(context, query.message.chat_id, route, destinations[0])
+
+    _notify_ally_route_accepted(context, route, courier.get("full_name") or "Repartidor")
+
+
+def _handle_route_reject(update, context, route_id):
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        query.edit_message_text("Esta oferta ya no esta disponible.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        query.edit_message_text("Oferta de ruta #{} rechazada.".format(route_id))
+        return
+
+    current = get_current_route_offer(route_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+    mark_route_offer_response(current["queue_id"], "REJECTED")
+    query.edit_message_text("Oferta de ruta #{} rechazada.".format(route_id))
+    _send_next_route_offer(route_id, context)
+
+
+def _handle_route_busy(update, context, route_id):
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        query.edit_message_text("Esta oferta ya no esta disponible.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        query.edit_message_text("Oferta de ruta #{} rechazada.".format(route_id))
+        return
+
+    current = get_current_route_offer(route_id)
+    if not current or current["courier_id"] != courier["id"]:
+        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+    mark_route_offer_response(current["queue_id"], "BUSY")
+    query.edit_message_text("Registrado. Te saltamos esta ruta.")
+    _send_next_route_offer(route_id, context)
+
+
+def _handle_route_deliver_stop(update, context, route_id, seq):
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta en curso.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("Solo el repartidor asignado puede confirmar entregas.")
+        return
+
+    deliver_route_stop(route_id, seq)
+    query.edit_message_text("Parada {} confirmada como entregada.".format(seq))
+
+    pending = get_pending_route_stops(route_id)
+    if pending:
+        next_stop = pending[0]
+        _send_route_stop_to_courier(context, query.message.chat_id, route, next_stop)
+    else:
+        update_route_status(route_id, "DELIVERED", "delivered_at")
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Ruta #{} completada. Todas las paradas fueron entregadas.".format(route_id),
+        )
+        _notify_ally_route_delivered(context, route)
+
+
+def _notify_ally_route_accepted(context, route, courier_name):
+    try:
+        ally = get_ally_by_id(route["ally_id"])
+        if not ally:
+            return
+        ally_user = get_user_by_id(ally["user_id"])
+        if not ally_user or not ally_user.get("telegram_id"):
+            return
+        context.bot.send_message(
+            chat_id=ally_user["telegram_id"],
+            text="Tu ruta #{} fue aceptada por {}. Tiene {} paradas de entrega.".format(
+                route["id"],
+                courier_name,
+                len(get_route_destinations(route["id"])),
+            ),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar aceptacion de ruta al aliado: {}".format(e))
+
+
+def _notify_ally_route_delivered(context, route):
+    try:
+        ally = get_ally_by_id(route["ally_id"])
+        if not ally:
+            return
+        ally_user = get_user_by_id(ally["user_id"])
+        if not ally_user or not ally_user.get("telegram_id"):
+            return
+        context.bot.send_message(
+            chat_id=ally_user["telegram_id"],
+            text="Tu ruta #{} fue completada. Todas las entregas fueron realizadas.".format(route["id"]),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar entrega de ruta al aliado: {}".format(e))
+
+
+def handle_route_callback(update, context):
+    """
+    Dispatcher de callbacks ruta_aceptar_*, ruta_rechazar_*, ruta_ocupado_*, ruta_entregar_*.
+    Registrar en main.py como CallbackQueryHandler con pattern r'^ruta_(aceptar|rechazar|ocupado|entregar)_'.
+    """
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data.startswith("ruta_aceptar_"):
+        route_id = int(data.replace("ruta_aceptar_", ""))
+        return _handle_route_accept(update, context, route_id)
+
+    if data.startswith("ruta_rechazar_"):
+        route_id = int(data.replace("ruta_rechazar_", ""))
+        return _handle_route_reject(update, context, route_id)
+
+    if data.startswith("ruta_ocupado_"):
+        route_id = int(data.replace("ruta_ocupado_", ""))
+        return _handle_route_busy(update, context, route_id)
+
+    if data.startswith("ruta_entregar_"):
+        parts = data.replace("ruta_entregar_", "").split("_")
+        if len(parts) == 2:
+            try:
+                route_id = int(parts[0])
+                seq = int(parts[1])
+                return _handle_route_deliver_stop(update, context, route_id, seq)
+            except ValueError:
+                pass
+
+    return None
