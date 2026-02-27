@@ -849,7 +849,8 @@ def volver_paso_anterior(update, context):
     RUTA_MAS_PARADAS,            # 44 - Agregar mas paradas o finalizar
     RUTA_DISTANCIA_KM,           # 45 - Km totales (si no hay GPS suficiente)
     RUTA_CONFIRMACION,           # 46 - Confirmacion y creacion de la ruta
-) = range(33, 47)
+    RUTA_GUARDAR_CLIENTES,       # 47 - Guardar clientes nuevos de las paradas
+) = range(33, 48)
 
 
 # =========================
@@ -8005,6 +8006,7 @@ def _ruta_guardar_parada_actual(context):
         "barrio": context.user_data.get("ruta_temp_barrio") or "",
         "lat": context.user_data.get("ruta_temp_lat"),
         "lng": context.user_data.get("ruta_temp_lng"),
+        "customer_id": context.user_data.get("ruta_temp_customer_id"),  # None si es cliente nuevo
     }
     paradas = context.user_data.get("ruta_paradas", [])
     paradas.append(parada)
@@ -8530,6 +8532,7 @@ def ruta_confirmacion_callback(update, context):
     if data == "ruta_cancelar":
         query.edit_message_text("Ruta cancelada.")
         context.user_data.clear()
+        show_main_menu(update, context)
         return ConversationHandler.END
     if data != "ruta_confirmar":
         return RUTA_CONFIRMACION
@@ -8539,6 +8542,7 @@ def ruta_confirmacion_callback(update, context):
     if not ally_id or len(paradas) < 2:
         query.edit_message_text("Error: datos incompletos. Empieza de nuevo con 'Nueva ruta'.")
         context.user_data.clear()
+        show_main_menu(update, context)
         return ConversationHandler.END
     pickup_address = context.user_data.get("ruta_pickup_address", "")
     pickup_lat = context.user_data.get("ruta_pickup_lat")
@@ -8562,6 +8566,7 @@ def ruta_confirmacion_callback(update, context):
     )
     if not route_id:
         query.edit_message_text("Error al crear la ruta. Intenta de nuevo.")
+        show_main_menu(update, context)
         return ConversationHandler.END
     for i, parada in enumerate(paradas, 1):
         create_route_destination(
@@ -8577,15 +8582,69 @@ def ruta_confirmacion_callback(update, context):
         )
     count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
     if count > 0:
-        query.edit_message_text(
-            "Ruta #{} creada y publicada a {} repartidor(es).\n"
-            "Te notificaremos cuando alguien la acepte.".format(route_id, count)
-        )
+        base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
     else:
-        query.edit_message_text(
-            "Ruta #{} creada, pero no hay repartidores disponibles en este momento.".format(route_id)
+        base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
+    query.edit_message_text(base_msg)
+
+    # Verificar si hay clientes nuevos para ofrecer guardarlos
+    nuevos = [p for p in paradas if not p.get("customer_id")]
+    if nuevos:
+        # Guardar referencia para el callback
+        context.user_data["ruta_nuevos_clientes"] = nuevos
+        context.user_data["ruta_ally_id_guardar"] = ally_id
+        names_list = "\n".join("- {} ({})".format(p["name"], p["phone"]) for p in nuevos if p.get("name"))
+        keyboard = [
+            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_clientes_si")],
+            [InlineKeyboardButton("No", callback_data="ruta_guardar_clientes_no")],
+        ]
+        query.message.reply_text(
+            "Clientes nuevos en esta ruta:\n{}\n\nDeseas guardarlos para futuros pedidos?".format(names_list),
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return RUTA_GUARDAR_CLIENTES
+
     context.user_data.clear()
+    show_main_menu(update, context)
+    return ConversationHandler.END
+
+
+def ruta_guardar_clientes_callback(update, context):
+    """Maneja la decision de guardar o no los clientes nuevos de la ruta."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id_guardar")
+    nuevos = context.user_data.get("ruta_nuevos_clientes", [])
+
+    if data == "ruta_guardar_clientes_si" and ally_id:
+        saved = 0
+        for p in nuevos:
+            name = p.get("name") or ""
+            phone = p.get("phone") or ""
+            address = p.get("address") or ""
+            if not phone:
+                continue
+            try:
+                existing = get_ally_customer_by_phone(ally_id, phone)
+                if existing:
+                    customer_id = existing["id"]
+                else:
+                    customer_id = create_ally_customer(ally_id, name, phone)
+                if address:
+                    create_customer_address(
+                        customer_id, "Principal", address,
+                        lat=p.get("lat"), lng=p.get("lng"),
+                    )
+                saved += 1
+            except Exception as e:
+                print("[WARN] Error guardando cliente de ruta: {}".format(e))
+        query.edit_message_text("Se guardaron {} cliente(s) nuevos.".format(saved))
+    else:
+        query.edit_message_text("Clientes no guardados.")
+
+    context.user_data.clear()
+    show_main_menu(update, context)
     return ConversationHandler.END
 
 
@@ -8647,6 +8706,9 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_CONFIRMACION: [
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
+        ],
+        RUTA_GUARDAR_CLIENTES: [
+            CallbackQueryHandler(ruta_guardar_clientes_callback, pattern=r"^ruta_guardar_clientes_(si|no)$"),
         ],
     },
     fallbacks=[
