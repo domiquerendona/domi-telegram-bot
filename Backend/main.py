@@ -243,6 +243,7 @@ from services import (
     # Rutas multi-parada
     calcular_precio_ruta,
     calcular_distancia_ruta,
+    calcular_distancia_ruta_smart,
     create_route,
     create_route_destination,
 )
@@ -8495,9 +8496,10 @@ def ruta_mas_paradas_callback(update, context):
             and all(p.get("lat") is not None and p.get("lng") is not None for p in paradas)
         )
         if tiene_gps:
-            total_km = calcular_distancia_ruta(pickup_lat, pickup_lng, paradas)
-            if total_km and total_km > 0:
-                context.user_data["ruta_distancia_km"] = total_km
+            query.edit_message_text("Calculando distancia de la ruta...")
+            dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
+            if dist_result and dist_result["total_km"] > 0:
+                context.user_data["ruta_distancia_km"] = dist_result["total_km"]
                 return _ruta_mostrar_confirmacion(query, context)
         query.edit_message_text(
             "DISTANCIA DE LA RUTA\n\n"

@@ -991,6 +991,65 @@ def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
     return round(total, 2)
 
 
+def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
+    """
+    Calcula la distancia total de la ruta segmento a segmento usando la misma
+    estrategia de 3 capas que get_smart_distance:
+      Capa 1 - Cache: reutiliza distancias ya calculadas (gratis).
+      Capa 2 - Google Distance Matrix API: por segmento, con control de cuota.
+      Capa 3 - Haversine: fallback si no hay cuota o falla la API.
+
+    Retorna dict {"total_km": float, "used_api": bool} o None si faltan coords.
+    """
+    if not pickup_lat or not pickup_lng:
+        return None
+    puntos = [(float(pickup_lat), float(pickup_lng))]
+    for p in paradas:
+        lat = p.get("lat")
+        lng = p.get("lng")
+        if not lat or not lng:
+            return None
+        puntos.append((float(lat), float(lng)))
+
+    total_km = 0.0
+    used_api = False
+
+    for i in range(len(puntos) - 1):
+        lat1, lng1 = puntos[i]
+        lat2, lng2 = puntos[i + 1]
+
+        origin_key = _coords_cache_key(lat1, lng1)
+        dest_key = _coords_cache_key(lat2, lng2)
+
+        # Capa 1: Cache
+        cached = get_distance_cache(origin_key, dest_key, mode="coords")
+        if cached and cached.get("distance_km") is not None:
+            total_km += float(cached["distance_km"])
+            continue
+
+        # Capa 2: Google Distance Matrix API
+        seg_km = None
+        if can_call_google_today() and GOOGLE_MAPS_API_KEY:
+            seg_km = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
+            if seg_km is not None:
+                upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                      distance_km=seg_km, provider="google_distance_matrix")
+                used_api = True
+
+        # Capa 3: Haversine fallback
+        if seg_km is None:
+            seg_km = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+            upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                  distance_km=seg_km, provider="haversine")
+
+        total_km += seg_km
+
+    return {
+        "total_km": round(total_km, 2),
+        "used_api": used_api,
+    }
+
+
 def get_distance_from_api(origin: str, destination: str, city_hint: str = "Pereira, Colombia") -> Optional[float]:
     """
     Calcula la distancia en km entre dos direcciones usando Google Distance Matrix API.
