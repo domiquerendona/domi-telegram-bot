@@ -8167,8 +8167,57 @@ def ruta_pickup_nueva_ubicacion_handler(update, context):
             "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
         )
         return RUTA_PICKUP_NUEVA_DETALLES
-    update.message.reply_text("No pude extraer coordenadas. Envia un PIN, lat,lng o link de Maps.")
+    geo = resolve_location(text)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        context.user_data["ruta_pickup_location_id"] = None
+        context.user_data["ruta_pickup_geo_formatted"] = geo.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(
+            update.message, context, geo, text,
+            "ruta_pickup_geo_si", "ruta_pickup_geo_no",
+        )
+        return RUTA_PICKUP_NUEVA_UBICACION
+    if geo and geo.get("lat") is not None:
+        context.user_data["ruta_pickup_lat"] = geo["lat"]
+        context.user_data["ruta_pickup_lng"] = geo["lng"]
+        context.user_data["ruta_pickup_location_id"] = None
+        update.message.reply_text(
+            "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
+        )
+        return RUTA_PICKUP_NUEVA_DETALLES
+    update.message.reply_text(
+        "No pude encontrar esa ubicacion.\n\n"
+        "Intenta con:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Nombre del lugar o barrio con ciudad"
+    )
     return RUTA_PICKUP_NUEVA_UBICACION
+
+
+def ruta_pickup_geo_callback(update, context):
+    """Confirmacion de geocoding para el punto de recogida de la ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_pickup_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        formatted = context.user_data.pop("ruta_pickup_geo_formatted", "")
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data["ruta_pickup_lat"] = lat
+        context.user_data["ruta_pickup_lng"] = lng
+        if formatted:
+            context.user_data["ruta_pickup_address"] = formatted
+        query.edit_message_text(
+            "Recogida confirmada.\n\nAhora escribe la descripcion de la direccion (o confirma la sugerida):"
+        )
+        if formatted:
+            query.message.reply_text(formatted)
+        return RUTA_PICKUP_NUEVA_DETALLES
+    return _geo_siguiente_o_gps(
+        query, context, "ruta_pickup_geo_si", "ruta_pickup_geo_no", RUTA_PICKUP_NUEVA_UBICACION
+    )
 
 
 def ruta_pickup_nueva_ubicacion_location_handler(update, context):
@@ -8350,8 +8399,58 @@ def ruta_parada_ubicacion_handler(update, context):
         n = len(paradas) + 1
         update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
         return RUTA_PARADA_DIRECCION
-    update.message.reply_text("No pude leer las coordenadas. Envia un PIN, lat,lng o escribe 'omitir'.")
+    geo = resolve_location(text)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        context.user_data["ruta_parada_geo_formatted"] = geo.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(
+            update.message, context, geo, text,
+            "ruta_parada_geo_si", "ruta_parada_geo_no",
+        )
+        return RUTA_PARADA_UBICACION
+    if geo and geo.get("lat") is not None:
+        context.user_data["ruta_temp_lat"] = geo["lat"]
+        context.user_data["ruta_temp_lng"] = geo["lng"]
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    update.message.reply_text(
+        "No pude encontrar esa ubicacion.\n\n"
+        "Intenta con:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Nombre del lugar o barrio con ciudad\n"
+        "- O escribe 'omitir' para ingresar solo la direccion."
+    )
     return RUTA_PARADA_UBICACION
+
+
+def ruta_parada_geo_callback(update, context):
+    """Confirmacion de geocoding para la ubicacion de una parada de la ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_parada_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        formatted = context.user_data.pop("ruta_parada_geo_formatted", "")
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data["ruta_temp_lat"] = lat
+        context.user_data["ruta_temp_lng"] = lng
+        if formatted:
+            context.user_data["ruta_temp_address"] = formatted
+            context.user_data["ruta_temp_city"] = ""
+            context.user_data["ruta_temp_barrio"] = ""
+            _ruta_guardar_parada_actual(context)
+            return _ruta_mostrar_mas_paradas(query, context)
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    return _geo_siguiente_o_gps(
+        query, context, "ruta_parada_geo_si", "ruta_parada_geo_no", RUTA_PARADA_UBICACION
+    )
 
 
 def ruta_parada_ubicacion_location_handler(update, context):
@@ -8501,6 +8600,7 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_pickup_lista_callback, pattern=r"^ruta_pickup_(usar_\d+|volver_lista)$"),
         ],
         RUTA_PICKUP_NUEVA_UBICACION: [
+            CallbackQueryHandler(ruta_pickup_geo_callback, pattern=r"^ruta_pickup_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ubicacion_handler),
@@ -8527,6 +8627,7 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, ruta_parada_telefono_handler),
         ],
         RUTA_PARADA_UBICACION: [
+            CallbackQueryHandler(ruta_parada_geo_callback, pattern=r"^ruta_parada_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_parada_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, ruta_parada_ubicacion_handler),
