@@ -868,6 +868,7 @@ COTIZAR_MODO = 903
 COTIZAR_RECOGIDA = 904
 COTIZAR_ENTREGA = 905
 COTIZAR_RECOGIDA_SELECTOR = 906
+COTIZAR_RESULTADO = 907
 
 
 # =========================
@@ -2471,6 +2472,62 @@ def courier_team_callback(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
+def nuevo_pedido_desde_cotizador(update, context):
+    """Entry point de nuevo_pedido_conv cuando el aliado confirma pedido desde el cotizador."""
+    query = update.callback_query
+    query.answer()
+
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        query.edit_message_text("No estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro de aliado no esta activo.")
+        return ConversationHandler.END
+
+    if not ensure_terms(update, context, user.id, role="ALLY"):
+        return ConversationHandler.END
+
+    # Transferir prefill del cotizador a claves del flujo de pedido
+    context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+    context.user_data["pickup_lat"] = context.user_data.pop("prefill_pickup_lat", None)
+    context.user_data["pickup_lng"] = context.user_data.pop("prefill_pickup_lng", None)
+    context.user_data["dropoff_lat"] = context.user_data.pop("prefill_dropoff_lat", None)
+    context.user_data["dropoff_lng"] = context.user_data.pop("prefill_dropoff_lng", None)
+    context.user_data["cotizador_prefill_dropoff"] = True
+
+    if query.data == "cotizar_cust_recurrente":
+        customers = list_ally_customers(ally["id"], limit=10)
+        if not customers:
+            query.edit_message_text("No tienes clientes guardados.\n\nEscribe el nombre del cliente:")
+            context.user_data["is_new_customer"] = True
+            return PEDIDO_NOMBRE
+        keyboard = []
+        for c in customers:
+            keyboard.append([InlineKeyboardButton(
+                f"{c['name']} - {c['phone']}",
+                callback_data=f"pedido_sel_cust_{c['id']}"
+            )])
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+        query.edit_message_text(
+            "CLIENTES RECURRENTES\n\nSelecciona un cliente:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return PEDIDO_SELECTOR_CLIENTE
+
+    # cotizar_cust_nuevo
+    query.edit_message_text("Escribe el nombre del cliente:")
+    context.user_data["is_new_customer"] = True
+    return PEDIDO_NOMBRE
+
+
 def nuevo_pedido(update, context):
     user = update.effective_user
 
@@ -3221,6 +3278,14 @@ def pedido_nombre_cliente(update, context):
 
 def pedido_telefono_cliente(update, context):
     context.user_data["customer_phone"] = update.message.text.strip()
+    # Si viene del cotizador, la ubicacion ya esta capturada
+    if context.user_data.get("cotizador_prefill_dropoff"):
+        update.message.reply_text(
+            "Ubicacion guardada de la cotizacion.\n\n"
+            "Escribe los detalles de la direccion del cliente:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
     # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
         "UBICACION (obligatoria)\n\n"
@@ -6374,16 +6439,23 @@ def cotizar_entrega(update, context):
     else:
         nota_fuente = f"Distancia desde cache ({source})"
 
+    context.user_data["cotizar_result_pickup_lat"] = pickup["lat"]
+    context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
+    context.user_data["cotizar_result_dropoff_lat"] = loc["lat"]
+    context.user_data["cotizar_result_dropoff_lng"] = loc["lng"]
+    keyboard = [[
+        InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido"),
+        InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar"),
+    ]]
     update.message.reply_text(
         f"COTIZACION\n\n"
         f"Distancia: {distance_km:.1f} km\n"
         f"Precio: ${precio:,}\n\n".replace(",", ".")
-        + f"{nota_fuente}"
+        + f"{nota_fuente}\n\n"
+        + "Deseas crear el pedido?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    context.user_data.pop("cotizar_pickup", None)
-    context.user_data.pop("cotizar_dropoff", None)
-    context.user_data.pop("cotizar_ally_id", None)
-    return ConversationHandler.END
+    return COTIZAR_RESULTADO
 
 
 def cotizar_entrega_location(update, context):
@@ -6422,17 +6494,67 @@ def cotizar_entrega_geo_callback(update, context):
         else:
             nota_fuente = f"Distancia desde cache ({source})"
 
-        context.user_data.pop("cotizar_pickup", None)
-        context.user_data.pop("cotizar_ally_id", None)
+        context.user_data["cotizar_result_pickup_lat"] = pickup["lat"]
+        context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
+        context.user_data["cotizar_result_dropoff_lat"] = lat
+        context.user_data["cotizar_result_dropoff_lng"] = lng
+        keyboard = [[
+            InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido"),
+            InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar"),
+        ]]
         query.edit_message_text(
             f"COTIZACION\n\n"
             f"Distancia: {distance_km:.1f} km\n"
             f"Precio: ${precio:,}\n\n".replace(",", ".")
-            + f"{nota_fuente}"
+            + f"{nota_fuente}\n\n"
+            + "Deseas crear el pedido?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
-        return ConversationHandler.END
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        return COTIZAR_RESULTADO
     else:  # cotizar_entrega_geo_no
         return _geo_siguiente_o_gps(query, context, "cotizar_entrega_geo_si", "cotizar_entrega_geo_no", COTIZAR_ENTREGA)
+
+
+def cotizar_resultado_callback(update, context):
+    """Maneja la decision del aliado tras ver el precio de cotizacion."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_cerrar":
+        context.user_data.pop("cotizar_result_pickup_lat", None)
+        context.user_data.pop("cotizar_result_pickup_lng", None)
+        context.user_data.pop("cotizar_result_dropoff_lat", None)
+        context.user_data.pop("cotizar_result_dropoff_lng", None)
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        query.edit_message_text("Cotizacion completada.")
+        return ConversationHandler.END
+
+    # cotizar_crear_pedido
+    pickup_lat = context.user_data.pop("cotizar_result_pickup_lat", None)
+    pickup_lng = context.user_data.pop("cotizar_result_pickup_lng", None)
+    dropoff_lat = context.user_data.pop("cotizar_result_dropoff_lat", None)
+    dropoff_lng = context.user_data.pop("cotizar_result_dropoff_lng", None)
+    context.user_data.pop("cotizar_pickup", None)
+    context.user_data.pop("cotizar_ally_id", None)
+
+    context.user_data["prefill_pickup_lat"] = pickup_lat
+    context.user_data["prefill_pickup_lng"] = pickup_lng
+    context.user_data["prefill_dropoff_lat"] = dropoff_lat
+    context.user_data["prefill_dropoff_lng"] = dropoff_lng
+
+    query.edit_message_text("Perfecto. Ahora selecciona el tipo de cliente:")
+    keyboard = [[
+        InlineKeyboardButton("Cliente recurrente", callback_data="cotizar_cust_recurrente"),
+        InlineKeyboardButton("Cliente nuevo", callback_data="cotizar_cust_nuevo"),
+    ]]
+    query.message.reply_text(
+        "Tipo de cliente:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ConversationHandler.END
 
 
 def courier_pick_admin_callback(update, context):
@@ -7778,6 +7900,7 @@ nuevo_pedido_conv = ConversationHandler(
     entry_points=[
         CommandHandler("nuevo_pedido", nuevo_pedido),
         MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
+        CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
@@ -7917,6 +8040,9 @@ cotizar_conv = ConversationHandler(
             CallbackQueryHandler(cotizar_entrega_geo_callback, pattern=r"^cotizar_entrega_geo_"),
             MessageHandler(Filters.location, cotizar_entrega_location),
             MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
+        ],
+        COTIZAR_RESULTADO: [
+            CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|cerrar)$"),
         ],
     },
     fallbacks=[
