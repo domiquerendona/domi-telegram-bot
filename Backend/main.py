@@ -7285,7 +7285,10 @@ def clientes_buscar(update, context):
 
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+        keyboard = [
+            [InlineKeyboardButton("Agregar nuevo cliente", callback_data="cust_nuevo")],
+            [InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")],
+        ]
         update.message.reply_text(
             f"No se encontraron clientes con '{query_text}'.",
             reply_markup=InlineKeyboardMarkup(keyboard)
