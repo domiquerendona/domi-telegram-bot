@@ -331,7 +331,7 @@ def pc_new_value(update, context):
         if not admin_row:
             update.message.reply_text("No existe un administrador con ese codigo de equipo.")
             return PC_NEW_VALUE
-        admin_status = admin_row["status"] if "status" in admin_row.keys() else admin_row[3]
+        admin_status = admin_row["status"]
         if admin_status != "APPROVED":
             update.message.reply_text(
                 "Ese administrador no esta APPROVED. Debes elegir un equipo APPROVED."
@@ -444,8 +444,8 @@ def apply_profile_change_request(request_row):
         admin_row = get_admin_by_team_code(team_code)
         if not admin_row:
             raise ValueError("Admin destino no encontrado para team_code={}".format(team_code))
-        admin_id = admin_row["id"] if "id" in admin_row.keys() else admin_row[0]
-        admin_status = admin_row["status"] if "status" in admin_row.keys() else admin_row[3]
+        admin_id = admin_row["id"]
+        admin_status = admin_row["status"]
         if admin_status != "APPROVED":
             raise ValueError("Admin destino no esta APPROVED.")
 

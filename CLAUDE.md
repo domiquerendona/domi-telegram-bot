@@ -245,6 +245,7 @@ Cada flujo usa prefijos exclusivos en sus claves. **PROHIBIDO** compartir claves
 | Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng` |
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
+| Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
 
 ### Convención de `callback_data`
 
@@ -278,6 +279,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `ref_` | Validación de referencias |
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
+| `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
 
@@ -630,6 +632,52 @@ El sistema de recargas transfiere saldo del Admin hacia Repartidores/Aliados. Es
 
 Los estados usan `normalize_role_status()` antes de persistir. **PROHIBIDO** modificar balance sin registro en ledger.
 
+### Modelo de Contabilidad de Doble Entrada
+
+El sistema implementa contabilidad de doble entrada. El Admin de Plataforma no tiene saldo ilimitado; debe registrar ingresos externos antes de poder aprobar recargas.
+
+**Flujo de fondos:**
+
+```
+Pago externo (transferencia/efectivo)
+  → register_platform_income(admin_id, amount, method, note)  [db.py]
+  → admins.balance += amount
+  → ledger: kind=INCOME | from_type=EXTERNAL | from_id=0 → to_type=PLATFORM/ADMIN
+
+Admin aprueba recarga a repartidor o aliado
+  → approve_recharge_request()  [services.py]
+  → admins.balance -= amount
+  → admin_couriers.balance o admin_allies.balance += amount
+  → ledger: kind=RECHARGE | from_type=PLATFORM/ADMIN | from_id=admin_id → to_type=COURIER/ALLY
+```
+
+**Reglas absolutas:**
+- **PROHIBIDO** eximir al Admin de Plataforma de la verificación de saldo.
+- **PROHIBIDO** aprobar una recarga si `admins.balance < amount`, sin importar el rol del admin.
+- **PROHIBIDO** modificar cualquier balance sin registro simultáneo en ledger.
+
+**Flujo de UI — Registrar ingreso externo** (`ingreso_conv`, `main.py`):
+- Estados: `INGRESO_MONTO=970`, `INGRESO_METODO=971`, `INGRESO_NOTA=972`
+- Prefijo callbacks: `ingreso_`
+- Claves user_data: `ingreso_monto`, `ingreso_metodo`
+- Función en db.py: `register_platform_income(admin_id, amount, method, note)`
+- Re-exportada en services.py; importada en main.py desde services.py
+
+### Sincronización de Estado en Tablas de Vínculo
+
+`admin_allies.status` y `admin_couriers.status` son campos independientes de `allies.status` y `couriers.status`. Ambos **siempre deben estar sincronizados**.
+
+**Bug síntoma:** "No hay admins disponibles para procesar recargas" al intentar recargar un aliado/repartidor recién aprobado. Ocurre cuando `allies.status = APPROVED` pero `admin_allies.status` sigue en `PENDING`.
+
+**Solución implementada — helpers en `db.py`:**
+- `_sync_ally_link_status(cur, ally_id, status, now_sql)`: sincroniza `admin_allies.status` al final de cada actualización de estado de aliado.
+- `_sync_courier_link_status(cur, courier_id, status, now_sql)`: ídem para repartidores.
+- Ambos se llaman dentro de `update_ally_status()`, `update_ally_status_by_id()`, `update_courier_status()`, `update_courier_status_by_id()`, antes de `conn.commit()`.
+
+**Comportamiento del sync:**
+- Si `status == "APPROVED"`: el vínculo más reciente (por `created_at`) → `APPROVED`; el resto → `INACTIVE`.
+- Si `status != "APPROVED"`: todos los vínculos del usuario → `INACTIVE`.
+
 ---
 
 ## Cotizador y Uso de APIs (Control de Costos)
@@ -718,7 +766,9 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 - Los pedidos siguen el ciclo: `PENDING` → publicado a repartidores → aceptado → recogida confirmada → entregado (o cancelado en cualquier paso).
 - Un Admin Local debe tener repartidores vinculados (status `APPROVED` en `admin_couriers`) para que su equipo funcione correctamente.
 - La referencia de versión financiera estable es el tag `v0.1-admin-saldos` (ledger confiable desde ese punto).
+- El sistema usa **contabilidad de doble entrada**: el Admin de Plataforma debe registrar ingresos externos (`register_platform_income`) para tener saldo y poder aprobar recargas. PROHIBIDO crear saldo sin origen contable.
+- Las tablas `admin_allies` y `admin_couriers` tienen su propio campo `status` que debe mantenerse sincronizado con `allies.status` / `couriers.status`. Los helpers `_sync_ally_link_status` y `_sync_courier_link_status` en `db.py` garantizan esta sincronía automáticamente en cada actualización de estado.
 
 ---
 
-*Última actualización: 2026-02-22*
+*Última actualización: 2026-02-23*

@@ -96,6 +96,7 @@ Prefijos establecidos:
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
 - Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
+- Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 
 Reglas:
 - PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.
@@ -131,6 +132,7 @@ Prefijos de dominio existentes y sus dueños:
 - ref_         → validación de referencias
 - terms_       → aceptación de términos y condiciones
 - ubicacion_   → selección de ubicación GPS
+- ingreso_     → registro de ingreso externo del administrador de plataforma
 
 Reglas:
 - PROHIBIDO crear un prefijo nuevo sin aprobación explícita del usuario.
@@ -641,6 +643,74 @@ Verificación obligatoria antes de aprobar:
 Verificar que el estado sigue siendo PENDING (con SELECT FOR UPDATE en Postgres).
 
 Si el estado ya cambió: retornar (False, "Ya procesado") sin modificar nada.
+
+9B. Modelo de contabilidad de doble entrada (CRÍTICO)
+
+El sistema implementa contabilidad de doble entrada. PROHIBIDO crear saldo de la nada.
+
+Principio fundamental:
+
+El Admin de Plataforma NO tiene saldo ilimitado ni exento de validación.
+
+Para aprobar recargas, el Admin de Plataforma debe tener balance suficiente en admins.balance.
+
+Para tener balance, el Admin de Plataforma DEBE registrar ingresos externos explícitamente.
+
+Flujo de fondos obligatorio:
+
+  Pago físico/transferencia del cliente
+    → register_platform_income(admin_id, amount, method, note)
+    → admins.balance sube en amount
+    → ledger registra: kind=INCOME, from_type=EXTERNAL, from_id=0, to_type=PLATFORM/ADMIN
+
+  Admin aprueba recarga a repartidor o aliado
+    → admins.balance baja en amount
+    → admin_couriers.balance o admin_allies.balance sube en amount
+    → ledger registra: kind=RECHARGE, from_type=PLATFORM/ADMIN, from_id=admin_id, to_type=COURIER/ALLY
+
+PROHIBIDO:
+
+- Eximir al Admin de Plataforma de la verificación de balance antes de aprobar recargas.
+- Aprobar una recarga si admins.balance < amount (sin importar si el admin es de plataforma o local).
+- Registrar un ingreso sin generar su entrada correspondiente en ledger.
+- Modificar el balance de cualquier actor sin registro simultáneo en ledger.
+
+Función de ingreso externo (db.py → register_platform_income):
+
+- Parámetros: admin_id, amount, method, note
+- Llama internamente a update_admin_balance_with_ledger()
+- Genera ledger con: kind="INCOME", from_type="EXTERNAL", from_id=0
+- Re-exportada en services.py e importada en main.py desde services.py
+
+Flujo de UI del ingreso externo (ConversationHandler ingreso_conv en main.py):
+
+- Estados: INGRESO_MONTO=970, INGRESO_METODO=971, INGRESO_NOTA=972
+- Prefijo de callbacks: ingreso_
+- Claves de user_data: ingreso_monto, ingreso_metodo
+- Accesible desde: menu Finanzas del Admin de Plataforma
+
+9C. Sincronización obligatoria de estado en tablas de vínculo
+
+Las tablas admin_allies y admin_couriers tienen su propio campo status, independiente del campo status en allies y couriers. Ambos DEBEN mantenerse sincronizados.
+
+PROHIBIDO actualizar allies.status o couriers.status sin actualizar también el status correspondiente en admin_allies o admin_couriers.
+
+Helpers obligatorios en db.py:
+
+_sync_ally_link_status(cur, ally_id, status, now_sql)
+  → Se llama dentro de update_ally_status() y update_ally_status_by_id(), antes de conn.commit()
+  → Si status == "APPROVED": el vínculo más reciente pasa a APPROVED, el resto a INACTIVE
+  → Si status != "APPROVED": todos los vínculos del aliado pasan a INACTIVE
+
+_sync_courier_link_status(cur, courier_id, status, now_sql)
+  → Se llama dentro de update_courier_status() y update_courier_status_by_id(), antes de conn.commit()
+  → Misma lógica que el helper de aliados, aplicada a admin_couriers
+
+Regla de UI en main.py:
+
+Cuando el callback de aprobación de aliado o repartidor (ally_approval_callback, etc.) crea o reutiliza un vínculo mediante upsert_admin_ally_link() o upsert_admin_courier_link(), debe pasarlo con status="APPROVED" explícito.
+
+Síntoma del bug si no se respeta: "No hay admins disponibles para procesar recargas" al intentar recargar un aliado o repartidor recién aprobado.
 
 X. Cotizador y uso de APIs (CRÍTICO: control de costos)
 

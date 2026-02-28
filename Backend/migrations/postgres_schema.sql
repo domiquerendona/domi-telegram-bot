@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS couriers (
     rejection_type TEXT,
     rejection_reason TEXT,
     rejected_at TIMESTAMP,
+    cedula_front_file_id TEXT,
+    cedula_back_file_id TEXT,
+    selfie_file_id TEXT,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
