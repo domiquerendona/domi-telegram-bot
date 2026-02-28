@@ -1168,10 +1168,9 @@ def get_ally_menu_keyboard():
     """Retorna el teclado de seccion Aliado."""
     keyboard = [
         ['Nuevo pedido', 'Nueva ruta'],
-        ['Mis pedidos', 'Clientes'],
-        ['Agenda', 'Cotizar envio'],
-        ['Recargar', 'Mi saldo aliado'],
-        ['Mis ubicaciones', 'Volver al menu'],
+        ['Mis pedidos', 'Agenda'],
+        ['Cotizar envio', 'Recargar'],
+        ['Mi saldo aliado', 'Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -3834,7 +3833,7 @@ def ally_locs_menu_callback(update, context):
     ally_id = context.user_data.get("ally_locs_ally_id")
 
     if not ally_id:
-        query.edit_message_text("Sesion expirada. Usa el menu para volver a Mis ubicaciones.")
+        query.edit_message_text("Sesion expirada. Regresa al menu e intenta de nuevo.")
         return ConversationHandler.END
 
     if data == "ally_locs_lista" or data == "ally_locs_del_cancel":
@@ -7555,6 +7554,7 @@ def agenda_cmd(update, context):
     context.user_data.clear()
     ally_id = ally["id"]
     context.user_data["active_ally_id"] = ally_id
+    context.user_data["ally_locs_ally_id"] = ally_id
     context.user_data["ally"] = {"id": ally_id}
 
     return agenda_mostrar_menu(update, context)
@@ -7592,8 +7592,7 @@ def agenda_menu_callback(update, context):
         return agenda_pickups_mostrar(query, context)
 
     elif data == "agenda_clientes":
-        query.edit_message_text("Agenda de clientes: usa /clientes para abrirla.")
-        return ConversationHandler.END
+        return clientes_mostrar_menu(update, context, edit_message=True)
 
     elif data == "agenda_cerrar":
         query.edit_message_text("Agenda cerrada.")
@@ -7606,55 +7605,34 @@ def agenda_menu_callback(update, context):
 
 
 def agenda_pickups_mostrar(query, context):
-    """Muestra lista de direcciones de recogida del aliado."""
+    """Muestra lista de direcciones de recogida del aliado con botones por ubicacion."""
     ally_id = context.user_data.get("active_ally_id")
     if not ally_id:
         query.edit_message_text("Error: no hay aliado activo.")
         return ConversationHandler.END
 
     locations = get_ally_locations(ally_id)
-
-    if not locations:
-        keyboard = [
-            [InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")],
-            [InlineKeyboardButton("Volver", callback_data="agenda_volver")],
-        ]
-        query.edit_message_text(
-            "Direcciones de recogida\n\n"
-            "Estas son las direcciones desde donde normalmente recoges pedidos.\n\n"
-            "No tienes direcciones de recogida guardadas.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return DIRECCIONES_PICKUPS
-
-    # Construir lista con botones
-    lines = [
-        "Direcciones de recogida\n\n"
-        "Estas son las direcciones desde donde normalmente recoges pedidos.\n"
-    ]
-
     keyboard = []
-    for loc in locations[:10]:
-        label = loc.get("label") or "Sin nombre"
-        tags = []
-        if loc.get("is_default"):
-            tags.append("BASE")
-        if loc.get("is_frequent"):
-            tags.append("FRECUENTE")
-        use_count = loc.get("use_count", 0)
-        if use_count > 0:
-            tags.append(f"x{use_count}")
 
-        tag_str = f" ({' - '.join(tags)})" if tags else ""
-        btn_text = f"{label}{tag_str}"
-        lines.append(f"- {btn_text}")
+    if locations:
+        for loc in locations[:10]:
+            label = (loc.get("label") or "Sin nombre")[:25]
+            tags = []
+            if loc.get("is_default"):
+                tags.append("BASE")
+            tag_str = " [{}]".format(", ".join(tags)) if tags else ""
+            keyboard.append([InlineKeyboardButton(
+                "{}{}".format(label, tag_str),
+                callback_data="agenda_pickup_ver_{}".format(loc["id"])
+            )])
+        keyboard.append([InlineKeyboardButton("+ Agregar nueva", callback_data="agenda_pickups_nueva")])
+        texto = "PUNTOS DE RECOGIDA\n\nSelecciona uno para ver opciones o agregar nuevo:"
+    else:
+        keyboard.append([InlineKeyboardButton("+ Agregar primera ubicacion", callback_data="agenda_pickups_nueva")])
+        texto = "PUNTOS DE RECOGIDA\n\nAun no tienes ubicaciones de recogida guardadas."
 
-    text = "\n".join(lines)
-
-    keyboard.append([InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")])
     keyboard.append([InlineKeyboardButton("Volver", callback_data="agenda_volver")])
-
-    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
     return DIRECCIONES_PICKUPS
 
 
@@ -7664,18 +7642,89 @@ def agenda_pickups_callback(update, context):
     query.answer()
     data = query.data
 
+    ally_id = context.user_data.get("active_ally_id")
+    if not ally_id:
+        query.edit_message_text("Error: no hay aliado activo.")
+        return ConversationHandler.END
+
     if data == "agenda_volver":
         return agenda_mostrar_menu(update, context, edit_message=True)
 
+    elif data == "agenda_pickup_lista" or data == "agenda_pickup_del_cancel":
+        return agenda_pickups_mostrar(query, context)
+
     elif data == "agenda_pickups_nueva":
         query.edit_message_text(
-            "Nueva direccion de recogida\n\n"
+            "Nueva ubicacion de recogida\n\n"
             "Envia la ubicacion (PIN de Telegram), "
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
             "La ubicacion es obligatoria para continuar."
         )
         return DIRECCIONES_PICKUP_NUEVA_UBICACION
+
+    elif data.startswith("agenda_pickup_ver_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_ver_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        if not loc:
+            return agenda_pickups_mostrar(query, context)
+        label = loc.get("label") or "Sin nombre"
+        address = loc.get("address") or "-"
+        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc.get("lat") else "Sin GPS"
+        is_base = bool(loc.get("is_default"))
+        detalle = "{}\n\nDireccion: {}\nGPS: {}".format(label, address, gps)
+        keyboard = []
+        if not is_base:
+            keyboard.append([InlineKeyboardButton(
+                "Marcar como base",
+                callback_data="agenda_pickup_base_{}".format(loc_id)
+            )])
+        keyboard.append([InlineKeyboardButton(
+            "Eliminar",
+            callback_data="agenda_pickup_del_{}".format(loc_id)
+        )])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="agenda_pickup_lista")])
+        query.edit_message_text(detalle, reply_markup=InlineKeyboardMarkup(keyboard))
+        return DIRECCIONES_PICKUPS
+
+    elif data.startswith("agenda_pickup_base_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_base_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        set_default_ally_location(loc_id, ally_id)
+        return agenda_pickups_mostrar(query, context)
+
+    elif data.startswith("agenda_pickup_del_confirm_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_del_confirm_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        delete_ally_location(loc_id, ally_id)
+        return agenda_pickups_mostrar(query, context)
+
+    elif data.startswith("agenda_pickup_del_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_del_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        label = (loc.get("label") or "esta ubicacion") if loc else "esta ubicacion"
+        keyboard = [
+            [InlineKeyboardButton(
+                "Confirmar eliminacion",
+                callback_data="agenda_pickup_del_confirm_{}".format(loc_id)
+            )],
+            [InlineKeyboardButton("Cancelar", callback_data="agenda_pickup_del_cancel")],
+        ]
+        query.edit_message_text(
+            "Eliminar '{}'?\n\nEsta accion no se puede deshacer.".format(label),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return DIRECCIONES_PICKUPS
 
     return DIRECCIONES_PICKUPS
 
@@ -7838,7 +7887,10 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_(pickups|clientes|cerrar|volver)$"),
         ],
         DIRECCIONES_PICKUPS: [
-            CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_(volver|pickups_nueva)$")
+            CallbackQueryHandler(
+                agenda_pickups_callback,
+                pattern=r"^agenda_(volver|pickups_nueva|pickup_lista|pickup_del_cancel|pickup_ver_\d+|pickup_base_\d+|pickup_del_confirm_\d+|pickup_del_\d+)$"
+            )
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
@@ -7849,6 +7901,54 @@ agenda_conv = ConversationHandler(
         ],
         DIRECCIONES_PICKUP_GUARDAR: [
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
+        ],
+        CLIENTES_MENU: [
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+        ],
+        CLIENTES_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+        ],
+        CLIENTES_NUEVO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+        ],
+        CLIENTES_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+        ],
+        CLIENTES_NUEVO_DIRECCION_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+        ],
+        CLIENTES_NUEVO_DIRECCION_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+        ],
+        CLIENTES_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+        ],
+        CLIENTES_VER_CLIENTE: [
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+        ],
+        CLIENTES_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+        ],
+        CLIENTES_EDITAR_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+        ],
+        CLIENTES_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+        ],
+        CLIENTES_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+        ],
+        CLIENTES_DIR_NUEVA_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+        ],
+        CLIENTES_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+        ],
+        CLIENTES_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+        ],
+        CLIENTES_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
         ],
     },
     fallbacks=[
