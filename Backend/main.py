@@ -1396,6 +1396,8 @@ def menu_button_handler(update, context):
         return
     elif text == "Menu":
         return start(update, context)
+    elif text == "Nuevo pedido":
+        return nuevo_pedido(update, context)
 
     # --- Botones del submenú Aliado ---
     elif text == "Mis pedidos":
@@ -11971,7 +11973,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Nuevo pedido|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
