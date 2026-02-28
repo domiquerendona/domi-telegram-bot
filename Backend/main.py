@@ -1397,8 +1397,6 @@ def menu_button_handler(update, context):
         return
     elif text == "Menu":
         return start(update, context)
-    elif text == "Nuevo pedido":
-        return nuevo_pedido(update, context)
 
     # --- Botones del submenú Aliado ---
     elif text == "Mis pedidos":
@@ -7854,7 +7852,6 @@ agenda_conv = ConversationHandler(
         ],
     },
     fallbacks=[
-        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
@@ -7919,7 +7916,6 @@ clientes_conv = ConversationHandler(
         ],
     },
     fallbacks=[
-        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
@@ -8830,7 +8826,6 @@ nueva_ruta_conv = ConversationHandler(
         ],
     },
     fallbacks=[
-        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
@@ -8842,7 +8837,6 @@ nueva_ruta_conv = ConversationHandler(
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[
         CommandHandler("nuevo_pedido", nuevo_pedido),
-        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
     ],
     states={
@@ -12120,7 +12114,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Nuevo pedido|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
@@ -12159,4 +12153,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
