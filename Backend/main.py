@@ -7770,6 +7770,7 @@ agenda_conv = ConversationHandler(
         ],
     },
     fallbacks=[
+        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
@@ -7834,6 +7835,7 @@ clientes_conv = ConversationHandler(
         ],
     },
     fallbacks=[
+        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
@@ -8717,6 +8719,7 @@ nueva_ruta_conv = ConversationHandler(
         ],
     },
     fallbacks=[
+        MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
     ],
