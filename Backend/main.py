@@ -11972,6 +11972,13 @@ def main():
     ), group=1)
     dp.add_handler(MessageHandler(Filters.location, reference_assign_location_handler), group=1)
 
+    # Atajo global de alta prioridad para iniciar flujo de pedido
+    dp.add_handler(MessageHandler(
+        Filters.regex(r'(?i)^\s*nuevo pedido\s*$') & ~Filters.command,
+        nuevo_pedido
+    ), group=-1)
+
+
     # -------------------------
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
