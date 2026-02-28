@@ -11579,8 +11579,13 @@ def admin_config_callback(update, context):
 
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
+    print(
+        f"[DEBUG][terms][ensure] role={role} telegram_id={telegram_id} via_callback={bool(getattr(update, 'callback_query', None))}",
+        flush=True,
+    )
     tv = get_active_terms_version(role)
     if not tv:
+        print(f"[DEBUG][terms][ensure] no_terms_config role={role}", flush=True)
         context.bot.send_message(
             chat_id=telegram_id,
             text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
@@ -11588,8 +11593,11 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         return False
 
     version, url, sha256 = tv
+    print(f"[DEBUG][terms][ensure] version={version!r} url={url!r}", flush=True)
 
-    if has_accepted_terms(telegram_id, role, version, sha256):
+    accepted = has_accepted_terms(telegram_id, role, version, sha256)
+    print(f"[DEBUG][terms][ensure] already_accepted={accepted}", flush=True)
+    if accepted:
         try:
             save_terms_session_ack(telegram_id, role, version)
         except Exception as e:
@@ -11617,8 +11625,10 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     )
 
     if update.callback_query:
+        print("[DEBUG][terms][ensure] prompt_sent_via=callback_edit", flush=True)
         update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
+        print("[DEBUG][terms][ensure] prompt_sent_via=send_message", flush=True)
         context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return False
@@ -11629,23 +11639,31 @@ def terms_callback(update, context):
     data = query.data
     telegram_id = query.from_user.id
     query.answer()
+    print(
+        f"[DEBUG][terms][callback] data={data!r} telegram_id={telegram_id} message_id={getattr(query.message, 'message_id', None)}",
+        flush=True,
+    )
 
     if data.startswith("terms_accept_"):
         role = data.split("_", 2)[-1]
         tv = get_active_terms_version(role)
+        print(f"[DEBUG][terms][callback] accept role={role} tv_found={bool(tv)}", flush=True)
         if not tv:
             query.edit_message_text("Términos no configurados. Contacta soporte.")
             return
 
         version, url, sha256 = tv
-        save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)`r`n        print(f"[DEBUG][terms][callback] acceptance_saved role={role} version={version!r}", flush=True)
+        save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)
+        print(f"[DEBUG][terms][callback] acceptance_saved role={role} version={version!r}", flush=True)
         if role == "ALLY":
             query.edit_message_text("Aceptación registrada. Continuando con nuevo pedido...")
+            print("[DEBUG][terms][callback] chaining_to=nuevo_pedido", flush=True)
             return nuevo_pedido(update, context)
         query.edit_message_text("Aceptación registrada. Ya puedes continuar.")
         return
 
     if data.startswith("terms_decline_"):
+        print("[DEBUG][terms][callback] decline", flush=True)
         query.edit_message_text(
             "No puedes usar la plataforma sin aceptar los Términos y Condiciones.\n"
             "Si cambias de decisión, vuelve a intentar y acepta los términos."
