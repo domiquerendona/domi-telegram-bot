@@ -4343,10 +4343,17 @@ def has_accepted_terms(telegram_id: int, role: str, version: str, sha256: str) -
 def save_terms_acceptance(telegram_id: int, role: str, version: str, sha256: str, message_id: int = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
-        INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
-        VALUES ({P}, {P}, {P}, {P}, {P})
-    """, (telegram_id, role, version, sha256, message_id))
+    if DB_ENGINE == "postgres":
+        cur.execute(f"""
+            INSERT INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
+            VALUES ({P}, {P}, {P}, {P}, {P})
+            ON CONFLICT (telegram_id, role, version, sha256) DO NOTHING
+        """, (telegram_id, role, version, sha256, message_id))
+    else:
+        cur.execute(f"""
+            INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
+            VALUES ({P}, {P}, {P}, {P}, {P})
+        """, (telegram_id, role, version, sha256, message_id))
     conn.commit()
     conn.close()
 
