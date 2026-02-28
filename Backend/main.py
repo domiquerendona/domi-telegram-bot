@@ -11609,13 +11609,18 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         "Lee el documento y confirma tu aceptación para continuar."
     ).format(role, version)
 
-    keyboard = [
-        [InlineKeyboardButton("Leer términos", url=url)],
+    valid_terms_url = isinstance(url, str) and url.strip().lower().startswith(("http://", "https://"))
+    keyboard = []
+    if valid_terms_url:
+        keyboard.append([InlineKeyboardButton("Leer términos", url=url)])
+    else:
+        print(f"[WARN][terms] URL invalida para role={role}, version={version}: {url!r}", flush=True)
+    keyboard.append(
         [
             InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
             InlineKeyboardButton("No acepto", callback_data="terms_decline_{}".format(role)),
-        ],
-    ]
+        ]
+    )
 
     if update.callback_query:
         update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
