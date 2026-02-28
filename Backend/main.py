@@ -11639,6 +11639,9 @@ def terms_callback(update, context):
 
         version, url, sha256 = tv
         save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)
+        if role == "ALLY":
+            query.edit_message_text("Aceptación registrada. Continuando con nuevo pedido...")
+            return nuevo_pedido(update, context)
         query.edit_message_text("Aceptación registrada. Ya puedes continuar.")
         return
 
