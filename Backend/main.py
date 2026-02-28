@@ -1,6 +1,7 @@
 import os
 import hashlib
 import os
+import traceback
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -2558,62 +2559,123 @@ def nuevo_pedido_desde_cotizador(update, context):
     return PEDIDO_NOMBRE
 
 
-def nuevo_pedido(update, context):
+def nueva_ruta_desde_cotizador(update, context):
+    """Entry point de nueva_ruta_conv cuando el aliado elige 'Varias entregas' desde el cotizador."""
+    query = update.callback_query
+    query.answer()
     user = update.effective_user
-
     ensure_user(user.id, user.username)
     db_user = get_user_by_telegram_id(user.id)
-
     if not db_user:
-        update.message.reply_text("Aun no estas registrado en el sistema. Usa /start primero.")
+        query.edit_message_text("No estas registrado. Usa /start primero.")
         return ConversationHandler.END
-
     ally = get_ally_by_user_id(db_user["id"])
-    if not ally:
-        update.message.reply_text(
-            "Aun no estas registrado como aliado.\n"
-            "Si tienes un negocio, registrate con /soy_aliado."
-        )
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro de aliado no esta activo.")
         return ConversationHandler.END
-
-    if ally["status"] != "APPROVED":
-        update.message.reply_text(
-            "Tu registro como aliado todavia no ha sido aprobado por el administrador.\n"
-            "Cuando tu estado sea APPROVED podras crear pedidos con /nuevo_pedido."
-        )
-        return ConversationHandler.END
-
-    # Si tienes ensure_terms implementado y quieres exigirlo, dejalo.
-    # Si NO lo tienes, comenta estas 2 lineas.
-    if not ensure_terms(update, context, user.id, role="ALLY"):
-        return ConversationHandler.END
-
+    pickup_lat = context.user_data.pop("prefill_ruta_pickup_lat", None)
+    pickup_lng = context.user_data.pop("prefill_ruta_pickup_lng", None)
+    # Buscar la ubicacion guardada que coincida con las coords del cotizador
+    pickup_address = ""
+    pickup_location_id = None
+    if pickup_lat and pickup_lng:
+        locations = get_ally_locations(ally["id"])
+        for loc in locations:
+            if loc.get("lat") == pickup_lat and loc.get("lng") == pickup_lng:
+                pickup_address = loc.get("address") or ""
+                pickup_location_id = loc.get("id")
+                break
     context.user_data.clear()
-    context.user_data["ally_id"] = ally["id"]
-    context.user_data["active_ally_id"] = ally["id"]
-    context.user_data["ally"] = ally
+    context.user_data["ruta_ally_id"] = ally["id"]
+    context.user_data["ruta_ally"] = ally
+    context.user_data["ruta_paradas"] = []
+    context.user_data["ruta_pickup_lat"] = pickup_lat
+    context.user_data["ruta_pickup_lng"] = pickup_lng
+    context.user_data["ruta_pickup_address"] = pickup_address
+    context.user_data["ruta_pickup_location_id"] = pickup_location_id
+    return _ruta_iniciar_parada(query, context)
 
-    # Mostrar menú reducido de flujo
-    show_flow_menu(update, context, "Iniciando nuevo pedido...")
 
-    # Mostrar selector de cliente recurrente/nuevo
-    keyboard = [
-        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
-        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
-    ]
+def nuevo_pedido(update, context):
+    user = update.effective_user
+    message = update.effective_message
+    try:
+        print(
+            f"[DEBUG][nuevo_pedido] entry user_id={getattr(user, 'id', None)} "
+            f"chat_id={getattr(getattr(message, 'chat', None), 'id', None)} "
+            f"text={getattr(message, 'text', None)!r}",
+            flush=True,
+        )
 
-    # Verificar si hay ultimo pedido para ofrecer repetir
-    last_order = get_last_order_by_ally(ally["id"])
-    if last_order:
-        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+        ensure_user(user.id, user.username)
+        db_user = get_user_by_telegram_id(user.id)
+        print(
+            f"[DEBUG][nuevo_pedido] db_user_found={bool(db_user)} user_id={getattr(user, 'id', None)}",
+            flush=True,
+        )
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(
-        "CREAR NUEVO PEDIDO\n\n"
-        "Selecciona una opcion:",
-        reply_markup=reply_markup
-    )
-    return PEDIDO_SELECTOR_CLIENTE
+        if not db_user:
+            if message:
+                message.reply_text("Aun no estas registrado en el sistema. Usa /start primero.")
+            return ConversationHandler.END
+
+        ally = get_ally_by_user_id(db_user["id"])
+        print(
+            f"[DEBUG][nuevo_pedido] ally_found={bool(ally)} ally_status={ally.get('status') if ally else None}",
+            flush=True,
+        )
+        if not ally:
+            if message:
+                message.reply_text(
+                    "Aun no estas registrado como aliado.\n"
+                    "Si tienes un negocio, registrate con /soy_aliado."
+                )
+            return ConversationHandler.END
+
+        if ally["status"] != "APPROVED":
+            if message:
+                message.reply_text(
+                    "Tu registro como aliado todavia no ha sido aprobado por el administrador.\n"
+                    "Cuando tu estado sea APPROVED podras crear pedidos con /nuevo_pedido."
+                )
+            return ConversationHandler.END
+
+        if not ensure_terms(update, context, user.id, role="ALLY"):
+            print("[DEBUG][nuevo_pedido] blocked_by_terms=True", flush=True)
+            return ConversationHandler.END
+
+        context.user_data.clear()
+        context.user_data["ally_id"] = ally["id"]
+        context.user_data["active_ally_id"] = ally["id"]
+        context.user_data["ally"] = ally
+
+        show_flow_menu(update, context, "Iniciando nuevo pedido...")
+
+        keyboard = [
+            [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+            [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+        ]
+
+        last_order = get_last_order_by_ally(ally["id"])
+        if last_order:
+            keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+
+        keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if message:
+            message.reply_text(
+                "CREAR NUEVO PEDIDO\n\n"
+                "Selecciona una opcion:",
+                reply_markup=reply_markup
+            )
+        return PEDIDO_SELECTOR_CLIENTE
+    except Exception as e:
+        print(f"[ERROR][nuevo_pedido] {type(e).__name__}: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        if message:
+            message.reply_text("Se produjo un error al iniciar el pedido. Intenta /nuevo_pedido.")
+        return ConversationHandler.END
 
 
 def pedido_selector_cliente_callback(update, context):
@@ -6473,10 +6535,11 @@ def cotizar_entrega(update, context):
     context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
     context.user_data["cotizar_result_dropoff_lat"] = loc["lat"]
     context.user_data["cotizar_result_dropoff_lng"] = loc["lng"]
-    keyboard = [[
-        InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido"),
-        InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar"),
-    ]]
+    keyboard = [
+        [InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido")],
+        [InlineKeyboardButton("Varias entregas (ruta)", callback_data="cotizar_crear_ruta")],
+        [InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar")],
+    ]
     update.message.reply_text(
         f"COTIZACION\n\n"
         f"Distancia: {distance_km:.1f} km\n"
@@ -6528,10 +6591,11 @@ def cotizar_entrega_geo_callback(update, context):
         context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
         context.user_data["cotizar_result_dropoff_lat"] = lat
         context.user_data["cotizar_result_dropoff_lng"] = lng
-        keyboard = [[
-            InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido"),
-            InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar"),
-        ]]
+        keyboard = [
+            [InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido")],
+            [InlineKeyboardButton("Varias entregas (ruta)", callback_data="cotizar_crear_ruta")],
+            [InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar")],
+        ]
         query.edit_message_text(
             f"COTIZACION\n\n"
             f"Distancia: {distance_km:.1f} km\n"
@@ -6560,6 +6624,26 @@ def cotizar_resultado_callback(update, context):
         context.user_data.pop("cotizar_pickup", None)
         context.user_data.pop("cotizar_ally_id", None)
         query.edit_message_text("Cotizacion completada.")
+        return ConversationHandler.END
+
+    if query.data == "cotizar_crear_ruta":
+        pickup_lat = context.user_data.pop("cotizar_result_pickup_lat", None)
+        pickup_lng = context.user_data.pop("cotizar_result_pickup_lng", None)
+        context.user_data.pop("cotizar_result_dropoff_lat", None)
+        context.user_data.pop("cotizar_result_dropoff_lng", None)
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        context.user_data["prefill_ruta_pickup_lat"] = pickup_lat
+        context.user_data["prefill_ruta_pickup_lng"] = pickup_lng
+        query.edit_message_text("Ruta de multiples paradas.")
+        keyboard = [[
+            InlineKeyboardButton("Cliente recurrente", callback_data="cotizar_ruta_cust_recurrente"),
+            InlineKeyboardButton("Cliente nuevo", callback_data="cotizar_ruta_cust_nuevo"),
+        ]]
+        query.message.reply_text(
+            "Primera parada - Tipo de cliente:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         return ConversationHandler.END
 
     # cotizar_crear_pedido
@@ -8078,6 +8162,31 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     return RUTA_CONFIRMACION
 
 
+def nueva_ruta_desde_menu(update, context):
+    """Entry point de nueva_ruta_conv desde boton 'Varias entregas (ruta)' en nuevo_pedido."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        query.edit_message_text("No estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        query.edit_message_text("No tienes perfil de aliado.")
+        return ConversationHandler.END
+    if ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como aliado no ha sido aprobado aun.")
+        return ConversationHandler.END
+    context.user_data.clear()
+    context.user_data["ruta_ally_id"] = ally["id"]
+    context.user_data["ruta_ally"] = ally
+    context.user_data["ruta_paradas"] = []
+    show_flow_menu(update, context, "Iniciando nueva ruta...")
+    return _ruta_mostrar_selector_pickup(query, context)
+
+
 def nueva_ruta_start(update, context):
     user = update.effective_user
     ensure_user(user.id, user.username)
@@ -8659,6 +8768,8 @@ def ruta_guardar_clientes_callback(update, context):
 nueva_ruta_conv = ConversationHandler(
     entry_points=[
         MessageHandler(Filters.regex(r'^Nueva ruta$'), nueva_ruta_start),
+        CallbackQueryHandler(nueva_ruta_desde_cotizador, pattern=r"^cotizar_ruta_cust_(nuevo|recurrente)$"),
+        CallbackQueryHandler(nueva_ruta_desde_menu, pattern=r"^pedido_a_ruta$"),
     ],
     states={
         RUTA_PICKUP_SELECTOR: [
@@ -8874,7 +8985,7 @@ cotizar_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
         ],
         COTIZAR_RESULTADO: [
-            CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|cerrar)$"),
+            CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|crear_ruta|cerrar)$"),
         ],
     },
     fallbacks=[
@@ -11730,6 +11841,26 @@ def courier_base_amount_handler(update, context):
     )
 
 
+def global_error_handler(update, context):
+    """Registra errores no capturados para diagnostico en Railway."""
+    print("[ERROR][telegram] Excepcion no capturada", flush=True)
+    try:
+        if update and getattr(update, "effective_user", None):
+            print(
+                f"[ERROR][telegram] user_id={update.effective_user.id} "
+                f"chat_id={getattr(getattr(update, 'effective_chat', None), 'id', None)}",
+                flush=True,
+            )
+        if update and getattr(update, "effective_message", None):
+            print(
+                f"[ERROR][telegram] text={getattr(update.effective_message, 'text', None)!r}",
+                flush=True,
+            )
+    except Exception as meta_err:
+        print(f"[ERROR][telegram] meta_log_failed={meta_err}", flush=True)
+    print(traceback.format_exc(), flush=True)
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
@@ -11746,6 +11877,7 @@ def main():
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
+    dp.add_error_handler(global_error_handler)
 
     # -------------------------
     # Comandos básicos
@@ -12022,3 +12154,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
