@@ -2873,6 +2873,11 @@ def pedido_selector_cliente_callback(update, context):
         return PEDIDO_SELECTOR_CLIENTE
 
     elif data == "pedido_cliente_nuevo":
+        # Limpiar datos residuales de flujos anteriores para evitar reusar ubicacion/cliente
+        for _k in ("customer_id", "customer_address", "customer_address_id",
+                   "dropoff_lat", "dropoff_lng", "customer_city", "customer_barrio",
+                   "customer_name", "customer_phone"):
+            context.user_data.pop(_k, None)
         query.edit_message_text("Escribe el nombre del cliente:")
         context.user_data["is_new_customer"] = True
         return PEDIDO_NOMBRE
@@ -3571,24 +3576,25 @@ def pedido_telefono_cliente(update, context):
         )
         return PEDIDO_DIRECCION
 
-    # Si el cliente ya es recurrente y la direccion ya existe con coords, no pedir ubicacion otra vez
-    customer_id = context.user_data.get("customer_id")
-    customer_address = context.user_data.get("customer_address")
-    dropoff_lat = context.user_data.get("dropoff_lat")
-    dropoff_lng = context.user_data.get("dropoff_lng")
-    if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
-        address_id = context.user_data.get("customer_address_id")
-        if address_id:
-            addr = get_customer_address_by_id(address_id, customer_id)
-            if addr:
-                context.user_data["dropoff_lat"] = addr.get("lat")
-                context.user_data["dropoff_lng"] = addr.get("lng")
-                dropoff_lat = context.user_data.get("dropoff_lat")
-                dropoff_lng = context.user_data.get("dropoff_lng")
+    # Solo reutilizar datos de ubicacion si es cliente recurrente (no cliente nuevo)
+    if not context.user_data.get("is_new_customer"):
+        customer_id = context.user_data.get("customer_id")
+        customer_address = context.user_data.get("customer_address")
+        dropoff_lat = context.user_data.get("dropoff_lat")
+        dropoff_lng = context.user_data.get("dropoff_lng")
+        if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
+            address_id = context.user_data.get("customer_address_id")
+            if address_id:
+                addr = get_customer_address_by_id(address_id, customer_id)
+                if addr:
+                    context.user_data["dropoff_lat"] = addr.get("lat")
+                    context.user_data["dropoff_lng"] = addr.get("lng")
+                    dropoff_lat = context.user_data.get("dropoff_lat")
+                    dropoff_lng = context.user_data.get("dropoff_lng")
 
-    if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
-        update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
-        return mostrar_selector_pickup(update, context, edit=False)
+        if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
+            update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
+            return mostrar_selector_pickup(update, context, edit=False)
 
     # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
