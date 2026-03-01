@@ -9786,12 +9786,59 @@ nueva_ruta_conv = ConversationHandler(
 )
 
 
+def nuevo_pedido_tras_terms(update, context):
+    """Continua el flujo de nuevo_pedido tras aceptar terminos y condiciones."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = query.from_user.id
+
+    tv = get_active_terms_version("ALLY")
+    if not tv:
+        query.edit_message_text("Terminos no configurados. Contacta soporte.")
+        return ConversationHandler.END
+
+    version, url, sha256 = tv
+    save_terms_acceptance(telegram_id, "ALLY", version, sha256, query.message.message_id)
+
+    db_user = get_user_by_telegram_id(telegram_id)
+    if not db_user:
+        query.edit_message_text("Error: usuario no encontrado. Usa /nuevo_pedido.")
+        return ConversationHandler.END
+
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("No se pudo continuar. Usa Nuevo pedido.")
+        return ConversationHandler.END
+
+    query.edit_message_text("Aceptacion registrada. Iniciando nuevo pedido...")
+    context.user_data.clear()
+    context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+
+    keyboard = [
+        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+    ]
+    last_order = get_last_order_by_ally(ally["id"])
+    if last_order:
+        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+    keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
+
+    update.effective_message.reply_text(
+        "CREAR NUEVO PEDIDO\n\nSelecciona una opcion:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PEDIDO_SELECTOR_CLIENTE
+
+
 # Conversacion para /nuevo_pedido (con selector de cliente recurrente)
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[
         CommandHandler("nuevo_pedido", nuevo_pedido),
         MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
+        CallbackQueryHandler(nuevo_pedido_tras_terms, pattern=r"^terms_accept_ALLY$"),
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
