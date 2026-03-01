@@ -2998,6 +2998,18 @@ def pedido_tipo_servicio_callback(update, context):
         )
         return PEDIDO_COMPRAS_CANTIDAD
 
+    # Si viene de cliente recurrente pero faltan campos, rehidratar desde BD
+    customer_id = context.user_data.get("customer_id")
+    ally_id = context.user_data.get("active_ally_id")
+    if customer_id and ally_id:
+        if not context.user_data.get("customer_name") or not context.user_data.get("customer_phone"):
+            customer = get_ally_customer_by_id(customer_id, ally_id)
+            if customer:
+                if not context.user_data.get("customer_name"):
+                    context.user_data["customer_name"] = customer.get("name") or ""
+                if not context.user_data.get("customer_phone"):
+                    context.user_data["customer_phone"] = customer.get("phone") or ""
+
     # Verificar si ya tenemos todos los datos del cliente
     has_name = context.user_data.get("customer_name")
     has_phone = context.user_data.get("customer_phone")
@@ -3007,6 +3019,30 @@ def pedido_tipo_servicio_callback(update, context):
         # Ya tenemos datos del cliente, preguntar por base requerida
         return mostrar_pregunta_base(query, context, edit=True)
     else:
+        # Si ya se selecciono un cliente recurrente, nunca re-pedir el nombre por defecto
+        if customer_id:
+            if not has_address:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta la direccion de entrega.\n"
+                    "Escribe la direccion de entrega:"
+                )
+                return PEDIDO_DIRECCION
+            if not has_name:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta el nombre del cliente.\n"
+                    "Escribe el nombre del cliente:"
+                )
+                return PEDIDO_NOMBRE
+            if not has_phone:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta el telefono del cliente.\n"
+                    "Escribe el numero de telefono del cliente:"
+                )
+                return PEDIDO_TELEFONO
+
         # Cliente nuevo: pedir nombre
         query.edit_message_text(
             f"Tipo de servicio: {tipos_map[data]}\n\n"
