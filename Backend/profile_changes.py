@@ -89,11 +89,16 @@ def _is_platform(update):
 
 
 def _cancel_wrapper(update, context):
+    # LAZY IMPORT: dependencia circular inevitable. cancel_conversacion debe vivir en
+    # main.py (registro de handlers), pero profile_changes.py necesita llamarlo como
+    # fallback de ConversationHandler. Import lazy dentro de función evita error de carga.
     from main import cancel_conversacion
     return cancel_conversacion(update, context)
 
 
 def _cancel_text_wrapper(update, context):
+    # LAZY IMPORT: idem que _cancel_wrapper. cancel_por_texto vive en main.py y no puede
+    # moverse a services.py porque requiere el estado del ConversationHandler.
     from main import cancel_por_texto
     return cancel_por_texto(update, context)
 

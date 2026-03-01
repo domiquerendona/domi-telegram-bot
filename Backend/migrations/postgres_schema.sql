@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS admins (
     payment_bank TEXT,
     payment_holder TEXT,
     payment_instructions TEXT,
+    cedula_front_file_id TEXT,
+    cedula_back_file_id TEXT,
+    selfie_file_id TEXT,
     rejection_type TEXT,
     rejection_reason TEXT,
     rejected_at TIMESTAMP,
@@ -521,7 +524,62 @@ CREATE TABLE IF NOT EXISTS profile_change_requests (
 );
 
 -- ============================================================
--- J) ÍNDICES
+-- J) RUTAS MULTI-PARADA
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS routes (
+    id BIGSERIAL PRIMARY KEY,
+    ally_id BIGINT NOT NULL,
+    ally_admin_id_snapshot BIGINT,
+    courier_id BIGINT,
+    courier_admin_id_snapshot BIGINT,
+    status TEXT DEFAULT 'PENDING',
+    pickup_location_id BIGINT,
+    pickup_address TEXT NOT NULL,
+    pickup_lat REAL,
+    pickup_lng REAL,
+    total_distance_km NUMERIC DEFAULT 0,
+    distance_fee INTEGER DEFAULT 0,
+    additional_stops_fee INTEGER DEFAULT 0,
+    total_fee INTEGER DEFAULT 0,
+    instructions TEXT,
+    canceled_by TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    published_at TIMESTAMP,
+    accepted_at TIMESTAMP,
+    delivered_at TIMESTAMP,
+    canceled_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS route_destinations (
+    id BIGSERIAL PRIMARY KEY,
+    route_id BIGINT NOT NULL,
+    sequence INTEGER NOT NULL,
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    customer_address TEXT NOT NULL,
+    customer_city TEXT NOT NULL,
+    customer_barrio TEXT NOT NULL,
+    dropoff_lat REAL,
+    dropoff_lng REAL,
+    status TEXT DEFAULT 'PENDING',
+    delivered_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS route_offer_queue (
+    id BIGSERIAL PRIMARY KEY,
+    route_id BIGINT NOT NULL,
+    courier_id BIGINT NOT NULL,
+    position INTEGER NOT NULL,
+    status TEXT DEFAULT 'PENDING',
+    offered_at TIMESTAMP,
+    responded_at TIMESTAMP,
+    response TEXT
+);
+
+-- ============================================================
+-- K) ÍNDICES
 -- ============================================================
 
 -- Identities
@@ -601,3 +659,10 @@ CREATE INDEX IF NOT EXISTS idx_ref_validator_perm_status ON admin_reference_vali
 CREATE INDEX IF NOT EXISTS idx_pcr_status ON profile_change_requests(status);
 CREATE INDEX IF NOT EXISTS idx_pcr_team_admin ON profile_change_requests(team_admin_id);
 CREATE INDEX IF NOT EXISTS idx_pcr_team_code ON profile_change_requests(team_code);
+
+-- Routes
+CREATE INDEX IF NOT EXISTS idx_routes_ally_id ON routes(ally_id);
+CREATE INDEX IF NOT EXISTS idx_routes_courier_id ON routes(courier_id);
+CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status);
+CREATE INDEX IF NOT EXISTS idx_route_destinations_route_id ON route_destinations(route_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_route_offer_queue_route_id ON route_offer_queue(route_id, status);
