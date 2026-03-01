@@ -252,8 +252,11 @@ from services import (
     get_all_online_couriers,
     get_active_orders_without_courier,
     get_online_couriers_sorted_by_distance,
+    block_courier_for_ally,
+    unblock_courier_for_ally,
+    get_blocked_courier_ids_for_ally,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -1177,7 +1180,8 @@ def get_ally_menu_keyboard():
         ['Nuevo pedido', 'Nueva ruta'],
         ['Mis pedidos', 'Agenda'],
         ['Cotizar envio', 'Recargar'],
-        ['Mi saldo aliado', 'Volver al menu'],
+        ['Mis repartidores', 'Mi saldo aliado'],
+        ['Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1211,6 +1215,107 @@ def mi_aliado(update, context):
     )
     reply_markup = get_ally_menu_keyboard()
     update.message.reply_text(msg, reply_markup=reply_markup)
+
+
+def _ally_couriers_build_panel(ally_id):
+    """Construye texto e InlineKeyboardMarkup del panel de repartidores para un aliado.
+    Muestra secciones ACTIVOS y BLOQUEADOS separadas.
+    Retorna (text, markup) donde markup puede ser None si no hay botones."""
+    admin_link = get_approved_admin_link_for_ally(ally_id)
+    if not admin_link:
+        return "No tienes un administrador aprobado asignado.", None
+
+    admin_id = admin_link["admin_id"]
+    couriers = list_courier_links_by_admin(admin_id)
+    if not couriers:
+        return "Tu equipo no tiene repartidores activos.", None
+
+    blocked_ids = get_blocked_courier_ids_for_ally(ally_id)
+    activos = []
+    bloqueados = []
+    for c in couriers:
+        cid = c["courier_id"] if isinstance(c, dict) else c[1]
+        name = (c["full_name"] if isinstance(c, dict) else c[2]) or "Sin nombre"
+        if cid in blocked_ids:
+            bloqueados.append((cid, name))
+        else:
+            activos.append((cid, name))
+
+    lines = ["Repartidores de tu equipo:\n"]
+    keyboard = []
+
+    if activos:
+        lines.append("ACTIVOS ({})".format(len(activos)))
+        for cid, name in activos:
+            lines.append("  {}".format(name))
+            keyboard.append([InlineKeyboardButton(
+                "Bloquear: {}".format(name),
+                callback_data="ally_block_block_{}".format(cid),
+            )])
+
+    if bloqueados:
+        if activos:
+            lines.append("")
+        lines.append("BLOQUEADOS ({})".format(len(bloqueados)))
+        for cid, name in bloqueados:
+            lines.append("  {} (bloqueado)".format(name))
+            keyboard.append([InlineKeyboardButton(
+                "Desbloquear: {}".format(name),
+                callback_data="ally_block_unblock_{}".format(cid),
+            )])
+
+    if not activos and not bloqueados:
+        return "Tu equipo no tiene repartidores.", None
+
+    markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    return chr(10).join(lines), markup
+
+
+def ally_couriers_panel(update, context):
+    """Muestra repartidores del equipo con secciones ACTIVOS y BLOQUEADOS."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally or ally["status"] != "APPROVED":
+        update.message.reply_text("Solo aliados aprobados pueden gestionar repartidores.")
+        return
+
+    text, markup = _ally_couriers_build_panel(ally["id"])
+    update.message.reply_text(text, reply_markup=markup)
+
+
+def ally_block_callback(update, context):
+    """Maneja bloqueo/desbloqueo de repartidor por aliado y actualiza el panel."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("Usuario no encontrado.")
+        return
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Solo aliados aprobados pueden gestionar repartidores.")
+        return
+
+    ally_id = ally["id"]
+    if data.startswith("ally_block_block_"):
+        courier_id = int(data.split("_")[-1])
+        block_courier_for_ally(ally_id, courier_id)
+    elif data.startswith("ally_block_unblock_"):
+        courier_id = int(data.split("_")[-1])
+        unblock_courier_for_ally(ally_id, courier_id)
+    else:
+        return
+
+    # Regenerar panel actualizado en el mismo mensaje
+    text, markup = _ally_couriers_build_panel(ally_id)
+    try:
+        query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        pass
 
 
 def mi_repartidor(update, context):
@@ -1407,6 +1512,8 @@ def menu_button_handler(update, context):
     # --- Botones del submenú Aliado ---
     elif text == "Mis pedidos":
         return ally_active_orders(update, context)
+    elif text == "Mis repartidores":
+        return ally_couriers_panel(update, context)
     elif text == "Mi saldo aliado":
         return cmd_saldo(update, context)
 
@@ -12796,6 +12903,8 @@ def main():
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
+    dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
+    dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(ally_locs_conv)     # Mis ubicaciones (aliado)
@@ -12925,7 +13034,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 

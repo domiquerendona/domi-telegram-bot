@@ -2568,6 +2568,18 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
 
         result.sort(key=_sort_key)
 
+        # Filtrar por radio maximo de 7 km desde el punto de recogida.
+        # Repartidores sin coordenadas conocidas quedan excluidos del radio.
+        MAX_OFFER_RADIUS_KM = 7.0
+        within = []
+        for c in result:
+            clat = c.get("live_lat") or c.get("residence_lat")
+            clng = c.get("live_lng") or c.get("residence_lng")
+            if clat is not None and clng is not None:
+                if _haversine(pickup_lat, pickup_lng, clat, clng) <= MAX_OFFER_RADIUS_KM:
+                    within.append(c)
+        result = within
+
     return result
 
 

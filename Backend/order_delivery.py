@@ -52,6 +52,7 @@ from db import (
     delete_route_offer_queue,
     reset_route_offer_queue,
 )
+from db import add_courier_rating, block_courier_for_ally
 from services import apply_service_fee, check_service_fee_available
 
 
@@ -296,11 +297,16 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     create_offer_queue(order_id, courier_ids)
     set_order_status(order_id, "PUBLISHED", "published_at")
 
-    # Guardar timestamp de inicio del ciclo
+    # Guardar datos del ciclo para re-consulta en reintentos
     context.bot_data.setdefault("offer_cycles", {})[order_id] = {
         "started_at": __import__("time").time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
+        "pickup_lat": p_lat,
+        "pickup_lng": p_lng,
+        "requires_cash": requires_cash,
+        "cash_amount": cash_amount,
+        "excluded_couriers": set(),
     }
 
     _send_next_offer(order_id, context)
@@ -400,7 +406,8 @@ def _offer_timeout_job(context):
 
 
 def _try_restart_cycle(order_id, context):
-    """Reinicia el ciclo si no se superan los 7 minutos. Si se superan, cancela."""
+    """Reinicia el ciclo re-consultando couriers elegibles actuales dentro del radio.
+    Captura repartidores que hayan entrado al radio desde el inicio del ciclo."""
     cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
     if not cycle_info:
         return
@@ -412,7 +419,30 @@ def _try_restart_cycle(order_id, context):
         _expire_order(order_id, cycle_info, context)
         return
 
-    reset_offer_queue(order_id)
+    admin_id = cycle_info["admin_id"]
+    ally_id = cycle_info["ally_id"]
+    p_lat = cycle_info.get("pickup_lat")
+    p_lng = cycle_info.get("pickup_lng")
+    requires_cash = cycle_info.get("requires_cash", False)
+    cash_amount = cycle_info.get("cash_amount", 0)
+    excluded = cycle_info.get("excluded_couriers", set())
+
+    fresh = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+        pickup_lat=p_lat,
+        pickup_lng=p_lng,
+    )
+    courier_ids = [c["courier_id"] for c in fresh if c["courier_id"] not in excluded]
+
+    if not courier_ids:
+        _expire_order(order_id, cycle_info, context)
+        return
+
+    delete_offer_queue(order_id)
+    create_offer_queue(order_id, courier_ids)
     _send_next_offer(order_id, context)
 
 
@@ -1094,6 +1124,15 @@ def _handle_release(update, context, order_id):
         print("[WARN] No se pudo reofertar pedido {}: sin admin operativo".format(order_id))
         return
 
+    # Preservar couriers excluidos del ciclo anterior y agregar el que libero el pedido
+    prev_cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
+    excluded = set(prev_cycle.get("excluded_couriers", set()))
+    excluded.add(courier["id"])
+
+    # Recuperar coordenadas de recogida del ciclo anterior
+    p_lat = prev_cycle.get("pickup_lat")
+    p_lng = prev_cycle.get("pickup_lng")
+
     requires_cash = bool(order["requires_cash"])
     cash_amount = int(order["cash_required_amount"] or 0)
 
@@ -1102,7 +1141,12 @@ def _handle_release(update, context, order_id):
         ally_id=ally_id,
         requires_cash=requires_cash,
         cash_required_amount=cash_amount,
+        pickup_lat=p_lat,
+        pickup_lng=p_lng,
     )
+    # Excluir al courier que libero y a cualquier otro excluido previamente
+    eligible = [c for c in eligible if c["courier_id"] not in excluded]
+
     if eligible:
         import time
         courier_ids = [c["courier_id"] for c in eligible]
@@ -1113,6 +1157,11 @@ def _handle_release(update, context, order_id):
             "started_at": time.time(),
             "admin_id": admin_id,
             "ally_id": ally_id,
+            "pickup_lat": p_lat,
+            "pickup_lng": p_lng,
+            "requires_cash": requires_cash,
+            "cash_amount": cash_amount,
+            "excluded_couriers": excluded,
         }
         _send_next_offer(order_id, context)
 
@@ -1580,7 +1629,7 @@ def _notify_courier_pickup_rejected(context, order):
 
 
 def _notify_ally_delivered(context, order):
-    """Notifica al aliado que el pedido fue entregado."""
+    """Notifica al aliado que el pedido fue entregado y solicita calificacion del servicio."""
     try:
         ally = get_ally_by_id(order["ally_id"])
         if not ally:
@@ -1588,12 +1637,113 @@ def _notify_ally_delivered(context, order):
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
             return
+
+        courier = get_courier_by_id(order["courier_id"]) if order.get("courier_id") else None
+        courier_name = (courier["full_name"] if courier else None) or "el repartidor"
+        order_id = order["id"]
+
+        keyboard = [[
+            InlineKeyboardButton("1", callback_data="rating_star_{}_1".format(order_id)),
+            InlineKeyboardButton("2", callback_data="rating_star_{}_2".format(order_id)),
+            InlineKeyboardButton("3", callback_data="rating_star_{}_3".format(order_id)),
+            InlineKeyboardButton("4", callback_data="rating_star_{}_4".format(order_id)),
+            InlineKeyboardButton("5", callback_data="rating_star_{}_5".format(order_id)),
+        ]]
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
-            text="Tu pedido #{} fue entregado exitosamente.".format(order["id"]),
+            text=(
+                "Pedido #{} entregado exitosamente por {}.\n\n"
+                "Como calificarias el servicio?\n"
+                "1 = Muy malo  |  5 = Excelente"
+            ).format(order_id, courier_name),
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar entrega al aliado: {}".format(e))
+
+
+def handle_rating_callback(update, context):
+    """Maneja la calificacion del servicio por parte del aliado tras la entrega."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data.startswith("rating_star_"):
+        parts = data.split("_")
+        order_id = int(parts[2])
+        stars = int(parts[3])
+
+        order = get_order_by_id(order_id)
+        if not order or not order.get("courier_id"):
+            query.edit_message_text("Pedido no encontrado.")
+            return
+
+        courier_id = order["courier_id"]
+        try:
+            add_courier_rating(order_id, courier_id, stars)
+        except Exception as e:
+            print("[WARN] No se pudo registrar calificacion orden {}: {}".format(order_id, e))
+
+        if stars >= 4:
+            query.edit_message_text(
+                "Gracias por tu calificacion ({}/5). "
+                "Seguiremos mejorando el servicio.".format(stars)
+            )
+            return
+
+        # Calificacion baja: ofrecer bloquear al courier
+        courier = get_courier_by_id(courier_id)
+        courier_name = (courier["full_name"] if courier else None) or "este repartidor"
+        keyboard = [[
+            InlineKeyboardButton(
+                "Si, bloquear",
+                callback_data="rating_block_{}_{}".format(courier_id, order_id),
+            ),
+            InlineKeyboardButton(
+                "No, gracias",
+                callback_data="rating_skip_{}".format(order_id),
+            ),
+        ]]
+        query.edit_message_text(
+            "Calificacion guardada ({}/5).\n\n"
+            "Deseas bloquear a {} para que tus pedidos no le lleguen?".format(
+                stars, courier_name
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    elif data.startswith("rating_block_"):
+        # rating_block_{courier_id}_{order_id}
+        parts = data.split("_")
+        courier_id = int(parts[2])
+
+        telegram_id = update.effective_user.id
+        user = get_user_by_telegram_id(telegram_id)
+        if not user:
+            query.edit_message_text("Usuario no encontrado.")
+            return
+
+        ally = get_ally_by_user_id(user["id"])
+        if not ally:
+            query.edit_message_text("Solo aliados pueden bloquear repartidores.")
+            return
+
+        try:
+            block_courier_for_ally(ally["id"], courier_id)
+        except Exception as e:
+            print("[WARN] No se pudo bloquear courier {}: {}".format(courier_id, e))
+
+        courier = get_courier_by_id(courier_id)
+        courier_name = (courier["full_name"] if courier else None) or "el repartidor"
+        query.edit_message_text(
+            "{} fue bloqueado. No recibira mas tus ofertas.\n"
+            "Puedes desbloquearlo en cualquier momento desde Mis repartidores.".format(courier_name)
+        )
+
+    elif data.startswith("rating_skip_"):
+        query.edit_message_text(
+            "Gracias por tu calificacion. Seguiremos mejorando el servicio."
+        )
 
 
 def _notify_courier_order_cancelled(context, order):
