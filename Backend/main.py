@@ -2405,23 +2405,31 @@ def courier_confirm(update, context):
 
     code = f"R-{db_user['id']:04d}"
 
-    create_courier(
-        user_id=db_user["id"],
-        full_name=full_name,
-        id_number=id_number,
-        phone=phone,
-        city=city,
-        barrio=barrio,
-        plate=plate,
-        bike_type=bike_type,
-        code=code,
-        residence_address=residence_address,
-        residence_lat=residence_lat,
-        residence_lng=residence_lng,
-        cedula_front_file_id=cedula_front_file_id,
-        cedula_back_file_id=cedula_back_file_id,
-        selfie_file_id=selfie_file_id,
-    )
+    try:
+        create_courier(
+            user_id=db_user["id"],
+            full_name=full_name,
+            id_number=id_number,
+            phone=phone,
+            city=city,
+            barrio=barrio,
+            plate=plate,
+            bike_type=bike_type,
+            code=code,
+            residence_address=residence_address,
+            residence_lat=residence_lat,
+            residence_lng=residence_lng,
+            cedula_front_file_id=cedula_front_file_id,
+            cedula_back_file_id=cedula_back_file_id,
+            selfie_file_id=selfie_file_id,
+        )
+    except ValueError as e:
+        update.message.reply_text(
+            "No se pudo completar el registro: {}\n\n"
+            "Revisa tus datos y vuelve a intentarlo con /soy_repartidor.".format(e)
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     courier = get_courier_by_user_id(db_user["id"])
     if not courier:
