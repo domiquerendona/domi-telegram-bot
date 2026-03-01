@@ -85,6 +85,8 @@ from db import (
     expire_stale_live_locations,
     get_pending_couriers,
     get_pending_couriers_by_admin,
+    get_pending_allies_by_admin,
+    get_allies_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
     get_all_couriers,

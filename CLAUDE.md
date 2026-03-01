@@ -16,7 +16,11 @@ Este archivo describe la estructura del proyecto, flujos de trabajo y convencion
 
 Los actores principales del sistema son:
 - **Platform Admin**: administrador global de la plataforma (un solo usuario).
-- **Admin Local**: administra un equipo de repartidores y aliados en una zona.
+- **Admin Local**: administra un equipo de repartidores y aliados en una zona. Sus atribuciones son:
+  - Aprobar o rechazar miembros pendientes de su equipo (repartidores y aliados).
+  - Inactivar miembros activos (`APPROVED` → `INACTIVE`) y reactivarlos (`INACTIVE` → `APPROVED`).
+  - **NO puede** rechazar definitivamente (`REJECTED`) — esa acción es exclusiva del Admin de Plataforma.
+  - Gestiona pedidos de su equipo y aprueba recargas de saldo a sus miembros.
 - **Aliado (Ally)**: negocio asociado (restaurante, tienda, etc.) que genera pedidos.
 - **Repartidor (Courier)**: entrega los pedidos.
 - **Cliente (Customer)**: destinatario del pedido (no tiene cuenta en el bot).
@@ -761,7 +765,7 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 - El cotizador usa la API de Google Maps para calcular distancias. Hay un límite diario de llamadas (`api_usage_daily`) para controlar costos.
 - El sistema de recargas transfiere saldo del Admin a Repartidores/Aliados. Es crítico que sea idempotente ante concurrencia.
 - Los pedidos siguen el ciclo: `PENDING` → publicado a repartidores → aceptado → recogida confirmada → entregado (o cancelado en cualquier paso).
-- Un Admin Local debe tener repartidores vinculados (status `APPROVED` en `admin_couriers`) para que su equipo funcione correctamente.
+- Un Admin Local debe tener repartidores y/o aliados vinculados (status `APPROVED` en `admin_couriers` / `admin_allies`) para que su equipo funcione correctamente. Puede aprobar/rechazar miembros pendientes, inactivar activos y reactivar inactivos; el rechazo definitivo (`REJECTED`) es exclusivo del Admin de Plataforma.
 - La referencia de versión financiera estable es el tag `v0.1-admin-saldos` (ledger confiable desde ese punto).
 - El sistema usa **contabilidad de doble entrada**: el Admin de Plataforma debe registrar ingresos externos (`register_platform_income`) para tener saldo y poder aprobar recargas. PROHIBIDO crear saldo sin origen contable.
 - Las tablas `admin_allies` y `admin_couriers` tienen su propio campo `status` que debe mantenerse sincronizado con `allies.status` / `couriers.status`. Los helpers `_sync_ally_link_status` y `_sync_courier_link_status` en `db.py` garantizan esta sincronía automáticamente en cada actualización de estado.

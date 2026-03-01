@@ -3415,6 +3415,57 @@ def get_couriers_by_admin_and_status(admin_id, status):
     return rows
     
 
+def get_pending_allies_by_admin(admin_id):
+    """Devuelve aliados con vínculo PENDING para un admin (espejo de get_pending_couriers_by_admin)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            a.barrio
+        FROM admin_allies aa
+        JOIN allies a ON a.id = aa.ally_id
+        WHERE aa.admin_id = {P}
+          AND aa.status = 'PENDING'
+          AND a.status != 'REJECTED'
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY aa.created_at ASC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_allies_by_admin_and_status(admin_id, status):
+    """Lista aliados de un admin por estado del vínculo (espejo de get_couriers_by_admin_and_status)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            a.barrio,
+            aa.balance,
+            aa.status
+        FROM admin_allies aa
+        JOIN allies a ON a.id = aa.ally_id
+        WHERE aa.admin_id = {P}
+          AND aa.status = {P}
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY a.business_name ASC
+    """, (admin_id, status))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()

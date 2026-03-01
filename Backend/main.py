@@ -184,6 +184,8 @@ from services import (
     expire_stale_live_locations,
     get_pending_couriers,
     get_pending_couriers_by_admin,
+    get_pending_allies_by_admin,
+    get_allies_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
     get_all_couriers,
@@ -2014,6 +2016,32 @@ def ally_team_callback(update, context):
         )
         context.user_data.clear()
         return ConversationHandler.END
+
+    admin_telegram_id = admin_row.get("telegram_id")
+    business_name = context.user_data.get("business_name", "Aliado")
+    try:
+        if admin_telegram_id:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de aliado para tu equipo.\n\n"
+                    "Negocio: {}\n"
+                    "Equipo: {} ({})\n\n"
+                    "Entra a /mi_admin para aprobar o rechazar."
+                ).format(business_name, team_name, team_code)
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_ally_pending_{}_{}".format(admin_id, ally_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un aliado pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
 
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
@@ -10301,10 +10329,12 @@ def mi_admin(update, context):
     # Administrador de Plataforma: siempre operativo
     if team_code == "PLATFORM":
         keyboard = [
-            [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
+            [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-            [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+            [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
         update.message.reply_text(
             header +
@@ -10343,11 +10373,13 @@ def mi_admin(update, context):
     )
     # En FASE 1: panel siempre habilitado
     keyboard = [
-        [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
+        [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-        [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
-        [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+        [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
     ]
 
@@ -11914,8 +11946,334 @@ def admin_local_callback(update, context):
         )
         return
 
+    # ---- ALIADOS PENDIENTES ----
+
+    if data.startswith("local_allies_pending_"):
+        try:
+            pendientes = get_pending_allies_by_admin(admin_id)
+        except Exception as e:
+            print("[ERROR] get_pending_allies_by_admin:", e)
+            query.edit_message_text("Error consultando aliados pendientes de tu equipo.")
+            return
+
+        if not pendientes:
+            query.edit_message_text(
+                "No tienes aliados pendientes por aprobar en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for a in pendientes:
+            ally_id_row = a["ally_id"]
+            bname = a["business_name"] or ""
+            keyboard.append([InlineKeyboardButton(
+                f"ID {ally_id_row} - {bname}",
+                callback_data=f"local_ally_view_{ally_id_row}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")])
+        query.edit_message_text(
+            "Aliados pendientes (tu equipo). Toca uno para ver detalle:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_ally_view_"):
+        ally_id_val = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id_val)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        texto = (
+            "ALIADO (pendiente de tu equipo)\n\n"
+            "ID: {}\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Ciudad: {}\n"
+            "Barrio: {}\n"
+            "Direccion: {}\n"
+        ).format(
+            ally.get("id"),
+            ally.get("business_name") or "-",
+            ally.get("owner_name") or "-",
+            ally.get("phone") or "-",
+            ally.get("city") or "-",
+            ally.get("barrio") or "-",
+            ally.get("address") or "-",
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"local_ally_approve_{ally_id_val}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"local_ally_reject_{ally_id_val}"),
+            ],
+            [InlineKeyboardButton("⬅ Volver", callback_data=f"local_allies_pending_{admin_id}")]
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        cedula_front = ally.get("cedula_front_file_id")
+        cedula_back = ally.get("cedula_back_file_id")
+        selfie = ally.get("selfie_file_id")
+        if cedula_front or cedula_back or selfie:
+            try:
+                if cedula_front:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+                if cedula_back:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                if selfie:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+            except Exception as e:
+                print(f"[WARN] No se pudieron enviar fotos del aliado {ally_id_val}: {e}")
+        return
+
+    if data.startswith("local_ally_approve_") or data.startswith("local_ally_reject_"):
+        ally_id_val = int(data.split("_")[-1])
+        admin_full = get_admin_by_id(admin_id)
+        admin_status = admin_full.get("status") if admin_full else None
+        if admin_status != "APPROVED":
+            query.edit_message_text("Tu cuenta de administrador no está APPROVED. No puedes aprobar/rechazar aliados.")
+            return
+
+        if data.startswith("local_ally_approve_"):
+            try:
+                upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
+                deactivate_other_approved_admin_ally_links(ally_id_val, admin_id)
+            except Exception as e:
+                print("[ERROR] local_ally_approve:", e)
+                query.edit_message_text("Error aprobando aliado. Revisa logs.")
+                return
+            _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
+            query.edit_message_text(
+                "✅ Aliado aprobado en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_allies_pending_{admin_id}")]
+                ])
+            )
+        else:
+            try:
+                upsert_admin_ally_link(admin_id, ally_id_val, "REJECTED")
+            except Exception as e:
+                print("[ERROR] local_ally_reject:", e)
+                query.edit_message_text("Error rechazando aliado. Revisa logs.")
+                return
+            _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
+            query.edit_message_text(
+                "❌ Aliado rechazado para tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_allies_pending_{admin_id}")]
+                ])
+            )
+        return
+
+    # ---- MI EQUIPO ----
+
+    if data.startswith("local_my_team_"):
+        keyboard = [
+            [InlineKeyboardButton("🚚 Mis repartidores", callback_data=f"local_team_couriers_{admin_id}")],
+            [InlineKeyboardButton("🏪 Mis aliados", callback_data=f"local_team_allies_{admin_id}")],
+            [InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")],
+        ]
+        query.edit_message_text("Mi equipo. Selecciona:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_team_couriers_"):
+        approved = get_couriers_by_admin_and_status(admin_id, "APPROVED")
+        inactive = get_couriers_by_admin_and_status(admin_id, "INACTIVE")
+        members = list(approved) + list(inactive)
+        if not members:
+            query.edit_message_text(
+                "No tienes repartidores en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")]
+                ])
+            )
+            return
+        keyboard = []
+        for c in members:
+            cid = c["courier_id"]
+            cname = c["full_name"] or ""
+            cstatus = c["status"]
+            keyboard.append([InlineKeyboardButton(
+                f"{cname} [{cstatus}]",
+                callback_data=f"local_team_courier_view_{cid}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")])
+        query.edit_message_text(
+            "Mis repartidores. Toca uno para gestionar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_team_allies_"):
+        approved = get_allies_by_admin_and_status(admin_id, "APPROVED")
+        inactive = get_allies_by_admin_and_status(admin_id, "INACTIVE")
+        members = list(approved) + list(inactive)
+        if not members:
+            query.edit_message_text(
+                "No tienes aliados en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")]
+                ])
+            )
+            return
+        keyboard = []
+        for a in members:
+            aid = a["ally_id"]
+            aname = a["business_name"] or ""
+            astatus = a["status"]
+            keyboard.append([InlineKeyboardButton(
+                f"{aname} [{astatus}]",
+                callback_data=f"local_team_ally_view_{aid}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")])
+        query.edit_message_text(
+            "Mis aliados. Toca uno para gestionar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_team_courier_view_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+        link = get_admin_link_for_courier(courier_id)
+        link_status = link.get("status") if link else "?"
+        link_balance = link.get("balance", 0) if link else 0
+        texto = (
+            "Repartidor de tu equipo\n\n"
+            "Nombre: {}\n"
+            "Telefono: {}\n"
+            "Estado en equipo: {}\n"
+            "Saldo: ${:,}\n"
+            "Placa: {}\n"
+            "Moto: {}\n"
+        ).format(
+            courier.get("full_name") or "-",
+            courier.get("phone") or "-",
+            link_status,
+            link_balance,
+            courier.get("plate") or "-",
+            courier.get("bike_type") or "-",
+        )
+        if link_status == "APPROVED":
+            action_btn = InlineKeyboardButton("⏸ Inactivar", callback_data=f"local_courier_inactivate_{courier_id}")
+        elif link_status == "INACTIVE":
+            action_btn = InlineKeyboardButton("▶ Activar", callback_data=f"local_courier_activate_{courier_id}")
+        else:
+            action_btn = None
+        keyboard = []
+        if action_btn:
+            keyboard.append([action_btn])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_team_couriers_{admin_id}")])
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_team_ally_view_"):
+        ally_id_val = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id_val)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+        link = get_admin_link_for_ally(ally_id_val)
+        link_status = link.get("status") if link else "?"
+        link_balance = link.get("balance", 0) if link else 0
+        texto = (
+            "Aliado de tu equipo\n\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Estado en equipo: {}\n"
+            "Saldo: ${:,}\n"
+        ).format(
+            ally.get("business_name") or "-",
+            ally.get("owner_name") or "-",
+            ally.get("phone") or "-",
+            link_status,
+            link_balance,
+        )
+        if link_status == "APPROVED":
+            action_btn = InlineKeyboardButton("⏸ Inactivar", callback_data=f"local_ally_inactivate_{ally_id_val}")
+        elif link_status == "INACTIVE":
+            action_btn = InlineKeyboardButton("▶ Activar", callback_data=f"local_ally_activate_{ally_id_val}")
+        else:
+            action_btn = None
+        keyboard = []
+        if action_btn:
+            keyboard.append([action_btn])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_team_allies_{admin_id}")])
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_courier_activate_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] local_courier_activate:", e)
+            query.edit_message_text("Error activando repartidor.")
+            return
+        query.edit_message_text(
+            "✅ Repartidor activado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_couriers_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_courier_inactivate_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] local_courier_inactivate:", e)
+            query.edit_message_text("Error inactivando repartidor.")
+            return
+        query.edit_message_text(
+            "⏸ Repartidor inactivado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_couriers_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_ally_activate_"):
+        ally_id_val = int(data.split("_")[-1])
+        try:
+            upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
+        except Exception as e:
+            print("[ERROR] local_ally_activate:", e)
+            query.edit_message_text("Error activando aliado.")
+            return
+        query.edit_message_text(
+            "✅ Aliado activado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_allies_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_ally_inactivate_"):
+        ally_id_val = int(data.split("_")[-1])
+        try:
+            upsert_admin_ally_link(admin_id, ally_id_val, "INACTIVE")
+        except Exception as e:
+            print("[ERROR] local_ally_inactivate:", e)
+            query.edit_message_text("Error inactivando aliado.")
+            return
+        query.edit_message_text(
+            "⏸ Aliado inactivado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_allies_{admin_id}")]
+            ])
+        )
+        return
+
     query.edit_message_text("Opción no reconocida.")
-    
+
 def ally_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar aliados (solo Admin Plataforma)."""
     query = update.callback_query
@@ -13008,7 +13366,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
-        pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
+        pattern=r"^local_"
     ))
 
     # -------------------------
