@@ -2340,6 +2340,72 @@ def get_active_courier_cash(courier_id: int) -> int:
     return row["available_cash"] if row else 0
 
 
+def get_all_online_couriers():
+    """
+    Retorna todos los repartidores ONLINE (live_location_active=1) de cualquier equipo.
+    Incluye datos de ubicación en vivo, residencia y equipo para calcular distancias.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.telegram_id,
+            c.phone,
+            c.live_lat,
+            c.live_lng,
+            c.live_location_updated_at,
+            c.residence_lat,
+            c.residence_lng,
+            c.available_cash,
+            c.availability_status,
+            a.city AS admin_city,
+            ac.admin_id
+        FROM couriers c
+        JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE c.live_location_active = 1
+          AND c.availability_status = 'APPROVED'
+          AND c.is_deleted = 0
+        ORDER BY c.live_location_updated_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_active_orders_without_courier(limit: int = 20):
+    """
+    Retorna pedidos activos sin courier asignado, con coordenadas de pickup.
+    Usado por el admin de plataforma para buscar repartidores cercanos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            o.id,
+            o.status,
+            o.pickup_address,
+            o.pickup_lat,
+            o.pickup_lng,
+            o.customer_name,
+            o.created_at,
+            al.name AS ally_name
+        FROM orders o
+        LEFT JOIN allies al ON al.id = o.ally_id
+        WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
+          AND (o.courier_id IS NULL OR o.courier_id = 0)
+          AND o.pickup_lat IS NOT NULL
+          AND o.pickup_lng IS NOT NULL
+        ORDER BY o.created_at ASC
+        LIMIT {P}
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def get_active_orders_by_ally(ally_id: int):
     """Devuelve pedidos activos de un aliado (no entregados ni cancelados)."""
     conn = get_connection()

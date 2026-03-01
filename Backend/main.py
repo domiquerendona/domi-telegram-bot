@@ -247,6 +247,9 @@ from services import (
     calcular_distancia_ruta_smart,
     create_route,
     create_route_destination,
+    get_all_online_couriers,
+    get_active_orders_without_courier,
+    get_online_couriers_sorted_by_distance,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback
 from db import (
@@ -5420,6 +5423,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
     ]
 
     update.message.reply_text(
@@ -11829,6 +11833,153 @@ def admin_config_callback(update, context):
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data == "config_couriers_online":
+        # Muestra todos los repartidores ONLINE en este momento (cualquier equipo)
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        online = get_all_online_couriers()
+        if not online:
+            query.edit_message_text(
+                "No hay repartidores con ubicacion en vivo activa en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")],
+                    [InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        import datetime
+        now = datetime.datetime.utcnow()
+        lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
+        keyboard = []
+        for c in online:
+            nombre = c["full_name"]
+            ciudad = c["admin_city"] or "?"
+            updated = c["live_location_updated_at"]
+            if updated:
+                try:
+                    if isinstance(updated, str):
+                        ts = datetime.datetime.fromisoformat(updated.replace("Z", ""))
+                    else:
+                        ts = updated
+                    minutos = int((now - ts).total_seconds() / 60)
+                    hace = "hace {} min".format(minutos) if minutos < 60 else "hace {}h".format(minutos // 60)
+                except Exception:
+                    hace = "?"
+            else:
+                hace = "?"
+            lineas.append("{} | {} | {}".format(nombre, ciudad, hace))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {}".format(nombre),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "config_couriers_cerca_pedido":
+        # Muestra pedidos activos sin courier para que el admin elija uno
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        pedidos = get_active_orders_without_courier(limit=15)
+        if not pedidos:
+            query.edit_message_text(
+                "No hay pedidos activos sin repartidor asignado en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")],
+                ])
+            )
+            return
+
+        keyboard = []
+        for p in pedidos:
+            orden_id = p["id"]
+            ally = p["ally_name"] or "Aliado"
+            direccion = (p["pickup_address"] or "")[:30]
+            estado = p["status"]
+            keyboard.append([InlineKeyboardButton(
+                "#{} {} — {} ({})".format(orden_id, ally, direccion, estado),
+                callback_data="config_cercanos_pedido_{}".format(orden_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")])
+        query.edit_message_text(
+            "Pedidos sin repartidor. Selecciona uno para ver quienes estan mas cerca:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_cercanos_pedido_"):
+        # Muestra repartidores ONLINE ordenados por distancia al pickup del pedido
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        try:
+            order_id = int(data.split("_")[-1])
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        order = get_order_by_id(order_id)
+        if not order:
+            query.edit_message_text("Pedido no encontrado.")
+            return
+
+        pickup_lat = order["pickup_lat"]
+        pickup_lng = order["pickup_lng"]
+        if not pickup_lat or not pickup_lng:
+            query.edit_message_text(
+                "Este pedido no tiene coordenadas de recogida registradas.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        cercanos = get_online_couriers_sorted_by_distance(float(pickup_lat), float(pickup_lng))
+        if not cercanos:
+            query.edit_message_text(
+                "No hay repartidores online en este momento para comparar.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        lineas = ["Repartidores mas cercanos al pedido #{}:\n".format(order_id)]
+        keyboard = []
+        for c in cercanos[:10]:
+            nombre = c["full_name"]
+            dist = c["distancia_km"]
+            ciudad = c["admin_city"] or "?"
+            if dist >= 9000:
+                dist_label = "sin GPS"
+            else:
+                dist_label = "{} km".format(dist)
+            lineas.append("{} — {} | {}".format(nombre, dist_label, ciudad))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {} ({})".format(nombre, dist_label),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     if data == "config_gestion_repartidores":

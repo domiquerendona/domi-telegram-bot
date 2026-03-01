@@ -154,6 +154,8 @@ from db import (
     get_current_route_offer,
     delete_route_offer_queue,
     reset_route_offer_queue,
+    get_all_online_couriers,
+    get_active_orders_without_courier,
 )
 import math
 import re
@@ -189,6 +191,28 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
+
+
+def get_online_couriers_sorted_by_distance(lat: float, lng: float) -> list:
+    """
+    Retorna todos los repartidores ONLINE ordenados por distancia (km) al punto dado.
+    Usa live_lat/live_lng si disponible; fallback a residence_lat/residence_lng.
+    Agrega campo 'distancia_km' a cada registro.
+    """
+    couriers = get_all_online_couriers()
+    result = []
+    for c in couriers:
+        c_lat = c["live_lat"] or c["residence_lat"]
+        c_lng = c["live_lng"] or c["residence_lng"]
+        if c_lat and c_lng:
+            dist = _haversine_km(lat, lng, float(c_lat), float(c_lng))
+        else:
+            dist = 9999.0
+        row = dict(c)
+        row["distancia_km"] = round(dist, 2)
+        result.append(row)
+    result.sort(key=lambda x: x["distancia_km"])
+    return result
 
 
 def _coords_cache_key(lat: float, lng: float) -> str:
