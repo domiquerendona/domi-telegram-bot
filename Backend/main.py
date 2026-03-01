@@ -186,6 +186,7 @@ from services import (
     get_pending_couriers_by_admin,
     get_pending_allies_by_admin,
     get_allies_by_admin_and_status,
+    get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
     get_all_couriers,
@@ -12141,8 +12142,8 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
         link = get_admin_link_for_courier(courier_id)
-        link_status = link.get("status") if link else "?"
-        link_balance = link.get("balance", 0) if link else 0
+        link_status = link["link_status"] if link else "?"
+        link_balance = link["balance"] if link else 0
         texto = (
             "Repartidor de tu equipo\n\n"
             "Nombre: {}\n"
@@ -12179,8 +12180,8 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el aliado.")
             return
         link = get_admin_link_for_ally(ally_id_val)
-        link_status = link.get("status") if link else "?"
-        link_balance = link.get("balance", 0) if link else 0
+        link_status = link["link_status"] if link else "?"
+        link_balance = link["balance"] if link else 0
         texto = (
             "Aliado de tu equipo\n\n"
             "Negocio: {}\n"
