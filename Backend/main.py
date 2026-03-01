@@ -13394,7 +13394,10 @@ def courier_live_location_handler(update, context):
 
     if live_period or update.edited_message:
         # Es live location (nueva o update) -> actualizar y marcar ONLINE
-        update_courier_live_location(courier["id"], lat, lng)
+        if update.message and live_period:
+            update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
+        else:
+            update_courier_live_location(courier["id"], lat, lng)
 
         # Solo notificar la primera vez (cuando pasa a ONLINE visible)
         was_online = (
@@ -13414,14 +13417,20 @@ def courier_live_location_handler(update, context):
 
 def courier_live_location_expired_check(context):
     """
-    Job periodico: revisa couriers ONLINE cuya ubicacion
-    no se actualiza hace mas de 2 minutos y los pasa a PAUSADO.
+    Job periodico: revisa couriers ONLINE cuya ubicacion y/o sesion
+    de ubicacion en vivo ya expiraron y los pasa a PAUSADO.
     """
-    expired_ids = expire_stale_live_locations(timeout_seconds=120)
+    expired_ids = expire_stale_live_locations(stale_timeout_seconds=900)
     for cid in expired_ids:
         try:
             courier = get_courier_by_id(cid)
             if courier:
+                # Evitar notificacion "antigua" si el courier ya volvio a ONLINE
+                if (
+                    _row_value(courier, "availability_status") == "APPROVED"
+                    and int(_row_value(courier, "live_location_active", 0) or 0) == 1
+                ):
+                    continue
                 user = get_user_by_id(courier["user_id"])
                 if user:
                     tg_id = user["telegram_id"]
