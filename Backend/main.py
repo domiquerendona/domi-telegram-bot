@@ -2858,6 +2858,7 @@ def pedido_seleccionar_direccion_callback(update, context):
             query.edit_message_text("Direccion no encontrada. Escribe la direccion de entrega:")
             return PEDIDO_DIRECCION
 
+        context.user_data["customer_address_id"] = address_id
         context.user_data["customer_address"] = address["address_text"]
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
@@ -3410,6 +3411,26 @@ def pedido_telefono_cliente(update, context):
             "barrio, conjunto, torre, apto, referencias."
         )
         return PEDIDO_DIRECCION
+
+    # Si el cliente ya es recurrente y la direccion ya existe con coords, no pedir ubicacion otra vez
+    customer_id = context.user_data.get("customer_id")
+    customer_address = context.user_data.get("customer_address")
+    dropoff_lat = context.user_data.get("dropoff_lat")
+    dropoff_lng = context.user_data.get("dropoff_lng")
+    if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
+        address_id = context.user_data.get("customer_address_id")
+        if address_id:
+            addr = get_customer_address_by_id(address_id, customer_id)
+            if addr:
+                context.user_data["dropoff_lat"] = addr.get("lat")
+                context.user_data["dropoff_lng"] = addr.get("lng")
+                dropoff_lat = context.user_data.get("dropoff_lat")
+                dropoff_lng = context.user_data.get("dropoff_lng")
+
+    if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
+        update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
+        return mostrar_selector_pickup(update, context, edit=False)
+
     # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
         "UBICACION (obligatoria)\n\n"
