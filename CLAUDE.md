@@ -663,6 +663,29 @@ Admin aprueba recarga a repartidor o aliado
 - Función en db.py: `register_platform_income(admin_id, amount, method, note)`
 - Re-exportada en services.py; importada en main.py desde services.py
 
+### Recarga Directa con Plataforma como Fallback
+
+Un aliado o repartidor puede siempre solicitar recarga directamente al Admin de Plataforma, aunque pertenezca a un equipo de Admin Local. Los casos habilitados son:
+1. El Admin Local no tiene saldo suficiente.
+2. El Admin Local no responde o no procesa la recarga.
+
+**Regla del interruptor de ganancias:**
+El saldo recargado pertenece a quien lo aportó. Las ganancias generadas por ese saldo fluyen hacia el mismo aportante:
+- Saldo aportado por Admin Local → ganancias al Admin Local.
+- Saldo aportado por Plataforma → ganancias a Plataforma.
+
+Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local, el flujo de ganancias vuelve al Admin Local. El Admin Local que no recarga a tiempo pierde las ganancias de ese usuario mientras el saldo activo provenga de plataforma.
+
+**Implementación técnica (PENDIENTE):**
+- `main.py → recargar_monto`: mostrar "Plataforma" siempre para COURIER/ALLY, sin verificar vínculo APPROVED.
+- `main.py → recargar_admin_callback`: permitir `platform_id` aunque no esté en `approved_links`.
+- `services.py → approve_recharge_request`: cuando plataforma aprueba para COURIER/ALLY sin vínculo directo, actualizar el balance en el vínculo APPROVED activo que el usuario sí tiene. Ledger registra `PLATFORM → COURIER/ALLY`.
+
+**Restricciones absolutas:**
+- PROHIBIDO bloquear la opción plataforma por ausencia de vínculo `admin_couriers`/`admin_allies`.
+- PROHIBIDO aprobar si `admins.balance` (plataforma) < monto solicitado.
+- Todo movimiento debe registrarse en ledger con el origen correcto.
+
 ### Sincronización de Estado en Tablas de Vínculo
 
 `admin_allies.status` y `admin_couriers.status` son campos independientes de `allies.status` y `couriers.status`. Ambos **siempre deben estar sincronizados**.

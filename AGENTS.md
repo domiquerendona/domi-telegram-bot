@@ -698,6 +698,46 @@ Flujo de UI del ingreso externo (ConversationHandler ingreso_conv en main.py):
 - Claves de user_data: ingreso_monto, ingreso_metodo
 - Accesible desde: menu Finanzas del Admin de Plataforma
 
+9D. Recarga directa con plataforma como fallback (CRÍTICO)
+
+Un aliado o repartidor puede siempre solicitar recarga directamente al Admin de Plataforma,
+aunque pertenezca a un equipo de Admin Local.
+
+Casos habilitados:
+1. El Admin Local no tiene saldo suficiente para recargar.
+2. El Admin Local no responde o no procesa la recarga.
+
+Regla del interruptor de ganancias:
+
+  El saldo recargado pertenece a quien lo aportó.
+  Las ganancias generadas por ese saldo fluyen hacia el mismo aportante.
+
+  Si el aliado/repartidor recargó con Admin Local → ganancias al Admin Local.
+  Si el aliado/repartidor recargó con Plataforma   → ganancias a Plataforma.
+
+  Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local,
+  el flujo de ganancias vuelve automáticamente al Admin Local.
+
+Consecuencia para el Admin Local:
+  El Admin Local que no recarga a tiempo pierde las ganancias generadas por ese
+  usuario mientras su saldo recargado provenga de la plataforma. Recupera las
+  ganancias cuando el usuario vuelva a recargar con él.
+
+PROHIBIDO:
+  - Bloquear la opción de recarga con plataforma si el courier/ally pertenece a un Admin Local.
+  - Asumir que platform solo aparece como opción cuando tiene vínculo APPROVED en admin_couriers/admin_allies.
+  - Aprobar la recarga de plataforma si admins.balance (plataforma) < amount.
+
+Implementación técnica:
+  - UI (main.py → recargar_monto): mostrar "Plataforma" siempre, sin verificar vínculo APPROVED.
+  - Validación (main.py → recargar_admin_callback): permitir platform_id aunque no esté en approved_links.
+  - Aprobación (services.py → approve_recharge_request): cuando el aprobador es plataforma y el
+    destinatario es COURIER/ALLY sin vínculo directo con plataforma, actualizar el balance en el
+    vínculo APPROVED activo que el courier/ally sí tiene (con su admin local).
+  - Ledger: registrar siempre PLATFORM → COURIER/ALLY para trazabilidad del origen del saldo.
+
+Estado: PENDIENTE DE IMPLEMENTACIÓN (regla de negocio aprobada, código no modificado aún).
+
 9C. Sincronización obligatoria de estado en tablas de vínculo
 
 Las tablas admin_allies y admin_couriers tienen su propio campo status, independiente del campo status en allies y couriers. Ambos DEBEN mantenerse sincronizados.
