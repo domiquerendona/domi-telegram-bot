@@ -1431,7 +1431,20 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         if DB_ENGINE == "sqlite":
             cur.execute("BEGIN IMMEDIATE")
 
-        cur.execute("SELECT balance FROM admins WHERE id = " + P, (admin_id,))
+        # Postgres: bloquear fila de solicitud para evitar race condition (approve vs reject
+        # concurrente). Re-verifica PENDING dentro de la transacción antes de tocar saldos.
+        # SQLite ya está protegido por BEGIN IMMEDIATE.
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT status FROM recharge_requests WHERE id = " + P + for_update,
+            (request_id,),
+        )
+        row_req = cur.fetchone()
+        if not row_req or row_req["status"] != "PENDING":
+            conn.rollback()
+            return False, "Solicitud ya procesada."
+
+        cur.execute("SELECT balance FROM admins WHERE id = " + P + for_update, (admin_id,))
         row = cur.fetchone()
         current_admin_balance = row["balance"] if row else 0
         if current_admin_balance < amount:
