@@ -222,7 +222,7 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
         conflict = cur.fetchone()
         if conflict:
             conn.close()
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+            return _row_value(conflict, "id", 0)
 
     # 3) Crear nueva identidad con documento real o placeholder
     final_doc = doc_n if doc_n else placeholder
