@@ -327,6 +327,17 @@ def _send_next_offer(order_id, context):
 
     mark_offer_as_offered(next_offer["queue_id"])
 
+    try:
+        pickup_lat, pickup_lng = _get_pickup_coords(order)
+        if pickup_lat is not None and pickup_lng is not None:
+            context.bot.send_location(
+                chat_id=next_offer["telegram_id"],
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+    except Exception:
+        pass
+
     offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(order)
     reply_markup = _offer_reply_markup(order_id)
 

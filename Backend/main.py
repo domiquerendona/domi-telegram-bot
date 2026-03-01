@@ -4320,6 +4320,7 @@ def pedido_pickup_lista_callback(update, context):
             return mostrar_selector_pickup(query, context, edit=False)
 
         if location.get("lat") is None or location.get("lng") is None:
+            query.answer("Esta direccion no tiene GPS. Selecciona otra o agrega una nueva.", show_alert=True)
             return mostrar_lista_pickups(query, context)
 
         context.user_data["pickup_location"] = location
@@ -4868,6 +4869,19 @@ def construir_resumen_pedido(context):
 
 def mostrar_resumen_confirmacion(query, context, edit=True):
     """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    if pickup_lat is None or pickup_lng is None:
+        return mostrar_selector_pickup(query, context, edit=True)
+    try:
+        context.bot.send_location(
+            chat_id=query.message.chat_id,
+            latitude=float(pickup_lat),
+            longitude=float(pickup_lng),
+        )
+    except Exception:
+        pass
+
     keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
@@ -4885,6 +4899,19 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
 
 def mostrar_resumen_confirmacion_msg(update, context):
     """Muestra resumen del pedido con botones de confirmacion (para Message)."""
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    if pickup_lat is None or pickup_lng is None:
+        return mostrar_selector_pickup(update, context, edit=False)
+    try:
+        context.bot.send_location(
+            chat_id=update.effective_chat.id,
+            latitude=float(pickup_lat),
+            longitude=float(pickup_lng),
+        )
+    except Exception:
+        pass
+
     keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
