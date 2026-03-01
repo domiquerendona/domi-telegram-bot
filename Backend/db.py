@@ -5490,6 +5490,93 @@ def list_pending_recharges_for_admin(admin_id: int):
     return rows
 
 
+def list_all_pending_recharges(limit=50):
+    """Lista todas las solicitudes PENDING de todos los admins con nombre de admin y destinatario."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT rr.id, rr.target_type, rr.target_id, rr.amount, rr.method, rr.created_at,
+               COALESCE(a.team_name, a.full_name) AS admin_name,
+               rr.admin_id,
+               CASE
+                   WHEN rr.target_type = 'COURIER' THEN c.full_name
+                   WHEN rr.target_type = 'ALLY'    THEN al.business_name
+                   WHEN rr.target_type = 'ADMIN'   THEN COALESCE(ad2.team_name, ad2.full_name)
+                   ELSE 'Desconocido'
+               END AS target_name,
+               rr.proof_file_id
+        FROM recharge_requests rr
+        JOIN admins a ON a.id = rr.admin_id
+        LEFT JOIN couriers c  ON rr.target_type = 'COURIER' AND rr.target_id = c.id
+        LEFT JOIN allies al   ON rr.target_type = 'ALLY'    AND rr.target_id = al.id
+        LEFT JOIN admins ad2  ON rr.target_type = 'ADMIN'   AND rr.target_id = ad2.id
+        WHERE rr.status = 'PENDING'
+        ORDER BY rr.created_at ASC
+        LIMIT {P}
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admins_with_pending_count():
+    """
+    Retorna todos los admins locales APPROVED con su conteo de solicitudes PENDING
+    y su balance. Incluye telegram_id del usuario para poder notificarlos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT a.id AS admin_id,
+               COALESCE(a.team_name, a.full_name) AS admin_name,
+               a.status,
+               a.balance,
+               u.telegram_id,
+               COUNT(rr.id) AS pending_count
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN recharge_requests rr ON rr.admin_id = a.id AND rr.status = 'PENDING'
+        WHERE a.is_deleted = 0
+          AND a.team_code != 'PLATFORM'
+          AND a.status = 'APPROVED'
+        GROUP BY a.id, a.full_name, a.team_name, a.status, a.balance, u.telegram_id
+        ORDER BY pending_count DESC, a.balance ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_recharge_ledger(limit=20, offset=0):
+    """Ultimas entradas del ledger tipo RECHARGE con nombres de origen y destino."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT l.id, l.from_type, l.from_id, l.to_type, l.to_id,
+               l.amount, l.ref_id, l.note, l.created_at,
+               CASE l.from_type
+                   WHEN 'PLATFORM' THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.from_id)
+                   WHEN 'ADMIN'    THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.from_id)
+                   WHEN 'EXTERNAL' THEN 'Externo'
+                   ELSE l.from_type
+               END AS from_name,
+               CASE l.to_type
+                   WHEN 'COURIER'  THEN (SELECT full_name      FROM couriers WHERE id = l.to_id)
+                   WHEN 'ALLY'     THEN (SELECT business_name  FROM allies   WHERE id = l.to_id)
+                   WHEN 'ADMIN'    THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.to_id)
+                   WHEN 'PLATFORM' THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.to_id)
+                   ELSE l.to_type
+               END AS to_name
+        FROM ledger l
+        WHERE l.kind = 'RECHARGE'
+        ORDER BY l.created_at DESC
+        LIMIT {P} OFFSET {P}
+    """, (limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def update_recharge_status(request_id: int, status: str, decided_by_admin_id: int):
     """Actualiza el status de una solicitud (APPROVED/REJECTED)."""
     status = normalize_role_status(status)

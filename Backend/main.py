@@ -237,6 +237,9 @@ from services import (
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
     list_pending_recharges_for_admin,
+    list_all_pending_recharges,
+    get_admins_with_pending_count,
+    list_recharge_ledger,
     get_recharge_request,
     get_admin_payment_info,
     update_admin_payment_info,
@@ -5999,6 +6002,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
     ]
 
@@ -6420,6 +6424,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+            [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         ]
 
         query.edit_message_text(
@@ -10334,6 +10339,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
+            [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
@@ -10378,6 +10384,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
+        [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -11356,6 +11363,245 @@ def recharge_callback(update, context):
                 query.edit_message_text("Solicitud procesada." + suffix)
         else:
             query.answer(msg, show_alert=True)
+
+
+# ============================================================
+# PANEL DE RECARGAS — ADMIN DE PLATAFORMA (plat_rec_*)
+# ============================================================
+
+def plat_recargas_callback(update, context):
+    """Panel de recargas para el Admin de Plataforma. Prefijo: plat_rec_"""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    user_id = update.effective_user.id
+
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Admin de Plataforma puede usar este panel.", show_alert=True)
+        return
+
+    back_btn = InlineKeyboardButton("⬅ Volver", callback_data="plat_rec_menu")
+
+    # ---- Menú principal ----
+    if data == "plat_rec_menu":
+        keyboard = [
+            [InlineKeyboardButton("📋 Pendientes de todos los admins", callback_data="plat_rec_pending")],
+            [InlineKeyboardButton("📊 Historial contable", callback_data="plat_rec_history")],
+            [InlineKeyboardButton("⚠️ Alertas de admins locales", callback_data="plat_rec_alerts")],
+            [InlineKeyboardButton("⬅ Volver al panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Panel de Recargas\n\nSelecciona una vista:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---- Todas las solicitudes PENDING agrupadas por admin ----
+    if data == "plat_rec_pending":
+        pendientes = list_all_pending_recharges(limit=50)
+        if not pendientes:
+            query.edit_message_text(
+                "No hay solicitudes de recarga pendientes en el sistema.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        by_admin = {}
+        for req in pendientes:
+            aid = req["admin_id"]
+            if aid not in by_admin:
+                by_admin[aid] = {"admin_name": req["admin_name"], "count": 0, "total": 0}
+            by_admin[aid]["count"] += 1
+            by_admin[aid]["total"] += req["amount"]
+
+        tipo_label = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin"}
+        lines = ["Solicitudes PENDIENTES ({} en total):\n".format(len(pendientes))]
+        for req in pendientes:
+            lines.append("#{} | {} | {} | ${:,}".format(
+                req["id"],
+                req["admin_name"],
+                req["target_name"] or "-",
+                req["amount"],
+            ))
+
+        lines.append("\nPor admin:")
+        keyboard = []
+        for aid, info in by_admin.items():
+            lines.append("  {}: {} solicitud(es) — ${:,}".format(
+                info["admin_name"], info["count"], info["total"]
+            ))
+            keyboard.append([InlineKeyboardButton(
+                "🔔 Notificar a {}".format(info["admin_name"]),
+                callback_data="plat_rec_notify_{}".format(aid)
+            )])
+        keyboard.append([back_btn])
+
+        texto = "\n".join(lines)
+        if len(texto) > 4000:
+            texto = texto[:3950] + "\n...(truncado)"
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # ---- Historial contable (ledger RECHARGE) ----
+    if data == "plat_rec_history":
+        entries = list_recharge_ledger(limit=20)
+        if not entries:
+            query.edit_message_text(
+                "No hay movimientos de recarga registrados aun.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        dest_label = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin", "PLATFORM": "Plataforma"}
+        lines = ["Historial de recargas (ultimas 20):\n"]
+        for e in entries:
+            fecha = (e["created_at"] or "")[:10]
+            origen = e["from_name"] or e["from_type"] or "-"
+            destino = e["to_name"] or e["to_type"] or "-"
+            tipo = dest_label.get(e["to_type"], e["to_type"])
+            lines.append("{} | {} -> {} ({}) | ${:,}".format(
+                fecha, origen, destino, tipo, e["amount"]
+            ))
+
+        texto = "\n".join(lines)
+        if len(texto) > 4000:
+            texto = texto[:3950] + "\n...(truncado)"
+        query.edit_message_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup([[back_btn]])
+        )
+        return
+
+    # ---- Alertas: admins con pendientes o saldo bajo ----
+    if data == "plat_rec_alerts":
+        admins_data = get_admins_with_pending_count()
+        alertas = [a for a in admins_data if a["pending_count"] > 0 or (a["balance"] or 0) < 60000]
+
+        if not alertas:
+            query.edit_message_text(
+                "No hay alertas: todos los admins tienen saldo suficiente y sin pendientes.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        lines = ["Alertas de admins locales:\n"]
+        keyboard = []
+        for a in alertas:
+            balance = a["balance"] or 0
+            pending = a["pending_count"]
+            flags = []
+            if pending > 0:
+                flags.append("{} pendiente(s)".format(pending))
+            if balance < 60000:
+                flags.append("saldo bajo ${:,}".format(balance))
+            lines.append("{}: {}".format(a["admin_name"], " | ".join(flags)))
+            keyboard.append([InlineKeyboardButton(
+                "🔔 Notificar a {}".format(a["admin_name"]),
+                callback_data="plat_rec_notify_{}".format(a["admin_id"])
+            )])
+        keyboard.append([back_btn])
+
+        query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---- Notificar admin local ----
+    if data.startswith("plat_rec_notify_"):
+        admin_id = int(data.replace("plat_rec_notify_", ""))
+        admins_data = get_admins_with_pending_count()
+        target = next((a for a in admins_data if a["admin_id"] == admin_id), None)
+        if not target:
+            query.answer("Admin no encontrado.", show_alert=True)
+            return
+
+        telegram_id = target["telegram_id"]
+        pending = target["pending_count"]
+        balance = target["balance"] or 0
+        admin_name = target["admin_name"]
+
+        partes = ["Recordatorio de Plataforma:"]
+        if pending > 0:
+            partes.append(
+                "Tienes {} solicitud(es) de recarga PENDIENTE(S) sin procesar.\n"
+                "Revisalas con /recargas_pendientes".format(pending)
+            )
+        if balance < 60000:
+            partes.append(
+                "Tu saldo actual es ${:,}. Recarga tu cuenta para poder atender "
+                "a tu equipo sin interrupciones.".format(balance)
+            )
+
+        try:
+            context.bot.send_message(chat_id=telegram_id, text="\n\n".join(partes))
+            query.answer("Notificacion enviada a {}.".format(admin_name))
+        except Exception as e:
+            print("[WARN] plat_rec_notify admin_id={}: {}".format(admin_id, e))
+            query.answer("No se pudo enviar la notificacion.", show_alert=True)
+        return
+
+
+# ---- Recargas pendientes inline para admin local (local_recargas_pending_) ----
+
+def local_recargas_pending_callback(update, context):
+    """Muestra las recargas pendientes del admin local desde su panel /mi_admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if not data.startswith("local_recargas_pending_"):
+        return
+
+    admin_id = int(data.split("_")[-1])
+
+    # Verificar que el solicitante es el propio admin
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    admin = get_admin_by_user_id(user_row["id"])
+    if not admin or admin["id"] != admin_id:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    pendientes = list_pending_recharges_for_admin(admin_id)
+    if not pendientes:
+        query.edit_message_text(
+            "No tienes solicitudes de recarga pendientes.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")
+            ]])
+        )
+        return
+
+    for req in pendientes:
+        req_id = req["id"]
+        tipo = "Repartidor" if req["target_type"] == "COURIER" else "Aliado"
+        texto = (
+            "Solicitud #{}\n"
+            "De: {} ({})\n"
+            "Monto: ${:,}\n"
+            "Metodo: {}\n"
+            "Fecha: {}"
+        ).format(
+            req_id,
+            req["target_name"] or "-",
+            tipo,
+            req["amount"],
+            req["method"] or "-",
+            (req["created_at"] or "-")[:16],
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{req_id}"),
+                InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{req_id}"),
+            ],
+            [InlineKeyboardButton("Ver comprobante", callback_data=f"recharge_proof_{req_id}")],
+        ]
+        query.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+    query.edit_message_text(
+        "Tienes {} solicitud(es) pendiente(s). Revisalas arriba.".format(len(pendientes))
+    )
 
 
 # ============================================================
@@ -13372,6 +13618,8 @@ def main():
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(plat_recargas_callback, pattern=r"^plat_rec_"))
+    dp.add_handler(CallbackQueryHandler(local_recargas_pending_callback, pattern=r"^local_recargas_pending_\d+$"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
         pattern=r"^local_"
