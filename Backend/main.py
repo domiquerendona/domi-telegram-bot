@@ -2928,7 +2928,6 @@ def get_tipo_servicio_keyboard():
     """Retorna InlineKeyboardMarkup con opciones de tipo de servicio."""
     keyboard = [
         [InlineKeyboardButton("Entrega", callback_data="pedido_tipo_entrega")],
-        [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
         [InlineKeyboardButton("🛒 Compras", callback_data="pedido_tipo_compras")],
     ]
     return InlineKeyboardMarkup(keyboard)
