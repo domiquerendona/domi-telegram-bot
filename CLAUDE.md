@@ -495,40 +495,36 @@ CORS configurado para permitir `http://localhost:4200` en desarrollo.
 | Rama/Prefijo | Tipo | Uso |
 |---|---|---|
 | `main` | Permanente | Producción (Railway PROD). **Nunca trabajar directamente aquí.** |
-| `staging` | Permanente | Integración y pruebas previas a producción. **Nunca borrar.** |
-| `claude/` | Temporal | Ramas de trabajo de agentes IA. Se borran tras merge a staging. |
-| `verify/` | Temporal | Validar cambios estructurales de BD antes de merge a staging/main. |
+| `staging` | Permanente | **Rama de trabajo e integración.** Aquí se desarrolla, se hace commit y se hace push. **Nunca borrar.** |
+| `claude/` | Temporal | Opcional. Solo si se necesita aislar experimentos; luego se mergea a staging. |
+| `verify/` | Temporal | **Obligatoria** para cambios estructurales de BD; luego se mergea a staging. |
 | `luisa-web` | Permanente | Rama de la colaboradora Luisa. **NUNCA borrar.** |
 
 ### Flujo de Trabajo
 
 ```
-claude/*  ──merge──►  staging  ──(validado)──►  main
-verify/*  ──merge──►  staging                  (PROD)
-                       (entorno DEV:
-                        BOT_TOKEN DEV
-                        DATABASE_URL separada)
+staging   ──(validado)──►  main
+verify/*  ──merge──►  staging  ──(validado)──►  main
+                        (entorno DEV:
+                         BOT_TOKEN DEV
+                         DATABASE_URL separada)
 ```
 
 ```bash
-# 1. Siempre crear ramas desde origin/main actualizado
-git fetch origin
-git checkout -b claude/nombre-tarea-ID origin/main
-
-# 2. Verificar rama activa antes de cualquier cambio
-git branch --show-current
-
-# 3. Mergear a staging primero (NUNCA directo a main)
+# 1. Trabajar SIEMPRE en staging
 git checkout staging
-git merge claude/nombre-tarea-ID --no-ff -m "merge: descripción"
+git pull --ff-only origin staging
+
+# 2. Implementar cambios, validar, commit y push
+python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
+git add -A
+git commit -m "feat: descripción"
 git push origin staging
 
-# 4. Validar funcionalmente en staging
+# 3. Validar funcionalmente en staging
 
-# 5. Solo cuando esté validado, mergear staging a main
-git checkout main
-git merge staging --no-ff -m "release: descripción"
-git push origin main
+# 4. Solo cuando esté validado, mergear staging a main
+# (Proceso de release según políticas del equipo)
 ```
 
 ### Verificación de Compatibilidad Estructural (Obligatorio Antes de Merge)

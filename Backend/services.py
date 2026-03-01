@@ -97,6 +97,7 @@ from db import (
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
+    add_order_incentive,
     get_orders_by_ally,
     get_orders_by_courier,
     get_totales_registros,
@@ -1695,6 +1696,72 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
             return False, "ADMIN_SIN_SALDO"
 
     return True, "OK"
+
+
+def ally_get_order_for_incentive(telegram_id: int, order_id: int) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    """
+    Retorna pedido si pertenece al aliado y está en estado elegible para incentivo.
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return False, None, "No se encontro tu usuario."
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        return False, None, "No tienes perfil de aliado."
+
+    order = get_order_by_id(order_id)
+    if not order:
+        return False, None, "Pedido no encontrado."
+
+    if int(order["ally_id"]) != int(ally["id"]):
+        return False, None, "No tienes permiso para modificar este pedido."
+
+    if order["status"] not in ("PENDING", "PUBLISHED", "ACCEPTED"):
+        return False, None, "Este pedido ya no permite incentivo (estado: {}).".format(order["status"])
+
+    return True, order, "OK"
+
+
+def ally_increment_order_incentive(telegram_id: int, order_id: int, delta: int) -> Tuple[bool, Optional[Dict[str, Any]], Optional[int], str]:
+    """
+    Incrementa incentivo adicional del pedido (solo aliado dueño).
+    Retorna (ok, updated_order, courier_telegram_id, message).
+    """
+    ok, order, msg = ally_get_order_for_incentive(telegram_id, order_id)
+    if not ok:
+        return False, None, None, msg
+
+    if delta is None:
+        return False, None, None, "Monto invalido."
+
+    try:
+        delta = int(delta)
+    except Exception:
+        return False, None, None, "Monto invalido."
+
+    if delta <= 0:
+        return False, None, None, "El incentivo debe ser mayor a 0."
+
+    if delta > 200000:
+        return False, None, None, "El incentivo es demasiado alto."
+
+    add_order_incentive(int(order_id), int(delta))
+    updated = get_order_by_id(order_id)
+
+    courier_telegram_id = None
+    try:
+        courier_id = updated["courier_id"]
+        if courier_id:
+            courier = get_courier_by_id(courier_id)
+            if courier:
+                courier_user = get_user_by_id(courier["user_id"])
+                if courier_user and courier_user.get("telegram_id"):
+                    courier_telegram_id = int(courier_user["telegram_id"])
+    except Exception:
+        courier_telegram_id = None
+
+    return True, updated, courier_telegram_id, "OK"
 
 
 # TODO: Fase 2 - Implementar cobro al courier cuando complete entrega

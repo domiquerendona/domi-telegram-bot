@@ -502,10 +502,20 @@ def ally_active_orders(update, context):
             )
 
             if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
-                keyboard = [[InlineKeyboardButton(
-                    "Cancelar pedido",
-                    callback_data="order_cancel_{}".format(order["id"]),
-                )]]
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            "Aumentar incentivo",
+                            callback_data="pedido_inc_menu_{}".format(order["id"]),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "Cancelar pedido",
+                            callback_data="order_cancel_{}".format(order["id"]),
+                        )
+                    ],
+                ]
                 update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 update.message.reply_text(text)
@@ -1346,6 +1356,7 @@ def _build_offer_text(order):
     pickup_address = _get_pickup_address(order)
     distance_km = order["distance_km"] or 0
     total_fee = int(order["total_fee"] or 0)
+    additional_incentive = int(order["additional_incentive"] or 0)
 
     text = (
         "OFERTA DISPONIBLE\n\n"
@@ -1353,7 +1364,7 @@ def _build_offer_text(order):
         "Recoge en: {}\n"
         "Entrega en: {}\n"
         "Distancia: {:.1f} km\n"
-        "Pago: ${:,}\n"
+        "Pago total: ${:,}\n"
     ).format(
         order["id"],
         pickup_address,
@@ -1361,6 +1372,11 @@ def _build_offer_text(order):
         distance_km,
         total_fee,
     )
+
+    if additional_incentive > 0:
+        base_fee = max(0, total_fee - additional_incentive)
+        text += "Pago base: ${:,}\n".format(int(base_fee))
+        text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
 
     cash_amount = order["cash_required_amount"] or 0
     if order["requires_cash"] and cash_amount > 0:

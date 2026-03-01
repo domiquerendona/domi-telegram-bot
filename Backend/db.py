@@ -3812,6 +3812,23 @@ def set_order_status(order_id: int, status: str, timestamp_field: str = None):
     conn.close()
 
 
+def add_order_incentive(order_id: int, delta: int):
+    """Incrementa additional_incentive y total_fee de un pedido por delta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE orders
+        SET additional_incentive = COALESCE(additional_incentive, 0) + {P},
+            total_fee = COALESCE(total_fee, 0) + {P}
+        WHERE id = {P};
+        """,
+        (delta, delta, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_snapshot: int = None):
     """Asigna un pedido a un repartidor y marca accepted_at."""
     conn = get_connection()

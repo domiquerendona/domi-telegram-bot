@@ -198,6 +198,8 @@ from services import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    ally_get_order_for_incentive,
+    ally_increment_order_incentive,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -833,6 +835,8 @@ def volver_paso_anterior(update, context):
     PEDIDO_GUARDAR_CLIENTE,       # Preguntar si guardar cliente nuevo
     PEDIDO_COMPRAS_CANTIDAD,      # Capturar lista de productos con cantidades
 ) = range(14, 33)
+
+PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
 
 
 # =========================
@@ -4456,6 +4460,46 @@ def continuar_despues_pickup(query, context, edit=True):
     return mostrar_pregunta_base(query, context, edit=edit)
 
 
+def _fmt_pesos(amount: int) -> str:
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        amount = 0
+    return f"${amount:,}".replace(",", ".")
+
+
+def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None):
+    """
+    Botones de incentivo (pre y post oferta).
+    - Pre: callback_data=pedido_inc_1000 / pedido_inc_otro
+    - Post: callback_data=pedido_inc_{order_id}_{monto} / pedido_inc_otro_{order_id}
+    """
+    if order_id is None:
+        return [
+            [
+                InlineKeyboardButton("+1000", callback_data=f"{prefix}1000"),
+                InlineKeyboardButton("+1500", callback_data=f"{prefix}1500"),
+            ],
+            [
+                InlineKeyboardButton("+2000", callback_data=f"{prefix}2000"),
+                InlineKeyboardButton("+3000", callback_data=f"{prefix}3000"),
+            ],
+            [InlineKeyboardButton("Otro monto", callback_data=f"{prefix}otro")],
+        ]
+
+    return [
+        [
+            InlineKeyboardButton("+1000", callback_data=f"{prefix}{order_id}_1000"),
+            InlineKeyboardButton("+1500", callback_data=f"{prefix}{order_id}_1500"),
+        ],
+        [
+            InlineKeyboardButton("+2000", callback_data=f"{prefix}{order_id}_2000"),
+            InlineKeyboardButton("+3000", callback_data=f"{prefix}{order_id}_3000"),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data=f"{prefix}otro_{order_id}")],
+    ]
+
+
 def construir_resumen_pedido(context):
     """Construye el texto del resumen del pedido."""
     tipo_servicio = context.user_data.get("service_type", "-")
@@ -4465,7 +4509,9 @@ def construir_resumen_pedido(context):
     pickup_label = context.user_data.get("pickup_label", "")
     pickup_address = context.user_data.get("pickup_address", "")
     distancia = context.user_data.get("quote_distance_km", 0)
-    precio = context.user_data.get("quote_price", 0)
+    precio_base = int(context.user_data.get("quote_price", 0) or 0)
+    incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    total = precio_base + incentivo
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
     buy_products = context.user_data.get("buy_products_count", 0)
@@ -4495,24 +4541,31 @@ def construir_resumen_pedido(context):
         if buy_list:
             resumen += f"Lista de productos:\n{buy_list}\n"
         if buy_products > 0:
-            tarifa_distancia = precio - buy_surcharge
-            resumen += f"Tarifa distancia: ${tarifa_distancia:,}".replace(",", ".") + "\n"
+            tarifa_distancia = precio_base - buy_surcharge
+            resumen += "Tarifa distancia: " + _fmt_pesos(tarifa_distancia) + "\n"
             resumen += f"Total unidades: {buy_products}\n"
             if buy_surcharge > 0:
-                resumen += f"Recargo productos: ${buy_surcharge:,}".replace(",", ".") + "\n"
+                resumen += "Recargo productos: " + _fmt_pesos(buy_surcharge) + "\n"
 
-    resumen += f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
+    resumen += "Valor base del servicio: " + _fmt_pesos(precio_base) + "\n"
+    if incentivo > 0:
+        resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
+    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
 
     if requires_cash and cash_amount > 0:
-        resumen += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
+        resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
 
-    resumen += "\nConfirmas este pedido?"
+    resumen += (
+        "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Confirmas este pedido?"
+    )
     return resumen
 
 
 def mostrar_resumen_confirmacion(query, context, edit=True):
     """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
-    keyboard = [
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -4529,7 +4582,7 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
 
 def mostrar_resumen_confirmacion_msg(update, context):
     """Muestra resumen del pedido con botones de confirmacion (para Message)."""
-    keyboard = [
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -4544,6 +4597,222 @@ def pedido_confirmacion(update, context):
     """Fallback: redirige a botones si el usuario escribe texto."""
     # Mostrar resumen con botones
     return mostrar_resumen_confirmacion_msg(update, context)
+
+
+def pedido_incentivo_fixed_callback(update, context):
+    """Agrega incentivo (botones +1000/+1500/+2000/+3000) antes de confirmar pedido."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    parts = data.split("_")
+    if len(parts) != 3:
+        return PEDIDO_CONFIRMACION
+    if parts[0] != "pedido" or parts[1] != "inc":
+        return PEDIDO_CONFIRMACION
+    try:
+        delta = int(parts[2])
+    except Exception:
+        return PEDIDO_CONFIRMACION
+    if delta <= 0:
+        return PEDIDO_CONFIRMACION
+
+    current = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    context.user_data["pedido_incentivo"] = current + delta
+    return mostrar_resumen_confirmacion(query, context, edit=True)
+
+
+def pedido_incentivo_otro_start(update, context):
+    """Pide al aliado ingresar un incentivo adicional por texto (antes de confirmar)."""
+    query = update.callback_query
+    query.answer()
+    context.user_data.pop("pedido_incentivo_edit_order_id", None)
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para volver al menu."
+    )
+    return PEDIDO_INCENTIVO_MONTO
+
+
+def pedido_incentivo_monto_handler(update, context):
+    """Recibe incentivo adicional por texto antes de confirmar."""
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return PEDIDO_INCENTIVO_MONTO
+
+    current = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    context.user_data["pedido_incentivo"] = current + delta
+    return mostrar_resumen_confirmacion_msg(update, context)
+
+
+def _pedido_incentivo_menu_text(order):
+    order_id = int(order["id"])
+    incentive = int(order["additional_incentive"] or 0)
+    total_fee = int(order["total_fee"] or 0)
+    return (
+        "INCENTIVO DEL PEDIDO\n\n"
+        "Pedido: #{}\n"
+        "Incentivo actual: {}\n"
+        "Pago total: {}\n\n"
+        "Sugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido."
+    ).format(order_id, _fmt_pesos(incentive), _fmt_pesos(total_fee))
+
+
+def pedido_incentivo_menu_callback(update, context):
+    """Muestra menú para aumentar incentivo de un pedido ya creado."""
+    query = update.callback_query
+    query.answer()
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        query.edit_message_text("Accion invalida.")
+        return
+    try:
+        order_id = int(parts[3])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return
+
+    telegram_id = update.effective_user.id
+    ok, order, msg = ally_get_order_for_incentive(telegram_id, order_id)
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    keyboard = _pedido_incentivo_keyboard(order_id=order_id)
+    query.edit_message_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def pedido_incentivo_existing_fixed_callback(update, context):
+    """Agrega incentivo (botones +1000/+1500/+2000/+3000) a pedido existente."""
+    query = update.callback_query
+    query.answer()
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        query.edit_message_text("Accion invalida.")
+        return
+    try:
+        order_id = int(parts[2])
+        delta = int(parts[3])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return
+
+    telegram_id = update.effective_user.id
+    ok, order, courier_telegram_id, msg = ally_increment_order_incentive(telegram_id, order_id, delta)
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    if courier_telegram_id:
+        try:
+            incentive = int(order["additional_incentive"] or 0)
+            total_fee = int(order["total_fee"] or 0)
+            context.bot.send_message(
+                chat_id=courier_telegram_id,
+                text=(
+                    "Actualizacion de pedido #{}:\n"
+                    "El aliado aumento el incentivo.\n"
+                    "Incentivo adicional: {}\n"
+                    "Pago total: {}"
+                ).format(order_id, _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+            )
+        except Exception:
+            pass
+
+    keyboard = _pedido_incentivo_keyboard(order_id=order_id)
+    query.edit_message_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def pedido_incentivo_existing_otro_start(update, context):
+    """Inicia captura de 'Otro monto' para un pedido existente."""
+    query = update.callback_query
+    query.answer()
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        query.edit_message_text("Accion invalida.")
+        return ConversationHandler.END
+    try:
+        order_id = int(parts[3])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return ConversationHandler.END
+
+    context.user_data["pedido_incentivo_edit_order_id"] = order_id
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para salir."
+    )
+    return PEDIDO_INCENTIVO_MONTO
+
+
+def pedido_incentivo_existing_monto_handler(update, context):
+    """Recibe incentivo adicional por texto para un pedido existente."""
+    order_id = context.user_data.get("pedido_incentivo_edit_order_id")
+    if not order_id:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return PEDIDO_INCENTIVO_MONTO
+
+    telegram_id = update.effective_user.id
+    ok, order, courier_telegram_id, msg = ally_increment_order_incentive(telegram_id, int(order_id), int(delta))
+    if not ok:
+        update.message.reply_text(msg)
+        context.user_data.pop("pedido_incentivo_edit_order_id", None)
+        return ConversationHandler.END
+
+    context.user_data.pop("pedido_incentivo_edit_order_id", None)
+
+    if courier_telegram_id:
+        try:
+            incentive = int(order["additional_incentive"] or 0)
+            total_fee = int(order["total_fee"] or 0)
+            context.bot.send_message(
+                chat_id=courier_telegram_id,
+                text=(
+                    "Actualizacion de pedido #{}:\n"
+                    "El aliado aumento el incentivo.\n"
+                    "Incentivo adicional: {}\n"
+                    "Pago total: {}"
+                ).format(int(order_id), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+            )
+        except Exception:
+            pass
+
+    keyboard = _pedido_incentivo_keyboard(order_id=int(order_id))
+    update.message.reply_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
 
 
 def pedido_confirmacion_callback(update, context):
@@ -4709,6 +4978,10 @@ def pedido_confirmacion_callback(update, context):
 
         # Crear pedido en BD
         try:
+            pedido_incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+            if pedido_incentivo < 0:
+                pedido_incentivo = 0
+            total_fee = int(quote_price or 0) + pedido_incentivo
             order_id = create_order(
                 ally_id=ally_id,
                 customer_name=customer_name,
@@ -4724,8 +4997,8 @@ def pedido_confirmacion_callback(update, context):
                 rain_extra=0,
                 high_demand_extra=0,
                 night_extra=0,
-                additional_incentive=0,
-                total_fee=quote_price,
+                additional_incentive=pedido_incentivo,
+                total_fee=total_fee,
                 instructions=instructions_final,
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
@@ -4757,7 +5030,7 @@ def pedido_confirmacion_callback(update, context):
             # Construir preview de oferta para repartidor
             preview = construir_preview_oferta(
                 order_id, service_type, pickup_text, customer_address,
-                distance_km, quote_price, requires_cash, cash_required_amount,
+                distance_km, total_fee, requires_cash, cash_required_amount,
                 products_list=context.user_data.get("buy_products_list", "")
             )
 
@@ -9256,11 +9529,35 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_CONFIRMACION: [
             CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
+            CallbackQueryHandler(pedido_incentivo_fixed_callback, pattern=r"^pedido_inc_(1000|1500|2000|3000)$"),
+            CallbackQueryHandler(pedido_incentivo_otro_start, pattern=r"^pedido_inc_otro$"),
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
             MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
         ],
+        PEDIDO_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, pedido_incentivo_monto_handler),
+        ],
         PEDIDO_GUARDAR_CLIENTE: [
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+
+pedido_incentivo_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(pedido_incentivo_existing_otro_start, pattern=r"^pedido_inc_otro_\d+$"),
+    ],
+    states={
+        PEDIDO_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, pedido_incentivo_existing_monto_handler),
         ],
     },
     fallbacks=[
@@ -12453,6 +12750,8 @@ def main():
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+_(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
@@ -12490,6 +12789,7 @@ def main():
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)

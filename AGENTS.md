@@ -94,7 +94,7 @@ Prefijos establecidos:
 - Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
 - Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
-- Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, etc.
+- Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 
@@ -432,6 +432,15 @@ Nunca trabajar directamente sobre main.
 
 Confirmar siempre la rama activa antes de modificar código.
 
+REGLA OPERATIVA (NUEVA, OBLIGATORIA):
+
+Siempre se trabaja sobre la rama staging.
+
+Todo commit y push del trabajo se hace directamente a origin/staging.
+
+Excepción única:
+- Cambios estructurales de base de datos (ver 7B) se implementan en verify/* y luego se mergean a staging.
+
 Si un bloque se reemplaza, el código anterior debe desaparecer.
 
 Mantener el repositorio:
@@ -537,21 +546,21 @@ Debe existir evidencia documentada antes de merge.
 Las siguientes ramas son PERMANENTES y NUNCA deben borrarse:
 
 - main       → producción (Railway PROD). NUNCA trabajar directamente aquí.
-- staging    → integración/pruebas previas a producción. Toda rama claude/* y verify/* se mergea aquí primero.
+- staging    → rama de trabajo e integración. Aquí se desarrolla, se hace commit y se hace push.
 - luisa-web  → rama de trabajo de la colaboradora Luisa (activa).
 
 Flujo oficial de ramas:
 
-  claude/*  ──merge──►  staging  ──(validado)──►  main
-  verify/*  ──merge──►  staging                  (PROD)
+  staging   ──(validado)──►  main
+  verify/*  ──merge──►  staging  ──(validado)──►  main
                          (entorno DEV:
                           BOT_TOKEN DEV
                           DATABASE_URL separada)
 
 Reglas de flujo:
-- PROHIBIDO mergear claude/* o verify/* directamente a main sin pasar por staging.
+- PROHIBIDO mergear verify/* directamente a main sin pasar por staging.
 - Un cambio puede ir de staging a main solo cuando fue validado funcionalmente en staging.
-- staging siempre se crea desde origin/main y debe mantenerse al día con main.
+- staging debe mantenerse al día con origin/staging.
 
 Regla general para ramas de colaboradores:
 - PROHIBIDO borrar ramas cuyo nombre no sea del prefijo claude/ o verify/
