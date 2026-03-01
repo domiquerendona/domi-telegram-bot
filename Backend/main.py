@@ -4472,7 +4472,7 @@ def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None
     """
     Botones de incentivo (pre y post oferta).
     - Pre: callback_data=pedido_inc_1000 / pedido_inc_otro
-    - Post: callback_data=pedido_inc_{order_id}_{monto} / pedido_inc_otro_{order_id}
+    - Post: callback_data=pedido_inc_{order_id}x{monto} / pedido_inc_otro_{order_id}
     """
     if order_id is None:
         return [
@@ -4489,12 +4489,12 @@ def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None
 
     return [
         [
-            InlineKeyboardButton("+1000", callback_data=f"{prefix}{order_id}_1000"),
-            InlineKeyboardButton("+1500", callback_data=f"{prefix}{order_id}_1500"),
+            InlineKeyboardButton("+1000", callback_data=f"{prefix}{order_id}x1000"),
+            InlineKeyboardButton("+1500", callback_data=f"{prefix}{order_id}x1500"),
         ],
         [
-            InlineKeyboardButton("+2000", callback_data=f"{prefix}{order_id}_2000"),
-            InlineKeyboardButton("+3000", callback_data=f"{prefix}{order_id}_3000"),
+            InlineKeyboardButton("+2000", callback_data=f"{prefix}{order_id}x2000"),
+            InlineKeyboardButton("+3000", callback_data=f"{prefix}{order_id}x3000"),
         ],
         [InlineKeyboardButton("Otro monto", callback_data=f"{prefix}otro_{order_id}")],
     ]
@@ -4700,13 +4700,17 @@ def pedido_incentivo_existing_fixed_callback(update, context):
     """Agrega incentivo (botones +1000/+1500/+2000/+3000) a pedido existente."""
     query = update.callback_query
     query.answer()
-    parts = query.data.split("_")
-    if len(parts) != 4:
+    if not query.data.startswith("pedido_inc_"):
         query.edit_message_text("Accion invalida.")
         return
+    payload = query.data[len("pedido_inc_"):]
+    if "x" not in payload:
+        query.edit_message_text("Accion invalida.")
+        return
+    chunks = payload.split("x", 1)
     try:
-        order_id = int(parts[2])
-        delta = int(parts[3])
+        order_id = int(chunks[0])
+        delta = int(chunks[1])
     except Exception:
         query.edit_message_text("Accion invalida.")
         return
@@ -12751,7 +12755,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
-    dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+_(1000|1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
