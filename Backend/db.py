@@ -1104,6 +1104,10 @@ def init_db():
     except Exception:
         pass
     try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_location_expires_at TEXT;")
+    except Exception:
+        pass
+    try:
         cur.execute("ALTER TABLE couriers ADD COLUMN availability_status TEXT DEFAULT 'INACTIVE';")
     except Exception:
         pass
@@ -1469,6 +1473,7 @@ def _init_db_postgres():
         ("residence_address", "TEXT"),
         ("residence_lat", "REAL"),
         ("residence_lng", "REAL"),
+        ("live_location_expires_at", "TIMESTAMP"),
         ("cedula_front_file_id", "TEXT"),
         ("cedula_back_file_id", "TEXT"),
         ("selfie_file_id", "TEXT"),
@@ -2221,7 +2226,7 @@ def deactivate_courier(courier_id: int):
     conn.close()
 
 
-def update_courier_live_location(courier_id: int, lat: float, lng: float):
+def update_courier_live_location(courier_id: int, lat: float, lng: float, live_period_seconds: int = None):
     """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
     retries = 5
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -2229,13 +2234,39 @@ def update_courier_live_location(courier_id: int, lat: float, lng: float):
         conn = get_connection()
         try:
             cur = conn.cursor()
+            set_clauses = [
+                f"live_lat = {P}",
+                f"live_lng = {P}",
+                "live_location_active = 1",
+                f"live_location_updated_at = {now_sql}",
+                "availability_status = 'APPROVED'",
+            ]
+            params = [lat, lng]
+
+            if live_period_seconds is not None:
+                try:
+                    seconds = int(live_period_seconds)
+                except Exception:
+                    seconds = None
+                if seconds and seconds > 0:
+                    if DB_ENGINE == "postgres":
+                        set_clauses.append(
+                            f"live_location_expires_at = NOW() + ({P} * INTERVAL '1 second')"
+                        )
+                        params.append(seconds)
+                    else:
+                        set_clauses.append(
+                            f"live_location_expires_at = datetime('now', {P})"
+                        )
+                        params.append(f"+{seconds} seconds")
+
+            params.append(courier_id)
             cur.execute(
-                f"UPDATE couriers SET live_lat = {P}, live_lng = {P}, "
-                f"live_location_active = 1, live_location_updated_at = {now_sql}, "
-                f"availability_status = 'APPROVED' WHERE id = {P};",
-                (lat, lng, courier_id))
+                f"UPDATE couriers SET {', '.join(set_clauses)} WHERE id = {P};",
+                tuple(params),
+            )
             conn.commit()
-            return
+            return True
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "database is locked" in message and attempt < retries - 1:
@@ -2280,18 +2311,27 @@ def get_courier_availability(courier_id: int) -> str:
     return "INACTIVE"
 
 
-def expire_stale_live_locations(timeout_seconds: int = 120):
+def expire_stale_live_locations(stale_timeout_seconds: int = 900):
     """
     Marca como INACTIVE a couriers con live_location vencida.
+    - Regla principal: si live_location_expires_at ya paso.
+    - Regla secundaria: si no hay updates en stale_timeout_seconds (fallback).
     Retorna la lista de courier_ids afectados.
     """
     retries = 5
     if DB_ENGINE == "postgres":
-        threshold_sql = f"NOW() - ({P} * INTERVAL '1 second')"
-        threshold_param = (timeout_seconds,)
+        stale_threshold_sql = f"NOW() - ({P} * INTERVAL '1 second')"
+        condition_sql = (
+            f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < NOW()) "
+            f"OR (live_location_updated_at IS NULL OR live_location_updated_at < {stale_threshold_sql}))"
+        )
+        condition_params = (stale_timeout_seconds,)
     else:
-        threshold_sql = f"datetime('now', {P} || ' seconds')"
-        threshold_param = ('-' + str(timeout_seconds),)
+        condition_sql = (
+            f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < datetime('now')) "
+            f"OR (live_location_updated_at IS NULL OR live_location_updated_at < datetime('now', {P})))"
+        )
+        condition_params = (f"-{stale_timeout_seconds} seconds",)
     for attempt in range(retries):
         conn = get_connection()
         try:
@@ -2302,8 +2342,8 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
                 SELECT id FROM couriers
                 WHERE availability_status = 'APPROVED'
                   AND live_location_active = 1
-                  AND live_location_updated_at < {threshold_sql}
-            """, threshold_param)
+                  AND {condition_sql}
+            """, condition_params)
             expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
             if expired:
@@ -2312,8 +2352,8 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
                     SET availability_status = 'INACTIVE', live_location_active = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
-                      AND live_location_updated_at < {threshold_sql}
-                """, threshold_param)
+                      AND {condition_sql}
+                """, condition_params)
                 conn.commit()
 
             return expired
