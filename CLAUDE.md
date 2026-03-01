@@ -696,6 +696,7 @@ El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota dia
 ### Regla de Geocodificación
 - Coordenadas (lat/lng) se capturan vía Telegram (ubicación GPS). La API solo se usa para geocodificación inversa o búsqueda de direcciones escritas.
 - **PROHIBIDO** usar la API para validar ubicaciones que ya tienen GPS válido.
+- Todo flujo que reciba direcciones por texto (cotizar, pedido, pickup, ruta) debe reutilizar el pipeline de resolución de cotización: `resolve_location(texto)` + confirmación de candidato geocodificado (si/no) + fallback con `resolve_location_next(...)` antes de exigir GPS.
 
 ### Manejo de Errores de API
 - Si la API falla: retornar error claro al usuario. **PROHIBIDO** propagar excepciones sin capturar ni reintentar automáticamente.

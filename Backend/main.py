@@ -4132,17 +4132,18 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    # Normalizar: tomar primer URL si hay varios tokens
-    raw_link = text
-    if "http" in text:
-        raw_link = next((t for t in text.split() if t.startswith("http")), text)
+    # Mismo pipeline de resolucion usado en cotizacion
+    loc = resolve_location(text)
+    if loc and loc.get("lat") is not None and loc.get("lng") is not None:
+        if loc.get("method") == "geocode" and loc.get("formatted_address"):
+            _mostrar_confirmacion_geocode(
+                update.message, context,
+                loc, text,
+                "pickup_geo_si", "pickup_geo_no",
+            )
+            return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    # Expandir link corto si aplica
-    expanded = expand_short_url(raw_link) or raw_link
-
-    coords = extract_lat_lng_from_text(expanded)
-    if coords:
-        lat, lng = coords
+        lat, lng = loc["lat"], loc["lng"]
         if fixing_default:
             ally = context.user_data.get("ally")
             location_id = context.user_data.get("pickup_fix_default_loc_id")
@@ -4178,7 +4179,7 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
     # No se pudo extraer - detectar si es link corto de Google
-    es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
+    es_link_corto_google = "maps.app.goo.gl" in text or "goo.gl/maps" in text
 
     if es_link_corto_google:
         keyboard = [[InlineKeyboardButton(
@@ -4201,6 +4202,58 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
 
     return PEDIDO_PICKUP_NUEVA_UBICACION
+
+
+def pedido_pickup_geo_callback(update, context):
+    """Maneja confirmacion de geocoding para nueva direccion de pickup en pedido."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "pickup_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /nuevo_pedido de nuevo.")
+            return PEDIDO_PICKUP_NUEVA_UBICACION
+
+        fixing_default = bool(context.user_data.get("pickup_fix_default_loc_id"))
+        if fixing_default:
+            ally = context.user_data.get("ally")
+            location_id = context.user_data.get("pickup_fix_default_loc_id")
+            if not ally or not location_id:
+                query.edit_message_text("No se pudo actualizar la direccion principal. Intenta /nuevo_pedido de nuevo.")
+                return ConversationHandler.END
+
+            update_ally_location_coords(location_id, lat, lng)
+            context.user_data.pop("pickup_fix_default_loc_id", None)
+
+            default_loc = get_default_ally_location(ally["id"])
+            if not default_loc:
+                query.edit_message_text("No se pudo cargar la direccion principal actualizada.")
+                return ConversationHandler.END
+
+            context.user_data["pickup_location"] = default_loc
+            context.user_data["pickup_label"] = default_loc.get("label") or "Base"
+            context.user_data["pickup_address"] = default_loc.get("address", "")
+            context.user_data["pickup_city"] = default_loc.get("city", "")
+            context.user_data["pickup_lat"] = default_loc.get("lat")
+            context.user_data["pickup_lng"] = default_loc.get("lng")
+
+            query.edit_message_text("Ubicacion principal actualizada. Continuamos con el pedido.")
+            return continuar_despues_pickup(query, context, edit=False)
+
+        context.user_data["new_pickup_lat"] = lat
+        context.user_data["new_pickup_lng"] = lng
+        query.edit_message_text(
+            f"Ubicacion capturada: {lat}, {lng}\n\n"
+            "Ahora escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias..."
+        )
+        return PEDIDO_PICKUP_NUEVA_DETALLES
+
+    return _geo_siguiente_o_gps(query, context, "pickup_geo_si", "pickup_geo_no", PEDIDO_PICKUP_NUEVA_UBICACION)
 
 
 def pedido_pickup_nueva_ubicacion_location_handler(update, context):
@@ -8990,6 +9043,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
+            CallbackQueryHandler(pedido_pickup_geo_callback, pattern=r"^pickup_geo_"),
             MessageHandler(Filters.location, pedido_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
