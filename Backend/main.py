@@ -7383,6 +7383,28 @@ def clientes_nuevo_direccion_label(update, context):
     return CLIENTES_NUEVO_DIRECCION_TEXT
 
 
+def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_no, estado):
+    """Aplica el mismo pipeline de cotizar para resolver una direccion en agenda."""
+    loc = resolve_location(texto)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return None
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["clientes_geo_formatted"] = loc.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        return estado
+
+    return loc
+
+
 def clientes_nuevo_direccion_text(update, context):
     """Recibe direccion y guarda el nuevo cliente."""
     address_text = update.message.text.strip()
@@ -7392,22 +7414,47 @@ def clientes_nuevo_direccion_text(update, context):
     notes = context.user_data.get("new_customer_notes")
     label = context.user_data.get("new_address_label")
 
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_NUEVO_DIRECCION_TEXT
+    )
+    if resolved is None:
+        return CLIENTES_NUEVO_DIRECCION_TEXT
+    if isinstance(resolved, int):
+        context.user_data["clientes_geo_mode"] = "nuevo_cliente"
+        context.user_data["clientes_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
     try:
         customer_id = create_ally_customer(ally_id, name, phone, notes)
-        create_customer_address(customer_id, label, address_text)
+        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
 
         keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
         update.message.reply_text(
             f"Cliente '{name}' creado exitosamente.\n\n"
             f"Telefono: {phone}\n"
-            f"Direccion ({label}): {address_text}",
+            f"Direccion ({label}): {address_to_save}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         update.message.reply_text(f"Error al crear cliente: {str(e)}")
 
     # Limpiar datos temporales
-    for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label"]:
+    for key in [
+        "new_customer_name",
+        "new_customer_phone",
+        "new_customer_notes",
+        "new_address_label",
+        "clientes_geo_mode",
+        "clientes_geo_address_input",
+        "clientes_geo_formatted",
+        "pending_geo_lat",
+        "pending_geo_lng",
+        "pending_geo_text",
+        "pending_geo_seen",
+    ]:
         context.user_data.pop(key, None)
 
     return CLIENTES_MENU
@@ -7506,14 +7553,94 @@ def clientes_dir_nueva_text(update, context):
     customer_id = context.user_data.get("current_customer_id")
     label = context.user_data.get("new_address_label")
 
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_DIR_NUEVA_TEXT
+    )
+    if resolved is None:
+        return CLIENTES_DIR_NUEVA_TEXT
+    if isinstance(resolved, int):
+        context.user_data["clientes_geo_mode"] = "dir_nueva"
+        context.user_data["clientes_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
     try:
-        create_customer_address(customer_id, label, address_text)
-        update.message.reply_text(f"Direccion agregada: {label} - {address_text}")
+        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
+        update.message.reply_text(f"Direccion agregada: {label} - {address_to_save}")
     except Exception as e:
         update.message.reply_text(f"Error: {str(e)}")
 
-    context.user_data.pop("new_address_label", None)
+    for key in [
+        "new_address_label",
+        "clientes_geo_mode",
+        "clientes_geo_address_input",
+        "clientes_geo_formatted",
+        "pending_geo_lat",
+        "pending_geo_lng",
+        "pending_geo_text",
+        "pending_geo_seen",
+    ]:
+        context.user_data.pop(key, None)
     return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_geo_callback(update, context):
+    """Confirma/rechaza geocoding de direccion en agenda de clientes."""
+    query = update.callback_query
+    query.answer()
+
+    mode = context.user_data.get("clientes_geo_mode")
+    if not mode:
+        query.edit_message_text("Sesion de geocodificacion expirada. Escribe la direccion nuevamente.")
+        return CLIENTES_MENU
+
+    if query.data == "cust_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        original_text = context.user_data.pop("pending_geo_text", "") or context.user_data.get("clientes_geo_address_input", "")
+        context.user_data.pop("pending_geo_seen", None)
+        formatted = context.user_data.pop("clientes_geo_formatted", "") or original_text
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Escribe la direccion nuevamente.")
+            return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
+
+        if mode == "nuevo_cliente":
+            ally_id = context.user_data.get("active_ally_id")
+            name = context.user_data.get("new_customer_name")
+            phone = context.user_data.get("new_customer_phone")
+            notes = context.user_data.get("new_customer_notes")
+            label = context.user_data.get("new_address_label")
+            try:
+                customer_id = create_ally_customer(ally_id, name, phone, notes)
+                create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
+                keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+                query.edit_message_text(
+                    f"Cliente '{name}' creado exitosamente.\n\n"
+                    f"Telefono: {phone}\n"
+                    f"Direccion ({label}): {formatted}",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception as e:
+                query.edit_message_text(f"Error al crear cliente: {str(e)}")
+            for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
+                context.user_data.pop(key, None)
+            return CLIENTES_MENU
+
+        customer_id = context.user_data.get("current_customer_id")
+        label = context.user_data.get("new_address_label")
+        try:
+            create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
+            query.edit_message_text(f"Direccion agregada: {label} - {formatted}")
+        except Exception as e:
+            query.edit_message_text(f"Error: {str(e)}")
+        for key in ["new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    estado = CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
+    return _geo_siguiente_o_gps(query, context, "cust_geo_si", "cust_geo_no", estado)
 
 
 def clientes_dir_editar_label(update, context):
@@ -7970,6 +8097,7 @@ agenda_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
@@ -7991,6 +8119,7 @@ agenda_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
@@ -8034,6 +8163,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
@@ -8055,6 +8185,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
