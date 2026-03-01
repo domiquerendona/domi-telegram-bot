@@ -11834,6 +11834,21 @@ def admin_local_callback(update, context):
         ]
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        cedula_front = courier.get("cedula_front_file_id")
+        cedula_back = courier.get("cedula_back_file_id")
+        selfie = courier.get("selfie_file_id")
+        if cedula_front or cedula_back or selfie:
+            try:
+                if cedula_front:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+                if cedula_back:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                if selfie:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+            except Exception as e:
+                print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
+
         return
 
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
