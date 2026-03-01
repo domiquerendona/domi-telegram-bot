@@ -11343,6 +11343,37 @@ def recharge_callback(update, context):
         success, msg = approve_recharge_request(request_id, admin_id)
 
         if success:
+            # Notificar al solicitante (ally/courier/admin) su nuevo saldo
+            try:
+                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user = get_user_by_id(req_user_id) if req_user_id else None
+                req_chat_id = req_user.get("telegram_id") if req_user else None
+
+                new_balance = None
+                if _req and _req.get("target_type") == "COURIER":
+                    link = get_approved_admin_link_for_courier(_req.get("target_id"))
+                    if link:
+                        new_balance = link.get("balance")
+                elif _req and _req.get("target_type") == "ALLY":
+                    link = get_approved_admin_link_for_ally(_req.get("target_id"))
+                    if link:
+                        new_balance = link.get("balance")
+                elif _req and _req.get("target_type") == "ADMIN":
+                    new_balance = get_admin_balance(_req.get("target_id"))
+
+                if req_chat_id and (new_balance is not None):
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text="Tu recarga #{} fue exitosa. Tu nuevo saldo es: ${:,}.".format(request_id, int(new_balance)),
+                    )
+                elif req_chat_id:
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text="Tu recarga #{} fue exitosa.".format(request_id),
+                    )
+            except Exception as e:
+                print("[WARN] No se pudo notificar al solicitante de la recarga #{}: {}".format(request_id, e))
+
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Recarga aprobada.")
             suffix = f"\n\nAPROBADA por admin #{admin_id}"
@@ -11365,6 +11396,22 @@ def recharge_callback(update, context):
         success, msg = reject_recharge_request(request_id, admin_id)
 
         if success:
+            # Notificar al solicitante (ally/courier/admin) sobre el rechazo
+            try:
+                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user = get_user_by_id(req_user_id) if req_user_id else None
+                req_chat_id = req_user.get("telegram_id") if req_user else None
+                if req_chat_id:
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text=(
+                            "Tu recarga #{} fue rechazada. "
+                            "Comunicate con el administrador al que solicitaste tu recarga."
+                        ).format(request_id),
+                    )
+            except Exception as e:
+                print("[WARN] No se pudo notificar rechazo al solicitante de la recarga #{}: {}".format(request_id, e))
+
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Solicitud rechazada.")
             suffix = f"\n\nRECHAZADA por admin #{admin_id}"
