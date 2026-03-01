@@ -4599,7 +4599,8 @@ def get_admin_link_for_courier(courier_id: int):
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
             a.team_code AS team_code,
-            ac.status AS link_status
+            ac.status AS link_status,
+            ac.balance
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
         WHERE ac.courier_id = {P}
@@ -4624,7 +4625,8 @@ def get_admin_link_for_ally(ally_id: int):
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
             a.team_code AS team_code,
-            aa.status AS link_status
+            aa.status AS link_status,
+            aa.balance
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
         WHERE aa.ally_id = {P}

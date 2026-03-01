@@ -12153,12 +12153,12 @@ def admin_local_callback(update, context):
             "Placa: {}\n"
             "Moto: {}\n"
         ).format(
-            courier.get("full_name") or "-",
-            courier.get("phone") or "-",
+            courier["full_name"] or "-",
+            courier["phone"] or "-",
             link_status,
             link_balance,
-            courier.get("plate") or "-",
-            courier.get("bike_type") or "-",
+            courier["plate"] or "-",
+            courier["bike_type"] or "-",
         )
         if link_status == "APPROVED":
             action_btn = InlineKeyboardButton("⏸ Inactivar", callback_data=f"local_courier_inactivate_{courier_id}")
@@ -12190,9 +12190,9 @@ def admin_local_callback(update, context):
             "Estado en equipo: {}\n"
             "Saldo: ${:,}\n"
         ).format(
-            ally.get("business_name") or "-",
-            ally.get("owner_name") or "-",
-            ally.get("phone") or "-",
+            ally["business_name"] or "-",
+            ally["owner_name"] or "-",
+            ally["phone"] or "-",
             link_status,
             link_balance,
         )
