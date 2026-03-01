@@ -157,6 +157,7 @@ from services import (
     get_all_admins,
     get_pending_admins,
     get_admin_by_id,
+    get_admin_status_by_id,
     update_admin_status_by_id,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
@@ -11018,6 +11019,18 @@ def recargar_admin_callback(update, context):
     if admin_id not in allowed_admin_ids:
         query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
         return ConversationHandler.END
+
+    # Si el admin seleccionado no es plataforma, verificar que este APPROVED
+    platform_admin = get_platform_admin()
+    platform_admin_id = platform_admin["id"] if platform_admin else None
+    if admin_id != platform_admin_id:
+        admin_status = get_admin_status_by_id(admin_id)
+        if admin_status == "PENDING":
+            query.edit_message_text(
+                "Este administrador aun no ha cumplido con los requisitos para aprobar recargas. "
+                "Por favor recarga con Plataforma para que puedas trabajar."
+            )
+            return ConversationHandler.END
 
     context.user_data["recargar_admin_id"] = admin_id
 
