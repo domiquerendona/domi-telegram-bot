@@ -100,6 +100,8 @@ from db import (
     add_order_incentive,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_daily_earnings_history,
+    get_courier_earnings_by_date,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -1765,6 +1767,31 @@ def ally_increment_order_incentive(telegram_id: int, order_id: int, delta: int) 
         courier_telegram_id = None
 
     return True, updated, courier_telegram_id, "OK"
+
+
+def courier_get_earnings_history(telegram_id: int, days: int = 7) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna historial diario de ganancias del courier (según liquidaciones contables).
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    rows = get_courier_daily_earnings_history(int(courier["id"]), days=days)
+    return True, courier, rows, "OK"
+
+
+def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna detalle de ganancias para una fecha (YYYY-MM-DD) del courier.
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    try:
+        rows = get_courier_earnings_by_date(int(courier["id"]), date_key)
+    except Exception as e:
+        return False, courier, [], str(e)
+    return True, courier, rows, "OK"
 
 
 # TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
