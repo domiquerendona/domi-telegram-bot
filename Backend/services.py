@@ -1523,8 +1523,23 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 (amount, target_id, admin_id),
             )
             if cur.rowcount != 1:
-                conn.rollback()
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+                if not is_platform:
+                    conn.rollback()
+                    return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+                # Plataforma como fallback: acreditar en el vínculo APPROVED más reciente del courier
+                cur.execute(
+                    "UPDATE admin_couriers"
+                    " SET balance = balance + " + P + ", updated_at = " + now_sql +
+                    " WHERE id = ("
+                    "   SELECT id FROM admin_couriers"
+                    "   WHERE courier_id = " + P + " AND status = 'APPROVED'"
+                    "   ORDER BY created_at DESC LIMIT 1"
+                    ")",
+                    (amount, target_id),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return False, "No hay vinculo APPROVED activo para acreditar saldo al courier."
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
@@ -1543,8 +1558,23 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 (amount, target_id, admin_id),
             )
             if cur.rowcount != 1:
-                conn.rollback()
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+                if not is_platform:
+                    conn.rollback()
+                    return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
+                # Plataforma como fallback: acreditar en el vínculo APPROVED más reciente del aliado
+                cur.execute(
+                    "UPDATE admin_allies"
+                    " SET balance = balance + " + P + ", updated_at = " + now_sql +
+                    " WHERE id = ("
+                    "   SELECT id FROM admin_allies"
+                    "   WHERE ally_id = " + P + " AND status = 'APPROVED'"
+                    "   ORDER BY created_at DESC LIMIT 1"
+                    ")",
+                    (amount, target_id),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return False, "No hay vinculo APPROVED activo para acreditar saldo al aliado."
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"

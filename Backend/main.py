@@ -10944,7 +10944,8 @@ def recargar_monto(update, context):
     if platform:
         platform_id = platform["id"]
         platform_name = platform["team_name"] or platform["full_name"] or "Plataforma"
-        if platform_id in approved_admin_ids and (not link or link["admin_id"] != platform_id):
+        # Plataforma siempre disponible como fallback, excepto si ya aparece como "Mi admin"
+        if not link or link["admin_id"] != platform_id:
             buttons.append([InlineKeyboardButton(
                 f"Plataforma: {platform_name}",
                 callback_data=f"recargar_admin_{platform_id}"
@@ -11000,6 +11001,12 @@ def recargar_admin_callback(update, context):
         allowed_admin_ids = {platform_admin_id} if platform_admin_id else set()
     else:
         allowed_admin_ids = set()
+
+    # Plataforma siempre habilitada como fallback para COURIER/ALLY
+    if target_type in ("COURIER", "ALLY"):
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            allowed_admin_ids.add(platform_admin["id"])
 
     if admin_id not in allowed_admin_ids:
         query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
