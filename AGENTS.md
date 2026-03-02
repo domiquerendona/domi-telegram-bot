@@ -773,6 +773,18 @@ Si api_usage_daily >= límite configurado: retornar error informativo, NO llamar
 
 Toda llamada a la API DEBE incrementar api_usage_daily en la misma operación (atómico).
 
+Regla de costeo (IMPLEMENTADO):
+
+- Toda llamada real a Google Maps (Distance Matrix / Geocode / Places) DEBE registrarse también como evento en api_usage_events (para conteo y costo promedio por operación).
+- La función oficial para registrar es record_api_usage_event() en Backend/db.py (hace INSERT en api_usage_events + incrementa api_usage_daily en la misma transacción).
+- PROHIBIDO guardar PII (direcciones completas, teléfonos, nombres, coordenadas) en meta_json de api_usage_events. Solo metadata no sensible (status, provider, mode).
+- La estimación de costo por operación se configura por variables de entorno:
+  - GOOGLE_COST_USD_PLACE_DETAILS
+  - GOOGLE_COST_USD_GEOCODE_FORWARD
+  - GOOGLE_COST_USD_PLACES_TEXT_SEARCH
+  - GOOGLE_COST_USD_DISTANCE_MATRIX_COORDS
+  - GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT
+
 Regla de caché:
 
 Los resultados de distancia entre pares de coordenadas DEBEN cachearse.
@@ -948,7 +960,8 @@ Ejemplo correcto:
 world correctamente
 
 Esta regla aplica a CUALQUIER caracter de escape Python que deba aparecer en el archivo
-generado: 	, , 
+generado: 	, 
+, 
 , \, etc.
 
 PROHIBIDO usar secuencias de escape directas (

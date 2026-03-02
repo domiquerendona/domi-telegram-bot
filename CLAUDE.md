@@ -793,6 +793,27 @@ El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota dia
 - Si `api_usage_daily >= límite`: retornar error informativo, **no llamar** a la API.
 - Toda llamada debe incrementar `api_usage_daily` de forma atómica.
 
+### Costeo por Operación (Google Maps) — IMPLEMENTADO
+
+Además del fusible diario (`api_usage_daily`), existe tracking por evento para estimar costo promedio por tipo de operación:
+
+- Tabla: `api_usage_events` (SQLite y PostgreSQL).
+- Inserción oficial: `Backend/db.py:record_api_usage_event()` (INSERT en `api_usage_events` + incrementa `api_usage_daily` en la misma transacción).
+- Instrumentación centralizada: `Backend/services.py` registra eventos en:
+  - `google_place_details()` → `place_details`
+  - `google_geocode_forward()` → `geocode_forward`
+  - `google_places_text_search()` → `places_text_search`
+  - `get_distance_from_api_coords()` → `distance_matrix_coords`
+  - `get_distance_from_api()` → `distance_matrix_text`
+- Estimación de costo por variables de entorno (valores en USD por llamada):
+  - `GOOGLE_COST_USD_PLACE_DETAILS`
+  - `GOOGLE_COST_USD_GEOCODE_FORWARD`
+  - `GOOGLE_COST_USD_PLACES_TEXT_SEARCH`
+  - `GOOGLE_COST_USD_DISTANCE_MATRIX_COORDS`
+  - `GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT`
+- Privacidad: **PROHIBIDO** guardar direcciones/coords o cualquier PII en `api_usage_events.meta_json`. Solo metadata no sensible (status, provider, mode).
+- Helper de consulta rápida: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
+
 ### Regla de Caché
 - Distancias entre pares de coordenadas **deben cachearse** en base de datos.
 - **PROHIBIDO** recalcular una distancia ya cacheada para la misma consulta.
@@ -862,7 +883,8 @@ line = '    text = "hola' + n_esc + 'world"'
 ```
 
 Esta regla aplica a cualquier caracter de escape que deba quedar literal en el archivo generado: `
-`, `	`, ``, `\`, etc.
+`, `	`, `
+`, `\`, etc.
 
 **PROHIBIDO** usar secuencias de escape directas (`
 `, `	`) dentro de strings Python al construir contenido de otro archivo Python.

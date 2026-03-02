@@ -457,6 +457,27 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS api_usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_name TEXT NOT NULL,
+            api_operation TEXT NOT NULL,
+            usage_date TEXT NOT NULL,
+            success INTEGER DEFAULT 1,
+            blocked INTEGER DEFAULT 0,
+            units INTEGER DEFAULT 1,
+            units_kind TEXT DEFAULT 'call',
+            cost_usd REAL DEFAULT 0,
+            http_status INTEGER,
+            provider_status TEXT,
+            error_message TEXT,
+            meta_json TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_date ON api_usage_events(api_name, usage_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_op_date ON api_usage_events(api_name, api_operation, usage_date)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS map_distance_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             origin_key TEXT NOT NULL,
@@ -5382,6 +5403,124 @@ def increment_api_usage(api_name: str):
     """, (api_name,))
     conn.commit()
     conn.close()
+
+
+# ---------- API USAGE EVENTS (COST TRACKING) ----------
+def record_api_usage_event(
+    api_name: str,
+    api_operation: str,
+    *,
+    success: bool = True,
+    blocked: bool = False,
+    units: int = 1,
+    units_kind: str = "call",
+    cost_usd: float = 0.0,
+    http_status: int = None,
+    provider_status: str = None,
+    error_message: str = None,
+    meta: dict = None,
+):
+    """
+    Registra un evento de uso de API (con estimación de costo) y también incrementa api_usage_daily
+    de forma atómica.
+    """
+    if not api_name or not api_operation:
+        return
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    meta_json = None
+    if meta is not None:
+        try:
+            import json
+            meta_json = json.dumps(meta, ensure_ascii=False)
+        except Exception:
+            meta_json = None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    try:
+        cur.execute(
+            f"""
+                INSERT INTO api_usage_events
+                    (api_name, api_operation, usage_date, success, blocked, units, units_kind,
+                     cost_usd, http_status, provider_status, error_message, meta_json, created_at)
+                VALUES
+                    ({P}, {P}, {today_sql}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {now_sql})
+            """,
+            (
+                api_name,
+                api_operation,
+                1 if success else 0,
+                1 if blocked else 0,
+                int(units or 0),
+                units_kind or "call",
+                float(cost_usd or 0.0),
+                http_status,
+                provider_status,
+                error_message,
+                meta_json,
+            ),
+        )
+
+        cur.execute(
+            f"""
+                INSERT INTO api_usage_daily (api_name, usage_date, call_count)
+                VALUES ({P}, {today_sql}, 1)
+                ON CONFLICT(api_name, usage_date) DO UPDATE SET
+                  call_count = api_usage_daily.call_count + 1
+            """,
+            (api_name,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_api_usage_cost_summary(api_name: str, date_from: str, date_to: str):
+    """
+    Resumen por operación (count, total_cost_usd, avg_cost_usd) entre fechas inclusivas (YYYY-MM-DD).
+    """
+    if not api_name or not date_from or not date_to:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+            SELECT
+              api_operation,
+              COUNT(*) AS events,
+              SUM(cost_usd) AS total_cost_usd,
+              AVG(cost_usd) AS avg_cost_usd,
+              SUM(CASE WHEN blocked = 1 THEN 1 ELSE 0 END) AS blocked_events,
+              SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_events
+            FROM api_usage_events
+            WHERE api_name = {P}
+              AND usage_date >= {P}
+              AND usage_date <= {P}
+            GROUP BY api_operation
+            ORDER BY events DESC
+        """,
+        (api_name, date_from, date_to),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    results = []
+    for r in rows or []:
+        results.append(
+            {
+                "api_operation": _row_value(r, "api_operation", None, 0),
+                "events": int(_row_value(r, "events", 0, 1) or 0),
+                "total_cost_usd": float(_row_value(r, "total_cost_usd", 0.0, 2) or 0.0),
+                "avg_cost_usd": float(_row_value(r, "avg_cost_usd", 0.0, 3) or 0.0),
+                "blocked_events": int(_row_value(r, "blocked_events", 0, 4) or 0),
+                "success_events": int(_row_value(r, "success_events", 0, 5) or 0),
+            }
+        )
+    return results
 
 
 # ============================================================
