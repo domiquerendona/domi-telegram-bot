@@ -823,6 +823,50 @@ Estas reglas aplican a cualquier agente que trabaje en este repositorio.
 - Trabajar **solo** en el objetivo indicado. **PROHIBIDO** ampliar alcance sin aprobación.
 - Cambios mínimos: un solo objetivo por instrucción.
 
+### Cuando el tool Edit no persiste los cambios
+
+**Sintoma:** Edit reporta exito pero `git diff` no muestra el cambio, o el archivo vuelve a su estado previo.  
+**Causa:** linter del IDE o servidor de lenguaje revierte el archivo inmediatamente al guardarlo.
+
+**Procedimiento:**
+1. Detectar con `git diff --name-only` que el cambio no persiste.
+2. Cambiar de estrategia al tercer intento fallido — no seguir reintentando Edit.
+3. Usar un script Python via Bash:
+
+```bash
+python3 << 'EOF'
+path = 'ruta/al/archivo.py'
+with open(path, 'r', encoding='utf-8') as f:
+    content = f.read()
+content = content.replace(viejo_bloque, nuevo_bloque, 1)
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(content)
+EOF
+```
+
+### Escritura de secuencias de escape en archivos Python via bash
+
+**Problema:** al escribir un archivo `.py` desde un heredoc bash (`<< 'PYEOF'`) o `python3 -c`, la secuencia `
+` dentro de strings Python se convierte en un salto de linea real en lugar de quedar como los dos caracteres `\` + `n`.
+
+**Solucion obligatoria:** usar `chr(92)` para construir el caracter backslash:
+
+```python
+bs = chr(92)       # chr(92) = backslash
+n_esc = bs + 'n'   # produce el escape 
+ correcto en el archivo escrito
+
+# Ejemplo: escribir la linea  text = "hola
+world"
+line = '    text = "hola' + n_esc + 'world"'
+```
+
+Esta regla aplica a cualquier caracter de escape que deba quedar literal en el archivo generado: `
+`, `	`, ``, `\`, etc.
+
+**PROHIBIDO** usar secuencias de escape directas (`
+`, `	`) dentro de strings Python al construir contenido de otro archivo Python.
+
 ### Después de los Cambios
 
 Ejecutar siempre:

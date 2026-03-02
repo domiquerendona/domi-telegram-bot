@@ -900,6 +900,61 @@ PROHIBIDO usar .get() en objetos Row de la base de datos. Usar siempre _row_valu
 - Botón explícito "Llegué" del courier (hoy es auto-detección por live location).
 - Persistencia ante reinicios: jobs T+5/T+15/T+20 y exclusión de couriers del ciclo viven en memoria.
 
+14. Reglas de escritura de archivos con herramientas de IA
+
+14A. Cuando el tool Edit no persiste los cambios
+
+Sintoma: Edit reporta exito pero git diff no muestra el cambio, o el archivo vuelve a su estado original.
+Causa comun: linter del IDE o servidor de lenguaje revierte el archivo inmediatamente despues de guardarlo.
+
+Procedimiento obligatorio al detectar este problema:
+1. Verificar con git diff que el cambio no esta presente.
+2. Usar un script Python via Bash para escribir el archivo directamente:
+   python3 << 'EOF'
+   path = 'ruta/al/archivo.py'
+   with open(path, 'r', encoding='utf-8') as f:
+       content = f.read()
+   content = content.replace(viejo_bloque, nuevo_bloque, 1)
+   with open(path, 'w', encoding='utf-8') as f:
+       f.write(content)
+   EOF
+3. Verificar con grep que el cambio persiste.
+4. Ejecutar python -m py_compile para confirmar compilacion.
+
+PROHIBIDO reintentar Edit indefinidamente si el patron de reversion es claro.
+Cambiar de estrategia al tercer intento fallido.
+
+14B. Escritura de secuencias de escape en archivos Python via bash
+
+Problema: al escribir un archivo Python usando heredoc (<< 'PYEOF') o python3 -c "...",
+la secuencia backslash-n dentro de strings Python se convierte en un salto de linea real
+en lugar de quedar como los dos caracteres backslash + n que Python necesita interpretar
+como escape de nueva linea.
+
+Ejemplo del problema (INCORRECTO):
+    line = '    text = "hola
+world"'  # en heredoc 
+ se convierte en newline real
+
+Solucion obligatoria: usar chr(92) para construir el caracter backslash:
+    bs = chr(92)       # chr(92) = backslash
+    n_esc = bs + 'n'   # produce el escape 
+ correcto en el archivo
+
+Ejemplo correcto:
+    bs = chr(92)
+    n_esc = bs + 'n'
+    line = '    text = "hola' + n_esc + 'world"'  # escribe hola
+world correctamente
+
+Esta regla aplica a CUALQUIER caracter de escape Python que deba aparecer en el archivo
+generado: 	, , 
+, \, etc.
+
+PROHIBIDO usar secuencias de escape directas (
+, 	) dentro de strings Python cuando
+el objetivo es escribir esas secuencias literalmente en otro archivo Python.
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.
