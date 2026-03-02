@@ -14,6 +14,7 @@ import { routes } from './app.routes';
 export const appConfig: ApplicationConfig = {
   providers: [
 
+
     // Activa el sistema de navegación basado en las rutas definidas
     provideRouter(routes),
 
@@ -21,3 +22,4 @@ export const appConfig: ApplicationConfig = {
     provideHttpClient()
   ]
 };
+

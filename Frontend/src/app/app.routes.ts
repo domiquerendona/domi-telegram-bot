@@ -5,9 +5,9 @@ import { Routes } from '@angular/router';
 import { SuperadminLayoutComponent } from './layout/superadmin-layout/superadmin-layout';
 
 // Importa los componentes que se mostrarán dentro del layout
-// import { DashboardComponent } from './features/superadmin/dashboard/dashboard.component';
-// import { UsersComponent } from './features/superadmin/users/users.component';
-// import { SettingsComponent } from './features/superadmin/settings/settings.component';
+ import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
+ import { UsersComponent } from './features/superadmin/users/users';
+ import { SettingsComponent } from './features/superadmin/settings/settings';
 
 // Definición de las rutas principales de la aplicación
 export const routes: Routes = [
@@ -26,9 +26,9 @@ export const routes: Routes = [
 
     // Rutas hijas que se renderizan dentro del layout
     children: [
-    //   { path: '', component: DashboardComponent }, // /superadmin
-    //   { path: 'users', component: UsersComponent }, // /superadmin/users
-    //   { path: 'settings', component: SettingsComponent } // /superadmin/settings
+       { path: '', component: DashboardComponent }, // /superadmin
+       { path: 'users', component: UsersComponent }, // /superadmin/users
+       { path: 'settings', component: SettingsComponent } // /superadmin/settings
     ]
   }
 ];

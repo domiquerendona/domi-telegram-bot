@@ -1,1 +1,77 @@
-/* You can add global styles to this file, and also import other style files */
+/* ============================= */
+/* VARIABLES GLOBALES (MODO CLARO) */
+/* ============================= */
+
+/* :root define variables CSS globales accesibles en toda la app */
+:root {
+  /* Tamaño base de fuente */
+  --font-size: 16px;
+
+  /* Color de fondo principal */
+  --background: #ffffff;
+
+  /* Color principal del texto */
+  --foreground: oklch(0.145 0 0);
+
+  /* Fondo del sidebar */
+  --sidebar: oklch(0.985 0 0);
+
+  /* Color del texto dentro del sidebar */
+  --sidebar-foreground: oklch(0.145 0 0);
+
+  /* Color del borde del sidebar */
+  --sidebar-border: oklch(0.922 0 0);
+
+  /* Radio global para bordes redondeados */
+  --radius: 0.625rem;
+}
+
+
+/* ============================= */
+/* VARIABLES PARA MODO OSCURO */
+/* ============================= */
+
+/* Cuando el body o html tenga la clase .dark
+   se reemplazan las variables anteriores */
+.dark {
+  /* Fondo general oscuro */
+  --background: oklch(0.145 0 0);
+
+  /* Texto claro para contraste */
+  --foreground: oklch(0.985 0 0);
+
+  /* Fondo del sidebar en modo oscuro */
+  --sidebar: oklch(0.205 0 0);
+
+  /* Texto del sidebar en claro */
+  --sidebar-foreground: oklch(0.985 0 0);
+
+  /* Borde del sidebar más oscuro */
+  --sidebar-border: oklch(0.269 0 0);
+}
+
+
+/* ============================= */
+/* CONFIGURACIÓN GLOBAL */
+/* ============================= */
+
+/* Aplica el tamaño de fuente base definido en la variable */
+html {
+  font-size: var(--font-size);
+}
+
+
+/* Estilos base del documento */
+body {
+  /* Elimina el margen por defecto del navegador */
+  margin: 0;
+
+  /* Fuente principal del sistema con fallback */
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+
+  /* Aplica el fondo dinámico (claro u oscuro) */
+  background: var(--background);
+
+  /* Aplica el color de texto dinámico */
+  color: var(--foreground);
+}
