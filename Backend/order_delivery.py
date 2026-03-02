@@ -989,6 +989,9 @@ def order_courier_callback(update, context):
     if data.startswith("order_wait_courier_"):
         order_id = int(data.replace("order_wait_courier_", ""))
         return _handle_wait_courier(update, context, order_id)
+    if data.startswith("order_call_courier_"):
+        order_id = int(data.replace("order_call_courier_", ""))
+        return _handle_call_courier(update, context, order_id)
     if data.startswith("order_accept_"):
         order_id = int(data.replace("order_accept_", ""))
         return _handle_accept(update, context, order_id)
@@ -1182,10 +1185,10 @@ def _arrival_warn_ally_job(context):
                         callback_data="order_wait_courier_{}".format(order_id),
                     )],
                 ]
-                if courier_tg_id:
+                if courier:
                     keyboard.insert(1, [InlineKeyboardButton(
-                        "Contactar repartidor",
-                        url="tg://user?id={}".format(courier_tg_id),
+                        "Llamar al repartidor",
+                        callback_data="order_call_courier_{}".format(order_id),
                     )])
                 context.bot.send_message(
                     chat_id=au["telegram_id"],
@@ -1451,7 +1454,41 @@ def _handle_find_another_courier(update, context, order_id):
         return
     query.edit_message_text("Buscando otro repartidor para el pedido #{}...".format(order_id))
     _release_order_by_timeout(order_id, order["courier_id"], context,
-                               reason="solicitado por el aliado")
+                              reason="solicitado por el aliado")
+
+
+def _handle_call_courier(update, context, order_id):
+    """Aliado solicita el teléfono del repartidor para poder llamarlo."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    courier_id = _row_value(order, "courier_id") if order else None
+    if not order or order["status"] != "ACCEPTED" or not courier_id:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Este pedido ya no esta disponible para esta accion.",
+        )
+        return
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != order["ally_id"]:
+        query.answer("No tienes permiso para esta accion.")
+        return
+
+    courier = get_courier_by_id(courier_id)
+    courier_phone = _row_value(courier, "phone") if courier else None
+    if not courier_phone:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Telefono del repartidor no disponible para el pedido #{}.".format(order_id),
+        )
+        return
+
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Telefono del repartidor para el pedido #{}: {}".format(order_id, courier_phone),
+    )
 
 
 def _handle_wait_courier(update, context, order_id):
@@ -1913,6 +1950,12 @@ def _notify_ally_order_accepted(context, order, courier_name):
                 "Tu pedido #{} fue aceptado por el repartidor {}.\n"
                 "El repartidor se dirige al punto de recogida."
             ).format(order["id"], courier_name),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "Llamar al repartidor",
+                    callback_data="order_call_courier_{}".format(order["id"]),
+                )
+            ]]),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar al aliado: {}".format(e))

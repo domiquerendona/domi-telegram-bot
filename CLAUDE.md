@@ -272,7 +272,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_wait_courier_{id}` (aliado sigue esperando) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando) |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos |
 | `perfil_` | Cambios de perfil |
@@ -720,7 +720,7 @@ Oferta publicada → courier acepta
       arr_deadline_{id}  T+20 min
 
   T+5:  ¿Movimiento ≥50m hacia pickup? No → _release_order_by_timeout
-  T+15: Notificar aliado (Buscar otro / Seguir esperando) + advertir courier
+  T+15: Notificar aliado (Buscar otro / Llamar / Seguir esperando) + advertir courier
   T+20: _release_order_by_timeout automático
 
   (En paralelo, cada live location update llama check_courier_arrival_at_pickup)
@@ -778,7 +778,6 @@ Re-exportadas en `services.py`.
 
 ### Pendientes (NO implementado aún)
 
-- Botón "Contactar repartidor" real desde el aviso T+15 (Telegram no permite forzar abrir chat si no existe; definir comportamiento deseado).
 - Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
 - Botón explícito "Llegué" para courier (hoy es detección automática por live location).
 - Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.

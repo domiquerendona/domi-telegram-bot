@@ -854,7 +854,7 @@ El único lugar donde se revelan estos datos al repartidor es _notify_courier_pi
 Al aceptar un pedido se programan SIEMPRE 3 jobs con job_queue.run_once:
 
 arr_inactive_{order_id} — T+5 min: si el repartidor no se movió ≥50m hacia el pickup → liberar y re-ofrecer.
-arr_warn_{order_id}    — T+15 min: notificar al aliado con opciones (buscar otro / esperar) y advertir al repartidor.
+arr_warn_{order_id}    — T+15 min: notificar al aliado con opciones (buscar otro / llamar / esperar) y advertir al repartidor.
 arr_deadline_{order_id} — T+20 min: liberar automáticamente y re-ofrecer.
 
 PROHIBIDO programar solo algunos timers; se programan los 3 juntos o ninguno.
@@ -896,7 +896,6 @@ PROHIBIDO usar .get() en objetos Row de la base de datos. Usar siempre _row_valu
 
 13G. Pendientes (NO implementado aún)
 
-- Botón "Contactar repartidor" en el aviso T+15.
 - Cuenta regresiva visible (countdown) post-aceptación.
 - Botón explícito "Llegué" del courier (hoy es auto-detección por live location).
 - Persistencia ante reinicios: jobs T+5/T+15/T+20 y exclusión de couriers del ciclo viven en memoria.
