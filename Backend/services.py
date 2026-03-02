@@ -9,7 +9,8 @@ from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     set_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
-    get_api_usage_today, increment_api_usage,
+    get_api_usage_today, record_api_usage_event,
+    get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
@@ -332,6 +333,40 @@ def can_call_google_today() -> bool:
     return result
 
 
+def _google_cost_usd(api_operation: str) -> float:
+    """
+    Lee costo estimado por operación desde env.
+
+    Env var: GOOGLE_COST_USD_{API_OPERATION}
+    Ej: GOOGLE_COST_USD_PLACE_DETAILS, GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT
+    """
+    import os
+    if not api_operation:
+        return 0.0
+    key = f"GOOGLE_COST_USD_{api_operation.upper()}"
+    raw = os.environ.get(key, "") or ""
+    try:
+        return float(raw) if raw.strip() else 0.0
+    except Exception:
+        return 0.0
+
+
+def get_google_maps_cost_summary(days: int = 7):
+    """
+    Resumen de costo estimado de Google Maps por operación en los últimos N días.
+    """
+    try:
+        from datetime import date, timedelta
+        d = int(days or 0)
+        if d <= 0:
+            d = 7
+        to_date = date.today().isoformat()
+        from_date = (date.today() - timedelta(days=d - 1)).isoformat()
+        return get_api_usage_cost_summary("google_maps", from_date, to_date)
+    except Exception:
+        return []
+
+
 def extract_place_id_from_url(url: str) -> Optional[str]:
     """Extrae place_id de una URL de Google Maps si existe."""
     if not url:
@@ -363,10 +398,23 @@ def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data.get("status") == "OK" and data.get("result"):
+        status = data.get("status")
+        ok = status == "OK" and bool(data.get("result"))
+        record_api_usage_event(
+            "google_maps",
+            "place_details",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("place_details"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_places"},
+        )
+        if ok:
             result = data["result"]
             geo = result.get("geometry", {}).get("location", {})
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -399,12 +447,24 @@ def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
         data = r.json()
         status = data.get("status")
         logger.warning("[GEOCODE] query=%r status=%s", query, status)
-        if status == "OK" and data.get("results"):
+        ok = status == "OK" and bool(data.get("results"))
+        record_api_usage_event(
+            "google_maps",
+            "geocode_forward",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("geocode_forward"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_geocode"},
+        )
+        if ok:
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
             fa = result.get("formatted_address")
             logger.warning("[GEOCODE] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -442,12 +502,24 @@ def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
         data = r.json()
         status = data.get("status")
         logger.warning("[PLACES] query=%r status=%s", query, status)
-        if status == "OK" and data.get("results"):
+        ok = status == "OK" and bool(data.get("results"))
+        record_api_usage_event(
+            "google_maps",
+            "places_text_search",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("places_text_search"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_textsearch"},
+        )
+        if ok:
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
             fa = result.get("formatted_address") or result.get("name", "")
             logger.warning("[PLACES] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -562,7 +634,21 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
 
-        if data.get("status") != "OK":
+        status = data.get("status")
+        ok = status == "OK"
+        record_api_usage_event(
+            "google_maps",
+            "distance_matrix_coords",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("distance_matrix_coords"),
+            http_status=getattr(response, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_distance_matrix", "mode": "coords"},
+        )
+        if not ok:
             return None
 
         rows = data.get("rows", [])
@@ -579,7 +665,6 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -1112,7 +1197,21 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
 
-        if data.get("status") != "OK":
+        status = data.get("status")
+        ok = status == "OK"
+        record_api_usage_event(
+            "google_maps",
+            "distance_matrix_text",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("distance_matrix_text"),
+            http_status=getattr(response, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_distance_matrix", "mode": "text"},
+        )
+        if not ok:
             return None
 
         rows = data.get("rows", [])
@@ -1129,7 +1228,6 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:

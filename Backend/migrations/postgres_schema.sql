@@ -143,6 +143,25 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
     UNIQUE(api_name, usage_date)
 );
 
+CREATE TABLE IF NOT EXISTS api_usage_events (
+    id BIGSERIAL PRIMARY KEY,
+    api_name TEXT NOT NULL,
+    api_operation TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    success INTEGER DEFAULT 1,
+    blocked INTEGER DEFAULT 0,
+    units INTEGER DEFAULT 1,
+    units_kind TEXT DEFAULT 'call',
+    cost_usd REAL DEFAULT 0,
+    http_status INTEGER,
+    provider_status TEXT,
+    error_message TEXT,
+    meta_json TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_date ON api_usage_events(api_name, usage_date);
+CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_op_date ON api_usage_events(api_name, api_operation, usage_date);
+
 CREATE TABLE IF NOT EXISTS map_distance_cache (
     id BIGSERIAL PRIMARY KEY,
     origin_key TEXT NOT NULL,
