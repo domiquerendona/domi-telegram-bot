@@ -42,7 +42,6 @@ styles: [`
 
   .content-wrapper {
     flex: 1;
-    padding: 20px;
     display: flex;
     flex-direction: column;
   }
