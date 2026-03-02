@@ -3,7 +3,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 
 // Servicio que se comunica con el backend (FastAPI)
-import { ApiService } from '../app/services/api';
+import { ApiService } from '../app/core/services/api';
 
 @Component({
   selector: 'app-root', // Componente raíz de la aplicación

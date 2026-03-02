@@ -19,42 +19,41 @@ import { HeaderComponent } from '../components/header/header';
   imports: [RouterOutlet, SidebarComponent, HeaderComponent],
 
   // Template HTML embebido
-  template: `
-    <div class="layout">
-      <!-- Sidebar lateral -->
-      <app-sidebar></app-sidebar>
 
-      <div class="main">
-        <!-- Header superior -->
-        <app-header></app-header>
+ template: `
+  <div class="app">
+    <app-sidebar></app-sidebar>
 
-        <!-- Contenedor donde se renderizan las rutas hijas -->
-        <div class="content">
-          <router-outlet></router-outlet>
-        </div>
+    <div class="content-wrapper">
+      <app-header></app-header>
+
+      <div class="content-container">
+        <router-outlet></router-outlet>
       </div>
     </div>
-  `,
+  </div>
+`,
+styles: [`
+  .app {
+    display: flex;
+    height: 100vh;
+    background: #eef1f6;
+  }
 
-  // Estilos propios del layout
-  styles: [`
-    .layout {
-      display: flex;        /* Distribuye sidebar y contenido en fila */
-      height: 100vh;        /* Ocupa toda la altura de la pantalla */
-    }
+  .content-wrapper {
+    flex: 1;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+  }
 
-    .main {
-      flex: 1;              /* Ocupa el espacio restante */
-      display: flex;
-      flex-direction: column; /* Header arriba y contenido abajo */
-      background: #f4f6f9;  /* Fondo estilo Admin */
-    }
-
-    .content {
-      padding: 20px;        /* Espaciado interno */
-      flex: 1;              /* Ocupa todo el espacio disponible */
-      overflow: auto;       /* Permite scroll si el contenido es grande */
-    }
-  `]
+  .content-container {
+    background: #f6f7fb;
+    flex: 1;
+    border-radius: 20px;
+    padding: 30px;
+    overflow: auto;
+  }
+`]
 })
 export class SuperadminLayoutComponent {}

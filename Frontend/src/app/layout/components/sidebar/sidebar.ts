@@ -1,79 +1,207 @@
-// Importa el decorador Component para crear un componente en Angular
-import { Component } from '@angular/core';
 
-// Importa directivas para navegación entre rutas
-// RouterLink → permite navegar sin recargar la página
-// RouterLinkActive → agrega una clase cuando la ruta está activa
+import { Component, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
+import { NgIf } from '@angular/common';
 
 @Component({
-  // Nombre del selector HTML para usar este componente
-  selector: 'app-sidebar',
-
-  // Indica que es un componente standalone (Angular moderno, sin NgModule)
-  standalone: true,
-
-  // Directivas necesarias para que funcionen los enlaces de navegación
-  imports: [RouterLink, RouterLinkActive],
-
-  // Template HTML embebido
+  selector: 'app-sidebar', // Selector del componente
+  standalone: true,         // Componente standalone (Angular moderno)
+  imports: [RouterLink, RouterLinkActive, NgIf], // Directivas necesarias
   template: `
-    <div class="sidebar">
-      <!-- Título del panel -->
-      <h2>SuperAdmin</h2>
+  <!-- Contenedor principal del sidebar -->
+  <aside class="sidebar" [class.collapsed]="collapsed()">
 
-      <!-- Enlace al Dashboard -->
-      <a
-        routerLink="/superadmin"
-        routerLinkActive="active"
-        [routerLinkActiveOptions]="{ exact: true }">
-        Dashboard
+    <!-- ================= HEADER ================= -->
+    <div>
+      <div class="header">
+        <!-- Logo solo visible cuando NO está colapsado -->
+        <span class="logo" *ngIf="!collapsed()">Sistema Admin</span>
+
+        <!-- Botón que alterna entre menú y cerrar -->
+        <button class="toggle-btn" (click)="toggle()">
+          <span class="material-icons">
+            {{ collapsed() ? 'menu' : 'close' }}
+          </span>
+        </button>
+      </div>
+
+      <!-- ================= MENÚ ================= -->
+      <nav class="menu">
+
+        <!-- Cada enlace usa routerLink y routerLinkActive -->
+        <!-- routerLinkActive agrega la clase 'active' automáticamente -->
+
+        <a routerLink="/superadmin"
+           routerLinkActive="active"
+           [routerLinkActiveOptions]="{ exact: true }">
+          <span class="material-symbols-outlined">dashboard</span>
+          <span *ngIf="!collapsed()">Dashboard</span>
+        </a>
+
+        <a routerLink="/superadmin/users"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">group</span>
+          <span *ngIf="!collapsed()">Usuarios</span>
+        </a>
+
+        <a routerLink="/superadmin/orders"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">inventory_2</span>
+          <span *ngIf="!collapsed()">Pedidos</span>
+        </a>
+
+        <a routerLink="/superadmin/saldos"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">payments</span>
+          <span *ngIf="!collapsed()">Saldos</span>
+        </a>
+
+        <a routerLink="/superadmin/ganancias"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">trending_up</span>
+          <span *ngIf="!collapsed()">Ganancias</span>
+        </a>
+
+      <a routerLink="/superadmin/mapa"
+              routerLinkActive="active">
+              <span class="material-symbols-outlined">map</span>
+              <span *ngIf="!collapsed()">Mapa</span>
       </a>
 
-      <!-- Enlace a la sección de usuarios -->
-      <a
-        routerLink="/superadmin/users"
-        routerLinkActive="active">
-        Usuarios
-      </a>
+        <a routerLink="/superadmin/settings"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">settings</span>
+          <span *ngIf="!collapsed()">Configuración</span>
+        </a>
 
-      <!-- Enlace a la sección de configuración -->
-      <a
-        routerLink="/superadmin/settings"
-        routerLinkActive="active">
-        Configuración
-      </a>
+      </nav>
+    </div>
 
-      <!-- Enlace al mapa de repartidores en tiempo real -->
-      <a
-        routerLink="/superadmin/mapa"
-        routerLinkActive="active">
-        Mapa en vivo
+    <!-- ================= LOGOUT ================= -->
+    <div class="logout">
+      <a>
+        <span class="material-icons">logout</span>
+        <span *ngIf="!collapsed()">Cerrar sesión</span>
       </a>
     </div>
+
+  </aside>
   `,
-
-  // Estilos del sidebar
   styles: [`
+  /* ================= CONTENEDOR PRINCIPAL ================= */
+  .sidebar {
+    width: 260px;
+    height: 100vh;
+    background: #4338ca;
+    color: white;
+    padding: 20px;
+    display: flex;
+    font-size: 16px;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: all 0.25s cubic-bezier(.4,0,.2,1);
+  }
+
+  /* Estado colapsado */
+  .sidebar.collapsed {
+    width: 56px;
+    padding: 20px 8px;
+  }
+
+  /* Header superior */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 40px;
+  }
+
+  /* Logo */
+  .logo {
+    font-size: 25px;
+    font-weight: 900;
+  }
+
+  /* Botón toggle sin fondo */
+  .toggle-btn {
+    background: transparent;
+    border: none;
+    color: white;
+    cursor: pointer;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Menú vertical */
+  .menu {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Estilo base de los enlaces */
+  a {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: #e2e8f0f0;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+
+  /* Hover → color más claro */
+  a:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: white;
+  }
+
+  /* Activo → color más oscuro */
+  a.active {
+    background: rgba(0, 0, 0, 0.20);
+    color: white;
+  }
+
+  /* Línea separadora inferior */
+  .logout {
+    border-top: 1px solid rgba(255,255,255,0.2);
+    padding-top: 20px;
+  }
+
+  /* Centrar iconos cuando esté colapsado */
+  .sidebar.collapsed .menu a,
+  .sidebar.collapsed .logout a {
+    justify-content: center;
+    padding: 12px 0;
+  }
+
+  .sidebar.collapsed .header {
+    justify-content: center;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
     .sidebar {
-      width: 220px;                 /* Ancho fijo del menú lateral */
-      background: #1f2d3d;          /* Color oscuro estilo admin */
-      color: white;                 /* Texto blanco */
-      padding: 20px;                /* Espaciado interno */
-      display: flex;
-      flex-direction: column;       /* Elementos en columna */
-      gap: 15px;                    /* Espacio entre enlaces */
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
     }
-
-    a {
-      color: #c2c7d0;               /* Color gris claro */
-      text-decoration: none;        /* Quita subrayado */
-    }
-
-    .active {
-      color: white;                 /* Color cuando está activo */
-      font-weight: bold;            /* Resalta el enlace activo */
-    }
+  }
   `]
 })
-export class SidebarComponent {}
+export class SidebarComponent {
+
+  // Signal que controla si el sidebar está colapsado
+  collapsed = signal(false);
+
+  // Método que alterna el estado del sidebar
+  toggle() {
+    this.collapsed.update(v => !v);
+  }
+}
