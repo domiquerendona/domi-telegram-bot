@@ -839,6 +839,68 @@ es detallista
 
 quiere control total del sistema
 
+13. Sistema de Tracking de Llegada (Pedidos)
+
+Implementado en: order_delivery.py + main.py + db.py
+
+13A. Protección de datos del cliente
+
+PROHIBIDO revelar customer_name, customer_phone ni customer_address al repartidor en _handle_accept o en cualquier momento antes de que el aliado confirme la llegada.
+
+El único lugar donde se revelan estos datos al repartidor es _notify_courier_pickup_approved (order_delivery.py), llamada tras la confirmación del aliado.
+
+13B. Timers post-aceptación (obligatorios)
+
+Al aceptar un pedido se programan SIEMPRE 3 jobs con job_queue.run_once:
+
+arr_inactive_{order_id} — T+5 min: si el repartidor no se movió ≥50m hacia el pickup → liberar y re-ofrecer.
+arr_warn_{order_id}    — T+15 min: notificar al aliado con opciones (buscar otro / esperar) y advertir al repartidor.
+arr_deadline_{order_id} — T+20 min: liberar automáticamente y re-ofrecer.
+
+PROHIBIDO programar solo algunos timers; se programan los 3 juntos o ninguno.
+
+Los 3 jobs deben cancelarse explícitamente (via _cancel_arrival_jobs) en:
+- _handle_release (repartidor libera manualmente)
+- _handle_delivered (entrega exitosa)
+- _handle_cancel_ally (aliado cancela)
+- check_courier_arrival_at_pickup (GPS detecta llegada)
+- _handle_find_another_courier (aliado solicita otro repartidor)
+
+PROHIBIDO agregar nuevas rutas de exit al flujo de pedido sin llamar _cancel_arrival_jobs.
+
+13C. Detección de llegada por GPS
+
+check_courier_arrival_at_pickup(courier_id, lat, lng, context) en order_delivery.py se llama desde courier_live_location_handler en main.py en CADA actualización de live location.
+
+Radio de llegada: ARRIVAL_RADIUS_KM = 0.1 (100 metros). PROHIBIDO cambiar este valor sin autorización.
+
+PROHIBIDO marcar courier_arrived_at sin validación GPS (haversine_km ≤ ARRIVAL_RADIUS_KM). La función es idempotente: solo actúa si courier_arrived_at IS NULL.
+
+Al detectar llegada: llama set_courier_arrived → _cancel_arrival_jobs → upsert_order_pickup_confirmation(PENDING) → _notify_ally_courier_arrived.
+
+13D. Liberación por timeout
+
+_release_order_by_timeout(order_id, courier_id, context, reason) centraliza la lógica de liberación automática. PROHIBIDO duplicar esta lógica.
+
+Al liberar: cancela jobs, llama release_order_from_courier, agrega al courier a excluded_couriers en offer_cycles, notifica courier y aliado, reinicia ciclo de ofertas excluyendo al courier liberado.
+
+13E. Posición al momento de aceptar
+
+En _handle_accept se guarda la posición actual del repartidor en courier_accepted_lat / courier_accepted_lng (tabla orders). Esta posición es la base para el chequeo de inactividad en T+5.
+
+PROHIBIDO usar residence_lat/lng como sustituto permanente; solo se usa como fallback si live_lat/lng no está disponible.
+
+13F. Compatibilidad SQLite/PostgreSQL en funciones nuevas
+
+PROHIBIDO usar .get() en objetos Row de la base de datos. Usar siempre _row_value(row, key) definido en order_delivery.py. sqlite3.Row no implementa .get(); RealDictRow de psycopg2 sí, pero el código debe ser compatible con ambos motores.
+
+13G. Pendientes (NO implementado aún)
+
+- Botón "Contactar repartidor" en el aviso T+15.
+- Cuenta regresiva visible (countdown) post-aceptación.
+- Botón explícito "Llegué" del courier (hoy es auto-detección por live location).
+- Persistencia ante reinicios: jobs T+5/T+15/T+20 y exclusión de couriers del ciclo viven en memoria.
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.

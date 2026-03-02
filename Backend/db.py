@@ -1505,6 +1505,9 @@ def _init_db_postgres():
         ("dropoff_lat", "REAL"),
         ("dropoff_lng", "REAL"),
         ("quote_source", "TEXT"),
+        ("courier_arrived_at", "TIMESTAMP"),
+        ("courier_accepted_lat", "REAL"),
+        ("courier_accepted_lng", "REAL"),
         ("canceled_by", "TEXT"),
     ]:
         _pg_add_col("orders", col, ctype)

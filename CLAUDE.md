@@ -228,7 +228,7 @@ Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
-| `orders` | Pedidos con todo su ciclo de vida |
+| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5) |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
@@ -272,7 +272,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_wait_courier_{id}` (aliado sigue esperando) |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos |
 | `perfil_` | Cambios de perfil |
@@ -700,6 +700,88 @@ Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local, el 
 **Comportamiento del sync:**
 - Si `status == "APPROVED"`: el vínculo más reciente (por `created_at`) → `APPROVED`; el resto → `INACTIVE`.
 - Si `status != "APPROVED"`: todos los vínculos del usuario → `INACTIVE`.
+
+---
+
+## Sistema de Tracking de Llegada (order_delivery.py)
+
+Implementado en commit `b06fc3e`. Controla el ciclo post-aceptación del courier hasta la confirmación de llegada al punto de recogida.
+
+### Flujo completo
+
+```
+Oferta publicada → courier acepta
+  ↓ _handle_accept
+  - Mensaje SIN datos del cliente (solo barrio destino + tarifa + pickup address)
+  - Guarda courier_accepted_lat/lng en orders (base para T+5)
+  - Programa 3 jobs:
+      arr_inactive_{id}  T+5 min
+      arr_warn_{id}      T+15 min
+      arr_deadline_{id}  T+20 min
+
+  T+5:  ¿Movimiento ≥50m hacia pickup? No → _release_order_by_timeout
+  T+15: Notificar aliado (Buscar otro / Seguir esperando) + advertir courier
+  T+20: _release_order_by_timeout automático
+
+  (En paralelo, cada live location update llama check_courier_arrival_at_pickup)
+  GPS detecta ≤100m del pickup:
+    → set_courier_arrived (idempotente)
+    → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
+    → upsert_order_pickup_confirmation(PENDING)
+    → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
+
+  Aliado confirma (order_pickupconfirm_approve_):
+    → _handle_pickup_confirmation_by_ally(approve=True)
+    → status = PICKED_UP
+    → _notify_courier_pickup_approved → courier recibe customer_name, phone, address
+```
+
+### Constantes (order_delivery.py)
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Timeout de inactividad Rappi-style |
+| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Notificación al aliado |
+| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Auto-liberación |
+| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio de detección de llegada |
+| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.05 (50 m) | Movimiento mínimo hacia pickup en T+5 |
+
+### Funciones nuevas en order_delivery.py
+
+| Función | Descripción |
+|---------|-------------|
+| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Pública. Llamada desde main.py en cada live location |
+| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs por nombre |
+| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 y T+20) |
+| `_arrival_inactivity_job(context)` | Job T+5 |
+| `_arrival_warn_ally_job(context)` | Job T+15 |
+| `_arrival_deadline_job(context)` | Job T+20 |
+| `_notify_ally_courier_arrived(context, order, courier_name)` | Notificación al aliado con botones |
+| `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
+| `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
+
+### Nuevas columnas en `orders`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp cuando GPS detecta llegada (≤100m). NULL = no llegó aún |
+| `courier_accepted_lat` | REAL | Latitud del courier al momento de aceptar (base para T+5) |
+| `courier_accepted_lng` | REAL | Longitud del courier al momento de aceptar (base para T+5) |
+
+### Nuevas funciones en db.py
+
+- `set_courier_arrived(order_id)` — idempotente, solo actúa si `courier_arrived_at IS NULL`
+- `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
+- `get_active_order_for_courier(courier_id)` — retorna orden en status `ACCEPTED` del courier
+
+Re-exportadas en `services.py`.
+
+### Pendientes (NO implementado aún)
+
+- Botón "Contactar repartidor" real desde el aviso T+15 (Telegram no permite forzar abrir chat si no existe; definir comportamiento deseado).
+- Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
+- Botón explícito "Llegué" para courier (hoy es detección automática por live location).
+- Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.
 
 ---
 
