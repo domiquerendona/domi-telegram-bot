@@ -22,6 +22,8 @@
 | 2026-03-02 | claude | AGENTS.md, CLAUDE.md | Docs: lecciones Edit tool y escape sequences en bash | COMPLETADO |
 | 2026-03-02 | claude | AGENTS.md, CLAUDE.md, Backend/db.py, Backend/services.py | Merge verify/live-location-expiry-15m + cherry-pick costeo Google Maps | COMPLETADO |
 | 2026-03-02 | claude | AGENTS.md, CLAUDE.md | Reglas colaboración multi-agente (sección 15) | COMPLETADO |
+| 2026-03-02 | claude | AGENTS.md, CLAUDE.md, WORKLOG.md | Sistema coordinación multi-agente: WORKLOG, prefijos, protocolo pre-push (15A-15G) | COMPLETADO |
+| 2026-03-02 | claude | AGENTS.md, CLAUDE.md | Routing de documentación (sección 16) y regla de cambios estructurales (sección 17) | COMPLETADO |
 
 ---
 
