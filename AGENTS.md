@@ -1084,6 +1084,29 @@ Comando rapido para detectar solapamiento de archivos:
   git diff --name-only HEAD origin/staging
   (compara contra los archivos que tu modificaste en esta sesion)
 
+16. Donde documentar (routing de documentacion)
+
+Cuando Luis Felipe da la orden "documenta esto", el agente debe determinar el destino
+correcto sin preguntar, usando esta tabla:
+
+| Tipo de contenido                                              | Documento destino         |
+|----------------------------------------------------------------|---------------------------|
+| Regla obligatoria, restriccion, prohibicion, protocolo         | AGENTS.md                 |
+| Leccion aprendida, solucion a problema tecnico recurrente      | AGENTS.md (seccion 14)    |
+| Protocolo de coordinacion entre agentes IA                     | AGENTS.md (seccion 15)    |
+| Arquitectura, estructura del proyecto, flujo, convencion       | CLAUDE.md                 |
+| Sesion activa o cierre de sesion de un agente                  | WORKLOG.md                |
+| Algo que es regla Y necesita detalle operativo / comandos      | AGENTS.md (regla) + CLAUDE.md (detalle) |
+
+Reglas de aplicacion:
+
+1. Si el contenido es una REGLA (algo que un agente debe o no debe hacer): va en AGENTS.md.
+2. Si el contenido explica COMO funciona el sistema o como trabajar con el: va en CLAUDE.md.
+3. Si un tema ya esta cubierto en AGENTS.md con detalle completo: CLAUDE.md solo agrega
+   un parrafo de referencia o comandos practicos, nunca repite el contenido completo.
+4. WORKLOG.md es exclusivo para registro de sesiones de agentes. No es un destino de documentacion general.
+5. Si el contenido no encaja claramente en ningun documento: preguntar a Luis Felipe antes de documentar.
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.

@@ -830,6 +830,19 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 
 ## Flujo de Trabajo con IA
 
+### Donde documentar
+
+Regla de routing — tabla completa en **AGENTS.md Sección 16**:
+
+| Contenido | Destino |
+|-----------|--------|
+| Regla, restricción, protocolo obligatorio | `AGENTS.md` |
+| Arquitectura, flujo, convención operativa | `CLAUDE.md` |
+| Sesión activa o cierre de agente | `WORKLOG.md` |
+| Regla + detalle operativo | `AGENTS.md` (regla) + `CLAUDE.md` (detalle) |
+
+Si el contenido ya está cubierto en AGENTS.md: CLAUDE.md solo agrega referencia o comandos, nunca repite.
+
 ### Colaboración entre Agentes IA (Claude Code y Codex)
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: **Claude Code** y **Codex**.
