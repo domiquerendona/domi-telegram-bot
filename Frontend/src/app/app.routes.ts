@@ -1,9 +1,7 @@
 // Importa el tipo Routes desde el sistema de enrutamiento de Angular
 import { Routes } from '@angular/router';
-
-// Importa el layout principal del módulo superadmin
 import { SuperadminLayoutComponent } from './layout/superadmin-layout/superadmin-layout';
-
+import { MapaComponent } from './features/superadmin/mapa/mapa.component';
 // Importa los componentes que se mostrarán dentro del layout
  import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
  import { UsersComponent } from './features/superadmin/users/users';
@@ -28,7 +26,8 @@ export const routes: Routes = [
     children: [
        { path: '', component: DashboardComponent }, // /superadmin
        { path: 'users', component: UsersComponent }, // /superadmin/users
-       { path: 'settings', component: SettingsComponent } // /superadmin/settings
+       { path: 'settings', component: SettingsComponent }, // /superadmin/settings
+       { path: 'mapa', component: MapaComponent },
     ]
   }
 ];

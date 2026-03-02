@@ -1,3 +1,4 @@
+
 import { Component, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { NgIf } from '@angular/common';
@@ -60,6 +61,12 @@ import { NgIf } from '@angular/common';
           <span class="material-symbols-outlined">trending_up</span>
           <span *ngIf="!collapsed()">Ganancias</span>
         </a>
+
+      <a routerLink="/superadmin/mapa"
+              routerLinkActive="active">
+              <span class="material-symbols-outlined">map</span>
+              <span *ngIf="!collapsed()">Mapa</span>
+      </a>
 
         <a routerLink="/superadmin/settings"
            routerLinkActive="active">

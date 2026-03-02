@@ -740,6 +740,16 @@ La API solo se usa para geocodificación inversa o búsqueda de direcciones escr
 
 PROHIBIDO usar la API para validar ubicaciones que ya tienen coordenadas GPS válidas.
 
+Regla global de resolución de ubicación por texto (OBLIGATORIA):
+
+Todo flujo que capture ubicaciones por texto (cotizar, pedido, pickup, ruta u otros) DEBE usar el mismo pipeline funcional de cotización:
+
+1. resolve_location(texto) como resolvedor principal.
+2. Si method == "geocode" con formatted_address, mostrar confirmación (si/no) antes de persistir coordenadas.
+3. Si el usuario rechaza, intentar siguiente candidato con resolve_location_next(...); si no hay más, pedir GPS.
+
+PROHIBIDO implementar parseos ad-hoc de links/direcciones que omitan este pipeline en nuevos puntos de captura.
+
 Regla de errores:
 
 Si la API falla (timeout, error de red, cuota agotada): el cotizador retorna error claro al usuario.

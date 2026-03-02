@@ -1,6 +1,7 @@
-import os
+﻿import os
 import hashlib
 import os
+import traceback
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -103,6 +104,7 @@ from services import (
     reject_recharge_request,
     check_service_fee_available,
     resolve_location,
+    resolve_location_next,
     get_smart_distance,
     _get_important_alert_config,
     es_admin_plataforma,
@@ -239,8 +241,17 @@ from services import (
     deactivate_payment_method,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
+    # Rutas multi-parada
+    calcular_precio_ruta,
+    calcular_distancia_ruta,
+    calcular_distancia_ruta_smart,
+    create_route,
+    create_route_destination,
+    get_all_online_couriers,
+    get_active_orders_without_courier,
+    get_online_couriers_sorted_by_distance,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -588,8 +599,11 @@ def reference_assign_location_handler(update, context):
     LOCAL_ADMIN_BARRIO,
     LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
+    LOCAL_ADMIN_CEDULA_FRONT,
+    LOCAL_ADMIN_CEDULA_BACK,
+    LOCAL_ADMIN_SELFIE,
     LOCAL_ADMIN_CONFIRM,
-) = range(300, 309)
+) = range(300, 312)
 
 
 FLOW_STATE_ORDER = {
@@ -608,6 +622,7 @@ FLOW_STATE_ORDER = {
         LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
         LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
         LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_CEDULA_FRONT, LOCAL_ADMIN_CEDULA_BACK, LOCAL_ADMIN_SELFIE,
         LOCAL_ADMIN_CONFIRM,
     ],
 }
@@ -648,6 +663,9 @@ FLOW_STATE_KEYS = {
         LOCAL_ADMIN_BARRIO: ["admin_barrio"],
         LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
         LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
+        LOCAL_ADMIN_CEDULA_FRONT: ["admin_cedula_front_file_id"],
+        LOCAL_ADMIN_CEDULA_BACK: ["admin_cedula_back_file_id"],
+        LOCAL_ADMIN_SELFIE: ["admin_selfie_file_id"],
         LOCAL_ADMIN_CONFIRM: [],
     },
 }
@@ -745,6 +763,9 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
             LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
             LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
+            LOCAL_ADMIN_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
+            LOCAL_ADMIN_SELFIE: "Envía una foto de tu cara (selfie):",
             LOCAL_ADMIN_CONFIRM: "Escribe ACEPTAR para finalizar o volver para corregir.",
         },
     }
@@ -815,6 +836,28 @@ def volver_paso_anterior(update, context):
 
 
 # =========================
+# Estados para crear una ruta multi-parada
+# =========================
+(
+    RUTA_PICKUP_SELECTOR,        # 33 - Selector de punto de recogida
+    RUTA_PICKUP_LISTA,           # 34 - Lista de pickups guardados
+    RUTA_PICKUP_NUEVA_UBICACION, # 35 - Capturar coords nueva direccion de recogida
+    RUTA_PICKUP_NUEVA_DETALLES,  # 36 - Detalles de nueva direccion
+    RUTA_PICKUP_GUARDAR,         # 37 - Preguntar si guardar nueva direccion
+    RUTA_PARADA_SELECTOR,        # 38 - Tipo de cliente (nuevo/recurrente) para parada actual
+    RUTA_PARADA_SEL_DIRECCION,   # 39 - Seleccionar direccion de cliente recurrente
+    RUTA_PARADA_NOMBRE,          # 40 - Nombre del cliente
+    RUTA_PARADA_TELEFONO,        # 41 - Telefono del cliente
+    RUTA_PARADA_UBICACION,       # 42 - GPS opcional de la parada
+    RUTA_PARADA_DIRECCION,       # 43 - Direccion de entrega
+    RUTA_MAS_PARADAS,            # 44 - Agregar mas paradas o finalizar
+    RUTA_DISTANCIA_KM,           # 45 - Km totales (si no hay GPS suficiente)
+    RUTA_CONFIRMACION,           # 46 - Confirmacion y creacion de la ruta
+    RUTA_GUARDAR_CLIENTES,       # 47 - Guardar clientes nuevos de las paradas
+) = range(33, 48)
+
+
+# =========================
 # Estados para /clientes (agenda de clientes recurrentes)
 # =========================
 (
@@ -856,6 +899,8 @@ COTIZAR_DISTANCIA = 901
 COTIZAR_MODO = 903
 COTIZAR_RECOGIDA = 904
 COTIZAR_ENTREGA = 905
+COTIZAR_RECOGIDA_SELECTOR = 906
+COTIZAR_RESULTADO = 907
 
 
 # =========================
@@ -885,6 +930,11 @@ ALERTAS_OFERTA_INPUT = 965
 INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
+
+# Estados para el panel de gestión de ubicaciones del aliado
+ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
+ALLY_LOCS_ADD_COORDS = 921   # Agregar: esperando GPS / link / coords
+ALLY_LOCS_ADD_LABEL  = 922   # Agregar: esperando etiqueta / nombre
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -1120,11 +1170,10 @@ def get_flow_menu_keyboard():
 def get_ally_menu_keyboard():
     """Retorna el teclado de seccion Aliado."""
     keyboard = [
-        ['Nuevo pedido', 'Mis pedidos'],
-        ['Clientes', 'Agenda'],
+        ['Nuevo pedido', 'Nueva ruta'],
+        ['Mis pedidos', 'Agenda'],
         ['Cotizar envio', 'Recargar'],
-        ['Mi saldo aliado'],
-        ['Volver al menu']
+        ['Mi saldo aliado', 'Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1534,15 +1583,24 @@ def ally_ubicacion_handler(update, context):
     if coords:
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
-        update.message.reply_text("Ubicación guardada.")
-    else:
-        update.message.reply_text(
-            "No se pudo extraer la ubicación del texto.\n"
-            "Envía un pin de Telegram o pega un link de Google Maps."
+        update.message.reply_text("Ubicacion guardada.")
+        return _show_ally_confirm(update, context)
+
+    # Geocoding: intentar como direccion escrita
+    geo = resolve_location(texto)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            geo, texto,
+            "ally_geo_si", "ally_geo_no",
         )
         return ALLY_UBICACION
 
-    return _show_ally_confirm(update, context)
+    update.message.reply_text(
+        "No se pudo extraer la ubicacion del texto.\n"
+        "Envia un pin de Telegram o pega un link de Google Maps."
+    )
+    return ALLY_UBICACION
 
 
 def ally_ubicacion_location_handler(update, context):
@@ -1550,8 +1608,29 @@ def ally_ubicacion_location_handler(update, context):
     loc = update.message.location
     context.user_data["ally_lat"] = loc.latitude
     context.user_data["ally_lng"] = loc.longitude
-    update.message.reply_text("Ubicación guardada.")
+    update.message.reply_text("Ubicacion guardada.")
     return _show_ally_confirm(update, context)
+
+
+def ally_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de aliado."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "ally_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return ALLY_UBICACION
+        context.user_data["ally_lat"] = lat
+        context.user_data["ally_lng"] = lng
+        query.edit_message_text("Ubicacion confirmada.")
+        return _show_ally_confirm(update, context)
+    else:  # ally_geo_no
+        return _geo_siguiente_o_gps(query, context, "ally_geo_si", "ally_geo_no", ALLY_UBICACION)
 
 
 def _show_ally_confirm(update, context):
@@ -1969,22 +2048,58 @@ def courier_residence_location(update, context):
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+        else:
+            # Geocoding: intentar como direccion escrita
+            geo = resolve_location(text)
+            if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                _mostrar_confirmacion_geocode(
+                    update.message, context,
+                    geo, text,
+                    "courier_geo_si", "courier_geo_no",
+                )
+                return COURIER_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
         update.message.reply_text(
-            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
         return COURIER_RESIDENCE_LOCATION
 
     context.user_data["residence_lat"] = lat
     context.user_data["residence_lng"] = lng
     update.message.reply_text(
-        "Ubicación guardada.\n\n"
+        "Ubicacion guardada.\n\n"
         "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
     )
     _set_flow_step(context, "courier", COURIER_PLATE)
     return COURIER_PLATE
+
+
+def courier_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de repartidor."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "courier_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return COURIER_RESIDENCE_LOCATION
+        context.user_data["residence_lat"] = lat
+        context.user_data["residence_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
+            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
+        )
+        _set_flow_step(context, "courier", COURIER_PLATE)
+        return COURIER_PLATE
+    else:  # courier_geo_no
+        return _geo_siguiente_o_gps(query, context, "courier_geo_si", "courier_geo_no", COURIER_RESIDENCE_LOCATION)
 
 
 def courier_plate(update, context):
@@ -2078,6 +2193,76 @@ def courier_selfie(update, context):
     update.message.reply_text(resumen)
     _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
+
+
+def admin_cedula_front(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del frente de tu cédula." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_CEDULA_FRONT
+    context.user_data["admin_cedula_front_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del frente recibida.\n\n"
+        "Ahora envía una foto del REVERSO de tu cédula:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_BACK)
+    return LOCAL_ADMIN_CEDULA_BACK
+
+
+def admin_cedula_back(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una foto (imagen) del reverso de tu cédula." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_CEDULA_BACK
+    context.user_data["admin_cedula_back_file_id"] = update.message.photo[-1].file_id
+    update.message.reply_text(
+        "Foto del reverso recibida.\n\n"
+        "Por último, envía una SELFIE (foto de tu cara) tomada en este momento:" + _OPTIONS_HINT
+    )
+    _set_flow_step(context, "admin", LOCAL_ADMIN_SELFIE)
+    return LOCAL_ADMIN_SELFIE
+
+
+def admin_selfie(update, context):
+    if not update.message.photo:
+        update.message.reply_text(
+            "Por favor envía una selfie (foto de tu cara)." + _OPTIONS_HINT
+        )
+        return LOCAL_ADMIN_SELFIE
+    context.user_data["admin_selfie_file_id"] = update.message.photo[-1].file_id
+
+    full_name = context.user_data.get("admin_name", "")
+    document_number = context.user_data.get("admin_document", "")
+    team_name = context.user_data.get("admin_team_name", "")
+    phone = context.user_data.get("phone", "")
+    city = context.user_data.get("admin_city", "")
+    barrio = context.user_data.get("admin_barrio", "")
+    residence_address = context.user_data.get("admin_residence_address", "")
+    lat = context.user_data.get("admin_residence_lat")
+    lng = context.user_data.get("admin_residence_lng")
+
+    resumen = (
+        "Fotos recibidas. Verifica tus datos de Administrador Local:\n\n"
+        "Nombre: {}\n"
+        "Cédula: {}\n"
+        "Equipo: {}\n"
+        "Teléfono: {}\n"
+        "Ciudad: {}\n"
+        "Barrio: {}\n"
+        "Dirección: {}\n"
+        "Ubicación: {}, {}\n\n"
+        "Condiciones para Administrador Local:\n"
+        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
+        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
+        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
+        "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
+        "Si quieres corregir, escribe 'volver' o usa /cancel."
+    ).format(full_name, document_number, team_name, phone, city, barrio, residence_address, lat, lng)
+    update.message.reply_text(resumen)
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CONFIRM)
+    return LOCAL_ADMIN_CONFIRM
 
 
 def courier_confirm(update, context):
@@ -2318,62 +2503,179 @@ def courier_team_callback(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
-def nuevo_pedido(update, context):
-    user = update.effective_user
+def nuevo_pedido_desde_cotizador(update, context):
+    """Entry point de nuevo_pedido_conv cuando el aliado confirma pedido desde el cotizador."""
+    query = update.callback_query
+    query.answer()
 
+    user = update.effective_user
     ensure_user(user.id, user.username)
     db_user = get_user_by_telegram_id(user.id)
-
     if not db_user:
-        update.message.reply_text("Aun no estas registrado en el sistema. Usa /start primero.")
+        query.edit_message_text("No estas registrado. Usa /start primero.")
         return ConversationHandler.END
 
     ally = get_ally_by_user_id(db_user["id"])
-    if not ally:
-        update.message.reply_text(
-            "Aun no estas registrado como aliado.\n"
-            "Si tienes un negocio, registrate con /soy_aliado."
-        )
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro de aliado no esta activo.")
         return ConversationHandler.END
 
-    if ally["status"] != "APPROVED":
-        update.message.reply_text(
-            "Tu registro como aliado todavia no ha sido aprobado por el administrador.\n"
-            "Cuando tu estado sea APPROVED podras crear pedidos con /nuevo_pedido."
-        )
-        return ConversationHandler.END
-
-    # Si tienes ensure_terms implementado y quieres exigirlo, dejalo.
-    # Si NO lo tienes, comenta estas 2 lineas.
     if not ensure_terms(update, context, user.id, role="ALLY"):
         return ConversationHandler.END
 
-    context.user_data.clear()
+    # Transferir prefill del cotizador a claves del flujo de pedido
     context.user_data["ally_id"] = ally["id"]
     context.user_data["active_ally_id"] = ally["id"]
     context.user_data["ally"] = ally
+    context.user_data["pickup_lat"] = context.user_data.pop("prefill_pickup_lat", None)
+    context.user_data["pickup_lng"] = context.user_data.pop("prefill_pickup_lng", None)
+    context.user_data["dropoff_lat"] = context.user_data.pop("prefill_dropoff_lat", None)
+    context.user_data["dropoff_lng"] = context.user_data.pop("prefill_dropoff_lng", None)
+    context.user_data["cotizador_prefill_dropoff"] = True
 
-    # Mostrar menú reducido de flujo
-    show_flow_menu(update, context, "Iniciando nuevo pedido...")
+    if query.data == "cotizar_cust_recurrente":
+        customers = list_ally_customers(ally["id"], limit=10)
+        if not customers:
+            query.edit_message_text("No tienes clientes guardados.\n\nEscribe el nombre del cliente:")
+            context.user_data["is_new_customer"] = True
+            return PEDIDO_NOMBRE
+        keyboard = []
+        for c in customers:
+            keyboard.append([InlineKeyboardButton(
+                f"{c['name']} - {c['phone']}",
+                callback_data=f"pedido_sel_cust_{c['id']}"
+            )])
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+        query.edit_message_text(
+            "CLIENTES RECURRENTES\n\nSelecciona un cliente:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return PEDIDO_SELECTOR_CLIENTE
 
-    # Mostrar selector de cliente recurrente/nuevo
-    keyboard = [
-        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
-        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
-    ]
+    # cotizar_cust_nuevo
+    query.edit_message_text("Escribe el nombre del cliente:")
+    context.user_data["is_new_customer"] = True
+    return PEDIDO_NOMBRE
 
-    # Verificar si hay ultimo pedido para ofrecer repetir
-    last_order = get_last_order_by_ally(ally["id"])
-    if last_order:
-        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(
-        "CREAR NUEVO PEDIDO\n\n"
-        "Selecciona una opcion:",
-        reply_markup=reply_markup
-    )
-    return PEDIDO_SELECTOR_CLIENTE
+def nueva_ruta_desde_cotizador(update, context):
+    """Entry point de nueva_ruta_conv cuando el aliado elige 'Varias entregas' desde el cotizador."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        query.edit_message_text("No estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro de aliado no esta activo.")
+        return ConversationHandler.END
+    pickup_lat = context.user_data.pop("prefill_ruta_pickup_lat", None)
+    pickup_lng = context.user_data.pop("prefill_ruta_pickup_lng", None)
+    # Buscar la ubicacion guardada que coincida con las coords del cotizador
+    pickup_address = ""
+    pickup_location_id = None
+    if pickup_lat and pickup_lng:
+        locations = get_ally_locations(ally["id"])
+        for loc in locations:
+            if loc.get("lat") == pickup_lat and loc.get("lng") == pickup_lng:
+                pickup_address = loc.get("address") or ""
+                pickup_location_id = loc.get("id")
+                break
+    context.user_data.clear()
+    context.user_data["ruta_ally_id"] = ally["id"]
+    context.user_data["ruta_ally"] = ally
+    context.user_data["ruta_paradas"] = []
+    context.user_data["ruta_pickup_lat"] = pickup_lat
+    context.user_data["ruta_pickup_lng"] = pickup_lng
+    context.user_data["ruta_pickup_address"] = pickup_address
+    context.user_data["ruta_pickup_location_id"] = pickup_location_id
+    return _ruta_iniciar_parada(query, context)
+
+
+def nuevo_pedido(update, context):
+    user = update.effective_user
+    message = update.effective_message
+    try:
+        print(
+            f"[DEBUG][nuevo_pedido] entry user_id={getattr(user, 'id', None)} "
+            f"chat_id={getattr(getattr(message, 'chat', None), 'id', None)} "
+            f"text={getattr(message, 'text', None)!r}",
+            flush=True,
+        )
+
+        ensure_user(user.id, user.username)
+        db_user = get_user_by_telegram_id(user.id)
+        print(
+            f"[DEBUG][nuevo_pedido] db_user_found={bool(db_user)} user_id={getattr(user, 'id', None)}",
+            flush=True,
+        )
+
+        if not db_user:
+            if message:
+                message.reply_text("Aun no estas registrado en el sistema. Usa /start primero.")
+            return ConversationHandler.END
+
+        ally = get_ally_by_user_id(db_user["id"])
+        print(
+            f"[DEBUG][nuevo_pedido] ally_found={bool(ally)} ally_status={ally.get('status') if ally else None}",
+            flush=True,
+        )
+        if not ally:
+            if message:
+                message.reply_text(
+                    "Aun no estas registrado como aliado.\n"
+                    "Si tienes un negocio, registrate con /soy_aliado."
+                )
+            return ConversationHandler.END
+
+        if ally["status"] != "APPROVED":
+            if message:
+                message.reply_text(
+                    "Tu registro como aliado todavia no ha sido aprobado por el administrador.\n"
+                    "Cuando tu estado sea APPROVED podras crear pedidos con /nuevo_pedido."
+                )
+            return ConversationHandler.END
+
+        if not ensure_terms(update, context, user.id, role="ALLY"):
+            print("[DEBUG][nuevo_pedido] blocked_by_terms=True", flush=True)
+            return ConversationHandler.END
+
+        context.user_data.clear()
+        context.user_data["ally_id"] = ally["id"]
+        context.user_data["active_ally_id"] = ally["id"]
+        context.user_data["ally"] = ally
+
+        show_flow_menu(update, context, "Iniciando nuevo pedido...")
+
+        keyboard = [
+            [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+            [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+        ]
+
+        last_order = get_last_order_by_ally(ally["id"])
+        if last_order:
+            keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+
+        keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if message:
+            message.reply_text(
+                "CREAR NUEVO PEDIDO\n\n"
+                "Selecciona una opcion:",
+                reply_markup=reply_markup
+            )
+        return PEDIDO_SELECTOR_CLIENTE
+    except Exception as e:
+        print(f"[ERROR][nuevo_pedido] {type(e).__name__}: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        if message:
+            message.reply_text("Se produjo un error al iniciar el pedido. Intenta /nuevo_pedido.")
+        return ConversationHandler.END
 
 
 def pedido_selector_cliente_callback(update, context):
@@ -2559,6 +2861,7 @@ def pedido_seleccionar_direccion_callback(update, context):
             query.edit_message_text("Direccion no encontrada. Escribe la direccion de entrega:")
             return PEDIDO_DIRECCION
 
+        context.user_data["customer_address_id"] = address_id
         context.user_data["customer_address"] = address["address_text"]
         context.user_data["customer_city"] = address["city"] or ""
         context.user_data["customer_barrio"] = address["barrio"] or ""
@@ -2629,7 +2932,6 @@ def get_tipo_servicio_keyboard():
     """Retorna InlineKeyboardMarkup con opciones de tipo de servicio."""
     keyboard = [
         [InlineKeyboardButton("Entrega", callback_data="pedido_tipo_entrega")],
-        [InlineKeyboardButton("Recogida en tienda", callback_data="pedido_tipo_recogida")],
         [InlineKeyboardButton("🛒 Compras", callback_data="pedido_tipo_compras")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -2700,6 +3002,18 @@ def pedido_tipo_servicio_callback(update, context):
         )
         return PEDIDO_COMPRAS_CANTIDAD
 
+    # Si viene de cliente recurrente pero faltan campos, rehidratar desde BD
+    customer_id = context.user_data.get("customer_id")
+    ally_id = context.user_data.get("active_ally_id")
+    if customer_id and ally_id:
+        if not context.user_data.get("customer_name") or not context.user_data.get("customer_phone"):
+            customer = get_ally_customer_by_id(customer_id, ally_id)
+            if customer:
+                if not context.user_data.get("customer_name"):
+                    context.user_data["customer_name"] = customer.get("name") or ""
+                if not context.user_data.get("customer_phone"):
+                    context.user_data["customer_phone"] = customer.get("phone") or ""
+
     # Verificar si ya tenemos todos los datos del cliente
     has_name = context.user_data.get("customer_name")
     has_phone = context.user_data.get("customer_phone")
@@ -2709,6 +3023,30 @@ def pedido_tipo_servicio_callback(update, context):
         # Ya tenemos datos del cliente, preguntar por base requerida
         return mostrar_pregunta_base(query, context, edit=True)
     else:
+        # Si ya se selecciono un cliente recurrente, nunca re-pedir el nombre por defecto
+        if customer_id:
+            if not has_address:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta la direccion de entrega.\n"
+                    "Escribe la direccion de entrega:"
+                )
+                return PEDIDO_DIRECCION
+            if not has_name:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta el nombre del cliente.\n"
+                    "Escribe el nombre del cliente:"
+                )
+                return PEDIDO_NOMBRE
+            if not has_phone:
+                query.edit_message_text(
+                    f"Tipo de servicio: {tipos_map[data]}\n\n"
+                    "Falta el telefono del cliente.\n"
+                    "Escribe el numero de telefono del cliente:"
+                )
+                return PEDIDO_TELEFONO
+
         # Cliente nuevo: pedir nombre
         query.edit_message_text(
             f"Tipo de servicio: {tipos_map[data]}\n\n"
@@ -3068,6 +3406,34 @@ def pedido_nombre_cliente(update, context):
 
 def pedido_telefono_cliente(update, context):
     context.user_data["customer_phone"] = update.message.text.strip()
+    # Si viene del cotizador, la ubicacion ya esta capturada
+    if context.user_data.get("cotizador_prefill_dropoff"):
+        update.message.reply_text(
+            "Ubicacion guardada de la cotizacion.\n\n"
+            "Escribe los detalles de la direccion del cliente:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
+
+    # Si el cliente ya es recurrente y la direccion ya existe con coords, no pedir ubicacion otra vez
+    customer_id = context.user_data.get("customer_id")
+    customer_address = context.user_data.get("customer_address")
+    dropoff_lat = context.user_data.get("dropoff_lat")
+    dropoff_lng = context.user_data.get("dropoff_lng")
+    if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
+        address_id = context.user_data.get("customer_address_id")
+        if address_id:
+            addr = get_customer_address_by_id(address_id, customer_id)
+            if addr:
+                context.user_data["dropoff_lat"] = addr.get("lat")
+                context.user_data["dropoff_lng"] = addr.get("lng")
+                dropoff_lat = context.user_data.get("dropoff_lat")
+                dropoff_lng = context.user_data.get("dropoff_lng")
+
+    if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
+        update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
+        return mostrar_selector_pickup(update, context, edit=False)
+
     # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
         "UBICACION (obligatoria)\n\n"
@@ -3077,6 +3443,71 @@ def pedido_telefono_cliente(update, context):
         "No se puede continuar sin una ubicacion valida."
     )
     return PEDIDO_UBICACION
+
+
+def _mostrar_confirmacion_geocode(message, context, geo, original_text, cb_si, cb_no):
+    """Muestra el primer candidato de geocoding con pin, link de Maps y botones de confirmacion.
+    geo: dict con lat, lng, formatted_address, place_id.
+    original_text: texto original del usuario (para carga perezosa del siguiente candidato)."""
+    lat = geo["lat"]
+    lng = geo["lng"]
+    formatted_address = geo.get("formatted_address", "")
+    _pid = geo.get("place_id") or f"{lat},{lng}"
+    context.user_data["pending_geo_lat"] = lat
+    context.user_data["pending_geo_lng"] = lng
+    context.user_data["pending_geo_text"] = original_text
+    context.user_data["pending_geo_seen"] = [_pid]
+    message.reply_location(latitude=lat, longitude=lng)
+    maps_link = f"https://maps.google.com/?q={lat},{lng}"
+    keyboard = [[
+        InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+        InlineKeyboardButton("No, esta no es", callback_data=cb_no),
+    ]]
+    message.reply_text(
+        f"Encontre esta ubicacion:\n\n{formatted_address}\n\n"
+        f"Ver en mapa: {maps_link}\n\n"
+        "Es correcta?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _geo_siguiente_o_gps(query, context, cb_si, cb_no, estado):
+    """Busca el siguiente candidato de geocoding (carga perezosa) o pide GPS si no hay mas."""
+    original_text = context.user_data.get("pending_geo_text", "")
+    seen = context.user_data.get("pending_geo_seen", [])
+    next_geo = resolve_location_next(original_text, seen) if original_text else None
+    if next_geo:
+        _pid = next_geo.get("place_id") or f"{next_geo['lat']},{next_geo['lng']}"
+        seen.append(_pid)
+        context.user_data["pending_geo_seen"] = seen
+        context.user_data["pending_geo_lat"] = next_geo["lat"]
+        context.user_data["pending_geo_lng"] = next_geo["lng"]
+        lat = next_geo["lat"]
+        lng = next_geo["lng"]
+        maps_link = f"https://maps.google.com/?q={lat},{lng}"
+        keyboard = [[
+            InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+            InlineKeyboardButton("No, esta no es", callback_data=cb_no),
+        ]]
+        query.edit_message_text("Buscando otra opcion...")
+        query.message.reply_location(latitude=lat, longitude=lng)
+        query.message.reply_text(
+            f"Otra opcion:\n\n{next_geo.get('formatted_address', '')}\n\n"
+            f"Ver en mapa: {maps_link}\n\nEs correcta?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        query.edit_message_text(
+            "No encontre mas opciones. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+    return estado
 
 
 def pedido_ubicacion_handler(update, context):
@@ -3140,7 +3571,18 @@ def pedido_ubicacion_handler(update, context):
             )
             return PEDIDO_DIRECCION
 
-    # 5) No se pudo resolver: la ubicacion es obligatoria
+    # 5) Geocoding: si el texto no es URL, intentar como direccion escrita
+    if "http" not in texto:
+        geo = resolve_location(texto)
+        if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+            _mostrar_confirmacion_geocode(
+                update.message, context,
+                geo, texto,
+                "pedido_geo_si", "pedido_geo_no",
+            )
+            return PEDIDO_UBICACION
+
+    # 6) No se pudo resolver: la ubicacion es obligatoria
     es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
 
     if es_link_corto_google:
@@ -3181,6 +3623,31 @@ def pedido_ubicacion_location_handler(update, context):
         "barrio, conjunto, torre, apto, referencias."
     )
     return PEDIDO_DIRECCION
+
+
+def pedido_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el flujo de pedido."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "pedido_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return PEDIDO_UBICACION
+        context.user_data["dropoff_lat"] = lat
+        context.user_data["dropoff_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Ahora escribe los detalles de la direccion:\n"
+            "barrio, conjunto, torre, apto, referencias."
+        )
+        return PEDIDO_DIRECCION
+    else:  # pedido_geo_no
+        return _geo_siguiente_o_gps(query, context, "pedido_geo_si", "pedido_geo_no", PEDIDO_UBICACION)
 
 
 def pedido_ubicacion_copiar_msg_callback(update, context):
@@ -3231,17 +3698,35 @@ def mostrar_selector_pickup(query_or_update, context, edit=False):
         context: Context del bot
         edit: Si True, edita el mensaje existente
     """
-    keyboard = [
-        [InlineKeyboardButton("Mi direccion base", callback_data="pickup_select_base")],
-        [InlineKeyboardButton("Elegir otra", callback_data="pickup_select_lista")],
-        [InlineKeyboardButton("Agregar nueva", callback_data="pickup_select_nueva")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    ally = context.user_data.get("ally")
+    ally_id = ally["id"] if ally else None
 
-    texto = (
-        "PUNTO DE RECOGIDA\n\n"
-        "Donde se recoge el pedido?"
-    )
+    keyboard = []
+    if ally_id:
+        locations = get_ally_locations(ally_id)
+        default_loc = next((l for l in locations if l.get("is_default")), None)
+
+        if default_loc:
+            label = (default_loc.get("label") or "Base")[:20]
+            address = (default_loc.get("address") or "")[:35]
+            sin_gps = " (sin GPS)" if default_loc.get("lat") is None else ""
+            keyboard.append([InlineKeyboardButton(
+                "Usar base: {} - {}{}".format(label, address, sin_gps),
+                callback_data="pickup_select_base"
+            )])
+
+        otros = [l for l in locations if not l.get("is_default")]
+        if otros or (locations and not default_loc):
+            n = len(locations)
+            keyboard.append([InlineKeyboardButton(
+                "Elegir otra ({})".format(n),
+                callback_data="pickup_select_lista"
+            )])
+
+    keyboard.append([InlineKeyboardButton("Agregar nueva direccion", callback_data="pickup_select_nueva")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    texto = "PUNTO DE RECOGIDA\n\nDonde se recoge el pedido?"
 
     if edit and hasattr(query_or_update, 'edit_message_text'):
         query_or_update.edit_message_text(texto, reply_markup=reply_markup)
@@ -3340,6 +3825,243 @@ def pedido_pickup_callback(update, context):
         return ConversationHandler.END
 
 
+# =============================================================
+# PANEL DE GESTIÓN DE UBICACIONES DEL ALIADO ("Mis ubicaciones")
+# =============================================================
+
+def _ally_locs_mostrar_lista(query_or_update, ally_id, edit=False, aviso=None):
+    """Muestra el panel de ubicaciones del aliado con botones de gestión."""
+    locations = get_ally_locations(ally_id)
+
+    keyboard = []
+    if locations:
+        for loc in locations:
+            label = (loc.get("label") or "Sin nombre")[:25]
+            tags = []
+            if loc.get("is_default"):
+                tags.append("BASE")
+            if loc.get("is_frequent"):
+                tags.append("FRECUENTE")
+            tag_str = " [{}]".format(", ".join(tags)) if tags else ""
+            sin_gps = " (sin GPS)" if loc.get("lat") is None else ""
+            keyboard.append([InlineKeyboardButton(
+                "{}{}{}".format(label, tag_str, sin_gps),
+                callback_data="ally_locs_ver_{}".format(loc["id"])
+            )])
+        keyboard.append([InlineKeyboardButton("+ Agregar nueva", callback_data="ally_locs_add")])
+        texto_base = "MIS UBICACIONES DE RECOGIDA\n\nSelecciona una para ver opciones:"
+    else:
+        keyboard.append([InlineKeyboardButton("+ Agregar primera ubicacion", callback_data="ally_locs_add")])
+        texto_base = "MIS UBICACIONES DE RECOGIDA\n\nAun no tienes ubicaciones guardadas."
+
+    if aviso:
+        texto = "{}\n\n{}".format(aviso, texto_base)
+    else:
+        texto = texto_base
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(texto, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(texto, reply_markup=reply_markup)
+
+    return ALLY_LOCS_MENU
+
+
+def mis_ubicaciones_start(update, context):
+    """Muestra el panel de gestión de ubicaciones del aliado."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally or ally.get("status") != "APPROVED":
+        update.message.reply_text(
+            "No tienes un perfil de aliado activo. Contacta al administrador."
+        )
+        return ConversationHandler.END
+    context.user_data["ally_locs_ally_id"] = ally["id"]
+    return _ally_locs_mostrar_lista(update, ally["id"], edit=False)
+
+
+def ally_locs_menu_callback(update, context):
+    """Maneja todas las acciones del panel de ubicaciones del aliado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ally_locs_ally_id")
+
+    if not ally_id:
+        query.edit_message_text("Sesion expirada. Regresa al menu e intenta de nuevo.")
+        return ConversationHandler.END
+
+    if data == "ally_locs_lista" or data == "ally_locs_del_cancel":
+        return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+
+    if data.startswith("ally_locs_ver_"):
+        try:
+            loc_id = int(data.split("ally_locs_ver_")[1])
+        except (ValueError, IndexError):
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        if not loc:
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Ubicacion no encontrada.")
+
+        label = loc.get("label") or "Sin nombre"
+        address = loc.get("address") or "-"
+        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc.get("lat") else "Sin GPS"
+        usos = loc.get("use_count") or 0
+        is_base = bool(loc.get("is_default"))
+
+        detalle = (
+            "UBICACION: {}\n\n"
+            "Direccion: {}\n"
+            "GPS: {}\n"
+            "Usos en pedidos: {}"
+        ).format(label, address, gps, usos)
+
+        keyboard = []
+        if not is_base:
+            keyboard.append([InlineKeyboardButton(
+                "Marcar como base",
+                callback_data="ally_locs_base_{}".format(loc_id)
+            )])
+        keyboard.append([InlineKeyboardButton(
+            "Eliminar",
+            callback_data="ally_locs_del_{}".format(loc_id)
+        )])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="ally_locs_lista")])
+
+        query.edit_message_text(detalle, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ALLY_LOCS_MENU
+
+    if data.startswith("ally_locs_base_"):
+        try:
+            loc_id = int(data.split("ally_locs_base_")[1])
+        except (ValueError, IndexError):
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+        set_default_ally_location(loc_id, ally_id)
+        return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Base actualizada.")
+
+    if data.startswith("ally_locs_del_confirm_"):
+        try:
+            loc_id = int(data.split("ally_locs_del_confirm_")[1])
+        except (ValueError, IndexError):
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+        delete_ally_location(loc_id, ally_id)
+        return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Ubicacion eliminada.")
+
+    if data.startswith("ally_locs_del_"):
+        try:
+            loc_id = int(data.split("ally_locs_del_")[1])
+        except (ValueError, IndexError):
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        label = loc.get("label") or "esta ubicacion" if loc else "esta ubicacion"
+        keyboard = [
+            [InlineKeyboardButton(
+                "Confirmar eliminacion",
+                callback_data="ally_locs_del_confirm_{}".format(loc_id)
+            )],
+            [InlineKeyboardButton("Cancelar", callback_data="ally_locs_del_cancel")],
+        ]
+        query.edit_message_text(
+            "Eliminar '{}'?\n\nEsta accion no se puede deshacer.".format(label),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_LOCS_MENU
+
+    if data == "ally_locs_add":
+        query.edit_message_text(
+            "AGREGAR UBICACION\n\n"
+            "Envia la ubicacion del punto de recogida:\n"
+            "- Comparte tu ubicacion (PIN de Telegram)\n"
+            "- Pega un link de Google Maps\n"
+            "- Escribe coordenadas (ej: 4.81,-75.69)"
+        )
+        return ALLY_LOCS_ADD_COORDS
+
+    return ALLY_LOCS_MENU
+
+
+def ally_locs_add_coords(update, context):
+    """Captura la ubicacion (texto/link/coords) de la nueva direccion del aliado."""
+    loc = _cotizar_resolver_ubicacion(update, context)
+    if not loc:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return ALLY_LOCS_ADD_COORDS
+
+    context.user_data["ally_locs_new_lat"] = loc["lat"]
+    context.user_data["ally_locs_new_lng"] = loc["lng"]
+    dir_encontrada = ""
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        dir_encontrada = f"Ubicacion encontrada: {loc['formatted_address']}\n\n"
+    update.message.reply_text(
+        f"{dir_encontrada}Dale un nombre a este punto de recogida:\n"
+        "(ej: Tienda centro, Bodega norte, Casa)"
+    )
+    return ALLY_LOCS_ADD_LABEL
+
+
+def ally_locs_add_coords_location(update, context):
+    """Handler para PIN nativo de Telegram al agregar ubicacion del aliado."""
+    return ally_locs_add_coords(update, context)
+
+
+def ally_locs_add_label(update, context):
+    """Guarda la nueva ubicacion del aliado con la etiqueta ingresada."""
+    texto = (update.message.text or "").strip()
+    if not texto:
+        update.message.reply_text("El nombre no puede estar vacio. Escribe un nombre para la ubicacion:")
+        return ALLY_LOCS_ADD_LABEL
+
+    ally_id = context.user_data.get("ally_locs_ally_id")
+    lat = context.user_data.get("ally_locs_new_lat")
+    lng = context.user_data.get("ally_locs_new_lng")
+
+    if not ally_id or lat is None:
+        update.message.reply_text("Error: datos perdidos. Regresa al menu de ubicaciones.")
+        return ConversationHandler.END
+
+    label = texto[:40]
+    new_loc_id = create_ally_location(
+        ally_id=ally_id,
+        label=label,
+        address=label,
+        city="",
+        barrio="",
+        lat=lat,
+        lng=lng,
+    )
+
+    context.user_data.pop("ally_locs_new_lat", None)
+    context.user_data.pop("ally_locs_new_lng", None)
+
+    keyboard = [
+        [InlineKeyboardButton("Si, usar como base", callback_data="ally_locs_base_{}".format(new_loc_id))],
+        [InlineKeyboardButton("No, solo guardarla", callback_data="ally_locs_lista")],
+    ]
+    update.message.reply_text(
+        "Ubicacion '{}' guardada.\n\n"
+        "Usar como direccion base (la que aparece primero al crear pedidos)?".format(label),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ALLY_LOCS_MENU
+
+
+# =============================================================
+# FIN PANEL GESTIÓN DE UBICACIONES
+# =============================================================
+
+
 def construir_etiqueta_pickup(loc):
     """Construye etiqueta para un pickup con info de uso."""
     label = loc.get("label") or loc.get("address", "Sin nombre")[:25]
@@ -3374,12 +4096,24 @@ def mostrar_lista_pickups(query, context):
         )
         return mostrar_selector_pickup(query, context, edit=False)
 
-    # Construir botones con etiquetas (max 8)
+    # Botones directos sin submenú — un clic usa la dirección
     keyboard = []
     for loc in locations[:8]:
-        btn_text = construir_etiqueta_pickup(loc)
-        callback = f"pickup_list_loc_{loc['id']}"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
+        label = (loc.get("label") or "Sin nombre")[:20]
+        address = (loc.get("address") or "")[:28]
+        tags = []
+        if loc.get("is_default"):
+            tags.append("BASE")
+        if loc.get("is_frequent"):
+            tags.append("FRECUENTE")
+        elif loc.get("use_count", 0) > 0:
+            tags.append("x{}".format(loc["use_count"]))
+        tag_str = " [{}]".format(", ".join(tags)) if tags else ""
+        sin_gps = " (sin GPS)" if loc.get("lat") is None else ""
+        keyboard.append([InlineKeyboardButton(
+            "{}: {}{}{}".format(label, address, tag_str, sin_gps),
+            callback_data="pickup_list_usar_{}".format(loc["id"])
+        )])
 
     keyboard.append([InlineKeyboardButton("Agregar nueva", callback_data="pickup_list_nueva")])
     keyboard.append([InlineKeyboardButton("Volver", callback_data="pickup_list_volver")])
@@ -3387,7 +4121,7 @@ def mostrar_lista_pickups(query, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     query.edit_message_text(
         "ELEGIR PUNTO DE RECOGIDA\n\n"
-        "Selecciona una de tus direcciones guardadas:",
+        "Selecciona una de tus direcciones:",
         reply_markup=reply_markup
     )
     return PEDIDO_PICKUP_LISTA
@@ -3412,23 +4146,6 @@ def pedido_pickup_lista_callback(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    if data == "pickup_list_back":
-        return mostrar_lista_pickups(query, context)
-
-    # Manejar marcar/desmarcar frecuente
-    if data.startswith("pickup_list_freq_"):
-        parts = data.replace("pickup_list_freq_", "").split("_")
-        if len(parts) == 2:
-            loc_id = int(parts[0])
-            new_freq = int(parts[1])
-            ally = context.user_data.get("ally")
-            if ally:
-                set_frequent_pickup(loc_id, ally["id"], new_freq == 1)
-                msg = "Marcada como frecuente" if new_freq == 1 else "Desmarcada como frecuente"
-                query.answer(msg)
-            return mostrar_lista_pickups(query, context)
-
-    # Usar pickup seleccionado
     if data.startswith("pickup_list_usar_"):
         try:
             loc_id = int(data.replace("pickup_list_usar_", ""))
@@ -3446,7 +4163,9 @@ def pedido_pickup_lista_callback(update, context):
             query.edit_message_text("Error: direccion no encontrada.")
             return mostrar_selector_pickup(query, context, edit=False)
 
-        # Guardar pickup en user_data
+        if location.get("lat") is None or location.get("lng") is None:
+            return mostrar_lista_pickups(query, context)
+
         context.user_data["pickup_location"] = location
         context.user_data["pickup_label"] = location.get("label") or "Recogida"
         context.user_data["pickup_address"] = location.get("address", "")
@@ -3455,49 +4174,6 @@ def pedido_pickup_lista_callback(update, context):
         context.user_data["pickup_lng"] = location.get("lng")
 
         return continuar_despues_pickup(query, context, edit=True)
-
-    # Seleccionar pickup - mostrar submenú
-    if data.startswith("pickup_list_loc_"):
-        try:
-            loc_id = int(data.replace("pickup_list_loc_", ""))
-        except ValueError:
-            query.edit_message_text("Error: ID invalido.")
-            return ConversationHandler.END
-
-        ally = context.user_data.get("ally")
-        if not ally:
-            query.edit_message_text("Error: no se encontro informacion del aliado.")
-            return ConversationHandler.END
-
-        location = get_ally_location_by_id(loc_id, ally["id"])
-        if not location:
-            query.edit_message_text("Error: direccion no encontrada.")
-            return mostrar_lista_pickups(query, context)
-
-        # Mostrar submenú para esta pickup
-        label = construir_etiqueta_pickup(location)
-        is_freq = location.get("is_frequent", 0)
-
-        keyboard = [
-            [InlineKeyboardButton("Usar para este pedido", callback_data=f"pickup_list_usar_{loc_id}")],
-        ]
-
-        if is_freq:
-            keyboard.append([InlineKeyboardButton("Quitar de frecuentes", callback_data=f"pickup_list_freq_{loc_id}_0")])
-        else:
-            keyboard.append([InlineKeyboardButton("Marcar como frecuente", callback_data=f"pickup_list_freq_{loc_id}_1")])
-
-        keyboard.append([InlineKeyboardButton("Volver a lista", callback_data="pickup_list_back")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        query.edit_message_text(
-            f"PICKUP SELECCIONADO\n\n"
-            f"{label}\n"
-            f"Direccion: {location.get('address', '-')}\n"
-            f"Usos: {location.get('use_count', 0)}",
-            reply_markup=reply_markup
-        )
-        return PEDIDO_PICKUP_LISTA
 
     query.edit_message_text("Opcion no valida.")
     return ConversationHandler.END
@@ -3515,17 +4191,18 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    # Normalizar: tomar primer URL si hay varios tokens
-    raw_link = text
-    if "http" in text:
-        raw_link = next((t for t in text.split() if t.startswith("http")), text)
+    # Mismo pipeline de resolucion usado en cotizacion
+    loc = resolve_location(text)
+    if loc and loc.get("lat") is not None and loc.get("lng") is not None:
+        if loc.get("method") == "geocode" and loc.get("formatted_address"):
+            _mostrar_confirmacion_geocode(
+                update.message, context,
+                loc, text,
+                "pickup_geo_si", "pickup_geo_no",
+            )
+            return PEDIDO_PICKUP_NUEVA_UBICACION
 
-    # Expandir link corto si aplica
-    expanded = expand_short_url(raw_link) or raw_link
-
-    coords = extract_lat_lng_from_text(expanded)
-    if coords:
-        lat, lng = coords
+        lat, lng = loc["lat"], loc["lng"]
         if fixing_default:
             ally = context.user_data.get("ally")
             location_id = context.user_data.get("pickup_fix_default_loc_id")
@@ -3561,7 +4238,7 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
     # No se pudo extraer - detectar si es link corto de Google
-    es_link_corto_google = "maps.app.goo.gl" in raw_link or "goo.gl/maps" in raw_link
+    es_link_corto_google = "maps.app.goo.gl" in text or "goo.gl/maps" in text
 
     if es_link_corto_google:
         keyboard = [[InlineKeyboardButton(
@@ -3584,6 +4261,58 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         )
 
     return PEDIDO_PICKUP_NUEVA_UBICACION
+
+
+def pedido_pickup_geo_callback(update, context):
+    """Maneja confirmacion de geocoding para nueva direccion de pickup en pedido."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "pickup_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /nuevo_pedido de nuevo.")
+            return PEDIDO_PICKUP_NUEVA_UBICACION
+
+        fixing_default = bool(context.user_data.get("pickup_fix_default_loc_id"))
+        if fixing_default:
+            ally = context.user_data.get("ally")
+            location_id = context.user_data.get("pickup_fix_default_loc_id")
+            if not ally or not location_id:
+                query.edit_message_text("No se pudo actualizar la direccion principal. Intenta /nuevo_pedido de nuevo.")
+                return ConversationHandler.END
+
+            update_ally_location_coords(location_id, lat, lng)
+            context.user_data.pop("pickup_fix_default_loc_id", None)
+
+            default_loc = get_default_ally_location(ally["id"])
+            if not default_loc:
+                query.edit_message_text("No se pudo cargar la direccion principal actualizada.")
+                return ConversationHandler.END
+
+            context.user_data["pickup_location"] = default_loc
+            context.user_data["pickup_label"] = default_loc.get("label") or "Base"
+            context.user_data["pickup_address"] = default_loc.get("address", "")
+            context.user_data["pickup_city"] = default_loc.get("city", "")
+            context.user_data["pickup_lat"] = default_loc.get("lat")
+            context.user_data["pickup_lng"] = default_loc.get("lng")
+
+            query.edit_message_text("Ubicacion principal actualizada. Continuamos con el pedido.")
+            return continuar_despues_pickup(query, context, edit=False)
+
+        context.user_data["new_pickup_lat"] = lat
+        context.user_data["new_pickup_lng"] = lng
+        query.edit_message_text(
+            f"Ubicacion capturada: {lat}, {lng}\n\n"
+            "Ahora escribe los detalles de la direccion de recogida:\n"
+            "direccion, barrio, referencias..."
+        )
+        return PEDIDO_PICKUP_NUEVA_DETALLES
+
+    return _geo_siguiente_o_gps(query, context, "pickup_geo_si", "pickup_geo_no", PEDIDO_PICKUP_NUEVA_UBICACION)
 
 
 def pedido_pickup_nueva_ubicacion_location_handler(update, context):
@@ -4528,46 +5257,58 @@ def admin_residence_location(update, context):
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+        else:
+            # Geocoding: intentar como direccion escrita
+            geo = resolve_location(text)
+            if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                _mostrar_confirmacion_geocode(
+                    update.message, context,
+                    geo, text,
+                    "admin_geo_si", "admin_geo_no",
+                )
+                return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
         update.message.reply_text(
-            "No pude detectar la ubicación. Envía un pin de Telegram o pega un link de Google Maps."
+            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
         return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
-    update.message.reply_text("Ubicación guardada.")
-
-    # Mostrar resumen completo + requisitos + pedir ACEPTAR
-    full_name = context.user_data.get("admin_name", "")
-    document_number = context.user_data.get("admin_document", "")
-    team_name = context.user_data.get("admin_team_name", "")
-    phone = context.user_data.get("phone", "")
-    city = context.user_data.get("admin_city", "")
-    barrio = context.user_data.get("admin_barrio", "")
-    residence_address = context.user_data.get("admin_residence_address", "")
-
-    resumen = (
-        "Verifica tus datos de Administrador Local:\n\n"
-        f"Nombre: {full_name}\n"
-        f"Cédula: {document_number}\n"
-        f"Equipo: {team_name}\n"
-        f"Teléfono: {phone}\n"
-        f"Ciudad: {city}\n"
-        f"Barrio: {barrio}\n"
-        f"Dirección: {residence_address}\n"
-        f"Ubicación: {lat}, {lng}\n\n"
-        "Condiciones para Administrador Local:\n"
-        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
-        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
-        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
-        "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
-        "Si quieres corregir, escribe 'volver' o usa /cancel."
+    update.message.reply_text(
+        "Ubicacion guardada.\n\n"
+        "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
+        "Envia una foto del FRENTE de tu cedula:" + _OPTIONS_HINT
     )
-    update.message.reply_text(resumen)
-    _set_flow_step(context, "admin", LOCAL_ADMIN_CONFIRM)
-    return LOCAL_ADMIN_CONFIRM
+    _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
+    return LOCAL_ADMIN_CEDULA_FRONT
+
+
+def admin_geo_ubicacion_callback(update, context):
+    """Maneja confirmacion de geocoding en el registro de admin local."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "admin_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return LOCAL_ADMIN_RESIDENCE_LOCATION
+        context.user_data["admin_residence_lat"] = lat
+        context.user_data["admin_residence_lng"] = lng
+        query.edit_message_text(
+            "Ubicacion confirmada.\n\n"
+            "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
+            "Envia una foto del FRENTE de tu cedula:" + _OPTIONS_HINT
+        )
+        _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
+        return LOCAL_ADMIN_CEDULA_FRONT
+    else:  # admin_geo_no
+        return _geo_siguiente_o_gps(query, context, "admin_geo_si", "admin_geo_no", LOCAL_ADMIN_RESIDENCE_LOCATION)
 
 
 def admin_confirm(update, context):
@@ -4588,6 +5329,9 @@ def admin_confirm(update, context):
     residence_address = (context.user_data.get("admin_residence_address") or "").strip()
     residence_lat = context.user_data.get("admin_residence_lat")
     residence_lng = context.user_data.get("admin_residence_lng")
+    cedula_front_file_id = context.user_data.get("admin_cedula_front_file_id")
+    cedula_back_file_id = context.user_data.get("admin_cedula_back_file_id")
+    selfie_file_id = context.user_data.get("admin_selfie_file_id")
 
     try:
         admin_id, team_code = create_admin(
@@ -4601,6 +5345,9 @@ def admin_confirm(update, context):
             residence_address,
             residence_lat,
             residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
         )
     except ValueError as e:
         update.message.reply_text(str(e))
@@ -4676,6 +5423,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
     ]
 
     update.message.reply_text(
@@ -5555,6 +6303,7 @@ def volver_menu_global(update, context):
 def cotizar_start(update, context):
     context.user_data.pop("cotizar_pickup", None)
     context.user_data.pop("cotizar_dropoff", None)
+    context.user_data.pop("cotizar_ally_id", None)
     keyboard = [
         [InlineKeyboardButton("Por distancia (km)", callback_data="cotizar_modo_km")],
         [InlineKeyboardButton("Por ubicaciones", callback_data="cotizar_modo_ubi")],
@@ -5580,6 +6329,15 @@ def cotizar_modo_callback(update, context):
         return COTIZAR_DISTANCIA
 
     elif modo == "cotizar_modo_ubi":
+        # Si el usuario es un aliado con ubicaciones guardadas, mostrar selector
+        user_db_id = get_user_db_id_from_update(update)
+        ally = get_ally_by_user_id(user_db_id) if user_db_id else None
+        if ally and ally.get("status") == "APPROVED":
+            locations = get_ally_locations(ally["id"])
+            if locations:
+                context.user_data["cotizar_ally_id"] = ally["id"]
+                return _cotizar_mostrar_selector(query, context, locations)
+        # Sin ubicaciones guardadas: flujo manual
         query.edit_message_text(
             "COTIZADOR POR UBICACIONES\n\n"
             "Enviame el punto de RECOGIDA.\n"
@@ -5592,6 +6350,150 @@ def cotizar_modo_callback(update, context):
         return COTIZAR_RECOGIDA
 
     return ConversationHandler.END
+
+
+def _cotizar_mostrar_selector(query, context, locations):
+    """Muestra el selector de punto de recogida del aliado en el cotizador."""
+    keyboard = []
+    default_loc = next((l for l in locations if l.get("is_default")), None)
+    if default_loc:
+        label = (default_loc.get("label") or "Base")[:20]
+        address = (default_loc.get("address") or "")[:35]
+        sin_gps = " (sin GPS)" if default_loc.get("lat") is None else ""
+        keyboard.append([InlineKeyboardButton(
+            "Usar mi ubicacion base: {} - {}{}".format(label, address, sin_gps),
+            callback_data="cotizar_pickup_base"
+        )])
+    if len(locations) > 1 or not default_loc:
+        keyboard.append([InlineKeyboardButton(
+            "Elegir de mis ubicaciones ({})".format(len(locations)),
+            callback_data="cotizar_pickup_lista"
+        )])
+    keyboard.append([InlineKeyboardButton(
+        "Ingresar otra ubicacion",
+        callback_data="cotizar_pickup_manual"
+    )])
+    query.edit_message_text(
+        "COTIZADOR - PUNTO DE RECOGIDA\n\n"
+        "Desde donde se recoge el envio?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return COTIZAR_RECOGIDA_SELECTOR
+
+
+def _cotizar_mostrar_lista(query, ally_id, titulo="MIS UBICACIONES"):
+    """Muestra la lista de ubicaciones guardadas del aliado en el cotizador."""
+    locations = get_ally_locations(ally_id)
+    if not locations:
+        query.edit_message_text("No tienes ubicaciones guardadas. Usa /cotizar de nuevo.")
+        return ConversationHandler.END
+    keyboard = []
+    for loc in locations[:8]:
+        loc_id = loc["id"]
+        label = (loc.get("label") or "Sin nombre")[:20]
+        address = (loc.get("address") or "")[:28]
+        tags = []
+        if loc.get("is_default"):
+            tags.append("BASE")
+        if loc.get("is_frequent"):
+            tags.append("FRECUENTE")
+        tag_str = " [{}]".format(", ".join(tags)) if tags else ""
+        sin_gps = " (sin GPS)" if loc.get("lat") is None else ""
+        keyboard.append([InlineKeyboardButton(
+            "{}: {}{}{}".format(label, address, tag_str, sin_gps),
+            callback_data="cotizar_pickup_usar_{}".format(loc_id)
+        )])
+    keyboard.append([InlineKeyboardButton("Ingresar otra ubicacion", callback_data="cotizar_pickup_manual")])
+    keyboard.append([InlineKeyboardButton("Volver", callback_data="cotizar_pickup_volver")])
+    query.edit_message_text(
+        "COTIZADOR - {}\n\n"
+        "Selecciona el punto de recogida:".format(titulo),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return COTIZAR_RECOGIDA_SELECTOR
+
+
+def cotizar_pickup_callback(update, context):
+    """Maneja la seleccion de punto de recogida del aliado en el cotizador."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("cotizar_ally_id")
+
+    if data == "cotizar_pickup_base":
+        if not ally_id:
+            query.edit_message_text("Error: intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        default_loc = get_default_ally_location(ally_id)
+        if not default_loc or default_loc.get("lat") is None:
+            return _cotizar_mostrar_lista(query, ally_id, "BASE SIN GPS - ELIGE OTRA")
+        context.user_data["cotizar_pickup"] = {
+            "lat": default_loc["lat"],
+            "lng": default_loc["lng"],
+            "method": "saved",
+        }
+        query.edit_message_text(
+            "Recogida: {} - {}\n\n"
+            "Ahora enviame el punto de ENTREGA.\n"
+            "Puedes enviar un PIN de ubicacion, un link de Google Maps "
+            "o coordenadas (ej: 4.81,-75.69).".format(
+                default_loc.get("label") or "Base",
+                default_loc.get("address") or ""
+            )
+        )
+        return COTIZAR_ENTREGA
+
+    elif data == "cotizar_pickup_lista":
+        if not ally_id:
+            query.edit_message_text("Error: intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        return _cotizar_mostrar_lista(query, ally_id)
+
+    elif data == "cotizar_pickup_manual":
+        query.edit_message_text(
+            "COTIZADOR POR UBICACIONES\n\n"
+            "Enviame el punto de RECOGIDA.\n"
+            "Puedes enviar:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Una direccion de texto"
+        )
+        return COTIZAR_RECOGIDA
+
+    elif data == "cotizar_pickup_volver":
+        if not ally_id:
+            query.edit_message_text("Error: intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        locations = get_ally_locations(ally_id)
+        return _cotizar_mostrar_selector(query, context, locations)
+
+    elif data.startswith("cotizar_pickup_usar_"):
+        try:
+            loc_id = int(data.split("cotizar_pickup_usar_")[1])
+        except (ValueError, IndexError):
+            query.edit_message_text("Error: intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        loc = get_ally_location_by_id(loc_id)
+        if not loc or loc.get("lat") is None:
+            return _cotizar_mostrar_lista(query, ally_id, "SIN GPS - ELIGE OTRA")
+        context.user_data["cotizar_pickup"] = {
+            "lat": loc["lat"],
+            "lng": loc["lng"],
+            "method": "saved",
+        }
+        query.edit_message_text(
+            "Recogida: {} - {}\n\n"
+            "Ahora enviame el punto de ENTREGA.\n"
+            "Puedes enviar un PIN de ubicacion, un link de Google Maps "
+            "o coordenadas (ej: 4.81,-75.69).".format(
+                loc.get("label") or "Ubicacion",
+                loc.get("address") or ""
+            )
+        )
+        return COTIZAR_ENTREGA
+
+    return COTIZAR_RECOGIDA_SELECTOR
 
 
 def cotizar_distancia(update, context):
@@ -5635,8 +6537,21 @@ def cotizar_recogida(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
         update.message.reply_text(
-            "No pude obtener la ubicacion.\n"
-            "Intenta con un PIN, link de Google Maps, o coordenadas."
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return COTIZAR_RECOGIDA
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        original_text = update.message.text.strip() if update.message and update.message.text else ""
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            loc, original_text,
+            "cotizar_recogida_geo_si", "cotizar_recogida_geo_no",
         )
         return COTIZAR_RECOGIDA
 
@@ -5658,33 +6573,66 @@ def cotizar_recogida_location(update, context):
     return cotizar_recogida(update, context)
 
 
+def cotizar_recogida_geo_callback(update, context):
+    """Maneja confirmacion de geocoding en recogida del cotizador."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_recogida_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
+            return COTIZAR_RECOGIDA
+        context.user_data["cotizar_pickup"] = {"lat": lat, "lng": lng, "method": "geocode"}
+        query.edit_message_text(
+            "Recogida confirmada.\n\n"
+            "Ahora enviame el punto de ENTREGA.\n"
+            "Puedes enviar:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Una direccion de texto"
+        )
+        return COTIZAR_ENTREGA
+    else:  # cotizar_recogida_geo_no
+        return _geo_siguiente_o_gps(query, context, "cotizar_recogida_geo_si", "cotizar_recogida_geo_no", COTIZAR_RECOGIDA)
+
+
 def cotizar_entrega(update, context):
     loc = _cotizar_resolver_ubicacion(update, context)
     if not loc:
         update.message.reply_text(
-            "No pude obtener la ubicacion.\n"
-            "Intenta con un PIN, link de Google Maps, o coordenadas."
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
         )
         return COTIZAR_ENTREGA
 
-    context.user_data["cotizar_dropoff"] = loc
-    pickup = context.user_data.get("cotizar_pickup")
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        original_text = update.message.text.strip() if update.message and update.message.text else ""
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            loc, original_text,
+            "cotizar_entrega_geo_si", "cotizar_entrega_geo_no",
+        )
+        return COTIZAR_ENTREGA
 
+    pickup = context.user_data.get("cotizar_pickup")
     if not pickup:
         update.message.reply_text("Error: no se encontro el punto de recogida. Usa /cotizar de nuevo.")
         return ConversationHandler.END
 
-    # Calcular distancia con estrategia inteligente
-    result = get_smart_distance(
-        pickup["lat"], pickup["lng"],
-        loc["lat"], loc["lng"]
-    )
-
+    result = get_smart_distance(pickup["lat"], pickup["lng"], loc["lat"], loc["lng"])
     distance_km = result["distance_km"]
     config = get_pricing_config()
     precio = calcular_precio_distancia(distance_km, config)
 
-    # Indicar fuente de distancia
     source = result["source"]
     if "google" in source:
         nota_fuente = "Distancia por ruta (Google Maps)"
@@ -5693,22 +6641,144 @@ def cotizar_entrega(update, context):
     else:
         nota_fuente = f"Distancia desde cache ({source})"
 
+    context.user_data["cotizar_result_pickup_lat"] = pickup["lat"]
+    context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
+    context.user_data["cotizar_result_dropoff_lat"] = loc["lat"]
+    context.user_data["cotizar_result_dropoff_lng"] = loc["lng"]
+    keyboard = [
+        [InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido")],
+        [InlineKeyboardButton("Varias entregas (ruta)", callback_data="cotizar_crear_ruta")],
+        [InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar")],
+    ]
     update.message.reply_text(
         f"COTIZACION\n\n"
         f"Distancia: {distance_km:.1f} km\n"
         f"Precio: ${precio:,}\n\n".replace(",", ".")
-        + f"{nota_fuente}"
+        + f"{nota_fuente}\n\n"
+        + "Deseas crear el pedido?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-
-    # Limpiar datos
-    context.user_data.pop("cotizar_pickup", None)
-    context.user_data.pop("cotizar_dropoff", None)
-    return ConversationHandler.END
+    return COTIZAR_RESULTADO
 
 
 def cotizar_entrega_location(update, context):
     """Handler para PIN de Telegram en entrega."""
     return cotizar_entrega(update, context)
+
+
+def cotizar_entrega_geo_callback(update, context):
+    """Maneja confirmacion de geocoding en entrega del cotizador."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_entrega_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
+            return ConversationHandler.END
+        pickup = context.user_data.get("cotizar_pickup")
+        if not pickup:
+            query.edit_message_text("Error: no se encontro recogida. Usa /cotizar de nuevo.")
+            return ConversationHandler.END
+
+        result = get_smart_distance(pickup["lat"], pickup["lng"], lat, lng)
+        distance_km = result["distance_km"]
+        config = get_pricing_config()
+        precio = calcular_precio_distancia(distance_km, config)
+
+        source = result["source"]
+        if "google" in source:
+            nota_fuente = "Distancia por ruta (Google Maps)"
+        elif "haversine" in source:
+            nota_fuente = "Distancia estimada (calculo local)"
+        else:
+            nota_fuente = f"Distancia desde cache ({source})"
+
+        context.user_data["cotizar_result_pickup_lat"] = pickup["lat"]
+        context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
+        context.user_data["cotizar_result_dropoff_lat"] = lat
+        context.user_data["cotizar_result_dropoff_lng"] = lng
+        keyboard = [
+            [InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido")],
+            [InlineKeyboardButton("Varias entregas (ruta)", callback_data="cotizar_crear_ruta")],
+            [InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar")],
+        ]
+        query.edit_message_text(
+            f"COTIZACION\n\n"
+            f"Distancia: {distance_km:.1f} km\n"
+            f"Precio: ${precio:,}\n\n".replace(",", ".")
+            + f"{nota_fuente}\n\n"
+            + "Deseas crear el pedido?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        return COTIZAR_RESULTADO
+    else:  # cotizar_entrega_geo_no
+        return _geo_siguiente_o_gps(query, context, "cotizar_entrega_geo_si", "cotizar_entrega_geo_no", COTIZAR_ENTREGA)
+
+
+def cotizar_resultado_callback(update, context):
+    """Maneja la decision del aliado tras ver el precio de cotizacion."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "cotizar_cerrar":
+        context.user_data.pop("cotizar_result_pickup_lat", None)
+        context.user_data.pop("cotizar_result_pickup_lng", None)
+        context.user_data.pop("cotizar_result_dropoff_lat", None)
+        context.user_data.pop("cotizar_result_dropoff_lng", None)
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        query.edit_message_text("Cotizacion completada.")
+        return ConversationHandler.END
+
+    if query.data == "cotizar_crear_ruta":
+        pickup_lat = context.user_data.pop("cotizar_result_pickup_lat", None)
+        pickup_lng = context.user_data.pop("cotizar_result_pickup_lng", None)
+        context.user_data.pop("cotizar_result_dropoff_lat", None)
+        context.user_data.pop("cotizar_result_dropoff_lng", None)
+        context.user_data.pop("cotizar_pickup", None)
+        context.user_data.pop("cotizar_ally_id", None)
+        context.user_data["prefill_ruta_pickup_lat"] = pickup_lat
+        context.user_data["prefill_ruta_pickup_lng"] = pickup_lng
+        query.edit_message_text("Ruta de multiples paradas.")
+        keyboard = [[
+            InlineKeyboardButton("Cliente recurrente", callback_data="cotizar_ruta_cust_recurrente"),
+            InlineKeyboardButton("Cliente nuevo", callback_data="cotizar_ruta_cust_nuevo"),
+        ]]
+        query.message.reply_text(
+            "Primera parada - Tipo de cliente:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return ConversationHandler.END
+
+    # cotizar_crear_pedido
+    pickup_lat = context.user_data.pop("cotizar_result_pickup_lat", None)
+    pickup_lng = context.user_data.pop("cotizar_result_pickup_lng", None)
+    dropoff_lat = context.user_data.pop("cotizar_result_dropoff_lat", None)
+    dropoff_lng = context.user_data.pop("cotizar_result_dropoff_lng", None)
+    context.user_data.pop("cotizar_pickup", None)
+    context.user_data.pop("cotizar_ally_id", None)
+
+    context.user_data["prefill_pickup_lat"] = pickup_lat
+    context.user_data["prefill_pickup_lng"] = pickup_lng
+    context.user_data["prefill_dropoff_lat"] = dropoff_lat
+    context.user_data["prefill_dropoff_lng"] = dropoff_lng
+
+    query.edit_message_text("Perfecto. Ahora selecciona el tipo de cliente:")
+    keyboard = [[
+        InlineKeyboardButton("Cliente recurrente", callback_data="cotizar_cust_recurrente"),
+        InlineKeyboardButton("Cliente nuevo", callback_data="cotizar_cust_nuevo"),
+    ]]
+    query.message.reply_text(
+        "Tipo de cliente:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ConversationHandler.END
 
 
 def courier_pick_admin_callback(update, context):
@@ -5940,6 +7010,21 @@ def admin_ver_pendiente(update, context):
     ]
 
     query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # Enviar fotos de verificación de identidad si están disponibles
+    cedula_front = admin.get("cedula_front_file_id")
+    cedula_back = admin.get("cedula_back_file_id")
+    selfie = admin.get("selfie_file_id")
+    if cedula_front or cedula_back or selfie:
+        try:
+            if cedula_front:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+            if cedula_back:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+            if selfie:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+        except Exception as e:
+            print(f"[WARN] No se pudieron enviar fotos del admin {admin_id}: {e}")
 
 def admin_aprobar_rechazar_callback(update, context):
     query = update.callback_query
@@ -6359,6 +7444,28 @@ def clientes_nuevo_direccion_label(update, context):
     return CLIENTES_NUEVO_DIRECCION_TEXT
 
 
+def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_no, estado):
+    """Aplica el mismo pipeline de cotizar para resolver una direccion en agenda."""
+    loc = resolve_location(texto)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return None
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["clientes_geo_formatted"] = loc.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        return estado
+
+    return loc
+
+
 def clientes_nuevo_direccion_text(update, context):
     """Recibe direccion y guarda el nuevo cliente."""
     address_text = update.message.text.strip()
@@ -6368,22 +7475,47 @@ def clientes_nuevo_direccion_text(update, context):
     notes = context.user_data.get("new_customer_notes")
     label = context.user_data.get("new_address_label")
 
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_NUEVO_DIRECCION_TEXT
+    )
+    if resolved is None:
+        return CLIENTES_NUEVO_DIRECCION_TEXT
+    if isinstance(resolved, int):
+        context.user_data["clientes_geo_mode"] = "nuevo_cliente"
+        context.user_data["clientes_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
     try:
         customer_id = create_ally_customer(ally_id, name, phone, notes)
-        create_customer_address(customer_id, label, address_text)
+        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
 
         keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
         update.message.reply_text(
             f"Cliente '{name}' creado exitosamente.\n\n"
             f"Telefono: {phone}\n"
-            f"Direccion ({label}): {address_text}",
+            f"Direccion ({label}): {address_to_save}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         update.message.reply_text(f"Error al crear cliente: {str(e)}")
 
     # Limpiar datos temporales
-    for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label"]:
+    for key in [
+        "new_customer_name",
+        "new_customer_phone",
+        "new_customer_notes",
+        "new_address_label",
+        "clientes_geo_mode",
+        "clientes_geo_address_input",
+        "clientes_geo_formatted",
+        "pending_geo_lat",
+        "pending_geo_lng",
+        "pending_geo_text",
+        "pending_geo_seen",
+    ]:
         context.user_data.pop(key, None)
 
     return CLIENTES_MENU
@@ -6396,7 +7528,10 @@ def clientes_buscar(update, context):
 
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+        keyboard = [
+            [InlineKeyboardButton("Agregar nuevo cliente", callback_data="cust_nuevo")],
+            [InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")],
+        ]
         update.message.reply_text(
             f"No se encontraron clientes con '{query_text}'.",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -6479,14 +7614,94 @@ def clientes_dir_nueva_text(update, context):
     customer_id = context.user_data.get("current_customer_id")
     label = context.user_data.get("new_address_label")
 
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_DIR_NUEVA_TEXT
+    )
+    if resolved is None:
+        return CLIENTES_DIR_NUEVA_TEXT
+    if isinstance(resolved, int):
+        context.user_data["clientes_geo_mode"] = "dir_nueva"
+        context.user_data["clientes_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
     try:
-        create_customer_address(customer_id, label, address_text)
-        update.message.reply_text(f"Direccion agregada: {label} - {address_text}")
+        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
+        update.message.reply_text(f"Direccion agregada: {label} - {address_to_save}")
     except Exception as e:
         update.message.reply_text(f"Error: {str(e)}")
 
-    context.user_data.pop("new_address_label", None)
+    for key in [
+        "new_address_label",
+        "clientes_geo_mode",
+        "clientes_geo_address_input",
+        "clientes_geo_formatted",
+        "pending_geo_lat",
+        "pending_geo_lng",
+        "pending_geo_text",
+        "pending_geo_seen",
+    ]:
+        context.user_data.pop(key, None)
     return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_geo_callback(update, context):
+    """Confirma/rechaza geocoding de direccion en agenda de clientes."""
+    query = update.callback_query
+    query.answer()
+
+    mode = context.user_data.get("clientes_geo_mode")
+    if not mode:
+        query.edit_message_text("Sesion de geocodificacion expirada. Escribe la direccion nuevamente.")
+        return CLIENTES_MENU
+
+    if query.data == "cust_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        original_text = context.user_data.pop("pending_geo_text", "") or context.user_data.get("clientes_geo_address_input", "")
+        context.user_data.pop("pending_geo_seen", None)
+        formatted = context.user_data.pop("clientes_geo_formatted", "") or original_text
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Escribe la direccion nuevamente.")
+            return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
+
+        if mode == "nuevo_cliente":
+            ally_id = context.user_data.get("active_ally_id")
+            name = context.user_data.get("new_customer_name")
+            phone = context.user_data.get("new_customer_phone")
+            notes = context.user_data.get("new_customer_notes")
+            label = context.user_data.get("new_address_label")
+            try:
+                customer_id = create_ally_customer(ally_id, name, phone, notes)
+                create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
+                keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+                query.edit_message_text(
+                    f"Cliente '{name}' creado exitosamente.\n\n"
+                    f"Telefono: {phone}\n"
+                    f"Direccion ({label}): {formatted}",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception as e:
+                query.edit_message_text(f"Error al crear cliente: {str(e)}")
+            for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
+                context.user_data.pop(key, None)
+            return CLIENTES_MENU
+
+        customer_id = context.user_data.get("current_customer_id")
+        label = context.user_data.get("new_address_label")
+        try:
+            create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
+            query.edit_message_text(f"Direccion agregada: {label} - {formatted}")
+        except Exception as e:
+            query.edit_message_text(f"Error: {str(e)}")
+        for key in ["new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    estado = CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
+    return _geo_siguiente_o_gps(query, context, "cust_geo_si", "cust_geo_no", estado)
 
 
 def clientes_dir_editar_label(update, context):
@@ -6579,6 +7794,7 @@ def agenda_cmd(update, context):
     context.user_data.clear()
     ally_id = ally["id"]
     context.user_data["active_ally_id"] = ally_id
+    context.user_data["ally_locs_ally_id"] = ally_id
     context.user_data["ally"] = {"id": ally_id}
 
     return agenda_mostrar_menu(update, context)
@@ -6616,8 +7832,7 @@ def agenda_menu_callback(update, context):
         return agenda_pickups_mostrar(query, context)
 
     elif data == "agenda_clientes":
-        query.edit_message_text("Agenda de clientes: usa /clientes para abrirla.")
-        return ConversationHandler.END
+        return clientes_mostrar_menu(update, context, edit_message=True)
 
     elif data == "agenda_cerrar":
         query.edit_message_text("Agenda cerrada.")
@@ -6630,55 +7845,34 @@ def agenda_menu_callback(update, context):
 
 
 def agenda_pickups_mostrar(query, context):
-    """Muestra lista de direcciones de recogida del aliado."""
+    """Muestra lista de direcciones de recogida del aliado con botones por ubicacion."""
     ally_id = context.user_data.get("active_ally_id")
     if not ally_id:
         query.edit_message_text("Error: no hay aliado activo.")
         return ConversationHandler.END
 
     locations = get_ally_locations(ally_id)
-
-    if not locations:
-        keyboard = [
-            [InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")],
-            [InlineKeyboardButton("Volver", callback_data="agenda_volver")],
-        ]
-        query.edit_message_text(
-            "Direcciones de recogida\n\n"
-            "Estas son las direcciones desde donde normalmente recoges pedidos.\n\n"
-            "No tienes direcciones de recogida guardadas.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return DIRECCIONES_PICKUPS
-
-    # Construir lista con botones
-    lines = [
-        "Direcciones de recogida\n\n"
-        "Estas son las direcciones desde donde normalmente recoges pedidos.\n"
-    ]
-
     keyboard = []
-    for loc in locations[:10]:
-        label = loc.get("label") or "Sin nombre"
-        tags = []
-        if loc.get("is_default"):
-            tags.append("BASE")
-        if loc.get("is_frequent"):
-            tags.append("FRECUENTE")
-        use_count = loc.get("use_count", 0)
-        if use_count > 0:
-            tags.append(f"x{use_count}")
 
-        tag_str = f" ({' - '.join(tags)})" if tags else ""
-        btn_text = f"{label}{tag_str}"
-        lines.append(f"- {btn_text}")
+    if locations:
+        for loc in locations[:10]:
+            label = (loc.get("label") or "Sin nombre")[:25]
+            tags = []
+            if loc.get("is_default"):
+                tags.append("BASE")
+            tag_str = " [{}]".format(", ".join(tags)) if tags else ""
+            keyboard.append([InlineKeyboardButton(
+                "{}{}".format(label, tag_str),
+                callback_data="agenda_pickup_ver_{}".format(loc["id"])
+            )])
+        keyboard.append([InlineKeyboardButton("+ Agregar nueva", callback_data="agenda_pickups_nueva")])
+        texto = "PUNTOS DE RECOGIDA\n\nSelecciona uno para ver opciones o agregar nuevo:"
+    else:
+        keyboard.append([InlineKeyboardButton("+ Agregar primera ubicacion", callback_data="agenda_pickups_nueva")])
+        texto = "PUNTOS DE RECOGIDA\n\nAun no tienes ubicaciones de recogida guardadas."
 
-    text = "\n".join(lines)
-
-    keyboard.append([InlineKeyboardButton("Agregar nueva recogida", callback_data="agenda_pickups_nueva")])
     keyboard.append([InlineKeyboardButton("Volver", callback_data="agenda_volver")])
-
-    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
     return DIRECCIONES_PICKUPS
 
 
@@ -6688,18 +7882,89 @@ def agenda_pickups_callback(update, context):
     query.answer()
     data = query.data
 
+    ally_id = context.user_data.get("active_ally_id")
+    if not ally_id:
+        query.edit_message_text("Error: no hay aliado activo.")
+        return ConversationHandler.END
+
     if data == "agenda_volver":
         return agenda_mostrar_menu(update, context, edit_message=True)
 
+    elif data == "agenda_pickup_lista" or data == "agenda_pickup_del_cancel":
+        return agenda_pickups_mostrar(query, context)
+
     elif data == "agenda_pickups_nueva":
         query.edit_message_text(
-            "Nueva direccion de recogida\n\n"
+            "Nueva ubicacion de recogida\n\n"
             "Envia la ubicacion (PIN de Telegram), "
             "pega el enlace (Google Maps/WhatsApp) "
             "o escribe coordenadas (lat,lng).\n\n"
             "La ubicacion es obligatoria para continuar."
         )
         return DIRECCIONES_PICKUP_NUEVA_UBICACION
+
+    elif data.startswith("agenda_pickup_ver_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_ver_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        if not loc:
+            return agenda_pickups_mostrar(query, context)
+        label = loc.get("label") or "Sin nombre"
+        address = loc.get("address") or "-"
+        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc.get("lat") else "Sin GPS"
+        is_base = bool(loc.get("is_default"))
+        detalle = "{}\n\nDireccion: {}\nGPS: {}".format(label, address, gps)
+        keyboard = []
+        if not is_base:
+            keyboard.append([InlineKeyboardButton(
+                "Marcar como base",
+                callback_data="agenda_pickup_base_{}".format(loc_id)
+            )])
+        keyboard.append([InlineKeyboardButton(
+            "Eliminar",
+            callback_data="agenda_pickup_del_{}".format(loc_id)
+        )])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="agenda_pickup_lista")])
+        query.edit_message_text(detalle, reply_markup=InlineKeyboardMarkup(keyboard))
+        return DIRECCIONES_PICKUPS
+
+    elif data.startswith("agenda_pickup_base_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_base_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        set_default_ally_location(loc_id, ally_id)
+        return agenda_pickups_mostrar(query, context)
+
+    elif data.startswith("agenda_pickup_del_confirm_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_del_confirm_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        delete_ally_location(loc_id, ally_id)
+        return agenda_pickups_mostrar(query, context)
+
+    elif data.startswith("agenda_pickup_del_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_del_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        label = (loc.get("label") or "esta ubicacion") if loc else "esta ubicacion"
+        keyboard = [
+            [InlineKeyboardButton(
+                "Confirmar eliminacion",
+                callback_data="agenda_pickup_del_confirm_{}".format(loc_id)
+            )],
+            [InlineKeyboardButton("Cancelar", callback_data="agenda_pickup_del_cancel")],
+        ]
+        query.edit_message_text(
+            "Eliminar '{}'?\n\nEsta accion no se puede deshacer.".format(label),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return DIRECCIONES_PICKUPS
 
     return DIRECCIONES_PICKUPS
 
@@ -6862,7 +8127,10 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(agenda_menu_callback, pattern=r"^agenda_(pickups|clientes|cerrar|volver)$"),
         ],
         DIRECCIONES_PICKUPS: [
-            CallbackQueryHandler(agenda_pickups_callback, pattern=r"^agenda_(volver|pickups_nueva)$")
+            CallbackQueryHandler(
+                agenda_pickups_callback,
+                pattern=r"^agenda_(volver|pickups_nueva|pickup_lista|pickup_del_cancel|pickup_ver_\d+|pickup_base_\d+|pickup_del_confirm_\d+|pickup_del_\d+)$"
+            )
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
@@ -6873,6 +8141,56 @@ agenda_conv = ConversationHandler(
         ],
         DIRECCIONES_PICKUP_GUARDAR: [
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
+        ],
+        CLIENTES_MENU: [
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+        ],
+        CLIENTES_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+        ],
+        CLIENTES_NUEVO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+        ],
+        CLIENTES_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+        ],
+        CLIENTES_NUEVO_DIRECCION_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+        ],
+        CLIENTES_NUEVO_DIRECCION_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+        ],
+        CLIENTES_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+        ],
+        CLIENTES_VER_CLIENTE: [
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+        ],
+        CLIENTES_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+        ],
+        CLIENTES_EDITAR_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+        ],
+        CLIENTES_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+        ],
+        CLIENTES_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+        ],
+        CLIENTES_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+        ],
+        CLIENTES_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+        ],
+        CLIENTES_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+        ],
+        CLIENTES_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
         ],
     },
     fallbacks=[
@@ -6906,6 +8224,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
@@ -6927,6 +8246,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
@@ -6958,6 +8278,7 @@ ally_conv = ConversationHandler(
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
         ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
         ALLY_UBICACION: [
+            CallbackQueryHandler(ally_geo_ubicacion_callback, pattern=r"^ally_geo_"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
             MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler),
         ],
@@ -6995,6 +8316,7 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, courier_residence_address)
         ],
         COURIER_RESIDENCE_LOCATION: [
+            CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
             MessageHandler(Filters.location, courier_residence_location),
             MessageHandler(Filters.text & ~Filters.command, courier_residence_location),
         ],
@@ -7032,11 +8354,835 @@ courier_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+# ======================================================
+# FLUJO NUEVA RUTA (multi-parada)
+# ======================================================
+
+def _ruta_limpiar_temp(context):
+    """Limpia datos temporales de la parada actual."""
+    for k in ["ruta_temp_name", "ruta_temp_phone", "ruta_temp_address",
+              "ruta_temp_city", "ruta_temp_barrio", "ruta_temp_lat", "ruta_temp_lng",
+              "ruta_temp_customer_id"]:
+        context.user_data.pop(k, None)
+
+
+def _ruta_mostrar_selector_pickup(update_or_query, context):
+    """Muestra el selector de punto de recogida para la ruta."""
+    ally_id = context.user_data.get("ruta_ally_id")
+    keyboard = []
+    if ally_id:
+        locations = get_ally_locations(ally_id)
+        default_loc = next((l for l in locations if l.get("is_default")), None)
+        if default_loc:
+            label = (default_loc.get("label") or "Base")[:20]
+            address = (default_loc.get("address") or "")[:30]
+            keyboard.append([InlineKeyboardButton(
+                "Usar base: {} - {}".format(label, address),
+                callback_data="ruta_pickup_base"
+            )])
+        if locations:
+            keyboard.append([InlineKeyboardButton(
+                "Elegir otra ubicacion ({})".format(len(locations)),
+                callback_data="ruta_pickup_lista"
+            )])
+    keyboard.append([InlineKeyboardButton("Nueva direccion de recogida", callback_data="ruta_pickup_nueva")])
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "NUEVA RUTA\n\nSelecciona el punto de recogida:"
+    if hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    return RUTA_PICKUP_SELECTOR
+
+
+def _ruta_guardar_pickup(context, location):
+    context.user_data["ruta_pickup_location_id"] = location.get("id")
+    context.user_data["ruta_pickup_address"] = location.get("address", "")
+    context.user_data["ruta_pickup_lat"] = location.get("lat")
+    context.user_data["ruta_pickup_lng"] = location.get("lng")
+
+
+def _ruta_iniciar_parada(update_or_query, context):
+    """Muestra el selector de cliente para la proxima parada."""
+    paradas = context.user_data.get("ruta_paradas", [])
+    n = len(paradas) + 1
+    ally_id = context.user_data.get("ruta_ally_id")
+    clientes = list_ally_customers(ally_id) if ally_id else []
+    activos = [c for c in clientes if c.get("status") == "ACTIVE"]
+    keyboard = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]
+    for c in activos[:8]:
+        nombre = (c.get("name") or "Sin nombre")[:25]
+        phone = c.get("phone") or ""
+        keyboard.append([InlineKeyboardButton(
+            "{} - {}".format(nombre, phone),
+            callback_data="ruta_sel_cust_{}".format(c["id"])
+        )])
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "PARADA {} DE LA RUTA\n\nSelecciona el cliente:".format(n)
+    _ruta_limpiar_temp(context)
+    if hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    return RUTA_PARADA_SELECTOR
+
+
+def _ruta_guardar_parada_actual(context):
+    """Guarda los datos temporales de la parada en la lista ruta_paradas."""
+    parada = {
+        "name": context.user_data.get("ruta_temp_name") or "",
+        "phone": context.user_data.get("ruta_temp_phone") or "",
+        "address": context.user_data.get("ruta_temp_address") or "",
+        "city": context.user_data.get("ruta_temp_city") or "",
+        "barrio": context.user_data.get("ruta_temp_barrio") or "",
+        "lat": context.user_data.get("ruta_temp_lat"),
+        "lng": context.user_data.get("ruta_temp_lng"),
+        "customer_id": context.user_data.get("ruta_temp_customer_id"),  # None si es cliente nuevo
+    }
+    paradas = context.user_data.get("ruta_paradas", [])
+    paradas.append(parada)
+    context.user_data["ruta_paradas"] = paradas
+    _ruta_limpiar_temp(context)
+
+
+def _ruta_mostrar_mas_paradas(update_or_query, context):
+    """Muestra opcion de agregar mas paradas o continuar."""
+    paradas = context.user_data.get("ruta_paradas", [])
+    n_actual = len(paradas)
+    resumen = "RUTA: {} parada(s) agregada(s)\n\n".format(n_actual)
+    for i, p in enumerate(paradas, 1):
+        resumen += "Parada {}: {} - {}\n".format(
+            i, p.get("name") or "Sin nombre", p.get("address") or "Sin direccion"
+        )
+    if n_actual >= 5:
+        resumen += "\nMaximo 5 paradas alcanzado."
+        keyboard = [[InlineKeyboardButton("Continuar con {} paradas".format(n_actual), callback_data="ruta_mas_no")]]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("Agregar parada {}".format(n_actual + 1), callback_data="ruta_mas_si")],
+            [InlineKeyboardButton("Listo, continuar con {} parada(s)".format(n_actual), callback_data="ruta_mas_no")],
+        ]
+    markup = InlineKeyboardMarkup(keyboard)
+    if hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(resumen, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(resumen, reply_markup=markup)
+    return RUTA_MAS_PARADAS
+
+
+def _ruta_mostrar_confirmacion(update_or_query, context):
+    """Muestra el resumen de la ruta con precio desglosado."""
+    paradas = context.user_data.get("ruta_paradas", [])
+    total_km = context.user_data.get("ruta_distancia_km", 0)
+    pickup_address = context.user_data.get("ruta_pickup_address", "No definida")
+    precio_info = calcular_precio_ruta(total_km, len(paradas))
+    distance_fee = precio_info["distance_fee"]
+    additional_fee = precio_info["additional_stops_fee"]
+    total_fee = precio_info["total_fee"]
+    context.user_data["ruta_precio"] = precio_info
+    text = "RUTA DE ENTREGA\n\nRecoge en: {}\n\n".format(pickup_address)
+    for i, p in enumerate(paradas, 1):
+        text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
+            i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion"
+        )
+    text += "\nDistancia total: {:.1f} km\n".format(total_km)
+    text += "Precio base (distancia): ${:,}\n".format(distance_fee)
+    if additional_fee > 0:
+        text += "Paradas adicionales ({} x $4,000): ${:,}\n".format(len(paradas) - 1, additional_fee)
+    text += "TOTAL: ${:,}".format(total_fee)
+    keyboard = [
+        [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    if hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    return RUTA_CONFIRMACION
+
+
+def nueva_ruta_desde_menu(update, context):
+    """Entry point de nueva_ruta_conv desde boton 'Varias entregas (ruta)' en nuevo_pedido."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        query.edit_message_text("No estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        query.edit_message_text("No tienes perfil de aliado.")
+        return ConversationHandler.END
+    if ally["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como aliado no ha sido aprobado aun.")
+        return ConversationHandler.END
+    context.user_data.clear()
+    context.user_data["ruta_ally_id"] = ally["id"]
+    context.user_data["ruta_ally"] = ally
+    context.user_data["ruta_paradas"] = []
+    show_flow_menu(update, context, "Iniciando nueva ruta...")
+    return _ruta_mostrar_selector_pickup(query, context)
+
+
+def nueva_ruta_start(update, context):
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        update.message.reply_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        update.message.reply_text("No tienes perfil de aliado.")
+        return ConversationHandler.END
+    if ally["status"] != "APPROVED":
+        update.message.reply_text("Tu registro como aliado no ha sido aprobado aun.")
+        return ConversationHandler.END
+    context.user_data.clear()
+    context.user_data["ruta_ally_id"] = ally["id"]
+    context.user_data["ruta_ally"] = ally
+    context.user_data["ruta_paradas"] = []
+    show_flow_menu(update, context, "Iniciando nueva ruta...")
+    return _ruta_mostrar_selector_pickup(update, context)
+
+
+def ruta_pickup_selector_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id")
+    if data == "ruta_pickup_base":
+        default_loc = get_default_ally_location(ally_id)
+        if not default_loc or not default_loc.get("lat"):
+            query.edit_message_text("Tu ubicacion base no tiene GPS. Elige otra.")
+            return _ruta_mostrar_selector_pickup(query, context)
+        _ruta_guardar_pickup(context, default_loc)
+        return _ruta_iniciar_parada(query, context)
+    if data == "ruta_pickup_lista":
+        locations = get_ally_locations(ally_id)
+        if not locations:
+            query.edit_message_text("No tienes ubicaciones guardadas.")
+            return _ruta_mostrar_selector_pickup(query, context)
+        keyboard = []
+        for loc in locations[:8]:
+            label = (loc.get("label") or "Sin nombre")[:20]
+            address = (loc.get("address") or "")[:25]
+            sin_gps = " (sin GPS)" if not loc.get("lat") else ""
+            keyboard.append([InlineKeyboardButton(
+                "{}: {}{}".format(label, address, sin_gps),
+                callback_data="ruta_pickup_usar_{}".format(loc["id"])
+            )])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="ruta_pickup_volver_lista")])
+        query.edit_message_text(
+            "Selecciona el punto de recogida:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return RUTA_PICKUP_LISTA
+    if data == "ruta_pickup_nueva":
+        query.edit_message_text(
+            "NUEVA DIRECCION DE RECOGIDA\n\n"
+            "Envia un PIN de ubicacion de Telegram, link de Google Maps o coordenadas (lat,lng)."
+        )
+        return RUTA_PICKUP_NUEVA_UBICACION
+    return RUTA_PICKUP_SELECTOR
+
+
+def ruta_pickup_lista_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id")
+    if data == "ruta_pickup_volver_lista":
+        return _ruta_mostrar_selector_pickup(query, context)
+    if data.startswith("ruta_pickup_usar_"):
+        try:
+            loc_id = int(data.replace("ruta_pickup_usar_", ""))
+        except ValueError:
+            return RUTA_PICKUP_LISTA
+        location = get_ally_location_by_id(loc_id, ally_id)
+        if not location or not location.get("lat"):
+            query.edit_message_text("Esa ubicacion no tiene GPS. Elige otra.")
+            return RUTA_PICKUP_LISTA
+        _ruta_guardar_pickup(context, location)
+        return _ruta_iniciar_parada(query, context)
+    return RUTA_PICKUP_LISTA
+
+
+def ruta_pickup_nueva_ubicacion_handler(update, context):
+    text = update.message.text.strip() if update.message.text else ""
+    raw = text
+    if "http" in text:
+        raw = next((t for t in text.split() if t.startswith("http")), text)
+    expanded = expand_short_url(raw) or raw
+    coords = extract_lat_lng_from_text(expanded)
+    if coords:
+        context.user_data["ruta_pickup_lat"] = coords[0]
+        context.user_data["ruta_pickup_lng"] = coords[1]
+        context.user_data["ruta_pickup_location_id"] = None
+        update.message.reply_text(
+            "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
+        )
+        return RUTA_PICKUP_NUEVA_DETALLES
+    geo = resolve_location(text)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        context.user_data["ruta_pickup_location_id"] = None
+        context.user_data["ruta_pickup_geo_formatted"] = geo.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(
+            update.message, context, geo, text,
+            "ruta_pickup_geo_si", "ruta_pickup_geo_no",
+        )
+        return RUTA_PICKUP_NUEVA_UBICACION
+    if geo and geo.get("lat") is not None:
+        context.user_data["ruta_pickup_lat"] = geo["lat"]
+        context.user_data["ruta_pickup_lng"] = geo["lng"]
+        context.user_data["ruta_pickup_location_id"] = None
+        update.message.reply_text(
+            "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
+        )
+        return RUTA_PICKUP_NUEVA_DETALLES
+    update.message.reply_text(
+        "No pude encontrar esa ubicacion.\n\n"
+        "Intenta con:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Nombre del lugar o barrio con ciudad"
+    )
+    return RUTA_PICKUP_NUEVA_UBICACION
+
+
+def ruta_pickup_geo_callback(update, context):
+    """Confirmacion de geocoding para el punto de recogida de la ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_pickup_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        formatted = context.user_data.pop("ruta_pickup_geo_formatted", "")
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data["ruta_pickup_lat"] = lat
+        context.user_data["ruta_pickup_lng"] = lng
+        if formatted:
+            context.user_data["ruta_pickup_address"] = formatted
+        query.edit_message_text(
+            "Recogida confirmada.\n\nAhora escribe la descripcion de la direccion (o confirma la sugerida):"
+        )
+        if formatted:
+            query.message.reply_text(formatted)
+        return RUTA_PICKUP_NUEVA_DETALLES
+    return _geo_siguiente_o_gps(
+        query, context, "ruta_pickup_geo_si", "ruta_pickup_geo_no", RUTA_PICKUP_NUEVA_UBICACION
+    )
+
+
+def ruta_pickup_nueva_ubicacion_location_handler(update, context):
+    loc = update.message.location
+    context.user_data["ruta_pickup_lat"] = loc.latitude
+    context.user_data["ruta_pickup_lng"] = loc.longitude
+    context.user_data["ruta_pickup_location_id"] = None
+    update.message.reply_text("Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:")
+    return RUTA_PICKUP_NUEVA_DETALLES
+
+
+def ruta_pickup_nueva_detalles_handler(update, context):
+    address = update.message.text.strip()
+    if not address:
+        update.message.reply_text("Escribe la descripcion de la direccion.")
+        return RUTA_PICKUP_NUEVA_DETALLES
+    context.user_data["ruta_pickup_address"] = address
+    keyboard = [
+        [InlineKeyboardButton("Si, guardar", callback_data="ruta_pickup_guardar_si")],
+        [InlineKeyboardButton("No, solo para esta ruta", callback_data="ruta_pickup_guardar_no")],
+    ]
+    update.message.reply_text(
+        "Deseas guardar '{}' como una de tus ubicaciones?".format(address[:50]),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return RUTA_PICKUP_GUARDAR
+
+
+def ruta_pickup_guardar_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id")
+    if data == "ruta_pickup_guardar_si":
+        address = context.user_data.get("ruta_pickup_address", "")
+        lat = context.user_data.get("ruta_pickup_lat")
+        lng = context.user_data.get("ruta_pickup_lng")
+        new_loc_id = create_ally_location(
+            ally_id=ally_id,
+            label=address[:30],
+            address=address,
+            city="",
+            barrio="",
+            phone="",
+            is_default=False,
+            lat=lat,
+            lng=lng,
+        )
+        context.user_data["ruta_pickup_location_id"] = new_loc_id
+        query.edit_message_text("Direccion guardada.")
+    else:
+        query.edit_message_text("OK, usaremos esta direccion solo para esta ruta.")
+    return _ruta_iniciar_parada(query, context)
+
+
+def ruta_parada_selector_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id")
+    _ruta_limpiar_temp(context)
+    if data == "ruta_cliente_nuevo":
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text("PARADA {} - CLIENTE NUEVO\n\nEscribe el nombre del cliente:".format(n))
+        return RUTA_PARADA_NOMBRE
+    if data.startswith("ruta_sel_cust_"):
+        try:
+            cust_id = int(data.replace("ruta_sel_cust_", ""))
+        except ValueError:
+            return RUTA_PARADA_SELECTOR
+        customer = get_ally_customer_by_id(cust_id, ally_id)
+        if not customer:
+            query.edit_message_text("Cliente no encontrado.")
+            return RUTA_PARADA_SELECTOR
+        context.user_data["ruta_temp_customer_id"] = cust_id
+        context.user_data["ruta_temp_name"] = customer.get("name") or ""
+        context.user_data["ruta_temp_phone"] = customer.get("phone") or ""
+        addresses = list_customer_addresses(cust_id)
+        activas = [a for a in addresses if a.get("status") == "ACTIVE"]
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        if not activas:
+            query.edit_message_text(
+                "PARADA {} - {}\n\nNo tiene direcciones guardadas. Escribe la direccion de entrega:".format(
+                    n, customer.get("name") or "Cliente"
+                )
+            )
+            return RUTA_PARADA_DIRECCION
+        keyboard = []
+        for addr in activas[:6]:
+            label = (addr.get("label") or addr.get("address_text") or "Direccion")[:30]
+            keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(addr["id"]))])
+        keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
+        query.edit_message_text(
+            "PARADA {} - {}\n\nSelecciona la direccion de entrega:".format(n, customer.get("name") or "Cliente"),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return RUTA_PARADA_SEL_DIRECCION
+    return RUTA_PARADA_SELECTOR
+
+
+def ruta_parada_sel_direccion_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    if data == "ruta_addr_nueva":
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    if data.startswith("ruta_sel_addr_"):
+        try:
+            addr_id = int(data.replace("ruta_sel_addr_", ""))
+        except ValueError:
+            return RUTA_PARADA_SEL_DIRECCION
+        cust_id = context.user_data.get("ruta_temp_customer_id")
+        addr = get_customer_address_by_id(addr_id, cust_id) if cust_id else None
+        if not addr:
+            query.edit_message_text("Direccion no encontrada.")
+            return RUTA_PARADA_SEL_DIRECCION
+        context.user_data["ruta_temp_address"] = addr.get("address_text") or ""
+        context.user_data["ruta_temp_city"] = addr.get("city") or ""
+        context.user_data["ruta_temp_barrio"] = addr.get("barrio") or ""
+        context.user_data["ruta_temp_lat"] = addr.get("lat")
+        context.user_data["ruta_temp_lng"] = addr.get("lng")
+        _ruta_guardar_parada_actual(context)
+        return _ruta_mostrar_mas_paradas(query, context)
+    return RUTA_PARADA_SEL_DIRECCION
+
+
+def ruta_parada_nombre_handler(update, context):
+    nombre = update.message.text.strip()
+    if not nombre:
+        update.message.reply_text("Escribe el nombre del cliente.")
+        return RUTA_PARADA_NOMBRE
+    context.user_data["ruta_temp_name"] = nombre
+    paradas = context.user_data.get("ruta_paradas", [])
+    n = len(paradas) + 1
+    update.message.reply_text(
+        "PARADA {} - {}\n\nEscribe el telefono del cliente (solo numeros):".format(n, nombre)
+    )
+    return RUTA_PARADA_TELEFONO
+
+
+def ruta_parada_telefono_handler(update, context):
+    texto = update.message.text.strip()
+    digits = "".join(filter(str.isdigit, texto))
+    if len(digits) < 7:
+        update.message.reply_text("Ingresa un numero de telefono valido (minimo 7 digitos).")
+        return RUTA_PARADA_TELEFONO
+    context.user_data["ruta_temp_phone"] = digits
+    paradas = context.user_data.get("ruta_paradas", [])
+    n = len(paradas) + 1
+    nombre = context.user_data.get("ruta_temp_name", "")
+    update.message.reply_text(
+        "PARADA {} - {}\n\n"
+        "Envia la ubicacion GPS (PIN de Telegram o lat,lng) o escribe 'omitir' para ingresar solo la direccion.".format(n, nombre)
+    )
+    return RUTA_PARADA_UBICACION
+
+
+def ruta_parada_ubicacion_handler(update, context):
+    text = update.message.text.strip()
+    if text.lower() == "omitir":
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    raw = text
+    if "http" in text:
+        raw = next((t for t in text.split() if t.startswith("http")), text)
+    expanded = expand_short_url(raw) or raw
+    coords = extract_lat_lng_from_text(expanded)
+    if coords:
+        context.user_data["ruta_temp_lat"] = coords[0]
+        context.user_data["ruta_temp_lng"] = coords[1]
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    geo = resolve_location(text)
+    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        context.user_data["ruta_parada_geo_formatted"] = geo.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(
+            update.message, context, geo, text,
+            "ruta_parada_geo_si", "ruta_parada_geo_no",
+        )
+        return RUTA_PARADA_UBICACION
+    if geo and geo.get("lat") is not None:
+        context.user_data["ruta_temp_lat"] = geo["lat"]
+        context.user_data["ruta_temp_lng"] = geo["lng"]
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    update.message.reply_text(
+        "No pude encontrar esa ubicacion.\n\n"
+        "Intenta con:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Nombre del lugar o barrio con ciudad\n"
+        "- O escribe 'omitir' para ingresar solo la direccion."
+    )
+    return RUTA_PARADA_UBICACION
+
+
+def ruta_parada_geo_callback(update, context):
+    """Confirmacion de geocoding para la ubicacion de una parada de la ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_parada_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        formatted = context.user_data.pop("ruta_parada_geo_formatted", "")
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data["ruta_temp_lat"] = lat
+        context.user_data["ruta_temp_lng"] = lng
+        if formatted:
+            context.user_data["ruta_temp_address"] = formatted
+            context.user_data["ruta_temp_city"] = ""
+            context.user_data["ruta_temp_barrio"] = ""
+            _ruta_guardar_parada_actual(context)
+            return _ruta_mostrar_mas_paradas(query, context)
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
+        return RUTA_PARADA_DIRECCION
+    return _geo_siguiente_o_gps(
+        query, context, "ruta_parada_geo_si", "ruta_parada_geo_no", RUTA_PARADA_UBICACION
+    )
+
+
+def ruta_parada_ubicacion_location_handler(update, context):
+    loc = update.message.location
+    context.user_data["ruta_temp_lat"] = loc.latitude
+    context.user_data["ruta_temp_lng"] = loc.longitude
+    paradas = context.user_data.get("ruta_paradas", [])
+    n = len(paradas) + 1
+    update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
+    return RUTA_PARADA_DIRECCION
+
+
+def ruta_parada_direccion_handler(update, context):
+    address = update.message.text.strip()
+    if not address:
+        update.message.reply_text("Escribe la direccion de entrega.")
+        return RUTA_PARADA_DIRECCION
+    context.user_data["ruta_temp_address"] = address
+    if not context.user_data.get("ruta_temp_city"):
+        context.user_data["ruta_temp_city"] = ""
+    if not context.user_data.get("ruta_temp_barrio"):
+        context.user_data["ruta_temp_barrio"] = ""
+    _ruta_guardar_parada_actual(context)
+    return _ruta_mostrar_mas_paradas(update, context)
+
+
+def ruta_mas_paradas_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    if data == "ruta_mas_si":
+        return _ruta_iniciar_parada(query, context)
+    if data == "ruta_mas_no":
+        paradas = context.user_data.get("ruta_paradas", [])
+        if len(paradas) < 2:
+            query.edit_message_text("Debes agregar al menos 2 paradas para crear una ruta.")
+            return _ruta_iniciar_parada(query, context)
+        pickup_lat = context.user_data.get("ruta_pickup_lat")
+        pickup_lng = context.user_data.get("ruta_pickup_lng")
+        tiene_gps = (
+            pickup_lat is not None and pickup_lng is not None
+            and all(p.get("lat") is not None and p.get("lng") is not None for p in paradas)
+        )
+        if tiene_gps:
+            query.edit_message_text("Calculando distancia de la ruta...")
+            dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
+            if dist_result and dist_result["total_km"] > 0:
+                context.user_data["ruta_distancia_km"] = dist_result["total_km"]
+                return _ruta_mostrar_confirmacion(query, context)
+        query.edit_message_text(
+            "DISTANCIA DE LA RUTA\n\n"
+            "No tengo GPS de todas las paradas para calcular automaticamente.\n"
+            "Ingresa la distancia total de la ruta en km.\n\nEjemplo: 10.5"
+        )
+        return RUTA_DISTANCIA_KM
+    return RUTA_MAS_PARADAS
+
+
+def ruta_distancia_km_handler(update, context):
+    text = update.message.text.strip().replace(",", ".")
+    try:
+        km = float(text)
+        if km <= 0:
+            raise ValueError
+    except ValueError:
+        update.message.reply_text("Ingresa un numero valido mayor a 0 (ej: 8 o 10.5).")
+        return RUTA_DISTANCIA_KM
+    context.user_data["ruta_distancia_km"] = round(km, 2)
+    return _ruta_mostrar_confirmacion(update, context)
+
+
+def ruta_confirmacion_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    if data == "ruta_cancelar":
+        query.edit_message_text("Ruta cancelada.")
+        context.user_data.clear()
+        show_main_menu(update, context)
+        return ConversationHandler.END
+    if data != "ruta_confirmar":
+        return RUTA_CONFIRMACION
+    ally_id = context.user_data.get("ruta_ally_id")
+    paradas = context.user_data.get("ruta_paradas", [])
+    precio_info = context.user_data.get("ruta_precio", {})
+    if not ally_id or len(paradas) < 2:
+        query.edit_message_text("Error: datos incompletos. Empieza de nuevo con 'Nueva ruta'.")
+        context.user_data.clear()
+        show_main_menu(update, context)
+        return ConversationHandler.END
+    pickup_address = context.user_data.get("ruta_pickup_address", "")
+    pickup_lat = context.user_data.get("ruta_pickup_lat")
+    pickup_lng = context.user_data.get("ruta_pickup_lng")
+    pickup_location_id = context.user_data.get("ruta_pickup_location_id")
+    total_km = context.user_data.get("ruta_distancia_km", 0)
+    link = get_approved_admin_link_for_ally(ally_id)
+    admin_id_snapshot = link["admin_id"] if link else None
+    route_id = create_route(
+        ally_id=ally_id,
+        pickup_location_id=pickup_location_id,
+        pickup_address=pickup_address,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        total_distance_km=total_km,
+        distance_fee=precio_info.get("distance_fee", 0),
+        additional_stops_fee=precio_info.get("additional_stops_fee", 0),
+        total_fee=precio_info.get("total_fee", 0),
+        instructions=None,
+        ally_admin_id_snapshot=admin_id_snapshot,
+    )
+    if not route_id:
+        query.edit_message_text("Error al crear la ruta. Intenta de nuevo.")
+        show_main_menu(update, context)
+        return ConversationHandler.END
+    for i, parada in enumerate(paradas, 1):
+        create_route_destination(
+            route_id=route_id,
+            sequence=i,
+            customer_name=parada.get("name") or "",
+            customer_phone=parada.get("phone") or "",
+            customer_address=parada.get("address") or "",
+            customer_city=parada.get("city") or "",
+            customer_barrio=parada.get("barrio") or "",
+            dropoff_lat=parada.get("lat"),
+            dropoff_lng=parada.get("lng"),
+        )
+    count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
+    if count > 0:
+        base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
+    else:
+        base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
+    query.edit_message_text(base_msg)
+
+    # Verificar si hay clientes nuevos para ofrecer guardarlos
+    nuevos = [p for p in paradas if not p.get("customer_id")]
+    if nuevos:
+        # Guardar referencia para el callback
+        context.user_data["ruta_nuevos_clientes"] = nuevos
+        context.user_data["ruta_ally_id_guardar"] = ally_id
+        names_list = "\n".join("- {} ({})".format(p["name"], p["phone"]) for p in nuevos if p.get("name"))
+        keyboard = [
+            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_clientes_si")],
+            [InlineKeyboardButton("No", callback_data="ruta_guardar_clientes_no")],
+        ]
+        query.message.reply_text(
+            "Clientes nuevos en esta ruta:\n{}\n\nDeseas guardarlos para futuros pedidos?".format(names_list),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return RUTA_GUARDAR_CLIENTES
+
+    context.user_data.clear()
+    show_main_menu(update, context)
+    return ConversationHandler.END
+
+
+def ruta_guardar_clientes_callback(update, context):
+    """Maneja la decision de guardar o no los clientes nuevos de la ruta."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("ruta_ally_id_guardar")
+    nuevos = context.user_data.get("ruta_nuevos_clientes", [])
+
+    if data == "ruta_guardar_clientes_si" and ally_id:
+        saved = 0
+        for p in nuevos:
+            name = p.get("name") or ""
+            phone = p.get("phone") or ""
+            address = p.get("address") or ""
+            if not phone:
+                continue
+            try:
+                existing = get_ally_customer_by_phone(ally_id, phone)
+                if existing:
+                    customer_id = existing["id"]
+                else:
+                    customer_id = create_ally_customer(ally_id, name, phone)
+                if address:
+                    create_customer_address(
+                        customer_id, "Principal", address,
+                        lat=p.get("lat"), lng=p.get("lng"),
+                    )
+                saved += 1
+            except Exception as e:
+                print("[WARN] Error guardando cliente de ruta: {}".format(e))
+        query.edit_message_text("Se guardaron {} cliente(s) nuevos.".format(saved))
+    else:
+        query.edit_message_text("Clientes no guardados.")
+
+    context.user_data.clear()
+    show_main_menu(update, context)
+    return ConversationHandler.END
+
+
+# Conversacion "Nueva ruta" (multi-parada)
+nueva_ruta_conv = ConversationHandler(
+    entry_points=[
+        MessageHandler(Filters.regex(r'^Nueva ruta$'), nueva_ruta_start),
+        CallbackQueryHandler(nueva_ruta_desde_cotizador, pattern=r"^cotizar_ruta_cust_(nuevo|recurrente)$"),
+        CallbackQueryHandler(nueva_ruta_desde_menu, pattern=r"^pedido_a_ruta$"),
+    ],
+    states={
+        RUTA_PICKUP_SELECTOR: [
+            CallbackQueryHandler(ruta_pickup_selector_callback, pattern=r"^ruta_pickup_(base|lista|nueva)$"),
+        ],
+        RUTA_PICKUP_LISTA: [
+            CallbackQueryHandler(ruta_pickup_lista_callback, pattern=r"^ruta_pickup_(usar_\d+|volver_lista)$"),
+        ],
+        RUTA_PICKUP_NUEVA_UBICACION: [
+            CallbackQueryHandler(ruta_pickup_geo_callback, pattern=r"^ruta_pickup_geo_(si|no)$"),
+            MessageHandler(Filters.location, ruta_pickup_nueva_ubicacion_location_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ubicacion_handler),
+        ],
+        RUTA_PICKUP_NUEVA_DETALLES: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_detalles_handler),
+        ],
+        RUTA_PICKUP_GUARDAR: [
+            CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
+        ],
+        RUTA_PARADA_SELECTOR: [
+            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+)$"),
+        ],
+        RUTA_PARADA_SEL_DIRECCION: [
+            CallbackQueryHandler(ruta_parada_sel_direccion_callback, pattern=r"^ruta_(sel_addr_\d+|addr_nueva)$"),
+        ],
+        RUTA_PARADA_NOMBRE: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_nombre_handler),
+        ],
+        RUTA_PARADA_TELEFONO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_telefono_handler),
+        ],
+        RUTA_PARADA_UBICACION: [
+            CallbackQueryHandler(ruta_parada_geo_callback, pattern=r"^ruta_parada_geo_(si|no)$"),
+            MessageHandler(Filters.location, ruta_parada_ubicacion_location_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_ubicacion_handler),
+        ],
+        RUTA_PARADA_DIRECCION: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_direccion_handler),
+        ],
+        RUTA_MAS_PARADAS: [
+            CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
+        ],
+        RUTA_DISTANCIA_KM: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_distancia_km_handler),
+        ],
+        RUTA_CONFIRMACION: [
+            CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
+        ],
+        RUTA_GUARDAR_CLIENTES: [
+            CallbackQueryHandler(ruta_guardar_clientes_callback, pattern=r"^ruta_guardar_clientes_(si|no)$"),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+
 # Conversacion para /nuevo_pedido (con selector de cliente recurrente)
 nuevo_pedido_conv = ConversationHandler(
     entry_points=[
         CommandHandler("nuevo_pedido", nuevo_pedido),
         MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
+        CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
@@ -7071,6 +9217,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
+            CallbackQueryHandler(pedido_geo_ubicacion_callback, pattern=r"^pedido_geo_"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
@@ -7087,6 +9234,7 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_PICKUP_NUEVA_UBICACION: [
             CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
+            CallbackQueryHandler(pedido_pickup_geo_callback, pattern=r"^pickup_geo_"),
             MessageHandler(Filters.location, pedido_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
@@ -7122,6 +9270,34 @@ nuevo_pedido_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+# Conversación para gestión de ubicaciones del aliado ("Mis ubicaciones")
+ally_locs_conv = ConversationHandler(
+    entry_points=[
+        MessageHandler(Filters.regex(r'^Mis ubicaciones$'), mis_ubicaciones_start),
+    ],
+    states={
+        ALLY_LOCS_MENU: [
+            CallbackQueryHandler(ally_locs_menu_callback, pattern=r"^ally_locs_"),
+        ],
+        ALLY_LOCS_ADD_COORDS: [
+            MessageHandler(Filters.location, ally_locs_add_coords_location),
+            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_coords),
+        ],
+        ALLY_LOCS_ADD_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_label),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(
+            Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'),
+            cancel_por_texto
+        ),
+    ],
+    allow_reentry=True,
+)
+
+
 # Conversación para /cotizar
 cotizar_conv = ConversationHandler(
     entry_points=[
@@ -7132,16 +9308,24 @@ cotizar_conv = ConversationHandler(
         COTIZAR_MODO: [
             CallbackQueryHandler(cotizar_modo_callback, pattern=r"^cotizar_modo_"),
         ],
+        COTIZAR_RECOGIDA_SELECTOR: [
+            CallbackQueryHandler(cotizar_pickup_callback, pattern=r"^cotizar_pickup_"),
+        ],
         COTIZAR_DISTANCIA: [
             MessageHandler(Filters.text & ~Filters.command, cotizar_distancia),
         ],
         COTIZAR_RECOGIDA: [
+            CallbackQueryHandler(cotizar_recogida_geo_callback, pattern=r"^cotizar_recogida_geo_"),
             MessageHandler(Filters.location, cotizar_recogida_location),
             MessageHandler(Filters.text & ~Filters.command, cotizar_recogida),
         ],
         COTIZAR_ENTREGA: [
+            CallbackQueryHandler(cotizar_entrega_geo_callback, pattern=r"^cotizar_entrega_geo_"),
             MessageHandler(Filters.location, cotizar_entrega_location),
             MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
+        ],
+        COTIZAR_RESULTADO: [
+            CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|crear_ruta|cerrar)$"),
         ],
     },
     fallbacks=[
@@ -9651,6 +11835,153 @@ def admin_config_callback(update, context):
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    if data == "config_couriers_online":
+        # Muestra todos los repartidores ONLINE en este momento (cualquier equipo)
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        online = get_all_online_couriers()
+        if not online:
+            query.edit_message_text(
+                "No hay repartidores con ubicacion en vivo activa en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")],
+                    [InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        import datetime
+        now = datetime.datetime.utcnow()
+        lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
+        keyboard = []
+        for c in online:
+            nombre = c["full_name"]
+            ciudad = c["admin_city"] or "?"
+            updated = c["live_location_updated_at"]
+            if updated:
+                try:
+                    if isinstance(updated, str):
+                        ts = datetime.datetime.fromisoformat(updated.replace("Z", ""))
+                    else:
+                        ts = updated
+                    minutos = int((now - ts).total_seconds() / 60)
+                    hace = "hace {} min".format(minutos) if minutos < 60 else "hace {}h".format(minutos // 60)
+                except Exception:
+                    hace = "?"
+            else:
+                hace = "?"
+            lineas.append("{} | {} | {}".format(nombre, ciudad, hace))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {}".format(nombre),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "config_couriers_cerca_pedido":
+        # Muestra pedidos activos sin courier para que el admin elija uno
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        pedidos = get_active_orders_without_courier(limit=15)
+        if not pedidos:
+            query.edit_message_text(
+                "No hay pedidos activos sin repartidor asignado en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")],
+                ])
+            )
+            return
+
+        keyboard = []
+        for p in pedidos:
+            orden_id = p["id"]
+            ally = p["ally_name"] or "Aliado"
+            direccion = (p["pickup_address"] or "")[:30]
+            estado = p["status"]
+            keyboard.append([InlineKeyboardButton(
+                "#{} {} — {} ({})".format(orden_id, ally, direccion, estado),
+                callback_data="config_cercanos_pedido_{}".format(orden_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")])
+        query.edit_message_text(
+            "Pedidos sin repartidor. Selecciona uno para ver quienes estan mas cerca:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_cercanos_pedido_"):
+        # Muestra repartidores ONLINE ordenados por distancia al pickup del pedido
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        try:
+            order_id = int(data.split("_")[-1])
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        order = get_order_by_id(order_id)
+        if not order:
+            query.edit_message_text("Pedido no encontrado.")
+            return
+
+        pickup_lat = order["pickup_lat"]
+        pickup_lng = order["pickup_lng"]
+        if not pickup_lat or not pickup_lng:
+            query.edit_message_text(
+                "Este pedido no tiene coordenadas de recogida registradas.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        cercanos = get_online_couriers_sorted_by_distance(float(pickup_lat), float(pickup_lng))
+        if not cercanos:
+            query.edit_message_text(
+                "No hay repartidores online en este momento para comparar.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        lineas = ["Repartidores mas cercanos al pedido #{}:\n".format(order_id)]
+        keyboard = []
+        for c in cercanos[:10]:
+            nombre = c["full_name"]
+            dist = c["distancia_km"]
+            ciudad = c["admin_city"] or "?"
+            if dist >= 9000:
+                dist_label = "sin GPS"
+            else:
+                dist_label = "{} km".format(dist)
+            lineas.append("{} — {} | {}".format(nombre, dist_label, ciudad))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {} ({})".format(nombre, dist_label),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
     if data == "config_gestion_repartidores":
         couriers = get_all_couriers()
         if not couriers:
@@ -9741,8 +12072,13 @@ def admin_config_callback(update, context):
 
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
+    print(
+        f"[DEBUG][terms][ensure] role={role} telegram_id={telegram_id} via_callback={bool(getattr(update, 'callback_query', None))}",
+        flush=True,
+    )
     tv = get_active_terms_version(role)
     if not tv:
+        print(f"[DEBUG][terms][ensure] no_terms_config role={role}", flush=True)
         context.bot.send_message(
             chat_id=telegram_id,
             text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
@@ -9750,8 +12086,11 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         return False
 
     version, url, sha256 = tv
+    print(f"[DEBUG][terms][ensure] version={version!r} url={url!r}", flush=True)
 
-    if has_accepted_terms(telegram_id, role, version, sha256):
+    accepted = has_accepted_terms(telegram_id, role, version, sha256)
+    print(f"[DEBUG][terms][ensure] already_accepted={accepted}", flush=True)
+    if accepted:
         try:
             save_terms_session_ack(telegram_id, role, version)
         except Exception as e:
@@ -9765,17 +12104,24 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         "Lee el documento y confirma tu aceptación para continuar."
     ).format(role, version)
 
-    keyboard = [
-        [InlineKeyboardButton("Leer términos", url=url)],
+    valid_terms_url = isinstance(url, str) and url.strip().lower().startswith(("http://", "https://"))
+    keyboard = []
+    if valid_terms_url:
+        keyboard.append([InlineKeyboardButton("Leer términos", url=url)])
+    else:
+        print(f"[WARN][terms] URL invalida para role={role}, version={version}: {url!r}", flush=True)
+    keyboard.append(
         [
             InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
             InlineKeyboardButton("No acepto", callback_data="terms_decline_{}".format(role)),
-        ],
-    ]
+        ]
+    )
 
     if update.callback_query:
+        print("[DEBUG][terms][ensure] prompt_sent_via=callback_edit", flush=True)
         update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
+        print("[DEBUG][terms][ensure] prompt_sent_via=send_message", flush=True)
         context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return False
@@ -9786,20 +12132,31 @@ def terms_callback(update, context):
     data = query.data
     telegram_id = query.from_user.id
     query.answer()
+    print(
+        f"[DEBUG][terms][callback] data={data!r} telegram_id={telegram_id} message_id={getattr(query.message, 'message_id', None)}",
+        flush=True,
+    )
 
     if data.startswith("terms_accept_"):
         role = data.split("_", 2)[-1]
         tv = get_active_terms_version(role)
+        print(f"[DEBUG][terms][callback] accept role={role} tv_found={bool(tv)}", flush=True)
         if not tv:
             query.edit_message_text("Términos no configurados. Contacta soporte.")
             return
 
         version, url, sha256 = tv
         save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)
+        print(f"[DEBUG][terms][callback] acceptance_saved role={role} version={version!r}", flush=True)
+        if role == "ALLY":
+            query.edit_message_text("Aceptación registrada. Ya puedes continuar con Nuevo pedido.")
+            print("[DEBUG][terms][callback] awaiting_manual_nuevo_pedido", flush=True)
+            return
         query.edit_message_text("Aceptación registrada. Ya puedes continuar.")
         return
 
     if data.startswith("terms_decline_"):
+        print("[DEBUG][terms][callback] decline", flush=True)
         query.edit_message_text(
             "No puedes usar la plataforma sin aceptar los Términos y Condiciones.\n"
             "Si cambias de decisión, vuelve a intentar y acepta los términos."
@@ -9997,6 +12354,26 @@ def courier_base_amount_handler(update, context):
     )
 
 
+def global_error_handler(update, context):
+    """Registra errores no capturados para diagnostico en Railway."""
+    print("[ERROR][telegram] Excepcion no capturada", flush=True)
+    try:
+        if update and getattr(update, "effective_user", None):
+            print(
+                f"[ERROR][telegram] user_id={update.effective_user.id} "
+                f"chat_id={getattr(getattr(update, 'effective_chat', None), 'id', None)}",
+                flush=True,
+            )
+        if update and getattr(update, "effective_message", None):
+            print(
+                f"[ERROR][telegram] text={getattr(update.effective_message, 'text', None)!r}",
+                flush=True,
+            )
+    except Exception as meta_err:
+        print(f"[ERROR][telegram] meta_log_failed={meta_err}", flush=True)
+    print(traceback.format_exc(), flush=True)
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
@@ -10013,6 +12390,7 @@ def main():
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
+    dp.add_error_handler(global_error_handler)
 
     # -------------------------
     # Comandos básicos
@@ -10110,10 +12488,13 @@ def main():
     # -------------------------
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
+    dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
+    dp.add_handler(ally_locs_conv)     # Mis ubicaciones (aliado)
     dp.add_handler(cotizar_conv)       # /cotizar
     dp.add_handler(tarifas_conv)       # /tarifas (Admin Plataforma)
     dp.add_handler(config_alertas_oferta_conv)  # /config_alertas_oferta (Admin Plataforma)
@@ -10202,8 +12583,21 @@ def main():
             LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
             LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, admin_residence_address)],
             LOCAL_ADMIN_RESIDENCE_LOCATION: [
+                CallbackQueryHandler(admin_geo_ubicacion_callback, pattern=r"^admin_geo_"),
                 MessageHandler(Filters.location, admin_residence_location),
                 MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
+            ],
+            LOCAL_ADMIN_CEDULA_FRONT: [
+                MessageHandler(Filters.photo, admin_cedula_front),
+                MessageHandler(Filters.text & ~Filters.command, admin_cedula_front),
+            ],
+            LOCAL_ADMIN_CEDULA_BACK: [
+                MessageHandler(Filters.photo, admin_cedula_back),
+                MessageHandler(Filters.text & ~Filters.command, admin_cedula_back),
+            ],
+            LOCAL_ADMIN_SELFIE: [
+                MessageHandler(Filters.photo, admin_selfie),
+                MessageHandler(Filters.text & ~Filters.command, admin_selfie),
             ],
             LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, admin_confirm)],
         },
@@ -10266,3 +12660,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+

@@ -1,7 +1,10 @@
 from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
+import logging
 import unicodedata
+
+logger = logging.getLogger(__name__)
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     set_setting,
@@ -134,6 +137,25 @@ from db import (
     deactivate_payment_method,
     get_admin_reference_validator_permission,
     set_admin_reference_validator_permission,
+    # Re-exports rutas multi-parada
+    create_route,
+    create_route_destination,
+    get_route_by_id,
+    get_route_destinations,
+    get_pending_route_stops,
+    update_route_status,
+    assign_route_to_courier,
+    deliver_route_stop,
+    cancel_route,
+    create_route_offer_queue,
+    get_next_pending_route_offer,
+    mark_route_offer_as_offered,
+    mark_route_offer_response,
+    get_current_route_offer,
+    delete_route_offer_queue,
+    reset_route_offer_queue,
+    get_all_online_couriers,
+    get_active_orders_without_courier,
 )
 import math
 import re
@@ -169,6 +191,28 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
+
+
+def get_online_couriers_sorted_by_distance(lat: float, lng: float) -> list:
+    """
+    Retorna todos los repartidores ONLINE ordenados por distancia (km) al punto dado.
+    Usa live_lat/live_lng si disponible; fallback a residence_lat/residence_lng.
+    Agrega campo 'distancia_km' a cada registro.
+    """
+    couriers = get_all_online_couriers()
+    result = []
+    for c in couriers:
+        c_lat = c["live_lat"] or c["residence_lat"]
+        c_lng = c["live_lng"] or c["residence_lng"]
+        if c_lat and c_lng:
+            dist = _haversine_km(lat, lng, float(c_lat), float(c_lng))
+        else:
+            dist = 9999.0
+        row = dict(c)
+        row["distancia_km"] = round(dist, 2)
+        result.append(row)
+    result.sort(key=lambda x: x["distancia_km"])
+    return result
 
 
 def _coords_cache_key(lat: float, lng: float) -> str:
@@ -283,7 +327,9 @@ def haversine_road_km(lat1: float, lng1: float, lat2: float, lng2: float) -> flo
 def can_call_google_today() -> bool:
     """Verifica si podemos hacer más llamadas a Google hoy (fusible)."""
     usage = get_api_usage_today("google_maps")
-    return usage < GOOGLE_LOOKUP_DAILY_LIMIT
+    result = usage < GOOGLE_LOOKUP_DAILY_LIMIT
+    logger.warning("[QUOTA] usage=%s limit=%s can_call=%s", usage, GOOGLE_LOOKUP_DAILY_LIMIT, result)
+    return result
 
 
 def extract_place_id_from_url(url: str) -> Optional[str]:
@@ -334,31 +380,85 @@ def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
 
 
 def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
-    """Geocodifica una dirección de texto usando Geocoding API."""
-    if not GOOGLE_MAPS_API_KEY or not query:
+    """Geocodifica una dirección de texto usando Geocoding API (sesgado a Colombia)."""
+    if not GOOGLE_MAPS_API_KEY:
+        logger.warning("[GEOCODE] GOOGLE_MAPS_API_KEY no configurada")
+        return None
+    if not query:
         return None
     try:
         import requests
         url = "https://maps.googleapis.com/maps/api/geocode/json"
         params = {
             "address": query,
-            "key": GOOGLE_MAPS_API_KEY
+            "region": "CO",
+            "components": "country:CO",
+            "key": GOOGLE_MAPS_API_KEY,
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data.get("status") == "OK" and data.get("results"):
+        status = data.get("status")
+        logger.warning("[GEOCODE] query=%r status=%s", query, status)
+        if status == "OK" and data.get("results"):
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
+            fa = result.get("formatted_address")
+            logger.warning("[GEOCODE] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
             increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
-                "formatted_address": result.get("formatted_address"),
+                "formatted_address": fa,
                 "place_id": result.get("place_id"),
-                "provider": "google_geocode"
+                "provider": "google_geocode",
             }
-    except Exception:
-        pass
+        else:
+            logger.warning("[GEOCODE] no results: %s", data.get("error_message", ""))
+    except Exception as e:
+        logger.warning("[GEOCODE] excepcion: %s", e)
+    return None
+
+
+def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
+    """Busca un lugar por texto libre usando Places Text Search API.
+    Equivale a escribir en el buscador de Google Maps — encuentra barrios,
+    establecimientos y puntos informales que Geocoding no siempre encuentra."""
+    if not GOOGLE_MAPS_API_KEY:
+        logger.warning("[PLACES] GOOGLE_MAPS_API_KEY no configurada")
+        return None
+    if not query:
+        return None
+    try:
+        import requests
+        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+        params = {
+            "query": query,
+            "region": "CO",
+            "location": "4.8133,-75.6961",  # Centro de Pereira (sesgo, no filtro duro)
+            "radius": 30000,                 # 30 km cubre Pereira, Dosquebradas, Santa Rosa
+            "key": GOOGLE_MAPS_API_KEY,
+        }
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+        status = data.get("status")
+        logger.warning("[PLACES] query=%r status=%s", query, status)
+        if status == "OK" and data.get("results"):
+            result = data["results"][0]
+            geo = result.get("geometry", {}).get("location", {})
+            fa = result.get("formatted_address") or result.get("name", "")
+            logger.warning("[PLACES] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
+            increment_api_usage("google_maps")
+            return {
+                "lat": geo.get("lat"),
+                "lng": geo.get("lng"),
+                "formatted_address": fa,
+                "place_id": result.get("place_id"),
+                "provider": "google_textsearch",
+            }
+        else:
+            logger.warning("[PLACES] no results: %s", data.get("error_message", ""))
+    except Exception as e:
+        logger.warning("[PLACES] excepcion: %s", e)
     return None
 
 
@@ -713,6 +813,7 @@ def get_pricing_config():
         "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
         "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
         "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
+        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "4000"), 4000),
     }
 
 
@@ -863,6 +964,116 @@ def quote_order(distance_km: float) -> dict:
     }
 
 
+def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict = None) -> dict:
+    """
+    Calcula el precio de una ruta multi-parada.
+
+    - distance_fee: precio de la distancia total (fórmula existente de calcular_precio_distancia)
+    - additional_stops_fee: (num_stops - 1) * tarifa_parada_adicional (default 4000)
+    - total_fee: suma de ambos
+
+    Args:
+        total_distance_km: Distancia total de la ruta en km (suma secuencial de segmentos)
+        num_stops: Número total de paradas de entrega
+        config: Dict de configuración de precios. Si None, carga desde BD.
+
+    Returns:
+        dict con: distance_fee, additional_stops_fee, total_fee, total_distance_km, num_stops
+    """
+    if config is None:
+        config = get_pricing_config()
+    tarifa_parada_adicional = config.get("tarifa_parada_adicional", 4000)
+    distance_fee = calcular_precio_distancia(total_distance_km, config)
+    additional_fee = (num_stops - 1) * tarifa_parada_adicional
+    return {
+        "distance_fee": distance_fee,
+        "additional_stops_fee": additional_fee,
+        "total_fee": distance_fee + additional_fee,
+        "total_distance_km": total_distance_km,
+        "num_stops": num_stops,
+    }
+
+
+def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
+    """
+    Calcula la distancia total de una ruta de forma secuencial usando Haversine:
+    pickup->stop1 + stop1->stop2 + ...
+
+    Retorna el total en km o None si algún punto carece de GPS.
+    """
+    if not pickup_lat or not pickup_lng:
+        return None
+    total = 0.0
+    prev_lat, prev_lng = float(pickup_lat), float(pickup_lng)
+    for p in paradas:
+        lat = p.get("lat")
+        lng = p.get("lng")
+        if not lat or not lng:
+            return None
+        total += haversine_road_km(prev_lat, prev_lng, float(lat), float(lng))
+        prev_lat, prev_lng = float(lat), float(lng)
+    return round(total, 2)
+
+
+def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
+    """
+    Calcula la distancia total de la ruta segmento a segmento usando la misma
+    estrategia de 3 capas que get_smart_distance:
+      Capa 1 - Cache: reutiliza distancias ya calculadas (gratis).
+      Capa 2 - Google Distance Matrix API: por segmento, con control de cuota.
+      Capa 3 - Haversine: fallback si no hay cuota o falla la API.
+
+    Retorna dict {"total_km": float, "used_api": bool} o None si faltan coords.
+    """
+    if not pickup_lat or not pickup_lng:
+        return None
+    puntos = [(float(pickup_lat), float(pickup_lng))]
+    for p in paradas:
+        lat = p.get("lat")
+        lng = p.get("lng")
+        if not lat or not lng:
+            return None
+        puntos.append((float(lat), float(lng)))
+
+    total_km = 0.0
+    used_api = False
+
+    for i in range(len(puntos) - 1):
+        lat1, lng1 = puntos[i]
+        lat2, lng2 = puntos[i + 1]
+
+        origin_key = _coords_cache_key(lat1, lng1)
+        dest_key = _coords_cache_key(lat2, lng2)
+
+        # Capa 1: Cache
+        cached = get_distance_cache(origin_key, dest_key, mode="coords")
+        if cached and cached.get("distance_km") is not None:
+            total_km += float(cached["distance_km"])
+            continue
+
+        # Capa 2: Google Distance Matrix API
+        seg_km = None
+        if can_call_google_today() and GOOGLE_MAPS_API_KEY:
+            seg_km = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
+            if seg_km is not None:
+                upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                      distance_km=seg_km, provider="google_distance_matrix")
+                used_api = True
+
+        # Capa 3: Haversine fallback
+        if seg_km is None:
+            seg_km = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+            upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                  distance_km=seg_km, provider="haversine")
+
+        total_km += seg_km
+
+    return {
+        "total_km": round(total_km, 2),
+        "used_api": used_api,
+    }
+
+
 def get_distance_from_api(origin: str, destination: str, city_hint: str = "Pereira, Colombia") -> Optional[float]:
     """
     Calcula la distancia en km entre dos direcciones usando Google Distance Matrix API.
@@ -1000,6 +1211,17 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
 
 # ---------- RESOLVER UBICACION INTELIGENTE ----------
 
+def _is_allowed_city(formatted_address: str) -> bool:
+    """True si la direccion corresponde a Pereira, Dosquebradas o Santa Rosa de Cabal."""
+    if not formatted_address:
+        return False
+    import unicodedata
+    normalized = unicodedata.normalize("NFD", formatted_address.lower())
+    normalized = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    allowed = ("pereira", "dosquebradas", "santa rosa de cabal")
+    return any(city in normalized for city in allowed)
+
+
 def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     """
     Intenta extraer lat/lng de cualquier entrada del usuario:
@@ -1049,24 +1271,138 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
 
     # 5. Geocoding por texto (ultimo recurso, cuesta API)
     normalized_text = _normalize_reference_key(text)
-    if can_call_google_today() and not is_url_like:
-        geo = google_geocode_forward(text)
-        if geo and geo.get("lat") and geo.get("lng"):
+    try:
+        quota_ok = can_call_google_today()
+    except Exception:
+        quota_ok = False
+
+    if quota_ok and not is_url_like:
+        # Cascada de consultas: texto original + sufijos de ciudad
+        # Para en el primer resultado valido (economia de cuota).
+        # Para mas candidatos usa resolve_location_next().
+        _queries = [
+            text,
+            f"{text}, Pereira, Risaralda, Colombia",
+            f"{text}, Dosquebradas, Risaralda, Colombia",
+            f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
+        ]
+        for _q in _queries:
+            geo = google_geocode_forward(_q)
+            if geo and geo.get("lat") and geo.get("lng"):
+                if _is_allowed_city(geo.get("formatted_address", "")):
+                    try:
+                        upsert_reference_alias_candidate(
+                            raw_text=text,
+                            normalized_text=normalized_text,
+                            suggested_lat=geo["lat"],
+                            suggested_lng=geo["lng"],
+                            source="geocode",
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "lat": geo["lat"],
+                        "lng": geo["lng"],
+                        "method": "geocode",
+                        "formatted_address": geo.get("formatted_address", ""),
+                        "place_id": geo.get("place_id"),
+                    }
+
+            try:
+                quota_ok2 = can_call_google_today()
+            except Exception:
+                quota_ok2 = False
+            if not quota_ok2:
+                break
+
+            places = google_places_text_search(_q)
+            if places and places.get("lat") and places.get("lng"):
+                if _is_allowed_city(places.get("formatted_address", "")):
+                    try:
+                        upsert_reference_alias_candidate(
+                            raw_text=text,
+                            normalized_text=normalized_text,
+                            suggested_lat=places["lat"],
+                            suggested_lng=places["lng"],
+                            source="textsearch",
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "lat": places["lat"],
+                        "lng": places["lng"],
+                        "method": "geocode",
+                        "formatted_address": places.get("formatted_address", ""),
+                        "place_id": places.get("place_id"),
+                    }
+
+    if not is_url_like:
+        try:
             upsert_reference_alias_candidate(
                 raw_text=text,
                 normalized_text=normalized_text,
-                suggested_lat=geo["lat"],
-                suggested_lng=geo["lng"],
-                source="geocode",
+                source="unresolved",
             )
-            return {"lat": geo["lat"], "lng": geo["lng"], "method": "geocode"}
+        except Exception:
+            pass
+    return None
 
-    if not is_url_like:
-        upsert_reference_alias_candidate(
-            raw_text=text,
-            normalized_text=normalized_text,
-            source="unresolved",
-        )
+
+def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]:
+    """
+    Retorna el siguiente candidato de geocoding distinto a los ya mostrados.
+    Carga perezosa: solo se llama cuando el usuario rechaza el candidato anterior.
+    seen_ids: lista de place_id o 'lat,lng' ya mostrados.
+    """
+    if not text:
+        return None
+    text = text.strip()
+    if "http" in text.lower():
+        return None
+    try:
+        quota_ok = can_call_google_today()
+    except Exception:
+        quota_ok = False
+    if not quota_ok:
+        return None
+
+    _queries = [
+        text,
+        f"{text}, Pereira, Risaralda, Colombia",
+        f"{text}, Dosquebradas, Risaralda, Colombia",
+        f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
+    ]
+    for _q in _queries:
+        geo = google_geocode_forward(_q)
+        if geo and geo.get("lat") and geo.get("lng"):
+            if _is_allowed_city(geo.get("formatted_address", "")):
+                _pid = geo.get("place_id") or f"{geo['lat']},{geo['lng']}"
+                if _pid not in seen_ids:
+                    return {
+                        "lat": geo["lat"],
+                        "lng": geo["lng"],
+                        "formatted_address": geo.get("formatted_address", ""),
+                        "place_id": _pid,
+                    }
+
+        try:
+            quota_ok2 = can_call_google_today()
+        except Exception:
+            quota_ok2 = False
+        if not quota_ok2:
+            break
+
+        places = google_places_text_search(_q)
+        if places and places.get("lat") and places.get("lng"):
+            if _is_allowed_city(places.get("formatted_address", "")):
+                _pid = places.get("place_id") or f"{places['lat']},{places['lng']}"
+                if _pid not in seen_ids:
+                    return {
+                        "lat": places["lat"],
+                        "lng": places["lng"],
+                        "formatted_address": places.get("formatted_address", ""),
+                        "place_id": _pid,
+                    }
     return None
 
 
@@ -1119,7 +1455,20 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
         if DB_ENGINE == "sqlite":
             cur.execute("BEGIN IMMEDIATE")
 
-        cur.execute("SELECT balance FROM admins WHERE id = " + P, (admin_id,))
+        # Postgres: bloquear fila de solicitud para evitar race condition (approve vs reject
+        # concurrente). Re-verifica PENDING dentro de la transacción antes de tocar saldos.
+        # SQLite ya está protegido por BEGIN IMMEDIATE.
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT status FROM recharge_requests WHERE id = " + P + for_update,
+            (request_id,),
+        )
+        row_req = cur.fetchone()
+        if not row_req or row_req["status"] != "PENDING":
+            conn.rollback()
+            return False, "Solicitud ya procesada."
+
+        cur.execute("SELECT balance FROM admins WHERE id = " + P + for_update, (admin_id,))
         row = cur.fetchone()
         current_admin_balance = row["balance"] if row else 0
         if current_admin_balance < amount:

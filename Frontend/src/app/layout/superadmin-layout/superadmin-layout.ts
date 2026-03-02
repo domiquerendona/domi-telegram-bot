@@ -19,6 +19,7 @@ import { HeaderComponent } from '../components/header/header';
   imports: [RouterOutlet, SidebarComponent, HeaderComponent],
 
   // Template HTML embebido
+
  template: `
   <div class="app">
     <app-sidebar></app-sidebar>

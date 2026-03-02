@@ -25,4 +25,12 @@ export class ApiService {
     return this.http.get(`${this.baseUrl}/users`);
   }
 
+  getActiveCourierLocations() {
+    return this.http.get<any[]>(`${this.baseUrl}/admin/couriers/active-locations`);
+  }
+
+  getUnassignedOrders() {
+    return this.http.get<any[]>(`${this.baseUrl}/admin/orders/unassigned`);
+  }
+
 }

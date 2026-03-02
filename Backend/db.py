@@ -1233,6 +1233,16 @@ def init_db():
     if "payment_instructions" not in admins_pay_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN payment_instructions TEXT")
 
+    # Migración: agregar columnas de fotos a admins si no existen
+    cur.execute("PRAGMA table_info(admins)")
+    admins_photo_cols = [r[1] for r in cur.fetchall()]
+    if "cedula_front_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN cedula_front_file_id TEXT")
+    if "cedula_back_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN cedula_back_file_id TEXT")
+    if "selfie_file_id" not in admins_photo_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN selfie_file_id TEXT")
+
     # Tabla: ledger (movimientos contables)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ledger (
@@ -1348,6 +1358,66 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_payment_methods_admin ON admin_payment_methods(admin_id, is_active)")
 
+    # Tablas: rutas multi-parada
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            ally_admin_id_snapshot INTEGER,
+            courier_id INTEGER,
+            courier_admin_id_snapshot INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            pickup_location_id INTEGER,
+            pickup_address TEXT NOT NULL,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            total_distance_km REAL DEFAULT 0,
+            distance_fee INTEGER DEFAULT 0,
+            additional_stops_fee INTEGER DEFAULT 0,
+            total_fee INTEGER DEFAULT 0,
+            instructions TEXT,
+            canceled_by TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            published_at TEXT,
+            accepted_at TEXT,
+            delivered_at TEXT,
+            canceled_at TEXT
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS route_destinations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id INTEGER NOT NULL,
+            sequence INTEGER NOT NULL,
+            customer_name TEXT NOT NULL,
+            customer_phone TEXT NOT NULL,
+            customer_address TEXT NOT NULL,
+            customer_city TEXT NOT NULL,
+            customer_barrio TEXT NOT NULL,
+            dropoff_lat REAL,
+            dropoff_lng REAL,
+            status TEXT DEFAULT 'PENDING',
+            delivered_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS route_offer_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id INTEGER NOT NULL,
+            courier_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            status TEXT DEFAULT 'PENDING',
+            offered_at TEXT,
+            responded_at TEXT,
+            response TEXT
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_routes_ally_id ON routes(ally_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_route_destinations_route_id ON route_destinations(route_id, sequence)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_route_offer_queue_route_id ON route_offer_queue(route_id, status)")
+
     conn.commit()
     conn.close()
 
@@ -1386,6 +1456,9 @@ def _init_db_postgres():
         ("payment_bank", "TEXT"),
         ("payment_holder", "TEXT"),
         ("payment_instructions", "TEXT"),
+        ("cedula_front_file_id", "TEXT"),
+        ("cedula_back_file_id", "TEXT"),
+        ("selfie_file_id", "TEXT"),
     ]:
         _pg_add_col("admins", col, ctype)
 
@@ -1686,20 +1759,23 @@ def get_admin_by_id(admin_id: int):
     cur = conn.cursor()
     cur.execute(f"""
         SELECT
-            id,                 -- 0
-            user_id,            -- 1
-            full_name,          -- 2
-            phone,              -- 3
-            city,               -- 4
-            barrio,             -- 5
-            team_name,          -- 6
-            document_number,    -- 7
-            team_code,          -- 8
-            status,             -- 9
-            created_at,         -- 10
-            residence_address,  -- 11
-            residence_lat,      -- 12
-            residence_lng       -- 13
+            id,                    -- 0
+            user_id,               -- 1
+            full_name,             -- 2
+            phone,                 -- 3
+            city,                  -- 4
+            barrio,                -- 5
+            team_name,             -- 6
+            document_number,       -- 7
+            team_code,             -- 8
+            status,                -- 9
+            created_at,            -- 10
+            residence_address,     -- 11
+            residence_lat,         -- 12
+            residence_lng,         -- 13
+            cedula_front_file_id,  -- 14
+            cedula_back_file_id,   -- 15
+            selfie_file_id         -- 16
         FROM admins
         WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC
@@ -2262,6 +2338,72 @@ def get_active_courier_cash(courier_id: int) -> int:
     row = cur.fetchone()
     conn.close()
     return row["available_cash"] if row else 0
+
+
+def get_all_online_couriers():
+    """
+    Retorna todos los repartidores ONLINE (live_location_active=1) de cualquier equipo.
+    Incluye datos de ubicación en vivo, residencia y equipo para calcular distancias.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.telegram_id,
+            c.phone,
+            c.live_lat,
+            c.live_lng,
+            c.live_location_updated_at,
+            c.residence_lat,
+            c.residence_lng,
+            c.available_cash,
+            c.availability_status,
+            a.city AS admin_city,
+            ac.admin_id
+        FROM couriers c
+        JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE c.live_location_active = 1
+          AND c.availability_status = 'APPROVED'
+          AND c.is_deleted = 0
+        ORDER BY c.live_location_updated_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_active_orders_without_courier(limit: int = 20):
+    """
+    Retorna pedidos activos sin courier asignado, con coordenadas de pickup.
+    Usado por el admin de plataforma para buscar repartidores cercanos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            o.id,
+            o.status,
+            o.pickup_address,
+            o.pickup_lat,
+            o.pickup_lng,
+            o.customer_name,
+            o.created_at,
+            al.name AS ally_name
+        FROM orders o
+        LEFT JOIN allies al ON al.id = o.ally_id
+        WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
+          AND (o.courier_id IS NULL OR o.courier_id = 0)
+          AND o.pickup_lat IS NOT NULL
+          AND o.pickup_lng IS NOT NULL
+        ORDER BY o.created_at ASC
+        LIMIT {P}
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_active_orders_by_ally(ally_id: int):
@@ -4054,6 +4196,9 @@ def create_admin(
     residence_address=None,
     residence_lat=None,
     residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
 ):
     # 1) Identidad global
     person_id = get_or_create_identity(phone, document_number, full_name=full_name)
@@ -4068,9 +4213,10 @@ def create_admin(
             INSERT INTO admins (
                 user_id, person_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number,
-                residence_address, residence_lat, residence_lng
+                residence_address, residence_lat, residence_lng,
+                cedula_front_file_id, cedula_back_file_id, selfie_file_id
             )
-            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql}, {P}, {P}, {P}, {P}, {P})
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
         """, (
             user_id,
             person_id,
@@ -4083,6 +4229,9 @@ def create_admin(
             residence_address,
             residence_lat,
             residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
         ))
 
         # TEAM_CODE automático y único
@@ -4260,10 +4409,17 @@ def has_accepted_terms(telegram_id: int, role: str, version: str, sha256: str) -
 def save_terms_acceptance(telegram_id: int, role: str, version: str, sha256: str, message_id: int = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
-        INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
-        VALUES ({P}, {P}, {P}, {P}, {P})
-    """, (telegram_id, role, version, sha256, message_id))
+    if DB_ENGINE == "postgres":
+        cur.execute(f"""
+            INSERT INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
+            VALUES ({P}, {P}, {P}, {P}, {P})
+            ON CONFLICT (telegram_id, role, version, sha256) DO NOTHING
+        """, (telegram_id, role, version, sha256, message_id))
+    else:
+        cur.execute(f"""
+            INSERT OR IGNORE INTO terms_acceptances (telegram_id, role, version, sha256, message_id)
+            VALUES ({P}, {P}, {P}, {P}, {P})
+        """, (telegram_id, role, version, sha256, message_id))
     conn.commit()
     conn.close()
 
@@ -4976,26 +5132,26 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
 
 def get_api_usage_today(api_name: str) -> int:
     """Retorna el número de llamadas hoy para una API."""
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
         SELECT call_count FROM api_usage_daily
-        WHERE api_name = {P} AND usage_date = date('now')
+        WHERE api_name = {P} AND usage_date = {today_sql}
     """, (api_name,))
     row = cur.fetchone()
     conn.close()
     return int(_row_value(row, "call_count", 0, 0) or 0)
 
 
-
-
 def increment_api_usage(api_name: str):
     """Incrementa el contador de uso diario para una API."""
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
         INSERT INTO api_usage_daily (api_name, usage_date, call_count)
-        VALUES ({P}, date('now'), 1)
+        VALUES ({P}, {today_sql}, 1)
         ON CONFLICT(api_name, usage_date) DO UPDATE SET
           call_count = api_usage_daily.call_count + 1
     """, (api_name,))
@@ -5976,6 +6132,267 @@ def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_
             rejection_reason = {P}
         WHERE id = {P}
     """, (reviewer_user_id, reviewer_admin_id, reason, request_id))
+    conn.commit()
+    conn.close()
+
+
+# ===== RUTAS MULTI-PARADA =====
+
+
+def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+                 total_distance_km, distance_fee, additional_stops_fee, total_fee,
+                 instructions, ally_admin_id_snapshot):
+    """Crea una ruta. Retorna el route_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(
+        cur, conn,
+        f"""
+        INSERT INTO routes (
+            ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+            total_distance_km, distance_fee, additional_stops_fee, total_fee,
+            instructions, ally_admin_id_snapshot, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+        """,
+        (ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
+         total_distance_km, distance_fee, additional_stops_fee, total_fee,
+         instructions, ally_admin_id_snapshot),
+    )
+
+
+def create_route_destination(route_id, sequence, customer_name, customer_phone,
+                              customer_address, customer_city, customer_barrio,
+                              dropoff_lat=None, dropoff_lng=None):
+    """Inserta una parada de ruta. Retorna el destination_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(
+        cur, conn,
+        f"""
+        INSERT INTO route_destinations (
+            route_id, sequence, customer_name, customer_phone,
+            customer_address, customer_city, customer_barrio,
+            dropoff_lat, dropoff_lng, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+        """,
+        (route_id, sequence, customer_name, customer_phone,
+         customer_address, customer_city, customer_barrio,
+         dropoff_lat, dropoff_lng),
+    )
+
+
+def get_route_by_id(route_id):
+    """Retorna la ruta o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT * FROM routes WHERE id = {P}", (route_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_route_destinations(route_id):
+    """Lista todas las paradas de la ruta ordenadas por sequence."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM route_destinations WHERE route_id = {P} ORDER BY sequence ASC",
+        (route_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_pending_route_stops(route_id):
+    """Lista las paradas PENDING de la ruta, ordenadas por sequence."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM route_destinations WHERE route_id = {P} AND status = 'PENDING' ORDER BY sequence ASC",
+        (route_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_route_status(route_id, status, timestamp_field=None):
+    """Actualiza el status de una ruta y opcionalmente un campo timestamp."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if timestamp_field:
+        cur.execute(
+            f"UPDATE routes SET status = {P}, {timestamp_field} = {now_sql} WHERE id = {P}",
+            (status, route_id)
+        )
+    else:
+        cur.execute(f"UPDATE routes SET status = {P} WHERE id = {P}", (status, route_id))
+    conn.commit()
+    conn.close()
+
+
+def assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot):
+    """Asigna un courier a la ruta y la marca como ACCEPTED."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET courier_id = {P}, courier_admin_id_snapshot = {P},
+            status = 'ACCEPTED', accepted_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (courier_id, courier_admin_id_snapshot, route_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def deliver_route_stop(route_id, sequence):
+    """Marca una parada como DELIVERED."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_destinations
+        SET status = 'DELIVERED', delivered_at = {now_sql}
+        WHERE route_id = {P} AND sequence = {P}
+        """,
+        (route_id, sequence)
+    )
+    conn.commit()
+    conn.close()
+
+
+def cancel_route(route_id, canceled_by):
+    """Cancela una ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        WHERE id = {P}
+        """,
+        (canceled_by, route_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def create_route_offer_queue(route_id, courier_ids):
+    """Crea entradas en la cola de ofertas de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for pos, courier_id in enumerate(courier_ids, start=1):
+        cur.execute(
+            f"""
+            INSERT INTO route_offer_queue (route_id, courier_id, position, status)
+            VALUES ({P}, {P}, {P}, 'PENDING')
+            """,
+            (route_id, courier_id, pos)
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_next_pending_route_offer(route_id):
+    """Retorna el proximo courier pendiente en la cola de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT q.id AS queue_id, q.courier_id, q.position, u.telegram_id
+        FROM route_offer_queue q
+        JOIN couriers c ON c.id = q.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE q.route_id = {P} AND q.status = 'PENDING'
+        ORDER BY q.position ASC
+        LIMIT 1
+        """,
+        (route_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_route_offer_as_offered(queue_id):
+    """Marca una oferta de ruta como enviada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE route_offer_queue SET status = 'OFFERED', offered_at = {now_sql} WHERE id = {P}",
+        (queue_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_route_offer_response(queue_id, response):
+    """Marca la respuesta de una oferta de ruta (ACCEPTED, REJECTED, EXPIRED, BUSY)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_offer_queue
+        SET status = {P}, response = {P}, responded_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (response, response, queue_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_current_route_offer(route_id):
+    """Retorna la oferta activa (OFFERED) de la ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT q.id AS queue_id, q.courier_id, q.position, u.telegram_id
+        FROM route_offer_queue q
+        JOIN couriers c ON c.id = q.courier_id
+        JOIN users u ON u.id = c.user_id
+        WHERE q.route_id = {P} AND q.status = 'OFFERED'
+        LIMIT 1
+        """,
+        (route_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_route_offer_queue(route_id):
+    """Borra toda la cola de ofertas de una ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM route_offer_queue WHERE route_id = {P}", (route_id,))
+    conn.commit()
+    conn.close()
+
+
+def reset_route_offer_queue(route_id):
+    """Reinicia todos los estados de la cola a PENDING para un nuevo ciclo."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE route_offer_queue
+        SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
+        WHERE route_id = {P}
+        """,
+        (route_id,)
+    )
     conn.commit()
     conn.close()
 
