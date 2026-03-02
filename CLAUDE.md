@@ -834,29 +834,51 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: **Claude Code** y **Codex**.
 En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (`staging`).
+Las reglas completas están en AGENTS.md Sección 15. Aquí el resumen operativo:
 
-**Reglas obligatorias para todos los agentes:**
+#### WORKLOG.md — Registro de sesiones
 
-- **PROHIBIDO** borrar, revertir o modificar cambios realizados por otro agente sin:
-  1. Informar primero a Luis Felipe qué cambio del otro agente es problemático y por qué.
-  2. Esperar autorización explícita antes de actuar.
-- Si se detecta código defectuoso, conflicto o regresión introducida por otro agente:
-  - **PROHIBIDO** corregirlo directamente sin autorización.
-  - **Obligatorio** reportar a Luis Felipe: archivo, función, commit, descripción del problema.
-  - Esperar instrucción explícita antes de modificar.
+Archivo en la raíz del repo que cada agente actualiza al iniciar y cerrar sesión.
 
-**Protocolo ante cambios recientes de otro agente:**
+**Al iniciar:**
+```bash
+git pull origin staging
+git log --oneline -15 origin/staging   # ver qué hizo el otro agente
+cat WORKLOG.md                          # ver sesiones activas
+# Agregar entrada en "Sesiones activas" y hacer commit+push:
+git commit -m "[claude] worklog: inicio — <tarea breve>"
+git push origin staging
+```
 
-1. Leer `git log` y `git diff` antes de continuar cualquier edición.
-2. Si los cambios del otro agente afectan el área de trabajo actual: pausar y notificar a Luis Felipe.
-3. **PROHIBIDO** hacer `git push` que sobreescriba trabajo del otro agente sin coordinación previa.
+**Al cerrar:**
+```bash
+# Mover entrada a "Historial" con estado COMPLETADO/PENDIENTE y hacer commit+push:
+git commit -m "[claude] worklog: cierre — <tarea breve>"
+git push origin staging
+```
 
-**Identificación de autor en commits:**
-Todo commit debe identificar al agente generador para trazabilidad:
-- Claude Code: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
-- Codex: co-author o nota equivalente según su configuración.
+#### Prefijo obligatorio en commits
 
-La coordinación entre agentes pasa siempre por Luis Felipe.
+| Agente | Formato |
+|--------|---------|
+| Claude Code | `[claude] feat: descripción` |
+| Codex | `[codex] feat: descripción` |
+
+Para filtrar por agente: `git log --oneline --grep="[claude]"`
+
+#### Reglas de no-interferencia
+
+- **PROHIBIDO** modificar o revertir trabajo del otro agente sin autorización de Luis Felipe.
+- Si se detecta un error del otro agente: reportar a Luis Felipe (archivo, función, commit) y **esperar instrucción**.
+- Si se detecta solapamiento en WORKLOG.md o `git log`: **pausar** y notificar a Luis Felipe.
+- Si `git push` es rechazado por fast-forward: **PROHIBIDO** `--force`. Hacer pull, revisar, reportar.
+
+#### Archivos de alto riesgo
+
+Verificar WORKLOG.md y `git log --follow -5 <archivo>` antes de editar cualquiera de estos:
+`Backend/main.py` · `Backend/services.py` · `Backend/db.py` · `Backend/order_delivery.py` · `AGENTS.md` · `CLAUDE.md`
+
+La coordinación entre agentes pasa **siempre** por Luis Felipe.
 
 Estas reglas aplican a cualquier agente que trabaje en este repositorio.
 

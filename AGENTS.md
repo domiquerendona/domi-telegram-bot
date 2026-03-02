@@ -972,35 +972,86 @@ el objetivo es escribir esas secuencias literalmente en otro archivo Python.
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
 En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (staging).
+Estas reglas garantizan la armonia del codigo y que ningun agente deshaga el trabajo del otro.
 
-15A. Reglas de convivencia (obligatorias para todos los agentes)
+15A. Registro obligatorio — WORKLOG.md
+
+Existe el archivo WORKLOG.md en la raiz del repositorio. Es el mecanismo principal de coordinacion.
+
+Al INICIAR una sesion de trabajo:
+  1. git pull origin staging  (traer cambios antes de empezar).
+  2. Leer git log --oneline -15 origin/staging para ver que hizo el otro agente recientemente.
+  3. Leer WORKLOG.md para detectar sesiones activas del otro agente.
+  4. Agregar una entrada en la seccion "Sesiones activas" de WORKLOG.md con:
+     - Agente (claude / codex)
+     - Fecha y hora de inicio
+     - Archivos que se van a modificar
+     - Descripcion breve de la tarea
+  5. Commit + push del WORKLOG: "[claude] worklog: inicio — <tarea breve>"
+
+Al FINALIZAR una sesion de trabajo:
+  1. Mover la entrada de "Sesiones activas" a "Historial reciente" en WORKLOG.md con estado COMPLETADO o PENDIENTE.
+  2. Commit + push del WORKLOG: "[claude] worklog: cierre — <tarea breve>"
+
+PROHIBIDO iniciar trabajo sin actualizar WORKLOG.md primero.
+PROHIBIDO olvidar cerrar la entrada al terminar la sesion.
+
+15B. Prefijo obligatorio en commits
+
+Todo commit generado por un agente IA DEBE comenzar con el prefijo de su agente:
+  - Claude Code: [claude] feat: ...
+  - Codex:       [codex] feat: ...
+
+El prefijo va siempre al inicio del titulo del commit, antes de feat/fix/docs/etc.
+Adicionalmente, Claude Code incluye al pie: Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Para filtrar commits por agente:
+  git log --oneline --grep="[claude]"
+  git log --oneline --grep="[codex]"
+
+PROHIBIDO omitir el prefijo en cualquier commit generado por un agente IA.
+
+15C. Reglas de no-interferencia (critico)
 
 PROHIBIDO borrar, revertir o modificar cambios realizados por otro agente sin:
-  1. Informar primero a Luis Felipe qué cambio del otro agente se encontró y por qué es problemático.
-  2. Esperar autorización explícita de Luis Felipe antes de actuar.
+  1. Informar primero a Luis Felipe: que cambio del otro agente es problematico y por que.
+  2. Esperar autorizacion explicita antes de actuar.
 
-Si un agente detecta código defectuoso, conflicto o regresión introducidos por otro agente:
-  - PROHIBIDO corregirlo directamente sin autorización.
-  - Obligatorio reportarlo a Luis Felipe con: archivo, función, commit o descripción del problema.
-  - Esperar instrucción explícita antes de modificar.
+Si se detecta codigo defectuoso, conflicto o regresion introducida por otro agente:
+  - PROHIBIDO corregirlo directamente.
+  - Obligatorio reportar a Luis Felipe: archivo exacto, funcion, hash del commit, descripcion del problema.
+  - Esperar instruccion explicita antes de tocar el codigo del otro agente.
 
-15B. Protocolo ante conflictos de edición
+15D. Protocolo ante solapamiento detectado
 
-Si al hacer git pull o al abrir un archivo se detectan cambios recientes de otro agente:
-  1. Leer los cambios (git log, git diff) antes de continuar cualquier edición.
-  2. Si los cambios del otro agente afectan el área de trabajo actual: pausar y notificar a Luis Felipe.
-  3. PROHIBIDO hacer git push que sobreescriba trabajo del otro agente sin coordinación previa.
+Si al leer WORKLOG.md o git log se detecta que el otro agente esta tocando los mismos archivos:
+  1. PAUSAR la tarea actual.
+  2. Notificar a Luis Felipe: "El agente X esta modificando <archivo> (ver WORKLOG.md o commit <hash>). Necesito instruccion antes de continuar."
+  3. No continuar hasta recibir instruccion.
 
-15C. Identificación de autor en commits
+Si al hacer git push se recibe rechazo por fast-forward (el otro agente pusheo primero):
+  - PROHIBIDO git push --force.
+  - Hacer git pull, revisar los cambios del otro agente, y reportar a Luis Felipe si hay conflicto.
 
-Todo commit debe incluir en el mensaje o en el co-author quién lo generó, para trazabilidad:
-  - Claude Code: Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-  - Codex: co-author o nota equivalente según su configuración.
+15E. Archivos de alto riesgo (zonas de conflicto)
 
-15D. Objetivo
+Los siguientes archivos son modificados frecuentemente por ambos agentes.
+Requieren especial atencion al verificar WORKLOG.md antes de editar:
 
-Estas reglas existen para garantizar la armonía del código y evitar que un agente deshaga
-el trabajo del otro. La coordinación pasa siempre por Luis Felipe.
+  Backend/main.py          — orquestador central, handlers, flujos
+  Backend/services.py      — logica de negocio y re-exports
+  Backend/db.py            — acceso a base de datos
+  Backend/order_delivery.py — flujo completo de pedidos
+  AGENTS.md                — reglas del proyecto
+  CLAUDE.md                — documentacion del proyecto
+
+Para estos archivos: OBLIGATORIO leer git log --follow -5 <archivo> antes de editar.
+
+15F. Objetivo
+
+La coordinacion entre agentes pasa SIEMPRE por Luis Felipe.
+Ningun agente tiene autoridad para resolver conflictos con otro agente por su cuenta.
+El objetivo es que el trabajo de ambos agentes sume, nunca que uno deshaga al otro.
 
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
