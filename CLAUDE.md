@@ -852,10 +852,24 @@ git push origin staging
 
 **Al cerrar:**
 ```bash
-# Mover entrada a "Historial" con estado COMPLETADO/PENDIENTE y hacer commit+push:
+# Mover entrada a "Historial" con estado COMPLETADO/PENDIENTE y hacer commit del WORKLOG
 git commit -m "[claude] worklog: cierre — <tarea breve>"
+
+# PROTOCOLO PRE-PUSH OBLIGATORIO:
+git fetch origin staging
+git log --oneline HEAD..origin/staging    # hay commits nuevos del otro agente?
+git diff --name-only HEAD origin/staging  # solapan con tus archivos?
+
+# Sin solapamiento -> push normal
 git push origin staging
+
+# Con solapamiento en mismos archivos -> PAUSAR
+# Reportar a Luis Felipe antes de pushear
 ```
+
+> Si `git log HEAD..origin/staging` muestra commits del otro agente en los mismos archivos
+> que tocaste: **PROHIBIDO pushear**. Reportar a Luis Felipe y esperar instruccion.
+> **PROHIBIDO `git push --force`** en cualquier circunstancia.
 
 #### Prefijo obligatorio en commits
 

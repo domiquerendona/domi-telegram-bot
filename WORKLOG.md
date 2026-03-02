@@ -39,10 +39,24 @@ git push origin staging
 
 ### Cerrar sesión
 ```bash
-# Mover fila de "Sesiones activas" a "Historial reciente" con estado COMPLETADO o PENDIENTE
+# 1. Mover fila de "Sesiones activas" a "Historial" y commitear el WORKLOG
 git commit -m "[claude] worklog: cierre — <descripción breve>"
+
+# 2. PROTOCOLO PRE-PUSH (obligatorio antes de cada push)
+git fetch origin staging
+git log --oneline HEAD..origin/staging    # ¿hay commits nuevos del otro agente?
+git diff --name-only HEAD origin/staging  # ¿tocan los mismos archivos que yo modifiqué?
+
+# Sin solapamiento de archivos -> push normal
 git push origin staging
+
+# Con solapamiento en mismos archivos -> PAUSAR
+# Reportar a Luis Felipe: qué archivos, cuál es tu cambio, cuál es el del otro agente
+# Esperar instruccion antes de pushear
 ```
+
+> **Regla de oro:** PROHIBIDO `git push --force`. Si el push es rechazado por fast-forward,
+> hacer fetch + revisar + reportar a Luis Felipe.
 
 ### Filtrar commits por agente
 ```bash

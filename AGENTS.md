@@ -1053,6 +1053,37 @@ La coordinacion entre agentes pasa SIEMPRE por Luis Felipe.
 Ningun agente tiene autoridad para resolver conflictos con otro agente por su cuenta.
 El objetivo es que el trabajo de ambos agentes sume, nunca que uno deshaga al otro.
 
+15G. Protocolo pre-push (obligatorio antes de cada git push)
+
+Antes de ejecutar git push origin staging, el agente DEBE:
+
+  1. Verificar si el otro agente pusheo mientras se trabajaba:
+       git fetch origin staging
+       git log --oneline HEAD..origin/staging
+
+  2. Segun el resultado:
+
+     a) Sin commits nuevos en origin/staging:
+          → Push normal. No hay riesgo de solapamiento.
+
+     b) Hay commits nuevos pero en archivos DISTINTOS a los que se modificaron:
+          → git pull --ff-only origin staging
+          → Verificar compilacion: python -m py_compile Backend/main.py services.py db.py ...
+          → Push si todo compila.
+
+     c) Hay commits nuevos en los MISMOS archivos que se modificaron:
+          → PAUSAR. PROHIBIDO hacer push.
+          → Reportar a Luis Felipe: "El agente X pusheo cambios en <archivo> mientras trabajaba.
+             Mis cambios: <descripcion>. Sus cambios: <hash> <descripcion>.
+             Necesito instruccion antes de pushear."
+          → Esperar instruccion explicita.
+
+  3. PROHIBIDO git push --force en cualquier circunstancia.
+
+Comando rapido para detectar solapamiento de archivos:
+  git diff --name-only HEAD origin/staging
+  (compara contra los archivos que tu modificaste en esta sesion)
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.
