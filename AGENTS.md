@@ -968,6 +968,40 @@ PROHIBIDO usar secuencias de escape directas (
 , 	) dentro de strings Python cuando
 el objetivo es escribir esas secuencias literalmente en otro archivo Python.
 
+15. Colaboración entre agentes IA (Claude Code y Codex)
+
+Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
+En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (staging).
+
+15A. Reglas de convivencia (obligatorias para todos los agentes)
+
+PROHIBIDO borrar, revertir o modificar cambios realizados por otro agente sin:
+  1. Informar primero a Luis Felipe qué cambio del otro agente se encontró y por qué es problemático.
+  2. Esperar autorización explícita de Luis Felipe antes de actuar.
+
+Si un agente detecta código defectuoso, conflicto o regresión introducidos por otro agente:
+  - PROHIBIDO corregirlo directamente sin autorización.
+  - Obligatorio reportarlo a Luis Felipe con: archivo, función, commit o descripción del problema.
+  - Esperar instrucción explícita antes de modificar.
+
+15B. Protocolo ante conflictos de edición
+
+Si al hacer git pull o al abrir un archivo se detectan cambios recientes de otro agente:
+  1. Leer los cambios (git log, git diff) antes de continuar cualquier edición.
+  2. Si los cambios del otro agente afectan el área de trabajo actual: pausar y notificar a Luis Felipe.
+  3. PROHIBIDO hacer git push que sobreescriba trabajo del otro agente sin coordinación previa.
+
+15C. Identificación de autor en commits
+
+Todo commit debe incluir en el mensaje o en el co-author quién lo generó, para trazabilidad:
+  - Claude Code: Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+  - Codex: co-author o nota equivalente según su configuración.
+
+15D. Objetivo
+
+Estas reglas existen para garantizar la armonía del código y evitar que un agente deshaga
+el trabajo del otro. La coordinación pasa siempre por Luis Felipe.
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.

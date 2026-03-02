@@ -830,6 +830,34 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 
 ## Flujo de Trabajo con IA
 
+### Colaboración entre Agentes IA (Claude Code y Codex)
+
+Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: **Claude Code** y **Codex**.
+En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (`staging`).
+
+**Reglas obligatorias para todos los agentes:**
+
+- **PROHIBIDO** borrar, revertir o modificar cambios realizados por otro agente sin:
+  1. Informar primero a Luis Felipe qué cambio del otro agente es problemático y por qué.
+  2. Esperar autorización explícita antes de actuar.
+- Si se detecta código defectuoso, conflicto o regresión introducida por otro agente:
+  - **PROHIBIDO** corregirlo directamente sin autorización.
+  - **Obligatorio** reportar a Luis Felipe: archivo, función, commit, descripción del problema.
+  - Esperar instrucción explícita antes de modificar.
+
+**Protocolo ante cambios recientes de otro agente:**
+
+1. Leer `git log` y `git diff` antes de continuar cualquier edición.
+2. Si los cambios del otro agente afectan el área de trabajo actual: pausar y notificar a Luis Felipe.
+3. **PROHIBIDO** hacer `git push` que sobreescriba trabajo del otro agente sin coordinación previa.
+
+**Identificación de autor en commits:**
+Todo commit debe identificar al agente generador para trazabilidad:
+- Claude Code: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
+- Codex: co-author o nota equivalente según su configuración.
+
+La coordinación entre agentes pasa siempre por Luis Felipe.
+
 Estas reglas aplican a cualquier agente que trabaje en este repositorio.
 
 ### Antes de Cambiar Código
