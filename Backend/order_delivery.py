@@ -52,14 +52,65 @@ from db import (
     delete_route_offer_queue,
     reset_route_offer_queue,
 )
+from datetime import datetime
 from db import (
     add_courier_rating,
     block_courier_for_ally,
     set_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
+    get_courier_delivery_time_stats,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km
+
+
+def _format_duration(seconds):
+    """Convierte segundos a texto legible: 'X min' o 'Xh Ymin'. Retorna 'N/D' si es None."""
+    if seconds is None or seconds < 0:
+        return "N/D"
+    minutes = int(seconds) // 60
+    if minutes < 60:
+        return "{} min".format(minutes)
+    hours = minutes // 60
+    mins = minutes % 60
+    return "{}h {}min".format(hours, mins)
+
+
+def _get_order_durations(order, delivered_now=False):
+    """
+    Calcula duraciones de cada etapa del pedido.
+    delivered_now=True: usa datetime.utcnow() como delivered_at (recien marcado DELIVERED).
+    Retorna dict con claves: llegada_aliado, entrega_cliente, tiempo_total (en segundos).
+    Cada clave solo se incluye si ambos extremos del intervalo estan disponibles.
+    """
+    def _parse(val):
+        if val is None:
+            return None
+        if hasattr(val, 'timetuple'):  # ya es objeto datetime (Postgres)
+            return val
+        s = str(val).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                return datetime.strptime(s[:len(fmt)], fmt)
+            except ValueError:
+                continue
+        return None
+
+    from db import _row_value as _rv
+    accepted    = _parse(_rv(order, "accepted_at"))
+    arrived     = _parse(_rv(order, "courier_arrived_at"))
+    pickup_conf = _parse(_rv(order, "pickup_confirmed_at"))
+    delivered   = datetime.utcnow() if delivered_now else _parse(_rv(order, "delivered_at"))
+
+    result = {}
+    if accepted and arrived:
+        result["llegada_aliado"] = (arrived - accepted).total_seconds()
+    if pickup_conf and delivered:
+        result["entrega_cliente"] = (delivered - pickup_conf).total_seconds()
+    if accepted and delivered:
+        result["tiempo_total"] = (delivered - accepted).total_seconds()
+    return result
 
 
 OFFER_TIMEOUT_SECONDS = 30
@@ -668,6 +719,7 @@ def admin_orders_panel(update, context, admin_id, is_platform=False):
         [InlineKeyboardButton("Pedidos entregados", callback_data="admpedidos_list_DELIVERED_{}".format(admin_id))],
         [InlineKeyboardButton("Pedidos cancelados", callback_data="admpedidos_list_CANCELLED_{}".format(admin_id))],
         [InlineKeyboardButton("Todos los pedidos", callback_data="admpedidos_list_ALL_{}".format(admin_id))],
+        [InlineKeyboardButton("Estadisticas de entrega", callback_data="admpedidos_stats_{}".format(admin_id))],
     ]
 
     query.edit_message_text(
@@ -694,6 +746,10 @@ def admin_orders_callback(update, context):
         return _admin_order_detail(update, context, data)
     if data.startswith("admpedidos_cancel_"):
         return _admin_order_cancel(update, context, data)
+    if data.startswith("admpedidos_statsdetail_"):
+        return _admin_courier_delivery_stats(update, context, data)
+    if data.startswith("admpedidos_stats_"):
+        return _admin_delivery_stats_panel(update, context, data)
     return None
 
 
@@ -836,6 +892,16 @@ def _admin_order_detail(update, context, data):
         courier_admin_snapshot_label = "{} ({})".format(courier_admin_snapshot_label, courier_admin_snapshot_name)
 
     canceled_by = order["canceled_by"] if "canceled_by" in order.keys() and order["canceled_by"] else "N/A"
+
+    durations = _get_order_durations(order)
+    dur_lines = []
+    if "llegada_aliado" in durations:
+        dur_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "entrega_cliente" in durations:
+        dur_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
+    if "tiempo_total" in durations:
+        dur_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+    dur_block = ("Tiempos del pedido:\n" + "\n".join(dur_lines) + "\n\n") if dur_lines else ""
 
     text = (
         "Pedido #{}\n\n"
@@ -1801,20 +1867,30 @@ def _handle_delivered(update, context, order_id):
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)
 
-    if fee_ally_ok and fee_courier_ok:
-        query.edit_message_text(
-            "Pedido #{} entregado exitosamente.\n\n"
-            "Se descontaron $300 de tu saldo por este servicio.".format(order_id)
-        )
-    elif fee_courier_ok:
-        query.edit_message_text(
-            "Pedido #{} entregado exitosamente.\n\n"
-            "Se descontaron $300 de tu saldo por este servicio.".format(order_id)
-        )
-    else:
-        query.edit_message_text("Pedido #{} entregado exitosamente.".format(order_id))
+    durations = _get_order_durations(order, delivered_now=True)
 
-    _notify_ally_delivered(context, order)
+    time_lines = []
+    if "llegada_aliado" in durations:
+        time_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "entrega_cliente" in durations:
+        time_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
+    if "tiempo_total" in durations:
+        time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+
+    time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+
+
+    if fee_courier_ok:
+        courier_msg = (
+            "Pedido #{} entregado exitosamente.{}\n\n"
+            "Se descontaron $300 de tu saldo por este servicio."
+        ).format(order_id, time_block)
+    else:
+        courier_msg = "Pedido #{} entregado exitosamente.{}".format(order_id, time_block)
+
+    query.edit_message_text(courier_msg)
+
+    _notify_ally_delivered(context, order, durations)
 
 
 def _build_offer_text(order, courier_dist_km=None):
@@ -2093,7 +2169,7 @@ def _notify_courier_pickup_rejected(context, order):
         print("[WARN] No se pudo notificar rechazo de recogida al courier: {}".format(e))
 
 
-def _notify_ally_delivered(context, order):
+def _notify_ally_delivered(context, order, durations=None):
     """Notifica al aliado que el pedido fue entregado y solicita calificacion del servicio."""
     try:
         ally = get_ally_by_id(order["ally_id"])
@@ -2107,6 +2183,15 @@ def _notify_ally_delivered(context, order):
         courier_name = (courier["full_name"] if courier else None) or "el repartidor"
         order_id = order["id"]
 
+        time_lines = []
+        if durations:
+            if "llegada_aliado" in durations:
+                time_lines.append("  Llegada del repartidor: {}".format(_format_duration(durations["llegada_aliado"])))
+            if "entrega_cliente" in durations:
+                time_lines.append("  Tiempo de entrega: {}".format(_format_duration(durations["entrega_cliente"])))
+        time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+
+
         keyboard = [[
             InlineKeyboardButton("1", callback_data="rating_star_{}_1".format(order_id)),
             InlineKeyboardButton("2", callback_data="rating_star_{}_2".format(order_id)),
@@ -2117,15 +2202,14 @@ def _notify_ally_delivered(context, order):
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text=(
-                "Pedido #{} entregado exitosamente por {}.\n\n"
+                "Pedido #{} entregado exitosamente por {}.{}\n\n"
                 "Como calificarias el servicio?\n"
                 "1 = Muy malo  |  5 = Excelente"
-            ).format(order_id, courier_name),
+            ).format(order_id, courier_name, time_block),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar entrega al aliado: {}".format(e))
-
 
 def handle_rating_callback(update, context):
     """Maneja la calificacion del servicio por parte del aliado tras la entrega."""

@@ -4097,6 +4097,62 @@ def get_all_orders(status_filter: str = None, limit: int = 20):
     return rows
 
 
+# ---------- ESTADÍSTICAS DE TIEMPOS DE ENTREGA ----------
+
+def get_courier_delivery_time_stats(admin_id=None, courier_id=None, days=30):
+    """
+    Devuelve estadísticas de tiempos de entrega por repartidor.
+    admin_id: si se provee, filtra al equipo actual del admin (admin_couriers APPROVED).
+    courier_id: si se provee, filtra a ese repartidor específico.
+    days: ventana de tiempo en días hacia atrás desde hoy (default 30).
+    Retorna lista de filas con: courier_id, full_name, total_entregados,
+    avg_llegada_seg, avg_entrega_seg, avg_total_seg.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if DB_ENGINE == "postgres":
+        time_filter = f"o.delivered_at >= NOW() - INTERVAL '{days} days'"
+        avg_llegada = "AVG(EXTRACT(EPOCH FROM (o.courier_arrived_at - o.accepted_at)))"
+        avg_entrega = "AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.pickup_confirmed_at)))"
+        avg_total   = "AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.accepted_at)))"
+    else:
+        time_filter = f"o.delivered_at >= datetime('now', '-{days} days')"
+        avg_llegada = "AVG(CAST(strftime('%s', o.courier_arrived_at) AS INTEGER) - CAST(strftime('%s', o.accepted_at) AS INTEGER))"
+        avg_entrega = "AVG(CAST(strftime('%s', o.delivered_at) AS INTEGER) - CAST(strftime('%s', o.pickup_confirmed_at) AS INTEGER))"
+        avg_total   = "AVG(CAST(strftime('%s', o.delivered_at) AS INTEGER) - CAST(strftime('%s', o.accepted_at) AS INTEGER))"
+
+    query = f"""
+        SELECT
+            o.courier_id,
+            c.full_name,
+            COUNT(*) AS total_entregados,
+            {avg_llegada} AS avg_llegada_seg,
+            {avg_entrega} AS avg_entrega_seg,
+            {avg_total}   AS avg_total_seg
+        FROM orders o
+        JOIN couriers c ON c.id = o.courier_id
+    """
+    params = []
+
+    if admin_id is not None:
+        query += f" JOIN admin_couriers ac ON ac.courier_id = o.courier_id AND ac.admin_id = {P} AND ac.status = 'APPROVED'"
+        params.append(admin_id)
+
+    query += f" WHERE o.status = 'DELIVERED' AND {time_filter} AND o.accepted_at IS NOT NULL AND o.delivered_at IS NOT NULL"
+
+    if courier_id is not None:
+        query += f" AND o.courier_id = {P}"
+        params.append(courier_id)
+
+    query += " GROUP BY o.courier_id, c.full_name ORDER BY avg_total_seg ASC"
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 # ---------- CALIFICACIONES DEL REPARTIDOR ----------
 
 def add_courier_rating(order_id: int, courier_id: int, rating: int, comment: str = None):
