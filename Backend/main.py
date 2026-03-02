@@ -265,7 +265,7 @@ from services import (
     unblock_courier_for_ally,
     get_blocked_courier_ids_for_ally,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup
 from db import (
     init_db,
     force_platform_admin,
@@ -13539,6 +13539,12 @@ def courier_live_location_handler(update, context):
         else:
             update_courier_live_location(courier["id"], lat, lng)
 
+        # Verificar llegada al punto de recogida si tiene pedido activo
+        try:
+            check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
+        except Exception as e:
+            print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
+
         # Solo notificar la primera vez (cuando pasa a ONLINE visible)
         was_online = (
             _row_value(courier, "availability_status") == "APPROVED"
@@ -13800,7 +13806,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel|find_another|wait_courier)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))

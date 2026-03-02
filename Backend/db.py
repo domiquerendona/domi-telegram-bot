@@ -1070,6 +1070,12 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN ally_admin_id_snapshot INTEGER")
     if 'courier_admin_id_snapshot' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN courier_admin_id_snapshot INTEGER")
+    if 'courier_arrived_at' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_arrived_at TEXT")
+    if 'courier_accepted_lat' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lat REAL")
+    if 'courier_accepted_lng' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lng REAL")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -2486,6 +2492,44 @@ def release_order_from_courier(order_id: int):
     """, (order_id,))
     conn.commit()
     conn.close()
+
+
+def set_courier_arrived(order_id: int):
+    """Marca la llegada GPS del courier al punto de recogida. Idempotente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE orders SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        (order_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_courier_accepted_location(order_id: int, lat: float, lng: float):
+    """Guarda la posición del courier en el momento de aceptar (base para T+5)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE orders SET courier_accepted_lat = {P}, courier_accepted_lng = {P} WHERE id = {P};",
+        (lat, lng, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_active_order_for_courier(courier_id: int):
+    """Retorna el pedido en estado ACCEPTED asignado a este courier, o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM orders WHERE courier_id = {P} AND status = 'ACCEPTED' LIMIT 1;",
+        (courier_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
