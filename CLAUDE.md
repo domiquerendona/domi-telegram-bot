@@ -832,6 +832,13 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 
 ### Donde documentar
 
+Regla de routing — tabla completa en **AGENTS.md Sección 16**.
+
+Regla de cambios estructurales — tabla completa en **AGENTS.md Sección 17**:
+todo cambio estructural (nueva tabla, módulo, variable de entorno, callback, flow)
+debe documentarse en la sección correspondiente de este archivo **en el mismo commit**.
+El `git log` es el historial cronológico. CLAUDE.md es la referencia de estado actual.
+
 Regla de routing — tabla completa en **AGENTS.md Sección 16**:
 
 | Contenido | Destino |

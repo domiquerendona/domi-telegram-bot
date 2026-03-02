@@ -1107,6 +1107,35 @@ Reglas de aplicacion:
 4. WORKLOG.md es exclusivo para registro de sesiones de agentes. No es un destino de documentacion general.
 5. Si el contenido no encaja claramente en ningun documento: preguntar a Luis Felipe antes de documentar.
 
+17. Documentar cambios estructurales (obligatorio en el mismo commit)
+
+Todo cambio que agregue o modifique la estructura del proyecto DEBE documentarse
+en el mismo commit que lo implementa. No en un commit posterior.
+
+Tabla de routing estructural:
+
+| Se agrega o modifica...                        | Actualizar en CLAUDE.md                        |
+|------------------------------------------------|------------------------------------------------|
+| Nueva tabla en la BD                           | Seccion "Tablas Principales"                   |
+| Nueva columna relevante en tabla existente     | Seccion "Tablas Principales" (fila de la tabla)|
+| Nuevo modulo .py en Backend/                   | Seccion "Estructura del Repositorio"           |
+| Nueva variable de entorno                      | Tabla "Variables de Entorno"                   |
+| Nuevo prefijo de callback                      | Tabla de prefijos de callback                  |
+| Nuevo flow de conversacion (ConversationHandler)| Seccion "Convenciones de Estado"              |
+| Nueva funcion publica en db.py                 | Seccion de la capa de datos o tabla relevante  |
+| Nueva capa, modulo web o ruta de API           | Seccion "Arquitectura de Capas" o "web/"       |
+| Nueva constante de tiempo o radio (order_delivery) | Seccion "Sistema de Tracking de Llegada"   |
+
+Reglas de aplicacion:
+
+1. El agente no debe esperar una orden separada de "documenta esto" para cambios estructurales.
+   La documentacion va incluida en el mismo commit del cambio.
+2. Si el cambio no encaja en ninguna fila de la tabla: agregar una nota breve en la seccion
+   mas cercana de CLAUDE.md y mencionar el archivo y funcion exactos.
+3. La descripcion en CLAUDE.md debe ser de una linea por elemento nuevo. No un parrafo.
+4. El git log es el historial cronologico. CLAUDE.md es la referencia de estado actual.
+   No hay CHANGELOG separado.
+
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.
