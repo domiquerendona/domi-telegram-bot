@@ -7,6 +7,7 @@ import { RouterOutlet } from '@angular/router';
 // Importa los componentes reutilizables del layout
 import { SidebarComponent } from '../components/sidebar/sidebar';
 import { HeaderComponent } from '../components/header/header';
+import { FooterComponent } from '../components/footer/footer';
 
 @Component({
   // Nombre de la etiqueta HTML personalizada
@@ -16,7 +17,7 @@ import { HeaderComponent } from '../components/header/header';
   standalone: true,
 
   // Componentes y módulos que este componente necesita
-  imports: [RouterOutlet, SidebarComponent, HeaderComponent],
+  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent],
 
   // Template HTML embebido
 
@@ -29,8 +30,11 @@ import { HeaderComponent } from '../components/header/header';
 
       <div class="content-container">
         <router-outlet></router-outlet>
+
       </div>
+           <app-footer></app-footer> 
     </div>
+        
   </div>
 `,
 styles: [`
