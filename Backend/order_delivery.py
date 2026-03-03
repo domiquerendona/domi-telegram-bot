@@ -42,6 +42,7 @@ from db import (
     get_pending_route_stops,
     update_route_status,
     assign_route_to_courier,
+    release_route_from_courier,
     deliver_route_stop,
     cancel_route,
     create_route_offer_queue,
@@ -56,6 +57,7 @@ from datetime import datetime
 from db import (
     add_courier_rating,
     block_courier_for_ally,
+    deactivate_courier,
     set_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
@@ -1983,7 +1985,23 @@ def _handle_delivered(update, context, order_id):
             try:
                 new_balance = get_courier_link_balance(courier_id, admin_id)
                 if new_balance < 300:
-                    _notify_recharge_needed_to_courier(context, courier_id)
+                    deactivate_courier(courier_id)
+                    try:
+                        courier_row = get_courier_by_id(courier_id)
+                        if courier_row:
+                            user = get_user_by_id(courier_row["user_id"])
+                            if user and user.get("telegram_id"):
+                                context.bot.send_message(
+                                    chat_id=user["telegram_id"],
+                                    text=(
+                                        "Has sido desactivado automaticamente.\n\n"
+                                        "Tu saldo operativo quedo en ${:,} tras el cobro del servicio "
+                                        "y necesitas al menos $300 para seguir recibiendo pedidos.\n\n"
+                                        "Solicita una recarga a tu administrador y vuelve a activarte.".format(new_balance)
+                                    ),
+                                )
+                    except Exception:
+                        pass
             except Exception as e:
                 print("[WARN] No se pudo verificar saldo post-fee del courier {}: {}".format(courier_id, e))
         else:
@@ -2759,6 +2777,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
             callback_data="ruta_entregar_{}_{}".format(route_id, seq)
         )
     ])
+    keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
     stop_instructions = stop.get("instructions") or ""
     instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
@@ -2849,6 +2868,7 @@ def _handle_route_accept(update, context, route_id):
     pickup_lng = route.get("pickup_lng")
 
     keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
+    keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
     query.edit_message_text(
         "Ruta #{} aceptada.\n\n"
@@ -2998,8 +3018,9 @@ def _notify_ally_route_delivered(context, route):
 
 def handle_route_callback(update, context):
     """
-    Dispatcher de callbacks ruta_aceptar_*, ruta_rechazar_*, ruta_ocupado_*, ruta_entregar_*.
-    Registrar en main.py como CallbackQueryHandler con pattern r'^ruta_(aceptar|rechazar|ocupado|entregar)_'.
+    Dispatcher de callbacks ruta_aceptar_*, ruta_rechazar_*, ruta_ocupado_*, ruta_entregar_*,
+    ruta_liberar_* (flujo responsable con motivo).
+    Registrar en main.py como CallbackQueryHandler con pattern r'^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_'.
     """
     query = update.callback_query
     query.answer()
@@ -3026,5 +3047,34 @@ def handle_route_callback(update, context):
                 return _handle_route_deliver_stop(update, context, route_id, seq)
             except ValueError:
                 pass
+
+    if data.startswith("ruta_liberar_abort_"):
+        route_id = int(data.replace("ruta_liberar_abort_", ""))
+        query.edit_message_text("Ok. La ruta #{} sigue en curso.".format(route_id))
+        return
+
+    if data.startswith("ruta_liberar_motivo_"):
+        # ruta_liberar_motivo_{route_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo procesar el motivo de liberacion.")
+            return
+        route_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_route_release_reason_selected(update, context, route_id, reason_code)
+
+    if data.startswith("ruta_liberar_confirmar_"):
+        # ruta_liberar_confirmar_{route_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo confirmar la liberacion.")
+            return
+        route_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_route_release_confirm(update, context, route_id, reason_code)
+
+    if data.startswith("ruta_liberar_"):
+        route_id = int(data.replace("ruta_liberar_", ""))
+        return _handle_route_release_menu(update, context, route_id)
 
     return None
