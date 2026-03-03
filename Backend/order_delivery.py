@@ -59,6 +59,7 @@ from db import (
     set_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
+    get_active_route_for_courier,
     get_courier_delivery_time_stats,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km
@@ -1367,6 +1368,24 @@ def _handle_accept(update, context, order_id):
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
+    active_order = get_active_order_for_courier(courier["id"])
+    if active_order and active_order["id"] != order_id:
+        query.edit_message_text(
+            "No puedes aceptar un nuevo pedido porque ya tienes un pedido en curso (#{}).".format(
+                active_order["id"]
+            )
+        )
+        return
+
+    active_route = get_active_route_for_courier(courier["id"])
+    if active_route:
+        query.edit_message_text(
+            "No puedes aceptar un nuevo pedido porque ya tienes una ruta en curso (#{}).".format(
+                active_route["id"]
+            )
+        )
+        return
+
     # Cancelar el job de timeout
     _cancel_offer_jobs(context, order_id, current["queue_id"])
 
@@ -2607,6 +2626,24 @@ def _handle_route_accept(update, context, route_id):
     current = get_current_route_offer(route_id)
     if not current or current["courier_id"] != courier["id"]:
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
+        return
+
+    active_order = get_active_order_for_courier(courier["id"])
+    if active_order:
+        query.edit_message_text(
+            "No puedes aceptar una nueva ruta porque ya tienes un pedido en curso (#{}).".format(
+                active_order["id"]
+            )
+        )
+        return
+
+    active_route = get_active_route_for_courier(courier["id"])
+    if active_route and active_route["id"] != route_id:
+        query.edit_message_text(
+            "No puedes aceptar una nueva ruta porque ya tienes una ruta en curso (#{}).".format(
+                active_route["id"]
+            )
+        )
         return
 
     _cancel_route_offer_jobs(context, route_id, current["queue_id"])

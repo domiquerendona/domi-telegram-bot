@@ -202,6 +202,8 @@ from services import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_active_order_for_courier,
+    get_active_route_for_courier,
     ally_get_order_for_incentive,
     ally_increment_order_incentive,
     courier_get_earnings_history,
@@ -1201,6 +1203,7 @@ def get_repartidor_menu_keyboard(courier):
     keyboard = []
     if courier_toggle:
         keyboard.append([courier_toggle])
+    keyboard.append(['Pedidos en curso'])
     keyboard.append(['Mis pedidos repartidor', 'Mis ganancias'])
     keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
     keyboard.append(['Volver al menu'])
@@ -1429,6 +1432,54 @@ def courier_orders_history(update, context):
             update.message.reply_text(msg)
 
 
+def courier_pedidos_en_curso(update, context):
+    """Muestra el estado de los trabajos activos asignados al repartidor."""
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    active_order = get_active_order_for_courier(courier["id"])
+    active_route = get_active_route_for_courier(courier["id"])
+
+    if not active_order and not active_route:
+        update.message.reply_text("No tienes pedidos en curso.")
+        return
+
+    order_status_labels = {
+        "ACCEPTED": "Asignado",
+        "PICKED_UP": "En camino",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+    route_status_labels = {
+        "ACCEPTED": "En curso",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+
+    lines = ["Pedidos en curso:"]
+
+    if active_order:
+        st = order_status_labels.get(
+            _row_value(active_order, "status"),
+            _row_value(active_order, "status", "-"),
+        )
+        lines.append("Pedido #{} - Estado: {}".format(_row_value(active_order, "id", "-"), st))
+
+    if active_route:
+        st = route_status_labels.get(
+            _row_value(active_route, "status"),
+            _row_value(active_route, "status", "-"),
+        )
+        lines.append("Ruta #{} - Estado: {}".format(_row_value(active_route, "id", "-"), st))
+
+    lines.append("")
+    lines.append("No puedes aceptar nuevos pedidos o rutas hasta finalizar el actual.")
+    update.message.reply_text("\n".join(lines))
+
+
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
     if getattr(update, "callback_query", None) and update.callback_query.message:
@@ -1531,6 +1582,8 @@ def menu_button_handler(update, context):
         return courier_activate_from_message(update, context)
     elif text == "Pausar repartidor":
         return courier_deactivate_from_message(update, context)
+    elif text == "Pedidos en curso":
+        return courier_pedidos_en_curso(update, context)
     elif text == "Mis pedidos repartidor":
         return courier_orders_history(update, context)
     elif text == "Mis ganancias":
@@ -13982,7 +14035,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Pausar repartidor|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
