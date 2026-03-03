@@ -272,7 +272,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos |
 | `perfil_` | Cambios de perfil |
@@ -292,10 +292,14 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en curso" para el repartidor:
 - Muestra el pedido activo (`orders.status` en `ACCEPTED`/`PICKED_UP`) y/o la ruta activa (`routes.status` en `ACCEPTED`).
 - Botones:
-  - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
-  - "Liberar pedido" → `order_release_{id}`.
+  - Si `orders.status == ACCEPTED`:
+    - "Solicitar confirmacion de recogida" → `order_pickup_{id}`.
+    - "Liberar pedido" → `order_release_{id}` → requiere motivo y confirmación (`order_release_reason_{id}_{reason}` → `order_release_confirm_{id}_{reason}`).
+  - Si `orders.status == PICKED_UP`:
+    - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
   - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
 - Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
+  - Al liberar un pedido, se notifica al admin del equipo para revisión del motivo.
 
 ### Helpers de Input Reutilizables (`main.py`)
 

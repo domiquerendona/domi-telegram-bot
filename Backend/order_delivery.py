@@ -1036,7 +1036,7 @@ def order_courier_callback(update, context):
     """
     Maneja botones de ofertas y ciclo de vida de pedidos.
     Patterns:
-    - ^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|cancel)_\\d+$
+    - ^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel)_\\d+$
     - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
@@ -1089,13 +1089,125 @@ def order_courier_callback(update, context):
     if data.startswith("order_delivered_"):
         order_id = int(data.replace("order_delivered_", ""))
         return _handle_delivered(update, context, order_id)
+    if data.startswith("order_release_abort_"):
+        order_id = int(data.replace("order_release_abort_", ""))
+        query.edit_message_text("Ok. El pedido #{} sigue en curso.".format(order_id))
+        return
+    if data.startswith("order_release_reason_"):
+        # order_release_reason_{order_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo procesar la razon de liberacion.")
+            return
+        order_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_release_reason_selected(update, context, order_id, reason_code)
+    if data.startswith("order_release_confirm_"):
+        # order_release_confirm_{order_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo confirmar la liberacion.")
+            return
+        order_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_release(update, context, order_id, reason_code=reason_code)
     if data.startswith("order_release_"):
-        order_id = int(data.replace("order_release_", ""))
-        return _handle_release(update, context, order_id)
+        # order_release_{order_id}
+        parts = data.split("_")
+        if len(parts) < 3:
+            query.edit_message_text("No se pudo procesar la liberacion.")
+            return
+        order_id = int(parts[2])
+        return _handle_release_reason_menu(update, context, order_id)
     if data.startswith("order_cancel_"):
         order_id = int(data.replace("order_cancel_", ""))
         return _handle_cancel_ally(update, context, order_id)
     return None
+
+
+def _handle_release_reason_menu(update, context, order_id):
+    """Muestra razones válidas antes de permitir que el courier libere el pedido."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para liberar este pedido.")
+        return
+
+    arrived_at = _row_value(order, "courier_arrived_at")
+    arrived_line = ""
+    if arrived_at:
+        arrived_line = (
+            "\n\nIMPORTANTE: Ya reportaste tu llegada al punto de recogida. "
+            "Liberar en este punto solo se permite por motivos serios."
+        )
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+
+    lines = [
+        "Vas a liberar el pedido #{}.".format(order_id),
+        "",
+        "Liberar un pedido sin motivo valido es una falta grave. "
+        "Liberar para evitar la comision puede terminar en suspension o expulsion.",
+        "Selecciona un motivo:",
+    ]
+    text = "\n".join(lines) + arrived_line
+
+    kb = []
+    for code, label in reason_labels.items():
+        kb.append([InlineKeyboardButton(label, callback_data="order_release_reason_{}_{}".format(order_id, code))])
+    kb.append([InlineKeyboardButton("Cancelar", callback_data="order_release_abort_{}".format(order_id))])
+
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+def _handle_release_reason_selected(update, context, order_id, reason_code):
+    """Pide confirmación final antes de liberar el pedido."""
+    query = update.callback_query
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+
+    keyboard = [[
+        InlineKeyboardButton(
+            "Confirmar liberacion",
+            callback_data="order_release_confirm_{}_{}".format(order_id, reason_code),
+        ),
+        InlineKeyboardButton(
+            "Cancelar",
+            callback_data="order_release_abort_{}".format(order_id),
+        ),
+    ]]
+    query.edit_message_text(
+        "Confirmas que vas a liberar el pedido #{}?\n\nMotivo: {}\n\n"
+        "Esta accion se revisa por el admin. Si es injustificada, puede haber sancion.".format(
+            order_id,
+            reason_label,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1599,7 +1711,7 @@ def _handle_wait_courier(update, context, order_id):
     )
 
 
-def _handle_release(update, context, order_id):
+def _handle_release(update, context, order_id, reason_code=None):
     """Courier libera un pedido aceptado. Vuelve a PUBLISHED y re-inicia ofertas."""
     query = update.callback_query
     order = get_order_by_id(order_id)
@@ -1617,11 +1729,29 @@ def _handle_release(update, context, order_id):
         query.edit_message_text("No tienes permiso para liberar este pedido.")
         return
 
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+
+    arrived_at = _row_value(order, "courier_arrived_at")
+    arrived_flag = "SI" if arrived_at else "NO"
+
     _cancel_arrival_jobs(context, order_id)
     release_order_from_courier(order_id)
-    query.edit_message_text("Pedido #{} liberado. Sera ofrecido a otros repartidores.".format(order_id))
+    query.edit_message_text(
+        "Pedido #{} liberado.\n"
+        "Motivo: {}\n\n"
+        "Este pedido sera ofrecido a otros repartidores.".format(order_id, reason_label)
+    )
 
-    _notify_ally_order_released(context, order)
+    _notify_ally_order_released(context, order, reason_label=reason_label)
+    _notify_admin_order_released(context, order, courier, reason_label=reason_label, arrived_flag=arrived_flag)
 
     # Re-iniciar ciclo de ofertas
     ally_id = order["ally_id"]
@@ -2348,7 +2478,7 @@ def _notify_courier_order_cancelled(context, order):
         print("[WARN] No se pudo notificar cancelacion al courier: {}".format(e))
 
 
-def _notify_ally_order_released(context, order):
+def _notify_ally_order_released(context, order, reason_label=None):
     """Notifica al aliado que el courier libero el pedido."""
     try:
         ally = get_ally_by_id(order["ally_id"])
@@ -2357,15 +2487,54 @@ def _notify_ally_order_released(context, order):
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
             return
+        reason_line = ""
+        if reason_label:
+            reason_line = "\nMotivo: {}".format(reason_label)
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text=(
-                "El repartidor libero tu pedido #{}. "
+                "El repartidor libero tu pedido #{}.{}\n"
                 "Estamos buscando otro repartidor."
-            ).format(order["id"]),
+            ).format(order["id"], reason_line),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar liberacion al aliado: {}".format(e))
+
+
+def _notify_admin_order_released(context, order, courier, reason_label, arrived_flag):
+    """Notifica al admin del equipo (si existe) cuando un courier libera un pedido."""
+    try:
+        admin_id = _row_value(order, "courier_admin_id_snapshot")
+        if not admin_id:
+            courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
+            admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+        if not admin_id:
+            return
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user.get("telegram_id"):
+            return
+        courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text=(
+                "ALERTA: liberacion de pedido\n\n"
+                "Pedido: #{}\n"
+                "Courier: {}\n"
+                "Llego al pickup: {}\n"
+                "Motivo: {}\n\n"
+                "Accion: revisar si es justificado. Liberar para evitar comision es falta grave."
+            ).format(
+                order["id"],
+                courier_name,
+                arrived_flag,
+                reason_label,
+            ),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar liberacion al admin: {}".format(e))
 
 
 # ===== FLUJO DE RUTAS MULTI-PARADA =====

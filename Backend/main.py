@@ -1468,6 +1468,7 @@ def courier_pedidos_en_curso(update, context):
             _row_value(active_order, "status"),
             _row_value(active_order, "status", "-"),
         )
+        order_status = _row_value(active_order, "status")
         pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
         customer_city = _row_value(active_order, "customer_city") or ""
         customer_barrio = _row_value(active_order, "customer_barrio") or ""
@@ -1482,18 +1483,27 @@ def courier_pedidos_en_curso(update, context):
             "Tarifa: ${:,}"
         ).format(order_id, st, pickup_address, destino_area, total_fee)
 
-        kb = [
-            [
+        kb = []
+        if order_status == "ACCEPTED":
+            kb.append([
                 InlineKeyboardButton(
-                    "Finalizar pedido",
-                    callback_data="order_delivered_confirm_{}".format(order_id),
+                    "Solicitar confirmacion de recogida",
+                    callback_data="order_pickup_{}".format(order_id),
                 ),
+            ])
+            kb.append([
                 InlineKeyboardButton(
                     "Liberar pedido",
                     callback_data="order_release_{}".format(order_id),
                 ),
-            ]
-        ]
+            ])
+        elif order_status == "PICKED_UP":
+            kb.append([
+                InlineKeyboardButton(
+                    "Finalizar pedido",
+                    callback_data="order_delivered_confirm_{}".format(order_id),
+                ),
+            ])
         update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
     if active_route:
@@ -13912,7 +13922,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|cancel|find_another|wait_courier|call_courier)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
