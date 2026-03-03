@@ -1624,30 +1624,39 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 ),
             )
         elif target_type == "COURIER":
-            cur.execute(
-                "UPDATE admin_couriers"
-                " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                " WHERE courier_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
-                (amount, target_id, admin_id),
-            )
-            if cur.rowcount != 1:
-                if not is_platform:
-                    conn.rollback()
-                    return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-                # Plataforma como fallback: acreditar en el vínculo APPROVED más reciente del courier
+            if is_platform:
+                # Plataforma: acreditar en vínculo directo plataforma-courier (crear si no existe)
                 cur.execute(
                     "UPDATE admin_couriers"
-                    " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                    " WHERE id = ("
-                    "   SELECT id FROM admin_couriers"
-                    "   WHERE courier_id = " + P + " AND status = 'APPROVED'"
-                    "   ORDER BY created_at DESC LIMIT 1"
-                    ")",
-                    (amount, target_id),
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE courier_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
                 )
-                if cur.rowcount != 1:
+                if cur.rowcount == 0:
+                    now_literal = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+                    cur.execute(
+                        "INSERT INTO admin_couriers"
+                        " (admin_id, courier_id, status, balance, is_active, created_at, updated_at)"
+                        " VALUES (" + ", ".join([P] * 5) + ", " + now_literal + ", " + now_literal + ")",
+                        (admin_id, target_id, "APPROVED", amount, 1),
+                    )
+            else:
+                # Admin local: acreditar en su vínculo (cualquier status, incluyendo INACTIVE)
+                cur.execute(
+                    "UPDATE admin_couriers"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE courier_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
                     conn.rollback()
-                    return False, "No hay vinculo APPROVED activo para acreditar saldo al courier."
+                    return False, "No hay vinculo con este admin para acreditar saldo al courier."
+            # Interruptor de ganancias: desactivar todos los otros vinculos del courier
+            cur.execute(
+                "UPDATE admin_couriers SET status = 'INACTIVE', updated_at = " + now_sql +
+                " WHERE courier_id = " + P + " AND admin_id != " + P,
+                (target_id, admin_id),
+            )
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
@@ -1659,30 +1668,39 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 ),
             )
         elif target_type == "ALLY":
-            cur.execute(
-                "UPDATE admin_allies"
-                " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                " WHERE ally_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
-                (amount, target_id, admin_id),
-            )
-            if cur.rowcount != 1:
-                if not is_platform:
-                    conn.rollback()
-                    return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
-                # Plataforma como fallback: acreditar en el vínculo APPROVED más reciente del aliado
+            if is_platform:
+                # Plataforma: acreditar en vínculo directo plataforma-aliado (crear si no existe)
                 cur.execute(
                     "UPDATE admin_allies"
-                    " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                    " WHERE id = ("
-                    "   SELECT id FROM admin_allies"
-                    "   WHERE ally_id = " + P + " AND status = 'APPROVED'"
-                    "   ORDER BY created_at DESC LIMIT 1"
-                    ")",
-                    (amount, target_id),
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE ally_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
                 )
-                if cur.rowcount != 1:
+                if cur.rowcount == 0:
+                    now_literal = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+                    cur.execute(
+                        "INSERT INTO admin_allies"
+                        " (admin_id, ally_id, status, balance, created_at, updated_at)"
+                        " VALUES (" + ", ".join([P] * 4) + ", " + now_literal + ", " + now_literal + ")",
+                        (admin_id, target_id, "APPROVED", amount),
+                    )
+            else:
+                # Admin local: acreditar en su vínculo (cualquier status, incluyendo INACTIVE)
+                cur.execute(
+                    "UPDATE admin_allies"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE ally_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
                     conn.rollback()
-                    return False, "No hay vinculo APPROVED activo para acreditar saldo al aliado."
+                    return False, "No hay vinculo con este admin para acreditar saldo al aliado."
+            # Interruptor de ganancias: desactivar todos los otros vinculos del aliado
+            cur.execute(
+                "UPDATE admin_allies SET status = 'INACTIVE', updated_at = " + now_sql +
+                " WHERE ally_id = " + P + " AND admin_id != " + P,
+                (target_id, admin_id),
+            )
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"

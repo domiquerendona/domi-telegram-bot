@@ -63,6 +63,7 @@ from db import (
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_courier_delivery_time_stats,
+    get_approved_admin_id_for_courier,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km
 
@@ -325,8 +326,9 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
             p_lat = loc["lat"] if "lat" in loc.keys() else None
             p_lng = loc["lng"] if "lng" in loc.keys() else None
 
+    # Red cooperativa: buscar en TODOS los couriers activos, sin filtro de equipo.
+    # Cada courier opera bajo su propio admin; el fee se cobra a cada uno por separado.
     eligible = get_eligible_couriers_for_order(
-        admin_id=admin_id,
         ally_id=ally_id,
         requires_cash=requires_cash,
         cash_required_amount=cash_amount,
@@ -337,30 +339,24 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
         print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
         return 0
 
-    # Verificacion previa de saldo por courier y admin antes de ofertar.
+    # Verificacion previa de saldo por courier usando el admin PROPIO de cada courier.
     filtered = []
-    admin_without_balance = False
     couriers_without_balance = []
     for c in eligible:
         courier_id = c["courier_id"]
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id is None:
+            couriers_without_balance.append(courier_id)
+            continue
         ok, code = check_service_fee_available(
             target_type="COURIER",
             target_id=courier_id,
-            admin_id=admin_id,
+            admin_id=courier_admin_id,
         )
         if ok:
             filtered.append(c)
         else:
-            if code == "ADMIN_SIN_SALDO":
-                admin_without_balance = True
-            else:
-                couriers_without_balance.append(courier_id)
-
-    if admin_without_balance:
-        print("[WARN] Pedido {} sin oferta por saldo admin insuficiente".format(order_id))
-        _notify_recharge_needed_to_admin(context, admin_id)
-        _notify_recharge_needed_to_ally(context, ally_id)
-        return 0
+            couriers_without_balance.append(courier_id)
 
     for courier_id in couriers_without_balance:
         _notify_recharge_needed_to_courier(context, courier_id)
@@ -1949,21 +1945,25 @@ def _handle_delivered(update, context, order_id):
 
     courier_id = courier["id"]
     ally_id = order["ally_id"]
-    admin_link = get_approved_admin_link_for_ally(ally_id)
-    if admin_link:
-        admin_id = admin_link["admin_id"]
-    else:
+
+    # Red cooperativa: fee del aliado → su propio admin; fee del courier → su propio admin.
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id)
+    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
+
+    # Usar snapshot guardado en _handle_accept; fallback al admin actual del courier
+    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+    if courier_admin_id is None:
         courier_admin_link = get_approved_admin_link_for_courier(courier_id)
-        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+        courier_admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
     fee_ally_ok = False
     fee_courier_ok = False
 
-    if admin_id:
+    if ally_admin_id:
         ally_ok, ally_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
-            admin_id=admin_id,
+            admin_id=ally_admin_id,
             ref_type="ORDER",
             ref_id=order_id,
         )
@@ -1972,10 +1972,11 @@ def _handle_delivered(update, context, order_id):
         else:
             print("[WARN] No se pudo cobrar fee al aliado: {}".format(ally_msg))
 
+    if courier_admin_id:
         courier_ok, courier_msg = apply_service_fee(
             target_type="COURIER",
             target_id=courier_id,
-            admin_id=admin_id,
+            admin_id=courier_admin_id,
             ref_type="ORDER",
             ref_id=order_id,
         )
@@ -1983,7 +1984,7 @@ def _handle_delivered(update, context, order_id):
             fee_courier_ok = True
             # Notificar al courier si su saldo quedo insuficiente para el proximo servicio
             try:
-                new_balance = get_courier_link_balance(courier_id, admin_id)
+                new_balance = get_courier_link_balance(courier_id, courier_admin_id)
                 if new_balance < 300:
                     deactivate_courier(courier_id)
                     try:
@@ -2007,7 +2008,7 @@ def _handle_delivered(update, context, order_id):
         else:
             if courier_msg == "ADMIN_SIN_SALDO":
                 try:
-                    admin_row = get_admin_by_id(admin_id)
+                    admin_row = get_admin_by_id(courier_admin_id)
                     if admin_row:
                         admin_user = get_user_by_id(admin_row["user_id"])
                         if admin_user and admin_user.get("telegram_id"):

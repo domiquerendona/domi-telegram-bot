@@ -74,7 +74,7 @@ def _sync_ally_link_status(cur, ally_id: int, status: str, now_sql: str):
     """Sincroniza admin_allies.status con el nuevo estado del aliado."""
     if status == "APPROVED":
         cur.execute(
-            f"SELECT id FROM admin_allies WHERE ally_id = {P} ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id FROM admin_allies WHERE ally_id = {P} ORDER BY updated_at DESC LIMIT 1",
             (ally_id,),
         )
         link_row = cur.fetchone()
@@ -100,7 +100,7 @@ def _sync_courier_link_status(cur, courier_id: int, status: str, now_sql: str):
     """Sincroniza admin_couriers.status con el nuevo estado del repartidor."""
     if status == "APPROVED":
         cur.execute(
-            f"SELECT id FROM admin_couriers WHERE courier_id = {P} ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id FROM admin_couriers WHERE courier_id = {P} ORDER BY updated_at DESC LIMIT 1",
             (courier_id,),
         )
         link_row = cur.fetchone()
@@ -2583,14 +2583,18 @@ def get_active_route_for_courier(courier_id: int):
     return row
 
 
-def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
+def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                                       requires_cash: bool = False,
                                       cash_required_amount: int = 0,
                                       pickup_lat: float = None,
                                       pickup_lng: float = None):
     """
-    Devuelve couriers elegibles para un pedido, filtrados por:
-    - Aprobados y activos en el equipo
+    Devuelve couriers elegibles para un pedido en la red cooperativa.
+    Busca TODOS los couriers activos sin restriccion de equipo/admin.
+    Cada courier opera bajo su propio admin (cuya comision se cobra por separado).
+
+    Filtros:
+    - Vinculo APPROVED con cualquier admin (is_active garantizado por el vinculo)
     - No eliminados
     - is_active = 1 (courier declaro base)
     - live_location_active = 1 (courier compartiendo GPS en vivo)
@@ -2598,10 +2602,10 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     - Con base suficiente (si requires_cash)
 
     Ordenamiento inteligente:
-    1. APPROVED + live_location_active=1 primero, por distancia al pickup
-    2. Sin live location activo: excluido (no se puede determinar posicion real)
+    1. Por distancia al pickup si hay coordenadas (max 7 km)
+    2. Por available_cash DESC como fallback
 
-    Si no hay pickup_lat/lng, usa el orden por available_cash DESC como antes.
+    admin_id: ignorado (conservado por compatibilidad de llamadas existentes).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -2613,14 +2617,13 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
-        WHERE ac.admin_id = {P}
-          AND ac.status = 'APPROVED'
+        WHERE ac.status = 'APPROVED'
           AND c.status = 'APPROVED'
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
           AND c.is_active = 1
           AND c.live_location_active = 1
     """
-    params = [admin_id]
+    params = []
 
     if ally_id:
         query += f"""

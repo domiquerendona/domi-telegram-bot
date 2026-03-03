@@ -693,15 +693,54 @@ El saldo recargado pertenece a quien lo aportó. Las ganancias generadas por ese
 
 Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local, el flujo de ganancias vuelve al Admin Local. El Admin Local que no recarga a tiempo pierde las ganancias de ese usuario mientras el saldo activo provenga de plataforma.
 
-**Implementación técnica (PENDIENTE):**
-- `main.py → recargar_monto`: mostrar "Plataforma" siempre para COURIER/ALLY, sin verificar vínculo APPROVED.
-- `main.py → recargar_admin_callback`: permitir `platform_id` aunque no esté en `approved_links`.
-- `services.py → approve_recharge_request`: cuando plataforma aprueba para COURIER/ALLY sin vínculo directo, actualizar el balance en el vínculo APPROVED activo que el usuario sí tiene. Ledger registra `PLATFORM → COURIER/ALLY`.
+**Implementación técnica (IMPLEMENTADO 2026-03-03):**
+- `main.py → recargar_monto`: muestra "Plataforma" siempre para COURIER/ALLY.
+- `main.py → recargar_admin_callback`: permite `platform_id` aunque no esté en `approved_links`. Detecta admin PENDING y redirige a Plataforma.
+- `services.py → approve_recharge_request`: cuando Plataforma aprueba para COURIER/ALLY, crea o actualiza un vínculo directo `admin_couriers`/`admin_allies` con `admin_id = platform_id`. El vínculo plataforma queda `APPROVED`; todos los otros vínculos del usuario quedan `INACTIVE`. Ledger registra `PLATFORM → COURIER/ALLY`. Cuando Admin Local re-recarga, el vínculo local pasa a `APPROVED` y plataforma a `INACTIVE` (interruptor).
+- `db.py → _sync_courier_link_status` y `_sync_ally_link_status`: usan `updated_at DESC` (no `created_at`) para determinar el vínculo activo en cambios de estado. Garantiza que el vínculo del último financiador siempre sea el activo.
 
 **Restricciones absolutas:**
 - PROHIBIDO bloquear la opción plataforma por ausencia de vínculo `admin_couriers`/`admin_allies`.
 - PROHIBIDO aprobar si `admins.balance` (plataforma) < monto solicitado.
 - Todo movimiento debe registrarse en ledger con el origen correcto.
+
+### Red Cooperativa — Todos los Couriers para Todos los Aliados (IMPLEMENTADO 2026-03-03)
+
+La plataforma opera como una **red cooperativa**: cualquier repartidor activo (de cualquier admin) puede tomar pedidos de cualquier aliado (de cualquier admin). No existen equipos aislados.
+
+**Regla de elegibilidad:**
+- `get_eligible_couriers_for_order` en `db.py` NO filtra por `admin_id`. Retorna todos los repartidores con `admin_couriers.status = 'APPROVED'` y `couriers.status = 'APPROVED'`.
+- El parámetro `admin_id` existe pero es opcional (`admin_id=None`) y se ignora en la query.
+
+**Modelo de comisiones (simétrico):**
+- Aliado crea pedido → fee al aliado → comisión va al **admin del aliado**.
+- Courier acepta pedido → fee al courier → comisión va al **admin del courier**.
+- Cada admin gana solo de sus propios miembros, sin importar con quién interactúan.
+
+**Flujo técnico post-implementación:**
+```
+Aliado (Admin A) crea pedido
+  → publish_order_to_couriers(admin_id=A)
+  → check_service_fee_available(ALLY, ally_id, admin_id=A)   # A debe tener saldo
+  → get_eligible_couriers_for_order(ally_id=X)               # Sin filtro → TODOS los couriers activos
+  → Para cada courier: get_approved_admin_id_for_courier(courier_id) → courier_admin_id
+    → check_service_fee_available(COURIER, courier_id, courier_admin_id)
+    → Solo pasan couriers con saldo en su propio admin
+
+Courier (Admin B) acepta
+  → courier_admin_id_snapshot = B (guardado en orders al aceptar)
+
+Courier entrega
+  → apply_service_fee(ALLY, ally_id, admin_id=A)              → Admin A cobra comisión
+  → apply_service_fee(COURIER, courier_id, admin_id=B)        → Admin B cobra comisión
+```
+
+**Archivos modificados:**
+- `db.py → get_eligible_couriers_for_order`: sin filtro `AND ac.admin_id = {P}`, `params = []`
+- `order_delivery.py → publish_order_to_couriers`: fee check usa `get_approved_admin_id_for_courier(courier_id)` por courier; elimina lógica de `admin_without_balance` global
+- `order_delivery.py → _handle_delivered`: `ally_admin_id` desde `get_approved_admin_link_for_ally`; `courier_admin_id` desde `order["courier_admin_id_snapshot"]` con fallback a `get_approved_admin_link_for_courier`; cada fee usa su propio admin; balance post-fee usa `courier_admin_id`
+
+---
 
 ### Sincronización de Estado en Tablas de Vínculo
 
@@ -715,7 +754,7 @@ Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local, el 
 - Ambos se llaman dentro de `update_ally_status()`, `update_ally_status_by_id()`, `update_courier_status()`, `update_courier_status_by_id()`, antes de `conn.commit()`.
 
 **Comportamiento del sync:**
-- Si `status == "APPROVED"`: el vínculo más reciente (por `created_at`) → `APPROVED`; el resto → `INACTIVE`.
+- Si `status == "APPROVED"`: el vínculo más recientemente actualizado (por `updated_at DESC`) → `APPROVED`; el resto → `INACTIVE`. El `updated_at` se actualiza en cada recarga, por lo que el último financiador es siempre el equipo activo.
 - Si `status != "APPROVED"`: todos los vínculos del usuario → `INACTIVE`.
 
 ---
@@ -1037,11 +1076,12 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 - El cotizador usa la API de Google Maps para calcular distancias. Hay un límite diario de llamadas (`api_usage_daily`) para controlar costos.
 - El sistema de recargas transfiere saldo del Admin a Repartidores/Aliados. Es crítico que sea idempotente ante concurrencia.
 - Los pedidos siguen el ciclo: `PENDING` → publicado a repartidores → aceptado → recogida confirmada → entregado (o cancelado en cualquier paso).
-- Un Admin Local debe tener repartidores y/o aliados vinculados (status `APPROVED` en `admin_couriers` / `admin_allies`) para que su equipo funcione correctamente. Puede aprobar/rechazar miembros pendientes, inactivar activos y reactivar inactivos; el rechazo definitivo (`REJECTED`) es exclusivo del Admin de Plataforma.
+- La plataforma opera como **red cooperativa**: cualquier repartidor activo puede tomar pedidos de cualquier aliado, sin importar a qué admin pertenece cada uno. No existen equipos aislados para el despacho de pedidos.
+- Un Admin Local gestiona su equipo (aprueba/inactiva repartidores y aliados) y gana comisiones de sus propios miembros. Puede aprobar/rechazar miembros pendientes, inactivar activos y reactivar inactivos; el rechazo definitivo (`REJECTED`) es exclusivo del Admin de Plataforma.
 - La referencia de versión financiera estable es el tag `v0.1-admin-saldos` (ledger confiable desde ese punto).
 - El sistema usa **contabilidad de doble entrada**: el Admin de Plataforma debe registrar ingresos externos (`register_platform_income`) para tener saldo y poder aprobar recargas. PROHIBIDO crear saldo sin origen contable.
 - Las tablas `admin_allies` y `admin_couriers` tienen su propio campo `status` que debe mantenerse sincronizado con `allies.status` / `couriers.status`. Los helpers `_sync_ally_link_status` y `_sync_courier_link_status` en `db.py` garantizan esta sincronía automáticamente en cada actualización de estado.
 
 ---
 
-*Última actualización: 2026-02-23*
+*Última actualización: 2026-03-03*

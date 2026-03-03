@@ -1342,6 +1342,7 @@ def mi_repartidor(update, context):
     status = _row_value(courier, "status", "PENDING")
     full_name = _row_value(courier, "full_name", "-")
     is_active = _row_value(courier, "is_active", 0)
+    available_cash = int(_row_value(courier, "available_cash", 0) or 0)
     if is_active and status == "APPROVED":
         avail_status = _row_value(courier, "availability_status", "INACTIVE")
         live_active = int(_row_value(courier, "live_location_active", 0) or 0) == 1
@@ -1353,11 +1354,14 @@ def mi_repartidor(update, context):
             disp = "OFFLINE"
     else:
         disp = "OFFLINE"
+    disp_line = f"Disponibilidad: {disp}"
+    if disp == "ONLINE":
+        disp_line += f" (base ${available_cash:,})"
     msg = (
         "🚴 GESTION DE REPARTIDOR\n\n"
         f"Nombre: {full_name}\n"
         f"Estado: {status}\n"
-        f"Disponibilidad: {disp}\n\n"
+        f"{disp_line}\n\n"
         "Selecciona una opcion:"
     )
     reply_markup = get_repartidor_menu_keyboard(courier)
@@ -10798,7 +10802,9 @@ def mi_perfil(update, context):
                 avail = "OFFLINE"
             mensaje += f"   Disponibilidad: {avail}\n"
             if avail == "ONLINE":
-                mensaje += "   (Compartiendo ubicacion en vivo)\n"
+                avail_cash = int(_row_value(courier, "available_cash", 0) or 0)
+                mensaje += f"   (Compartiendo ubicacion en vivo)\n"
+                mensaje += f"   Base declarada: ${avail_cash:,}\n"
             elif avail == "PAUSADO":
                 mensaje += "   (Ubicacion en vivo detenida - comparte para volver a ONLINE)\n"
             else:
