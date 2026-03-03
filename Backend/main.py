@@ -204,6 +204,7 @@ from services import (
     get_orders_by_courier,
     get_active_order_for_courier,
     get_active_route_for_courier,
+    get_pending_route_stops,
     ally_get_order_for_incentive,
     ally_increment_order_incentive,
     courier_get_earnings_history,
@@ -1459,25 +1460,77 @@ def courier_pedidos_en_curso(update, context):
         "CANCELLED": "Cancelado",
     }
 
-    lines = ["Pedidos en curso:"]
+    update.message.reply_text("Pedidos en curso:")
 
     if active_order:
+        order_id = _row_value(active_order, "id", "-")
         st = order_status_labels.get(
             _row_value(active_order, "status"),
             _row_value(active_order, "status", "-"),
         )
-        lines.append("Pedido #{} - Estado: {}".format(_row_value(active_order, "id", "-"), st))
+        pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
+        customer_city = _row_value(active_order, "customer_city") or ""
+        customer_barrio = _row_value(active_order, "customer_barrio") or ""
+        destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
+        total_fee = int((_row_value(active_order, "total_fee") or 0) or 0)
+
+        msg = (
+            "Pedido #{}\n"
+            "Estado: {}\n"
+            "Recoge en: {}\n"
+            "Destino: {}\n"
+            "Tarifa: ${:,}"
+        ).format(order_id, st, pickup_address, destino_area, total_fee)
+
+        kb = [
+            [
+                InlineKeyboardButton(
+                    "Finalizar pedido",
+                    callback_data="order_delivered_confirm_{}".format(order_id),
+                ),
+                InlineKeyboardButton(
+                    "Liberar pedido",
+                    callback_data="order_release_{}".format(order_id),
+                ),
+            ]
+        ]
+        update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
     if active_route:
+        route_id = _row_value(active_route, "id", "-")
         st = route_status_labels.get(
             _row_value(active_route, "status"),
             _row_value(active_route, "status", "-"),
         )
-        lines.append("Ruta #{} - Estado: {}".format(_row_value(active_route, "id", "-"), st))
+        pickup_address = _row_value(active_route, "pickup_address") or "No disponible"
+        total_fee = int((_row_value(active_route, "total_fee") or 0) or 0)
 
-    lines.append("")
-    lines.append("No puedes aceptar nuevos pedidos o rutas hasta finalizar el actual.")
-    update.message.reply_text("\n".join(lines))
+        pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
+        next_seq = None
+        if pending_stops:
+            try:
+                next_seq = min(int(s["sequence"]) for s in pending_stops if s.get("sequence") is not None)
+            except Exception:
+                next_seq = None
+
+        msg = (
+            "Ruta #{}\n"
+            "Estado: {}\n"
+            "Recoge en: {}\n"
+            "Pago: ${:,}"
+        ).format(route_id, st, pickup_address, total_fee)
+
+        kb = []
+        if next_seq is not None:
+            kb.append([
+                InlineKeyboardButton(
+                    "Entregar siguiente parada",
+                    callback_data="ruta_entregar_{}_{}".format(route_id, next_seq),
+                )
+            ])
+        update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+
+    update.message.reply_text("No puedes aceptar nuevos pedidos o rutas hasta finalizar el actual.")
 
 
 def _get_chat_id(update):
@@ -13859,7 +13912,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel|find_another|wait_courier|call_courier)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|cancel|find_another|wait_courier|call_courier)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))

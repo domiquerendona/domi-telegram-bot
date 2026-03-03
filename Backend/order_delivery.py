@@ -1036,7 +1036,7 @@ def order_courier_callback(update, context):
     """
     Maneja botones de ofertas y ciclo de vida de pedidos.
     Patterns:
-    - ^order_(accept|reject|busy|pickup|delivered|release|cancel)_\\d+$
+    - ^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|cancel)_\\d+$
     - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
@@ -1071,6 +1071,21 @@ def order_courier_callback(update, context):
     if data.startswith("order_pickup_"):
         order_id = int(data.replace("order_pickup_", ""))
         return _handle_pickup(update, context, order_id)
+    if data.startswith("order_delivered_confirm_"):
+        order_id = int(data.replace("order_delivered_confirm_", ""))
+        keyboard = [[
+            InlineKeyboardButton("Si", callback_data="order_delivered_{}".format(order_id)),
+            InlineKeyboardButton("No", callback_data="order_delivered_cancel_{}".format(order_id)),
+        ]]
+        query.edit_message_text(
+            "Ya entregaste el pedido #{}?".format(order_id),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+    if data.startswith("order_delivered_cancel_"):
+        order_id = int(data.replace("order_delivered_cancel_", ""))
+        query.edit_message_text("Ok. El pedido #{} sigue en curso.".format(order_id))
+        return
     if data.startswith("order_delivered_"):
         order_id = int(data.replace("order_delivered_", ""))
         return _handle_delivered(update, context, order_id)
