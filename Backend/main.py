@@ -179,6 +179,7 @@ from services import (
     get_courier_by_id,
     get_courier_by_telegram_id,
     set_courier_available_cash,
+    can_courier_activate,
     deactivate_courier,
     update_courier_live_location,
     set_courier_availability,
@@ -13805,6 +13806,13 @@ def courier_base_amount_handler(update, context):
     courier_id = context.user_data.get("courier_id_activating")
     if not courier_id:
         update.message.reply_text("Error: sesion expirada. Ve a Mi perfil e intenta de nuevo.")
+        context.user_data.pop("courier_activating", None)
+        context.user_data.pop("courier_id_activating", None)
+        return
+
+    ok, msg = can_courier_activate(courier_id)
+    if not ok:
+        update.message.reply_text(msg)
         context.user_data.pop("courier_activating", None)
         context.user_data.pop("courier_id_activating", None)
         return

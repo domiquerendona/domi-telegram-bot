@@ -2719,6 +2719,23 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     return result
 
 
+def get_approved_admin_id_for_courier(courier_id: int):
+    """Retorna el admin_id del vínculo APPROVED activo del repartidor, o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT admin_id FROM admin_couriers
+        WHERE courier_id = {P} AND status = 'APPROVED'
+        ORDER BY updated_at DESC
+        LIMIT 1;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return int(_row_value(row, "admin_id", 0))
+
+
 def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
     """
     Lista vínculos APPROVED admin_allies con saldo por vínculo.

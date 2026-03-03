@@ -19,6 +19,7 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
+    get_approved_admin_id_for_courier,
     upsert_reference_alias_candidate,
     list_reference_alias_candidates,
     get_reference_alias_candidate_by_id,
@@ -97,6 +98,7 @@ from db import (
     get_admin_link_for_courier,
     get_admin_link_for_ally,
     get_courier_link_balance,
+    get_approved_admin_id_for_courier,
     create_order,
     set_order_status,
     assign_order_to_courier,
@@ -1839,6 +1841,26 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
         if admin_balance < platform_commission:
             return False, "ADMIN_SIN_SALDO"
 
+    return True, "OK"
+
+
+def can_courier_activate(courier_id: int) -> Tuple[bool, str]:
+    """
+    Verifica si el repartidor tiene saldo operativo suficiente para activarse.
+    Requiere al menos $300 en admin_couriers.balance (fee minimo por servicio).
+    Retorna (puede_activarse, mensaje_error).
+    """
+    MIN_BALANCE = 300
+    admin_id = get_approved_admin_id_for_courier(courier_id)
+    if admin_id is None:
+        return False, "No tienes un administrador aprobado. Contacta a tu admin."
+    balance = get_courier_link_balance(courier_id, admin_id)
+    if balance < MIN_BALANCE:
+        return False, (
+            "No puedes activarte: tu saldo operativo es ${:,}.\n"
+            "Necesitas al menos ${:,} para recibir pedidos.\n"
+            "Solicita una recarga a tu administrador.".format(balance, MIN_BALANCE)
+        )
     return True, "OK"
 
 
