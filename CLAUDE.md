@@ -298,8 +298,11 @@ En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en cur
   - Si `orders.status == PICKED_UP`:
     - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
   - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
+  - "Liberar ruta" → `ruta_liberar_{route_id}` → requiere motivo y confirmación (`ruta_liberar_motivo_{route_id}_{reason}` → `ruta_liberar_confirmar_{route_id}_{reason}`).
 - Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
   - Al liberar un pedido, se notifica al admin del equipo para revisión del motivo.
+  - Al liberar pedido o ruta, el servicio se re-oferta a otros repartidores excluyendo al courier que liberó (no se le vuelve a ofrecer a él).
+  - Solo el aliado puede CANCELAR el servicio; el courier solo puede LIBERAR para re-ofertar (con motivo y revisión).
 
 ### Helpers de Input Reutilizables (`main.py`)
 

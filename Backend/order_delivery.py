@@ -3078,3 +3078,185 @@ def handle_route_callback(update, context):
         return _handle_route_release_menu(update, context, route_id)
 
     return None
+
+
+def _handle_route_release_menu(update, context, route_id):
+    """Muestra razones antes de permitir que el courier libere una ruta aceptada."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route.get("status") != "ACCEPTED":
+        query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("No tienes permiso para liberar esta ruta.")
+        return
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+
+    text = (
+        "Vas a liberar la ruta #{}.\n\n"
+        "Liberar una ruta sin motivo valido es una falta grave.\n"
+        "Solo el aliado puede cancelar el servicio; esto solo libera y re-oferta la ruta.\n\n"
+        "Selecciona un motivo:"
+    ).format(route_id)
+
+    kb = []
+    for code, label in reason_labels.items():
+        kb.append([InlineKeyboardButton(label, callback_data="ruta_liberar_motivo_{}_{}".format(route_id, code))])
+    kb.append([InlineKeyboardButton("Cancelar", callback_data="ruta_liberar_abort_{}".format(route_id))])
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+def _handle_route_release_reason_selected(update, context, route_id, reason_code):
+    """Pide confirmación final antes de liberar la ruta."""
+    query = update.callback_query
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+    keyboard = [[
+        InlineKeyboardButton(
+            "Confirmar liberacion",
+            callback_data="ruta_liberar_confirmar_{}_{}".format(route_id, reason_code),
+        ),
+        InlineKeyboardButton(
+            "Cancelar",
+            callback_data="ruta_liberar_abort_{}".format(route_id),
+        ),
+    ]]
+    query.edit_message_text(
+        "Confirmas que vas a liberar la ruta #{}?\n\nMotivo: {}\n\n"
+        "Esta accion se revisa por el admin. Si es injustificada, puede haber sancion.".format(
+            route_id,
+            reason_label,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _handle_route_release_confirm(update, context, route_id, reason_code):
+    """Libera la ruta y la re-oferta a otros couriers, excluyendo al que la liberó."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route.get("status") != "ACCEPTED":
+        query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("No tienes permiso para liberar esta ruta.")
+        return
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+
+    ally_id = route.get("ally_id")
+    link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    admin_id = link["admin_id"] if link else None
+    if not admin_id:
+        courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
+        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+
+    delete_route_offer_queue(route_id)
+    release_route_from_courier(route_id)
+
+    query.edit_message_text(
+        "Ruta #{} liberada.\nMotivo: {}\n\nSera ofrecida a otros repartidores.".format(
+            route_id,
+            reason_label,
+        )
+    )
+
+    try:
+        ally = get_ally_by_id(ally_id) if ally_id else None
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user.get("telegram_id"):
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text=(
+                        "El repartidor libero tu ruta #{}.\n"
+                        "Motivo: {}\n"
+                        "Estamos buscando otro repartidor."
+                    ).format(route_id, reason_label),
+                )
+    except Exception:
+        pass
+
+    try:
+        if admin_id:
+            admin = get_admin_by_id(admin_id)
+            if admin:
+                admin_user = get_user_by_id(admin["user_id"])
+                if admin_user and admin_user.get("telegram_id"):
+                    courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+                    context.bot.send_message(
+                        chat_id=admin_user["telegram_id"],
+                        text=(
+                            "ALERTA: liberacion de ruta\n\n"
+                            "Ruta: #{}\n"
+                            "Courier: {}\n"
+                            "Motivo: {}\n\n"
+                            "Accion: revisar si es justificado."
+                        ).format(route_id, courier_name, reason_label),
+                    )
+    except Exception:
+        pass
+
+    if not admin_id or not ally_id:
+        return
+
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=False,
+        cash_required_amount=0,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+    )
+    eligible = [c for c in eligible if c["courier_id"] != courier["id"]]
+    if not eligible:
+        return
+
+    courier_ids = [c["courier_id"] for c in eligible]
+    create_route_offer_queue(route_id, courier_ids)
+    update_route_status(route_id, "PUBLISHED", "published_at")
+
+    import time
+    context.bot_data.setdefault("route_offer_cycles", {})[route_id] = {
+        "started_at": time.time(),
+        "admin_id": admin_id,
+        "ally_id": ally_id,
+        "excluded_couriers": {courier["id"]},
+    }
+    _send_next_route_offer(route_id, context)

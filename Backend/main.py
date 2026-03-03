@@ -1513,6 +1513,7 @@ def courier_pedidos_en_curso(update, context):
             _row_value(active_route, "status"),
             _row_value(active_route, "status", "-"),
         )
+        route_status = _row_value(active_route, "status")
         pickup_address = _row_value(active_route, "pickup_address") or "No disponible"
         total_fee = int((_row_value(active_route, "total_fee") or 0) or 0)
 
@@ -1537,6 +1538,13 @@ def courier_pedidos_en_curso(update, context):
                 InlineKeyboardButton(
                     "Entregar siguiente parada",
                     callback_data="ruta_entregar_{}_{}".format(route_id, next_seq),
+                )
+            ])
+        if route_status == "ACCEPTED":
+            kb.append([
+                InlineKeyboardButton(
+                    "Liberar ruta",
+                    callback_data="ruta_liberar_{}".format(route_id),
                 )
             ])
         update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
@@ -13973,7 +13981,7 @@ def main():
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega

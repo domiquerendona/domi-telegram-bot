@@ -6747,6 +6747,27 @@ def assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot):
     conn.close()
 
 
+def release_route_from_courier(route_id):
+    """Libera una ruta aceptada: limpia courier y la vuelve a publicar (PUBLISHED)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET courier_id = NULL,
+            courier_admin_id_snapshot = NULL,
+            status = 'PUBLISHED',
+            accepted_at = NULL,
+            published_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (route_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
 def deliver_route_stop(route_id, sequence):
     """Marca una parada como DELIVERED."""
     conn = get_connection()
