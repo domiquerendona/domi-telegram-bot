@@ -2544,11 +2544,38 @@ def set_courier_accepted_location(order_id: int, lat: float, lng: float):
 
 
 def get_active_order_for_courier(courier_id: int):
-    """Retorna el pedido en estado ACCEPTED asignado a este courier, o None."""
+    """Retorna el pedido activo asignado a este courier (ACCEPTED/PICKED_UP), o None."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT * FROM orders WHERE courier_id = {P} AND status = 'ACCEPTED' LIMIT 1;",
+        f"""
+        SELECT *
+        FROM orders
+        WHERE courier_id = {P}
+          AND status IN ('ACCEPTED', 'PICKED_UP')
+        ORDER BY accepted_at DESC
+        LIMIT 1;
+        """,
+        (courier_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_active_route_for_courier(courier_id: int):
+    """Retorna la ruta activa asignada a este courier (ACCEPTED), o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT *
+        FROM routes
+        WHERE courier_id = {P}
+          AND status = 'ACCEPTED'
+        ORDER BY accepted_at DESC
+        LIMIT 1;
+        """,
         (courier_id,),
     )
     row = cur.fetchone()
@@ -2565,14 +2592,14 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
     Devuelve couriers elegibles para un pedido, filtrados por:
     - Aprobados y activos en el equipo
     - No eliminados
-    - is_active = 1 (courier se activo y declaro base)
+    - is_active = 1 (courier declaro base)
+    - live_location_active = 1 (courier compartiendo GPS en vivo)
     - No vetados por el aliado (si ally_id dado)
     - Con base suficiente (si requires_cash)
 
     Ordenamiento inteligente:
     1. APPROVED + live_location_active=1 primero, por distancia al pickup
-    2. APPROVED + live_location_active=0 segundo, por distancia
-    3. INACTIVE al final por available_cash DESC (fallback)
+    2. Sin live location activo: excluido (no se puede determinar posicion real)
 
     Si no hay pickup_lat/lng, usa el orden por available_cash DESC como antes.
     """
@@ -2591,6 +2618,7 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
           AND c.status = 'APPROVED'
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
           AND c.is_active = 1
+          AND c.live_location_active = 1
     """
     params = [admin_id]
 
