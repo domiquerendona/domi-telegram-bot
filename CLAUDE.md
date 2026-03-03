@@ -272,7 +272,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier) |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos |
 | `perfil_` | Cambios de perfil |
@@ -286,6 +286,16 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
+
+### Repartidor: Pedidos en curso
+
+En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en curso" para el repartidor:
+- Muestra el pedido activo (`orders.status` en `ACCEPTED`/`PICKED_UP`) y/o la ruta activa (`routes.status` en `ACCEPTED`).
+- Botones:
+  - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
+  - "Liberar pedido" → `order_release_{id}`.
+  - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
+- Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
 
 ### Helpers de Input Reutilizables (`main.py`)
 
@@ -772,7 +782,8 @@ Oferta publicada → courier acepta
 
 - `set_courier_arrived(order_id)` — idempotente, solo actúa si `courier_arrived_at IS NULL`
 - `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
-- `get_active_order_for_courier(courier_id)` — retorna orden en status `ACCEPTED` del courier
+- `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
+- `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
 
 Re-exportadas en `services.py`.
 
