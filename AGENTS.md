@@ -728,15 +728,48 @@ PROHIBIDO:
   - Asumir que platform solo aparece como opción cuando tiene vínculo APPROVED en admin_couriers/admin_allies.
   - Aprobar la recarga de plataforma si admins.balance (plataforma) < amount.
 
-Implementación técnica:
+Implementación técnica (IMPLEMENTADO 2026-03-03):
   - UI (main.py → recargar_monto): mostrar "Plataforma" siempre, sin verificar vínculo APPROVED.
   - Validación (main.py → recargar_admin_callback): permitir platform_id aunque no esté en approved_links.
-  - Aprobación (services.py → approve_recharge_request): cuando el aprobador es plataforma y el
-    destinatario es COURIER/ALLY sin vínculo directo con plataforma, actualizar el balance en el
-    vínculo APPROVED activo que el courier/ally sí tiene (con su admin local).
+  - Aprobación (services.py → approve_recharge_request): cuando el aprobador es plataforma,
+    crea o actualiza un vínculo directo admin_couriers/admin_allies con admin_id=platform_id y
+    lo pone APPROVED. Todos los demás vínculos del courier/ally quedan INACTIVE (interruptor).
+    Cuando un Admin Local aprueba después: su vínculo pasa a APPROVED, el de plataforma a INACTIVE.
+  - Determinación de vínculo activo: _sync_courier_link_status y _sync_ally_link_status usan
+    updated_at DESC (no created_at) para identificar el vínculo más reciente como APPROVED.
   - Ledger: registrar siempre PLATFORM → COURIER/ALLY para trazabilidad del origen del saldo.
 
-Estado: PENDIENTE DE IMPLEMENTACIÓN (regla de negocio aprobada, código no modificado aún).
+9E. Red cooperativa — elegibilidad de couriers (CRÍTICO)
+
+La plataforma opera como red cooperativa: cualquier courier activo puede tomar pedidos de
+cualquier aliado, sin importar a qué admin pertenece cada uno. NO existen equipos aislados
+para el despacho de pedidos.
+
+PROHIBIDO:
+  - Filtrar couriers elegibles por admin_id del aliado en get_eligible_couriers_for_order.
+  - Cancelar un dispatch completo porque el admin de un courier no tiene saldo (ADMIN_SIN_SALDO
+    de un courier solo excluye ESE courier, no cancela la oferta a otros).
+  - Usar el admin del aliado para cobrar el fee del courier (y viceversa).
+
+Regla de elegibilidad:
+  get_eligible_couriers_for_order NO recibe ni aplica admin_id como filtro.
+  Retorna todos los couriers con admin_couriers.status = 'APPROVED' y couriers.status = 'APPROVED'.
+
+Regla de comisiones (simétrica):
+  - Fee del aliado → admin del aliado (get_approved_admin_link_for_ally).
+  - Fee del courier → admin del courier al momento de aceptar (order.courier_admin_id_snapshot).
+    Fallback: get_approved_admin_link_for_courier si el snapshot es NULL.
+  - Cada admin gana únicamente de sus propios miembros.
+
+Regla de pre-verificación de saldo (publish_order_to_couriers):
+  Para cada courier elegible, llamar get_approved_admin_id_for_courier(courier_id) y verificar
+  check_service_fee_available(COURIER, courier_id, courier_admin_id) de forma individual.
+  Si un courier falla: se excluye solo él. El dispatch continúa con los demás.
+
+Implementado en (2026-03-03):
+  - db.py → get_eligible_couriers_for_order: sin filtro AND ac.admin_id, params = []
+  - order_delivery.py → publish_order_to_couriers: fee check con admin propio de cada courier
+  - order_delivery.py → _handle_delivered: ally_admin_id y courier_admin_id separados
 
 9C. Sincronización obligatoria de estado en tablas de vínculo
 
