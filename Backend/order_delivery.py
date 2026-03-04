@@ -279,7 +279,16 @@ def _notify_recharge_needed_to_courier(context, courier_id):
         print("[WARN] No se pudo notificar saldo insuficiente al courier {}: {}".format(courier_id, e))
 
 
-def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None):
+def publish_order_to_couriers(
+    order_id,
+    ally_id,
+    context,
+    admin_id_override=None,
+    pickup_city=None,
+    pickup_barrio=None,
+    dropoff_city=None,
+    dropoff_barrio=None,
+):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
     1. Busca couriers elegibles (filtrados por veto, base, activación).
@@ -320,9 +329,11 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     p_lat = order["pickup_lat"] if "pickup_lat" in order.keys() else None
     p_lng = order["pickup_lng"] if "pickup_lng" in order.keys() else None
     pickup_location_id = order["pickup_location_id"] if "pickup_location_id" in order.keys() else None
+    pickup_loc_row = None
     if p_lat is None and pickup_location_id:
         loc = get_ally_location_by_id(pickup_location_id, ally_id)
         if loc:
+            pickup_loc_row = loc
             p_lat = loc["lat"] if "lat" in loc.keys() else None
             p_lng = loc["lng"] if "lng" in loc.keys() else None
 
@@ -371,12 +382,37 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     set_order_status(order_id, "PUBLISHED", "published_at")
 
     # Guardar datos del ciclo para re-consulta en reintentos
+    if pickup_loc_row is None and pickup_location_id:
+        try:
+            pickup_loc_row = get_ally_location_by_id(pickup_location_id, ally_id)
+        except Exception:
+            pickup_loc_row = None
+
+    if pickup_city is None or pickup_barrio is None:
+        if pickup_loc_row:
+            pickup_city = pickup_city if pickup_city is not None else pickup_loc_row.get("city")
+            pickup_barrio = pickup_barrio if pickup_barrio is not None else pickup_loc_row.get("barrio")
+        else:
+            default_loc = get_default_ally_location(ally_id)
+            if default_loc:
+                pickup_city = pickup_city if pickup_city is not None else default_loc.get("city")
+                pickup_barrio = pickup_barrio if pickup_barrio is not None else default_loc.get("barrio")
+
+    if dropoff_city is None:
+        dropoff_city = _row_value(order, "customer_city")
+    if dropoff_barrio is None:
+        dropoff_barrio = _row_value(order, "customer_barrio")
+
     context.bot_data.setdefault("offer_cycles", {})[order_id] = {
         "started_at": __import__("time").time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
         "pickup_lat": p_lat,
         "pickup_lng": p_lng,
+        "pickup_city": pickup_city,
+        "pickup_barrio": pickup_barrio,
+        "dropoff_city": dropoff_city,
+        "dropoff_barrio": dropoff_barrio,
         "requires_cash": requires_cash,
         "cash_amount": cash_amount,
         "excluded_couriers": set(),
@@ -401,15 +437,6 @@ def _send_next_offer(order_id, context):
     mark_offer_as_offered(next_offer["queue_id"])
 
     pickup_lat, pickup_lng = _get_pickup_coords(order)
-    try:
-        if pickup_lat is not None and pickup_lng is not None:
-            context.bot.send_location(
-                chat_id=next_offer["telegram_id"],
-                latitude=float(pickup_lat),
-                longitude=float(pickup_lng),
-            )
-    except Exception:
-        pass
 
     # Calcular distancia y ETA del courier al punto de recogida
     courier_dist_km = None
@@ -424,7 +451,15 @@ def _send_next_offer(order_id, context):
     except Exception:
         pass
 
-    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(order, courier_dist_km=courier_dist_km)
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id, {}) or {}
+    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(
+        order,
+        courier_dist_km=courier_dist_km,
+        pickup_city_override=cycle_info.get("pickup_city"),
+        pickup_barrio_override=cycle_info.get("pickup_barrio"),
+        dropoff_city_override=cycle_info.get("dropoff_city"),
+        dropoff_barrio_override=cycle_info.get("dropoff_barrio"),
+    )
     reply_markup = _offer_reply_markup(order_id)
 
     try:
@@ -443,6 +478,28 @@ def _send_next_offer(order_id, context):
         mark_offer_response(next_offer["queue_id"], "EXPIRED")
         _send_next_offer(order_id, context)
         return
+
+    # Enviar mapas (recogida + entrega)
+    try:
+        if pickup_lat is not None and pickup_lng is not None:
+            context.bot.send_location(
+                chat_id=next_offer["telegram_id"],
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+    except Exception:
+        pass
+
+    try:
+        dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
+        if dropoff_lat is not None and dropoff_lng is not None:
+            context.bot.send_location(
+                chat_id=next_offer["telegram_id"],
+                latitude=float(dropoff_lat),
+                longitude=float(dropoff_lng),
+            )
+    except Exception:
+        pass
 
     # Programar timeout de 30 segundos
     context.job_queue.run_once(
@@ -1289,6 +1346,10 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
             "started_at": _time.time(),
             "admin_id": admin_id, "ally_id": ally_id,
             "pickup_lat": p_lat, "pickup_lng": p_lng,
+            "pickup_city": cycle.get("pickup_city") if cycle else None,
+            "pickup_barrio": cycle.get("pickup_barrio") if cycle else None,
+            "dropoff_city": cycle.get("dropoff_city") if cycle else None,
+            "dropoff_barrio": cycle.get("dropoff_barrio") if cycle else None,
             "requires_cash": requires_cash, "cash_amount": cash_amount,
             "excluded_couriers": excluded,
         }
@@ -1799,6 +1860,10 @@ def _handle_release(update, context, order_id, reason_code=None):
             "ally_id": ally_id,
             "pickup_lat": p_lat,
             "pickup_lng": p_lng,
+            "pickup_city": prev_cycle.get("pickup_city"),
+            "pickup_barrio": prev_cycle.get("pickup_barrio"),
+            "dropoff_city": prev_cycle.get("dropoff_city"),
+            "dropoff_barrio": prev_cycle.get("dropoff_barrio"),
             "requires_cash": requires_cash,
             "cash_amount": cash_amount,
             "excluded_couriers": excluded,
@@ -2076,9 +2141,27 @@ def _handle_delivered(update, context, order_id):
     _notify_ally_delivered(context, order, durations)
 
 
-def _build_offer_text(order, courier_dist_km=None):
+def _build_offer_text(
+    order,
+    courier_dist_km=None,
+    pickup_city_override=None,
+    pickup_barrio_override=None,
+    dropoff_city_override=None,
+    dropoff_barrio_override=None,
+):
     """Construye el texto de oferta para el courier."""
-    pickup_address = _get_pickup_address(order)
+    pickup_city, pickup_barrio = _get_pickup_area(order)
+    if pickup_city_override is not None:
+        pickup_city = pickup_city_override
+    if pickup_barrio_override is not None:
+        pickup_barrio = pickup_barrio_override
+
+    dropoff_city, dropoff_barrio = _get_dropoff_area(order)
+    if dropoff_city_override is not None:
+        dropoff_city = dropoff_city_override
+    if dropoff_barrio_override is not None:
+        dropoff_barrio = dropoff_barrio_override
+
     distance_km = order["distance_km"] or 0
     total_fee = int(order["total_fee"] or 0)
     additional_incentive = int(order["additional_incentive"] or 0)
@@ -2086,14 +2169,16 @@ def _build_offer_text(order, courier_dist_km=None):
     text = (
         "OFERTA DISPONIBLE\n\n"
         "Pedido: #{}\n"
-        "Recoge en: {}\n"
-        "Entrega en: {}\n"
+        "Recoges en el barrio o sector {} de la ciudad de {}\n"
+        "Entrega en el barrio o sector {} de la ciudad de {}\n"
         "Distancia de entrega: {:.1f} km\n"
         "Pago total: ${:,}\n"
     ).format(
         order["id"],
-        pickup_address,
-        order["customer_address"] or "No disponible",
+        (pickup_barrio or "No disponible"),
+        (pickup_city or "No disponible"),
+        (dropoff_barrio or "No disponible"),
+        (dropoff_city or "No disponible"),
         distance_km,
         total_fee,
     )
@@ -2171,6 +2256,26 @@ def _get_pickup_coords(order):
         if lat is not None and lng is not None:
             return lat, lng
     return None, None
+
+
+def _get_pickup_area(order):
+    pickup_location_id = _row_value(order, "pickup_location_id")
+    ally_id = _row_value(order, "ally_id")
+
+    if pickup_location_id and ally_id:
+        location = get_ally_location_by_id(pickup_location_id, ally_id)
+        if location:
+            return _row_value(location, "city"), _row_value(location, "barrio")
+
+    default_loc = get_default_ally_location(ally_id) if ally_id else None
+    if default_loc:
+        return _row_value(default_loc, "city"), _row_value(default_loc, "barrio")
+
+    return None, None
+
+
+def _get_dropoff_area(order):
+    return _row_value(order, "customer_city"), _row_value(order, "customer_barrio")
 
 
 def _get_dropoff_coords(order):

@@ -94,14 +94,20 @@ Prefijos establecidos:
 - Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
 - Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
-- Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, etc.
+- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
+- Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
+- Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes)
+- Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
 
 Reglas:
 - PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.
 - Si se agrega una clave nueva, documentarla en esta sección en el mismo commit.
 - PROHIBIDO usar claves genéricas ("data", "value", "temp") sin prefijo de flujo.
+
+Regla obligatoria de direcciones (ciudad + barrio/sector):
+- Toda creación/registro de una dirección (pickups del aliado, direcciones de clientes, paradas de ruta, etc.) DEBE pedir y guardar siempre ciudad y barrio/sector.
 
 2D. Estándar obligatorio de callback_data
 
@@ -411,7 +417,7 @@ Después de los cambios
 
 Ejecutar obligatoriamente:
 
-python -m py_compile Backend/main.py Backend/services.py Backend/db.py order_delivery.py profile_changes.py
+python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
 
 Verificar imports huérfanos tras mover o eliminar funciones:
 Para cada nombre movido o eliminado, ejecutar:
@@ -890,9 +896,14 @@ Implementado en: order_delivery.py + main.py + db.py
 
 13A. Protección de datos del cliente
 
-PROHIBIDO revelar customer_name, customer_phone ni customer_address al repartidor en _handle_accept o en cualquier momento antes de que el aliado confirme la llegada.
+PROHIBIDO revelar customer_name, customer_phone ni customer_address al repartidor en _handle_accept o en cualquier momento antes de que el aliado confirme la recogida.
 
-El único lugar donde se revelan estos datos al repartidor es _notify_courier_pickup_approved (order_delivery.py), llamada tras la confirmación del aliado.
+Durante la oferta (pedido publicado / aún sin confirmación de recogida) SÍ está permitido mostrar únicamente:
+
+- Mapas (PINs de Telegram) de recogida y entrega usando coordenadas ya guardadas.
+- Ciudad + barrio/sector de recogida y entrega (sin dirección exacta).
+
+El único lugar donde se revelan al repartidor la dirección exacta y los detalles del cliente (nombre/teléfono/dirección) es _notify_courier_pickup_approved (order_delivery.py), llamada tras la confirmación del aliado.
 
 13B. Timers post-aceptación (obligatorios)
 
@@ -1101,7 +1112,7 @@ Antes de ejecutar git push origin staging, el agente DEBE:
 
      b) Hay commits nuevos pero en archivos DISTINTOS a los que se modificaron:
           → git pull --ff-only origin staging
-          → Verificar compilacion: python -m py_compile Backend/main.py services.py db.py ...
+          → Verificar compilacion: python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
           → Push si todo compila.
 
      c) Hay commits nuevos en los MISMOS archivos que se modificaron:

@@ -789,7 +789,7 @@ Oferta publicada → courier acepta
   Aliado confirma (order_pickupconfirm_approve_):
     → _handle_pickup_confirmation_by_ally(approve=True)
     → status = PICKED_UP
-    → _notify_courier_pickup_approved → courier recibe customer_name, phone, address
+    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta (en oferta solo ve mapas + ciudad/barrio)
 ```
 
 ### Constantes (order_delivery.py)

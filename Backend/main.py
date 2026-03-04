@@ -720,15 +720,28 @@ def _handle_phone_input(update, context, storage_key, current_state, next_state,
     return next_state
 
 
-def _handle_text_field_input(update, context, error_msg, storage_key, current_state, next_state, flow, next_prompt):
-    """Helper para validar y almacenar campos de texto simple en flujos de registro."""
+def _handle_text_field_input(
+    update,
+    context,
+    error_msg,
+    storage_key,
+    current_state,
+    next_state,
+    flow,
+    next_prompt,
+    options_hint=_OPTIONS_HINT,
+    set_back_step=True,
+):
+    """Helper para validar y almacenar campos de texto simple."""
     texto = (update.message.text or "").strip()
     if not texto:
-        update.message.reply_text(error_msg + _OPTIONS_HINT)
+        update.message.reply_text(error_msg + (options_hint or ""))
         return current_state
     context.user_data[storage_key] = texto
-    update.message.reply_text(next_prompt + _OPTIONS_HINT)
-    _set_flow_step(context, flow, next_state)
+    if next_prompt is not None:
+        update.message.reply_text(next_prompt + (options_hint or ""))
+    if set_back_step:
+        _set_flow_step(context, flow, next_state)
     return next_state
 
 
@@ -853,6 +866,8 @@ def volver_paso_anterior(update, context):
 ) = range(14, 33)
 
 PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
+PEDIDO_PICKUP_NUEVA_CIUDAD = 880
+PEDIDO_PICKUP_NUEVA_BARRIO = 881
 
 
 # =========================
@@ -875,6 +890,11 @@ PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
     RUTA_CONFIRMACION,           # 46 - Confirmacion y creacion de la ruta
     RUTA_GUARDAR_CLIENTES,       # 47 - Guardar clientes nuevos de las paradas
 ) = range(33, 48)
+
+RUTA_PICKUP_NUEVA_CIUDAD = 48
+RUTA_PICKUP_NUEVA_BARRIO = 49
+RUTA_PARADA_CIUDAD = 50
+RUTA_PARADA_BARRIO = 51
 
 
 # =========================
@@ -899,6 +919,9 @@ PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
     CLIENTES_DIR_EDITAR_NOTA,
 ) = range(400, 416)
 
+CLIENTES_DIR_CIUDAD = 416
+CLIENTES_DIR_BARRIO = 417
+
 
 # =========================
 # Estados para /direcciones (panel Mis direcciones del aliado)
@@ -911,6 +934,8 @@ PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
     DIRECCIONES_PICKUP_GUARDAR,
 ) = range(500, 505)
 
+DIRECCIONES_PICKUP_NUEVA_CIUDAD = 505
+DIRECCIONES_PICKUP_NUEVA_BARRIO = 506
 
 # =========================
 # Estados para cotizador interno
@@ -955,6 +980,8 @@ INGRESO_NOTA = 972
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
 ALLY_LOCS_ADD_COORDS = 921   # Agregar: esperando GPS / link / coords
 ALLY_LOCS_ADD_LABEL  = 922   # Agregar: esperando etiqueta / nombre
+ALLY_LOCS_ADD_CITY   = 923   # Agregar: esperando ciudad
+ALLY_LOCS_ADD_BARRIO = 924   # Agregar: esperando barrio/sector
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -3130,6 +3157,8 @@ def pedido_seleccionar_direccion_callback(update, context):
                 customer_id=customer_id,
                 label=address_text[:30],
                 address_text=address_text,
+                city=context.user_data.get("customer_city", ""),
+                barrio=context.user_data.get("customer_barrio", ""),
                 lat=lat,
                 lng=lng
             )
@@ -4074,6 +4103,7 @@ def pedido_pickup_callback(update, context):
         context.user_data["pickup_label"] = default_loc.get("label") or "Base"
         context.user_data["pickup_address"] = default_loc.get("address", "")
         context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
         context.user_data["pickup_lat"] = default_loc.get("lat")
         context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4323,18 +4353,71 @@ def ally_locs_add_label(update, context):
         return ConversationHandler.END
 
     label = texto[:40]
+    context.user_data["ally_locs_new_label"] = label
+    update.message.reply_text("Escribe la ciudad del punto de recogida:")
+    return ALLY_LOCS_ADD_CITY
+
+
+def ally_locs_add_city(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad del punto de recogida:",
+        "ally_locs_new_city",
+        ALLY_LOCS_ADD_CITY,
+        ALLY_LOCS_ADD_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector del punto de recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ally_locs_add_barrio(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector del punto de recogida:",
+        "ally_locs_new_barrio",
+        ALLY_LOCS_ADD_BARRIO,
+        ALLY_LOCS_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == ALLY_LOCS_ADD_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("ally_locs_new_barrio", "")
+
+    ally_id = context.user_data.get("ally_locs_ally_id")
+    lat = context.user_data.get("ally_locs_new_lat")
+    lng = context.user_data.get("ally_locs_new_lng")
+    label = context.user_data.get("ally_locs_new_label", "")
+    city = context.user_data.get("ally_locs_new_city", "")
+
+    if not ally_id or lat is None:
+        update.message.reply_text("Error: datos perdidos. Regresa al menu de ubicaciones.")
+        return ConversationHandler.END
+
     new_loc_id = create_ally_location(
         ally_id=ally_id,
         label=label,
         address=label,
-        city="",
-        barrio="",
+        city=city,
+        barrio=barrio,
         lat=lat,
         lng=lng,
     )
 
-    context.user_data.pop("ally_locs_new_lat", None)
-    context.user_data.pop("ally_locs_new_lng", None)
+    for key in [
+        "ally_locs_new_lat",
+        "ally_locs_new_lng",
+        "ally_locs_new_label",
+        "ally_locs_new_city",
+        "ally_locs_new_barrio",
+    ]:
+        context.user_data.pop(key, None)
 
     keyboard = [
         [InlineKeyboardButton("Si, usar como base", callback_data="ally_locs_base_{}".format(new_loc_id))],
@@ -4462,6 +4545,7 @@ def pedido_pickup_lista_callback(update, context):
         context.user_data["pickup_label"] = location.get("label") or "Recogida"
         context.user_data["pickup_address"] = location.get("address", "")
         context.user_data["pickup_city"] = location.get("city", "")
+        context.user_data["pickup_barrio"] = location.get("barrio", "")
         context.user_data["pickup_lat"] = location.get("lat")
         context.user_data["pickup_lng"] = location.get("lng")
 
@@ -4514,6 +4598,7 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
             context.user_data["pickup_label"] = default_loc.get("label") or "Base"
             context.user_data["pickup_address"] = default_loc.get("address", "")
             context.user_data["pickup_city"] = default_loc.get("city", "")
+            context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
             context.user_data["pickup_lat"] = default_loc.get("lat")
             context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4599,8 +4684,7 @@ def pedido_pickup_geo_callback(update, context):
         context.user_data["new_pickup_lng"] = lng
         query.edit_message_text(
             f"Ubicacion capturada: {lat}, {lng}\n\n"
-            "Ahora escribe los detalles de la direccion de recogida:\n"
-            "direccion, barrio, referencias..."
+            "Ahora escribe la direccion de recogida (sin ciudad ni barrio):"
         )
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
@@ -4631,6 +4715,7 @@ def pedido_pickup_nueva_ubicacion_location_handler(update, context):
         context.user_data["pickup_label"] = default_loc.get("label") or "Base"
         context.user_data["pickup_address"] = default_loc.get("address", "")
         context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
         context.user_data["pickup_lat"] = default_loc.get("lat")
         context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4641,8 +4726,7 @@ def pedido_pickup_nueva_ubicacion_location_handler(update, context):
     context.user_data["new_pickup_lng"] = loc.longitude
     update.message.reply_text(
         f"Ubicacion capturada: {loc.latitude}, {loc.longitude}\n\n"
-        "Ahora escribe los detalles de la direccion de recogida:\n"
-        "direccion, barrio, referencias..."
+        "Ahora escribe la direccion de recogida (sin ciudad ni barrio):"
     )
     return PEDIDO_PICKUP_NUEVA_DETALLES
 
@@ -4672,7 +4756,7 @@ def pedido_pickup_nueva_detalles_handler(update, context):
 
     context.user_data["new_pickup_address"] = text
 
-    # Usar pickup temporal en user_data
+    # Sugerir ciudad basada en la base del aliado (pero se pregunta siempre)
     ally = context.user_data.get("ally")
     default_city = "Pereira"
     if ally:
@@ -4680,12 +4764,49 @@ def pedido_pickup_nueva_detalles_handler(update, context):
         if default_loc and default_loc.get("city"):
             default_city = default_loc["city"]
 
-    context.user_data["new_pickup_city"] = default_city
+    update.message.reply_text(
+        "Ciudad de la recogida (ej: {}).".format(default_city)
+    )
+    return PEDIDO_PICKUP_NUEVA_CIUDAD
+
+
+def pedido_pickup_nueva_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la recogida:",
+        "new_pickup_city",
+        PEDIDO_PICKUP_NUEVA_CIUDAD,
+        PEDIDO_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Barrio o sector de la recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def pedido_pickup_nueva_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la recogida:",
+        "new_pickup_barrio",
+        PEDIDO_PICKUP_NUEVA_BARRIO,
+        PEDIDO_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == PEDIDO_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("new_pickup_barrio", "")
 
     # Guardar pickup temporal
     context.user_data["pickup_label"] = "Nueva"
-    context.user_data["pickup_address"] = text
-    context.user_data["pickup_city"] = default_city
+    context.user_data["pickup_address"] = context.user_data.get("new_pickup_address", "")
+    context.user_data["pickup_city"] = context.user_data.get("new_pickup_city", "")
+    context.user_data["pickup_barrio"] = barrio
     context.user_data["pickup_lat"] = context.user_data.get("new_pickup_lat")
     context.user_data["pickup_lng"] = context.user_data.get("new_pickup_lng")
 
@@ -4720,7 +4841,7 @@ def pedido_pickup_guardar_callback(update, context):
             label=context.user_data.get("new_pickup_address", "")[:30],
             address=context.user_data.get("new_pickup_address", ""),
             city=context.user_data.get("new_pickup_city", "Pereira"),
-            barrio="",
+            barrio=context.user_data.get("new_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=context.user_data.get("new_pickup_lat"),
@@ -5488,6 +5609,10 @@ def pedido_confirmacion_callback(update, context):
                     ally_id,
                     context,
                     admin_id_override=admin_id_for_publish,
+                    pickup_city=context.user_data.get("pickup_city"),
+                    pickup_barrio=context.user_data.get("pickup_barrio"),
+                    dropoff_city=context.user_data.get("customer_city"),
+                    dropoff_barrio=context.user_data.get("customer_barrio"),
                 )
             except Exception as e:
                 print("[WARN] Error al publicar pedido a couriers:", e)
@@ -5639,6 +5764,8 @@ def pedido_guardar_cliente_callback(update, context):
                 customer_id,
                 "Principal",
                 customer_address,
+                city=context.user_data.get("customer_city", ""),
+                barrio=context.user_data.get("customer_barrio", ""),
                 lat=context.user_data.get("dropoff_lat"),
                 lng=context.user_data.get("dropoff_lng"),
             )
@@ -8232,37 +8359,12 @@ def clientes_nuevo_direccion_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    try:
-        customer_id = create_ally_customer(ally_id, name, phone, notes)
-        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
-
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
-        update.message.reply_text(
-            f"Cliente '{name}' creado exitosamente.\n\n"
-            f"Telefono: {phone}\n"
-            f"Direccion ({label}): {address_to_save}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        update.message.reply_text(f"Error al crear cliente: {str(e)}")
-
-    # Limpiar datos temporales
-    for key in [
-        "new_customer_name",
-        "new_customer_phone",
-        "new_customer_notes",
-        "new_address_label",
-        "clientes_geo_mode",
-        "clientes_geo_address_input",
-        "clientes_geo_formatted",
-        "pending_geo_lat",
-        "pending_geo_lng",
-        "pending_geo_text",
-        "pending_geo_seen",
-    ]:
-        context.user_data.pop(key, None)
-
-    return CLIENTES_MENU
+    context.user_data["clientes_pending_mode"] = "nuevo_cliente"
+    context.user_data["clientes_pending_address_text"] = address_to_save
+    context.user_data["clientes_pending_lat"] = lat
+    context.user_data["clientes_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_buscar(update, context):
@@ -8371,24 +8473,12 @@ def clientes_dir_nueva_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    try:
-        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
-        update.message.reply_text(f"Direccion agregada: {label} - {address_to_save}")
-    except Exception as e:
-        update.message.reply_text(f"Error: {str(e)}")
-
-    for key in [
-        "new_address_label",
-        "clientes_geo_mode",
-        "clientes_geo_address_input",
-        "clientes_geo_formatted",
-        "pending_geo_lat",
-        "pending_geo_lng",
-        "pending_geo_text",
-        "pending_geo_seen",
-    ]:
-        context.user_data.pop(key, None)
-    return clientes_mostrar_menu(update, context, edit_message=False)
+    context.user_data["clientes_pending_mode"] = "dir_nueva"
+    context.user_data["clientes_pending_address_text"] = address_to_save
+    context.user_data["clientes_pending_lat"] = lat
+    context.user_data["clientes_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_geo_callback(update, context):
@@ -8411,41 +8501,163 @@ def clientes_geo_callback(update, context):
             query.edit_message_text("Error: datos perdidos. Escribe la direccion nuevamente.")
             return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
 
-        if mode == "nuevo_cliente":
-            ally_id = context.user_data.get("active_ally_id")
-            name = context.user_data.get("new_customer_name")
-            phone = context.user_data.get("new_customer_phone")
-            notes = context.user_data.get("new_customer_notes")
-            label = context.user_data.get("new_address_label")
-            try:
-                customer_id = create_ally_customer(ally_id, name, phone, notes)
-                create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
-                keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
-                query.edit_message_text(
-                    f"Cliente '{name}' creado exitosamente.\n\n"
-                    f"Telefono: {phone}\n"
-                    f"Direccion ({label}): {formatted}",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            except Exception as e:
-                query.edit_message_text(f"Error al crear cliente: {str(e)}")
-            for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
-                context.user_data.pop(key, None)
-            return CLIENTES_MENU
-
-        customer_id = context.user_data.get("current_customer_id")
-        label = context.user_data.get("new_address_label")
-        try:
-            create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
-            query.edit_message_text(f"Direccion agregada: {label} - {formatted}")
-        except Exception as e:
-            query.edit_message_text(f"Error: {str(e)}")
-        for key in ["new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
-            context.user_data.pop(key, None)
-        return clientes_mostrar_menu(update, context, edit_message=False)
+        context.user_data["clientes_pending_mode"] = mode
+        context.user_data["clientes_pending_address_text"] = formatted
+        context.user_data["clientes_pending_lat"] = lat
+        context.user_data["clientes_pending_lng"] = lng
+        query.edit_message_text("Escribe la ciudad de la direccion:")
+        return CLIENTES_DIR_CIUDAD
 
     estado = CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
     return _geo_siguiente_o_gps(query, context, "cust_geo_si", "cust_geo_no", estado)
+
+
+def clientes_dir_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la direccion:",
+        "clientes_pending_city",
+        CLIENTES_DIR_CIUDAD,
+        CLIENTES_DIR_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la direccion:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def clientes_dir_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la direccion:",
+        "clientes_pending_barrio",
+        CLIENTES_DIR_BARRIO,
+        CLIENTES_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == CLIENTES_DIR_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("clientes_pending_barrio", "")
+
+    mode = context.user_data.get("clientes_pending_mode")
+    address_text = context.user_data.get("clientes_pending_address_text", "")
+    lat = context.user_data.get("clientes_pending_lat")
+    lng = context.user_data.get("clientes_pending_lng")
+    city = context.user_data.get("clientes_pending_city", "")
+    notes = context.user_data.get("clientes_pending_notes")
+
+    if mode == "nuevo_cliente":
+        ally_id = context.user_data.get("active_ally_id")
+        name = context.user_data.get("new_customer_name")
+        phone = context.user_data.get("new_customer_phone")
+        customer_notes = context.user_data.get("new_customer_notes")
+        label = context.user_data.get("new_address_label")
+        try:
+            customer_id = create_ally_customer(ally_id, name, phone, customer_notes)
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+            update.message.reply_text(
+                "Cliente '{}' creado exitosamente.\n\n"
+                "Telefono: {}\n"
+                "Direccion ({}): {}".format(name, phone, label, address_text),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as e:
+            update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+
+        for key in [
+            "new_customer_name",
+            "new_customer_phone",
+            "new_customer_notes",
+            "new_address_label",
+            "clientes_geo_mode",
+            "clientes_geo_address_input",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return CLIENTES_MENU
+
+    if mode == "dir_nueva":
+        customer_id = context.user_data.get("current_customer_id")
+        label = context.user_data.get("new_address_label")
+        try:
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "new_address_label",
+            "clientes_geo_mode",
+            "clientes_geo_address_input",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    if mode == "dir_editar":
+        customer_id = context.user_data.get("current_customer_id")
+        address_id = context.user_data.get("current_address_id")
+        label = context.user_data.get("edit_address_label")
+        try:
+            update_customer_address(
+                address_id=address_id,
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                notes=notes,
+                lat=lat,
+                lng=lng,
+            )
+            update.message.reply_text("Direccion actualizada.")
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "edit_address_label",
+            "current_address_id",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    update.message.reply_text("Error: sesion expirada. Intenta de nuevo desde el menu.")
+    for key in [
+        "clientes_pending_mode",
+        "clientes_pending_address_text",
+        "clientes_pending_lat",
+        "clientes_pending_lng",
+        "clientes_pending_city",
+        "clientes_pending_barrio",
+        "clientes_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
 
 
 def clientes_dir_editar_label(update, context):
@@ -8462,15 +8674,20 @@ def clientes_dir_editar_text(update, context):
     address_id = context.user_data.get("current_address_id")
     label = context.user_data.get("edit_address_label")
 
-    try:
-        update_customer_address(address_id, customer_id, label, address_text)
-        update.message.reply_text("Direccion actualizada.")
-    except Exception as e:
-        update.message.reply_text(f"Error: {str(e)}")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("edit_address_label", None)
+        context.user_data.pop("current_address_id", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
 
-    context.user_data.pop("edit_address_label", None)
-    context.user_data.pop("current_address_id", None)
-    return clientes_mostrar_menu(update, context, edit_message=False)
+    context.user_data["clientes_pending_mode"] = "dir_editar"
+    context.user_data["clientes_pending_address_text"] = address_text
+    context.user_data["clientes_pending_lat"] = address.get("lat")
+    context.user_data["clientes_pending_lng"] = address.get("lng")
+    context.user_data["clientes_pending_notes"] = address.get("notes")
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_dir_editar_nota(update, context):
@@ -8789,14 +9006,50 @@ def direcciones_pickup_nueva_detalles(update, context):
 
     context.user_data["new_pickup_address"] = text
 
-    # Ciudad por defecto
+    # Sugerir ciudad basada en la base del aliado (pero se pregunta siempre)
     ally_id = context.user_data.get("active_ally_id")
     default_city = "Pereira"
     if ally_id:
         default_loc = get_default_ally_location(ally_id)
         if default_loc and default_loc.get("city"):
             default_city = default_loc["city"]
-    context.user_data["new_pickup_city"] = default_city
+    update.message.reply_text("Ciudad de la recogida (ej: {}).".format(default_city))
+    return DIRECCIONES_PICKUP_NUEVA_CIUDAD
+
+
+def direcciones_pickup_nueva_ciudad(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la recogida:",
+        "new_pickup_city",
+        DIRECCIONES_PICKUP_NUEVA_CIUDAD,
+        DIRECCIONES_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Barrio o sector de la recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def direcciones_pickup_nueva_barrio(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la recogida:",
+        "new_pickup_barrio",
+        DIRECCIONES_PICKUP_NUEVA_BARRIO,
+        DIRECCIONES_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == DIRECCIONES_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("new_pickup_barrio", "")
+    address = context.user_data.get("new_pickup_address", "")
+    city = context.user_data.get("new_pickup_city", "")
 
     keyboard = [
         [InlineKeyboardButton("Si, guardar", callback_data="dir_pickup_guardar_si")],
@@ -8804,9 +9057,7 @@ def direcciones_pickup_nueva_detalles(update, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
-        f"Direccion: {text}\n"
-        f"Ciudad: {default_city}\n\n"
-        "Deseas guardar esta direccion?",
+        "Direccion: {}\nCiudad: {}\nBarrio o sector: {}\n\nDeseas guardar esta direccion?".format(address, city, barrio),
         reply_markup=reply_markup
     )
     return DIRECCIONES_PICKUP_GUARDAR
@@ -8834,7 +9085,7 @@ def direcciones_pickup_guardar_callback(update, context):
             label=address[:30],
             address=address,
             city=city,
-            barrio="",
+            barrio=context.user_data.get("new_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=lat,
@@ -8849,6 +9100,7 @@ def direcciones_pickup_guardar_callback(update, context):
         # Limpiar datos temporales
         context.user_data.pop("new_pickup_address", None)
         context.user_data.pop("new_pickup_city", None)
+        context.user_data.pop("new_pickup_barrio", None)
         context.user_data.pop("new_pickup_lat", None)
         context.user_data.pop("new_pickup_lng", None)
 
@@ -8882,6 +9134,12 @@ agenda_conv = ConversationHandler(
         ],
         DIRECCIONES_PICKUP_NUEVA_DETALLES: [
             MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_detalles)
+        ],
+        DIRECCIONES_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ciudad)
+        ],
+        DIRECCIONES_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_barrio)
         ],
         DIRECCIONES_PICKUP_GUARDAR: [
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
@@ -8932,6 +9190,12 @@ agenda_conv = ConversationHandler(
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+        ],
+        CLIENTES_DIR_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_ciudad_handler)
+        ],
+        CLIENTES_DIR_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_barrio_handler)
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
@@ -9438,6 +9702,42 @@ def ruta_pickup_nueva_detalles_handler(update, context):
         update.message.reply_text("Escribe la descripcion de la direccion.")
         return RUTA_PICKUP_NUEVA_DETALLES
     context.user_data["ruta_pickup_address"] = address
+    update.message.reply_text("Escribe la ciudad del punto de recogida:")
+    return RUTA_PICKUP_NUEVA_CIUDAD
+
+
+def ruta_pickup_nueva_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad del punto de recogida:",
+        "ruta_pickup_city",
+        RUTA_PICKUP_NUEVA_CIUDAD,
+        RUTA_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector del punto de recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ruta_pickup_nueva_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector del punto de recogida:",
+        "ruta_pickup_barrio",
+        RUTA_PICKUP_NUEVA_BARRIO,
+        RUTA_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == RUTA_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("ruta_pickup_barrio", "")
+    address = context.user_data.get("ruta_pickup_address", "")
     keyboard = [
         [InlineKeyboardButton("Si, guardar", callback_data="ruta_pickup_guardar_si")],
         [InlineKeyboardButton("No, solo para esta ruta", callback_data="ruta_pickup_guardar_no")],
@@ -9462,8 +9762,8 @@ def ruta_pickup_guardar_callback(update, context):
             ally_id=ally_id,
             label=address[:30],
             address=address,
-            city="",
-            barrio="",
+            city=context.user_data.get("ruta_pickup_city", ""),
+            barrio=context.user_data.get("ruta_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=lat,
@@ -9643,10 +9943,8 @@ def ruta_parada_geo_callback(update, context):
         context.user_data["ruta_temp_lng"] = lng
         if formatted:
             context.user_data["ruta_temp_address"] = formatted
-            context.user_data["ruta_temp_city"] = ""
-            context.user_data["ruta_temp_barrio"] = ""
-            _ruta_guardar_parada_actual(context)
-            return _ruta_mostrar_mas_paradas(query, context)
+            query.edit_message_text("Escribe la ciudad de la entrega:")
+            return RUTA_PARADA_CIUDAD
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
@@ -9672,10 +9970,40 @@ def ruta_parada_direccion_handler(update, context):
         update.message.reply_text("Escribe la direccion de entrega.")
         return RUTA_PARADA_DIRECCION
     context.user_data["ruta_temp_address"] = address
-    if not context.user_data.get("ruta_temp_city"):
-        context.user_data["ruta_temp_city"] = ""
-    if not context.user_data.get("ruta_temp_barrio"):
-        context.user_data["ruta_temp_barrio"] = ""
+    update.message.reply_text("Escribe la ciudad de la entrega:")
+    return RUTA_PARADA_CIUDAD
+
+
+def ruta_parada_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la entrega:",
+        "ruta_temp_city",
+        RUTA_PARADA_CIUDAD,
+        RUTA_PARADA_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la entrega:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ruta_parada_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la entrega:",
+        "ruta_temp_barrio",
+        RUTA_PARADA_BARRIO,
+        RUTA_MAS_PARADAS,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == RUTA_PARADA_BARRIO:
+        return ok_state
     _ruta_guardar_parada_actual(context)
     return _ruta_mostrar_mas_paradas(update, context)
 
@@ -9834,6 +10162,8 @@ def ruta_guardar_clientes_callback(update, context):
                 if address:
                     create_customer_address(
                         customer_id, "Principal", address,
+                        city=p.get("city") or "",
+                        barrio=p.get("barrio") or "",
                         lat=p.get("lat"), lng=p.get("lng"),
                     )
                 saved += 1
@@ -9872,6 +10202,14 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_detalles_handler),
         ],
+        RUTA_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ciudad_handler),
+        ],
+        RUTA_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_barrio_handler),
+        ],
         RUTA_PICKUP_GUARDAR: [
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
         ],
@@ -9898,6 +10236,14 @@ nueva_ruta_conv = ConversationHandler(
         RUTA_PARADA_DIRECCION: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, ruta_parada_direccion_handler),
+        ],
+        RUTA_PARADA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_ciudad_handler),
+        ],
+        RUTA_PARADA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, ruta_parada_barrio_handler),
         ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
@@ -10034,6 +10380,14 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_detalles_handler)
         ],
+        PEDIDO_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ciudad_handler),
+        ],
+        PEDIDO_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_barrio_handler),
+        ],
         PEDIDO_PICKUP_GUARDAR: [
             CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
         ],
@@ -10100,6 +10454,12 @@ ally_locs_conv = ConversationHandler(
         ],
         ALLY_LOCS_ADD_LABEL: [
             MessageHandler(Filters.text & ~Filters.command, ally_locs_add_label),
+        ],
+        ALLY_LOCS_ADD_CITY: [
+            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_city),
+        ],
+        ALLY_LOCS_ADD_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_barrio),
         ],
     },
     fallbacks=[
@@ -13655,6 +14015,17 @@ def courier_live_location_handler(update, context):
         return
     if courier["status"] != "APPROVED":
         return
+    if not int(_row_value(courier, "is_active", 0) or 0):
+        if update.message and getattr(message.location, 'live_period', None):
+            try:
+                context.bot.send_message(
+                    chat_id=telegram_id,
+                    text="Para recibir pedidos debes activarte primero.\n"
+                         "Ve a tu menu y presiona Activarme para declarar tu base."
+                )
+            except Exception:
+                pass
+        return
 
     location = message.location
     lat = location.latitude
@@ -13694,8 +14065,8 @@ def courier_live_location_handler(update, context):
 
 def courier_live_location_expired_check(context):
     """
-    Job periodico: revisa couriers ONLINE cuya ubicacion y/o sesion
-    de ubicacion en vivo ya expiraron y los pasa a PAUSADO.
+    Job periodico: revisa couriers ONLINE cuya sesion de ubicacion en vivo
+    ya expiro y los desactiva completamente (requieren re-activacion con base).
     """
     expired_ids = expire_stale_live_locations(stale_timeout_seconds=900)
     for cid in expired_ids:
@@ -13713,8 +14084,8 @@ def courier_live_location_expired_check(context):
                     tg_id = user["telegram_id"]
                     context.bot.send_message(
                         chat_id=tg_id,
-                        text="Tu ubicacion en vivo expiro. Estas PAUSADO.\n"
-                             "Comparte tu ubicacion en vivo para volver a ONLINE."
+                        text="Tu ubicacion en vivo expiro. Quedaste OFFLINE.\n"
+                             "Para volver a recibir pedidos, ve a tu menu y presiona Activarme."
                     )
         except Exception as e:
             print(f"[WARN] No se pudo notificar expiracion a courier {cid}: {e}")
