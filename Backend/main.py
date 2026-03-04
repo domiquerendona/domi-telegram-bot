@@ -14208,11 +14208,10 @@ def courier_base_amount_handler(update, context):
     context.user_data.pop("courier_id_activating", None)
 
     update.message.reply_text(
-        "Te has activado exitosamente.\n"
-        "Base declarada: ${:,}\n\n"
-        "Ahora recibiras ofertas de pedidos.\n\n"
-        "Comparte tu ubicacion en vivo para estar ONLINE "
-        "y recibir ofertas mas cercanas.".format(amount)
+        "Base registrada: ${:,}\n\n"
+        "Aun no estas ONLINE.\n"
+        "Comparte tu ubicacion en vivo para activarte "
+        "y comenzar a recibir pedidos.".format(amount)
     )
 
 
