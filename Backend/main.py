@@ -1178,8 +1178,20 @@ def _get_courier_toggle_button_label(courier):
         return None
     courier_is_active = _row_value(courier, "is_active", 0)
     if courier_is_active:
-        return "Pausar repartidor"
+        return "Desactivarme"
     return "Activar repartidor"
+
+
+def _courier_main_button_label(courier):
+    """Retorna el label del boton Mi repartidor con estado inline."""
+    if not courier or _row_value(courier, "status") != "APPROVED":
+        return None
+    is_active = int(_row_value(courier, "is_active", 0) or 0)
+    avail_status = _row_value(courier, "availability_status", "INACTIVE")
+    live_active = int(_row_value(courier, "live_location_active", 0) or 0)
+    if is_active and avail_status == "APPROVED" and live_active:
+        return "Mi repartidor · ONLINE"
+    return "Mi repartidor · OFFLINE"
 
 
 def get_main_menu_keyboard(missing_cmds, courier=None, ally=None):
@@ -1189,8 +1201,9 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None):
     role_row = []
     if ally:
         role_row.append('Mi aliado')
-    if courier and _row_value(courier, "status") == "APPROVED":
-        role_row.append('Mi repartidor')
+    courier_btn = _courier_main_button_label(courier)
+    if courier_btn:
+        role_row.append(courier_btn)
     if role_row:
         keyboard.append(role_row)
     keyboard.append(['Mi perfil', 'Ayuda'])
@@ -1637,7 +1650,7 @@ def menu_button_handler(update, context):
     # --- Botones del menú principal ---
     if text == "Mi aliado":
         return mi_aliado(update, context)
-    elif text == "Mi repartidor":
+    elif text.startswith("Mi repartidor"):
         return mi_repartidor(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
@@ -1683,7 +1696,7 @@ def menu_button_handler(update, context):
     # --- Botones del submenú Repartidor ---
     elif text == "Activar repartidor":
         return courier_activate_from_message(update, context)
-    elif text == "Pausar repartidor":
+    elif text == "Desactivarme":
         return courier_deactivate_from_message(update, context)
     elif text == "Pedidos en curso":
         return courier_pedidos_en_curso(update, context)
