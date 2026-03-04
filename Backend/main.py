@@ -922,6 +922,8 @@ RUTA_PARADA_BARRIO = 51
 
 CLIENTES_DIR_CIUDAD = 416
 CLIENTES_DIR_BARRIO = 417
+CLIENTES_DIR_CORREGIR_COORDS = 418
+CLIENTES_DIR_CORREGIR_GEO = 419
 
 
 # =========================
@@ -8252,10 +8254,28 @@ def clientes_ver_cliente_callback(update, context):
         context.user_data["current_address_id"] = address_id
         label = address["label"] or "Sin etiqueta"
         nota_entrega = address["notes"] or "Sin nota"
+        lat = address["lat"]
+        lng = address["lng"]
+
+        if lat is not None and lng is not None:
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
+            coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng))
+            btn_coords = "Corregir coordenadas"
+        else:
+            coords_text = "Sin coordenadas"
+            btn_coords = "Agregar coordenadas"
 
         keyboard = [
             [InlineKeyboardButton("Editar", callback_data="cust_dir_editar")],
             [InlineKeyboardButton("Editar nota entrega", callback_data="cust_dir_edit_nota")],
+            [InlineKeyboardButton(btn_coords, callback_data="cust_dir_corregir_coords")],
             [InlineKeyboardButton("Archivar", callback_data="cust_dir_archivar")],
             [InlineKeyboardButton("Volver", callback_data="cust_dirs")],
         ]
@@ -8263,10 +8283,21 @@ def clientes_ver_cliente_callback(update, context):
         query.edit_message_text(
             f"{label}\n"
             f"{address['address_text']}\n\n"
-            f"Nota para entrega:\n{nota_entrega}",
+            f"Nota para entrega:\n{nota_entrega}\n\n"
+            f"{coords_text}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CLIENTES_VER_CLIENTE
+
+    elif data == "cust_dir_corregir_coords":
+        query.edit_message_text(
+            "Corregir / agregar coordenadas\n\n"
+            "Envia un pin de ubicacion de Telegram, un link de Google Maps, "
+            "o escribe las coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para volver."
+        )
+        context.user_data["clientes_geo_mode"] = "corregir_coords"
+        return CLIENTES_DIR_CORREGIR_COORDS
 
     elif data == "cust_dir_editar":
         query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
@@ -8510,15 +8541,44 @@ def clientes_geo_callback(update, context):
     if query.data == "cust_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
-        original_text = context.user_data.pop("pending_geo_text", "") or context.user_data.get("clientes_geo_address_input", "")
+        context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
-        formatted = context.user_data.pop("clientes_geo_formatted", "") or original_text
+        context.user_data.pop("clientes_geo_formatted", None)
         if lat is None or lng is None:
-            query.edit_message_text("Error: datos perdidos. Escribe la direccion nuevamente.")
+            query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
             return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
 
+        if mode == "corregir_coords":
+            context.user_data.pop("clientes_geo_mode", None)
+            customer_id = context.user_data.get("current_customer_id")
+            address_id = context.user_data.get("current_address_id")
+            address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+            if not address:
+                query.edit_message_text("Error: direccion no encontrada.")
+                return clientes_mostrar_menu(update, context, edit_message=True)
+            try:
+                update_customer_address(
+                    address_id=address_id,
+                    customer_id=customer_id,
+                    label=address["label"],
+                    address_text=address["address_text"],
+                    city=address["city"] or "",
+                    barrio=address["barrio"] or "",
+                    notes=address["notes"],
+                    lat=lat,
+                    lng=lng,
+                )
+                query.edit_message_text(
+                    "Coordenadas actualizadas.\n"
+                    "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+                )
+            except Exception as e:
+                query.edit_message_text("Error al actualizar: {}".format(str(e)))
+            return clientes_mostrar_menu(update, context, edit_message=False)
+
+        original_text = context.user_data.get("clientes_geo_address_input", "")
         context.user_data["clientes_pending_mode"] = mode
-        context.user_data["clientes_pending_address_text"] = formatted
+        context.user_data["clientes_pending_address_text"] = original_text
         context.user_data["clientes_pending_lat"] = lat
         context.user_data["clientes_pending_lng"] = lng
         query.edit_message_text("Escribe la ciudad de la direccion:")
@@ -8741,6 +8801,98 @@ def clientes_dir_editar_nota(update, context):
         update.message.reply_text(f"Error: {str(e)}")
 
     context.user_data.pop("current_address_id", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_corregir_coords_handler(update, context):
+    """Recibe texto/link para corregir o agregar coordenadas de una direccion de cliente."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["clientes_geo_mode"] = "corregir_coords"
+    context.user_data["clientes_geo_address_input"] = text
+
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, text, "cust_geo_si", "cust_geo_no", CLIENTES_DIR_CORREGIR_COORDS
+    )
+    if resolved is None:
+        return CLIENTES_DIR_CORREGIR_COORDS
+    if isinstance(resolved, int):
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    if lat is None or lng is None:
+        update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
+        return CLIENTES_DIR_CORREGIR_COORDS
+
+    try:
+        update_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("clientes_geo_mode", None)
+    context.user_data.pop("clientes_geo_address_input", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_corregir_coords_location_handler(update, context):
+    """Recibe pin GPS de Telegram para corregir o agregar coordenadas de una direccion."""
+    loc = update.message.location
+    lat = loc.latitude
+    lng = loc.longitude
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    try:
+        update_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("clientes_geo_mode", None)
     return clientes_mostrar_menu(update, context, edit_message=False)
 
 
@@ -9183,7 +9335,7 @@ agenda_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
-            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
@@ -9215,6 +9367,11 @@ agenda_conv = ConversationHandler(
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+        ],
+        CLIENTES_DIR_CORREGIR_COORDS: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
@@ -9255,7 +9412,7 @@ clientes_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
-            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
@@ -9281,6 +9438,11 @@ clientes_conv = ConversationHandler(
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
             MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+        ],
+        CLIENTES_DIR_CORREGIR_COORDS: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
+            MessageHandler(Filters.text & ~Filters.command, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
