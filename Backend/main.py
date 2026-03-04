@@ -1246,7 +1246,7 @@ def get_repartidor_menu_keyboard(courier):
     keyboard = []
     if courier_toggle:
         keyboard.append([courier_toggle])
-    keyboard.append(['Pedidos en curso'])
+    keyboard.append(['Pedidos en curso', 'Actualizar'])
     keyboard.append(['Mis pedidos repartidor', 'Mis ganancias'])
     keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
     keyboard.append(['Volver al menu'])
@@ -1699,6 +1699,8 @@ def menu_button_handler(update, context):
         return courier_activate_from_message(update, context)
     elif text == "Desactivarme":
         return courier_deactivate_from_message(update, context)
+    elif text == "Actualizar":
+        return mi_repartidor(update, context)
     elif text == "Pedidos en curso":
         return courier_pedidos_en_curso(update, context)
     elif text == "Mis pedidos repartidor":
@@ -14516,7 +14518,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Desactivarme|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
