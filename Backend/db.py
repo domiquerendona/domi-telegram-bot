@@ -2343,9 +2343,10 @@ def get_courier_availability(courier_id: int) -> str:
 
 def expire_stale_live_locations(stale_timeout_seconds: int = 900):
     """
-    Marca como INACTIVE a couriers con live_location vencida.
+    Desactiva completamente couriers con live_location vencida.
     - Regla principal: si live_location_expires_at ya paso.
-    - Regla secundaria: si no hay updates en stale_timeout_seconds (fallback).
+    - Regla secundaria (fallback): si expires_at IS NULL y no hay updates en stale_timeout_seconds.
+      El fallback NO aplica cuando expires_at esta definido y aun es futuro.
     Retorna la lista de courier_ids afectados.
     """
     retries = 5
@@ -2353,13 +2354,15 @@ def expire_stale_live_locations(stale_timeout_seconds: int = 900):
         stale_threshold_sql = f"NOW() - ({P} * INTERVAL '1 second')"
         condition_sql = (
             f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < NOW()) "
-            f"OR (live_location_updated_at IS NULL OR live_location_updated_at < {stale_threshold_sql}))"
+            f"OR (live_location_expires_at IS NULL AND "
+            f"(live_location_updated_at IS NULL OR live_location_updated_at < {stale_threshold_sql})))"
         )
         condition_params = (stale_timeout_seconds,)
     else:
         condition_sql = (
             f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < datetime('now')) "
-            f"OR (live_location_updated_at IS NULL OR live_location_updated_at < datetime('now', {P})))"
+            f"OR (live_location_expires_at IS NULL AND "
+            f"(live_location_updated_at IS NULL OR live_location_updated_at < datetime('now', {P}))))"
         )
         condition_params = (f"-{stale_timeout_seconds} seconds",)
     for attempt in range(retries):
@@ -2379,7 +2382,8 @@ def expire_stale_live_locations(stale_timeout_seconds: int = 900):
             if expired:
                 cur.execute(f"""
                     UPDATE couriers
-                    SET availability_status = 'INACTIVE', live_location_active = 0
+                    SET availability_status = 'INACTIVE', live_location_active = 0,
+                        is_active = 0, available_cash = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
                       AND {condition_sql}
