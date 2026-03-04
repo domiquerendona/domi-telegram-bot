@@ -14164,10 +14164,13 @@ def _courier_deactivate_common(update, context, reply_func):
 
     deactivate_courier(courier["id"])
     context.user_data.pop("deact_reminder_ts", None)
-    reply_func(
+    courier_updated = get_courier_by_user_id(user["id"])
+    updated_keyboard = get_repartidor_menu_keyboard(courier_updated)
+    update.effective_message.reply_text(
         "Te has desactivado. No recibiras ofertas de pedidos.\n\n"
         "Deten el envio de ubicacion en vivo desde tu chat para "
-        "dejar de compartir tu posicion y ahorrar bateria."
+        "dejar de compartir tu posicion y ahorrar bateria.",
+        reply_markup=updated_keyboard
     )
 
 
