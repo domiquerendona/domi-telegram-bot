@@ -1,6 +1,7 @@
 ﻿import os
 import hashlib
 import os
+import time
 import traceback
 from dotenv import load_dotenv
 
@@ -14029,13 +14030,17 @@ def courier_live_location_handler(update, context):
     if courier["status"] != "APPROVED":
         return
     if not int(_row_value(courier, "is_active", 0) or 0):
-        if update.message and getattr(message.location, 'live_period', None):
+        now_ts = time.time()
+        last_sent = context.user_data.get("deact_reminder_ts", 0)
+        if now_ts - last_sent >= 300:
             try:
                 context.bot.send_message(
                     chat_id=telegram_id,
-                    text="Para recibir pedidos debes activarte primero.\n"
-                         "Ve a tu menu y presiona Activarme para declarar tu base."
+                    text="Estas desactivado y sigues compartiendo tu ubicacion.\n"
+                         "Deten el envio de ubicacion en vivo desde tu chat.\n"
+                         "Si quieres activarte, presiona Activarme en tu menu."
                 )
+                context.user_data["deact_reminder_ts"] = now_ts
             except Exception:
                 pass
         return
@@ -14158,7 +14163,12 @@ def _courier_deactivate_common(update, context, reply_func):
         return
 
     deactivate_courier(courier["id"])
-    reply_func("Te has desactivado. No recibiras ofertas de pedidos.")
+    context.user_data.pop("deact_reminder_ts", None)
+    reply_func(
+        "Te has desactivado. No recibiras ofertas de pedidos.\n\n"
+        "Deten el envio de ubicacion en vivo desde tu chat para "
+        "dejar de compartir tu posicion y ahorrar bateria."
+    )
 
 
 def courier_activate_from_message(update, context):
