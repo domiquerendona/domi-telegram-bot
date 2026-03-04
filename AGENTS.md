@@ -98,7 +98,7 @@ Prefijos establecidos:
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 - Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
-- Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes)
+- Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id
 - Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
 
 Reglas:

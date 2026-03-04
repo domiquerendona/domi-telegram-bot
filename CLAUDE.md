@@ -250,6 +250,7 @@ Cada flujo usa prefijos exclusivos en sus claves. **PROHIBIDO** compartir claves
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
+| Agenda clientes (coordenadas) | `clientes_geo_mode` (`corregir_coords` al agregar/corregir coords), `current_customer_id`, `current_address_id`, `clientes_geo_address_input` |
 
 ### Convención de `callback_data`
 
@@ -268,7 +269,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `config_` | Configuración del sistema |
 | `cotizar_` | Flujo de cotización de envío |
 | `courier_` | Acciones de repartidor |
-| `cust_` | Acciones de cliente |
+| `cust_` | Acciones de cliente. Incluye: `cust_dir_corregir_coords` (abre flujo para agregar/corregir coords de una dirección guardada), `cust_geo_si` / `cust_geo_no` (confirmar geocoding en flujo de dirección) |
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
