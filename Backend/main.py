@@ -3161,8 +3161,11 @@ def pedido_seleccionar_direccion_callback(update, context):
     data = query.data
 
     if data == "pedido_nueva_dir":
-        query.edit_message_text("Escribe la nueva direccion de entrega:")
-        return PEDIDO_DIRECCION
+        query.edit_message_text(
+            "Escribe la nueva direccion de entrega (nombre del lugar o calle),\n"
+            "o envia un pin de ubicacion de Telegram."
+        )
+        return PEDIDO_UBICACION
 
     elif data == "guardar_dir_cliente_si":
         # Guardar la direccion del cliente
@@ -3195,8 +3198,11 @@ def pedido_seleccionar_direccion_callback(update, context):
         address = get_customer_address_by_id(address_id, customer_id)
 
         if not address:
-            query.edit_message_text("Direccion no encontrada. Escribe la direccion de entrega:")
-            return PEDIDO_DIRECCION
+            query.edit_message_text(
+                "Direccion no encontrada. Escribe la direccion de entrega (nombre del lugar o calle),\n"
+                "o envia un pin de ubicacion de Telegram."
+            )
+            return PEDIDO_UBICACION
 
         context.user_data["customer_address_id"] = address_id
         context.user_data["customer_address"] = address["address_text"]
