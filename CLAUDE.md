@@ -275,7 +275,7 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `menu_` | Navegación de menú |
 | `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
 | `pagos_` | Sistema de pagos |
-| `pedido_` | Flujo de creación de pedidos |
+| `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente) |
 | `perfil_` | Cambios de perfil |
 | `pickup_` | Selección de punto de recogida |
 | `preview_` | Previsualización de pedido |
@@ -770,6 +770,7 @@ Implementado en commit `b06fc3e`. Controla el ciclo post-aceptación del courier
 Oferta publicada → courier acepta
   ↓ _handle_accept
   - Mensaje SIN datos del cliente (solo barrio destino + tarifa + pickup address)
+  - Mensaje incluye instruccion explicita: navegar al pickup (Google Maps/Waze) y liberar si no puede llegar
   - Guarda courier_accepted_lat/lng en orders (base para T+5)
   - Programa 3 jobs:
       arr_inactive_{id}  T+5 min
@@ -792,6 +793,8 @@ Oferta publicada → courier acepta
     → status = PICKED_UP
     → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta (en oferta solo ve mapas + ciudad/barrio)
 ```
+
+- Para rutas: `order_delivery.py â†’ _handle_route_accept` tambiÃ©n incluye instrucciÃ³n de navegaciÃ³n al pickup (Google Maps/Waze) y opciÃ³n de liberar ruta.
 
 ### Constantes (order_delivery.py)
 
