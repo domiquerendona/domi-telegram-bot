@@ -1599,7 +1599,10 @@ def _handle_accept(update, context, order_id):
         "Recoge en: {}\n"
         "Destino: {}\n"
         "Tarifa: ${:,}\n\n"
+        "Dirigete ahora al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
+        "Manten tu GPS encendido.\n"
         "Tienes 15 minutos para llegar al punto de recogida.\n"
+        "Si no puedes llegar, presiona \"Liberar pedido\".\n"
         "El aliado confirmara tu llegada antes de entregarte los datos del cliente.".format(
             order_id,
             _get_pickup_address(order),
@@ -2980,7 +2983,8 @@ def _handle_route_accept(update, context, route_id):
         "Ruta #{} aceptada.\n\n"
         "Recoge en: {}\n"
         "Total de paradas: {}\n\n"
-        "Dirigete al punto de recogida. "
+        "Dirigete al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
+        "Si no puedes completar la ruta, presiona \"Liberar ruta\".\n"
         "Recibes los detalles de cada parada a medida que avanzas.".format(
             route_id,
             pickup_address,
