@@ -255,9 +255,27 @@ CREATE TABLE IF NOT EXISTS ally_courier_blocks (
 -- E) TABLAS DE PEDIDOS
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS admin_locations (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    label TEXT NOT NULL,
+    address TEXT NOT NULL,
+    city TEXT NOT NULL,
+    barrio TEXT NOT NULL,
+    phone TEXT,
+    lat REAL,
+    lng REAL,
+    is_default INTEGER DEFAULT 0,
+    use_count INTEGER DEFAULT 0,
+    is_frequent INTEGER DEFAULT 0,
+    last_used_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
-    ally_id BIGINT NOT NULL,
+    ally_id BIGINT,
+    creator_admin_id BIGINT,
     courier_id BIGINT,
     status TEXT DEFAULT 'PENDING',
     customer_name TEXT NOT NULL,

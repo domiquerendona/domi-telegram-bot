@@ -802,6 +802,27 @@ def init_db():
         );
     """)
 
+    # Tabla: admin_locations (direcciones de recogida del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            phone TEXT,
+            lat REAL,
+            lng REAL,
+            is_default INTEGER DEFAULT 0,
+            use_count INTEGER DEFAULT 0,
+            is_frequent INTEGER DEFAULT 0,
+            last_used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+
     # Tabla: profile_change_requests (solicitudes de cambio de perfil)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS profile_change_requests (
@@ -864,7 +885,8 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ally_id INTEGER NOT NULL,
+            ally_id INTEGER,
+            creator_admin_id INTEGER,
             courier_id INTEGER,
             status TEXT DEFAULT 'PENDING',
             customer_name TEXT NOT NULL,
@@ -1097,6 +1119,8 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lat REAL")
     if 'courier_accepted_lng' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lng REAL")
+    if 'creator_admin_id' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN creator_admin_id INTEGER")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -1530,8 +1554,17 @@ def _init_db_postgres():
         ("courier_accepted_lat", "REAL"),
         ("courier_accepted_lng", "REAL"),
         ("canceled_by", "TEXT"),
+        ("creator_admin_id", "BIGINT"),
     ]:
         _pg_add_col("orders", col, ctype)
+
+    # ally_id en orders: permite NULL para pedidos creados por admin
+    cur.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'orders' AND column_name = 'ally_id' AND is_nullable = 'NO'"
+    )
+    if cur.fetchone():
+        cur.execute("ALTER TABLE orders ALTER COLUMN ally_id DROP NOT NULL")
 
     # map_link_cache
     for col, ctype in [
@@ -2167,6 +2200,15 @@ def reset_offer_queue(order_id: int):
         SET status = 'PENDING', offered_at = NULL, responded_at = NULL, response = NULL
         WHERE order_id = {P} AND status IN ('REJECTED', 'EXPIRED');
     """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def clear_offer_queue(order_id: int):
+    """Elimina todos los registros de la cola de ofertas de un pedido para permitir re-oferta completa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM order_offer_queue WHERE order_id = {P};", (order_id,))
     conn.commit()
     conn.close()
 
@@ -3891,6 +3933,166 @@ def update_ally_location_coords(location_id: int, lat: float, lng: float):
     conn.close()
 
 
+# ---------- DIRECCIONES DE ADMIN (admin_locations) ----------
+
+def create_admin_location(
+    admin_id: int,
+    label: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str = None,
+    lat: float = None,
+    lng: float = None,
+    is_default: bool = False,
+):
+    """Crea una dirección de recogida para un admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if is_default:
+        cur.execute(
+            f"UPDATE admin_locations SET is_default = 0 WHERE admin_id = {P};",
+            (admin_id,),
+        )
+    location_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_locations (
+            admin_id, label, address, city, barrio, phone, is_default, lat, lng
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+    """, (admin_id, label, address, city, barrio, phone, 1 if is_default else 0, lat, lng))
+    conn.commit()
+    conn.close()
+    return location_id
+
+
+def get_admin_locations(admin_id: int):
+    """Devuelve todas las direcciones de un admin ordenadas por prioridad."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE admin_id = {P}
+        ORDER BY is_default DESC, is_frequent DESC, use_count DESC, id ASC;
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": _row_value(row, "id"),
+            "admin_id": _row_value(row, "admin_id"),
+            "label": _row_value(row, "label"),
+            "address": _row_value(row, "address"),
+            "city": _row_value(row, "city"),
+            "barrio": _row_value(row, "barrio"),
+            "phone": _row_value(row, "phone"),
+            "is_default": _row_value(row, "is_default"),
+            "lat": _row_value(row, "lat"),
+            "lng": _row_value(row, "lng"),
+            "use_count": _row_value(row, "use_count") or 0,
+            "is_frequent": _row_value(row, "is_frequent") or 0,
+            "last_used_at": _row_value(row, "last_used_at"),
+        }
+        for row in rows
+    ]
+
+
+def get_admin_location_by_id(location_id: int, admin_id: int):
+    """Devuelve una dirección específica de un admin como dict (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE id = {P} AND admin_id = {P}
+        LIMIT 1;
+    """, (location_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": _row_value(row, "id"),
+        "admin_id": _row_value(row, "admin_id"),
+        "label": _row_value(row, "label"),
+        "address": _row_value(row, "address"),
+        "city": _row_value(row, "city"),
+        "barrio": _row_value(row, "barrio"),
+        "phone": _row_value(row, "phone"),
+        "is_default": _row_value(row, "is_default"),
+        "lat": _row_value(row, "lat"),
+        "lng": _row_value(row, "lng"),
+        "use_count": _row_value(row, "use_count") or 0,
+        "is_frequent": _row_value(row, "is_frequent") or 0,
+        "last_used_at": _row_value(row, "last_used_at"),
+    }
+
+
+def get_default_admin_location(admin_id: int):
+    """Devuelve la dirección principal de un admin como dict (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE admin_id = {P} AND is_default = 1
+        ORDER BY id ASC
+        LIMIT 1;
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": _row_value(row, "id"),
+        "admin_id": _row_value(row, "admin_id"),
+        "label": _row_value(row, "label"),
+        "address": _row_value(row, "address"),
+        "city": _row_value(row, "city"),
+        "barrio": _row_value(row, "barrio"),
+        "phone": _row_value(row, "phone"),
+        "is_default": _row_value(row, "is_default"),
+        "lat": _row_value(row, "lat"),
+        "lng": _row_value(row, "lng"),
+        "use_count": _row_value(row, "use_count") or 0,
+        "is_frequent": _row_value(row, "is_frequent") or 0,
+        "last_used_at": _row_value(row, "last_used_at"),
+    }
+
+
+def set_default_admin_location(location_id: int, admin_id: int):
+    """Marca una dirección como principal para ese admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE admin_locations SET is_default = 0 WHERE admin_id = {P};",
+        (admin_id,),
+    )
+    cur.execute(
+        f"UPDATE admin_locations SET is_default = 1 WHERE id = {P} AND admin_id = {P};",
+        (location_id, admin_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def increment_admin_location_usage(location_id: int, admin_id: int):
+    """Incrementa use_count y actualiza last_used_at para una admin location."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET use_count = COALESCE(use_count, 0) + 1,
+            last_used_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P};
+    """, (location_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
 def increment_pickup_usage(location_id: int, ally_id: int):
     """Incrementa use_count y actualiza last_used_at para una pickup."""
     conn = get_connection()
@@ -3922,23 +4124,23 @@ def set_frequent_pickup(location_id: int, ally_id: int, is_frequent: bool):
 # ---------- PEDIDOS (orders) ----------
 
 def create_order(
-    ally_id: int,
-    customer_name: str,
-    customer_phone: str,
-    customer_address: str,
-    customer_city: str,
-    customer_barrio: str,
-    pickup_location_id: int,
-    pay_at_store_required: bool,
-    pay_at_store_amount: int,
-    base_fee: int,
-    distance_km: float,
-    rain_extra: int,
-    high_demand_extra: int,
-    night_extra: int,
-    additional_incentive: int,
-    total_fee: int,
-    instructions: str,
+    ally_id: int = None,
+    customer_name: str = None,
+    customer_phone: str = None,
+    customer_address: str = None,
+    customer_city: str = None,
+    customer_barrio: str = None,
+    pickup_location_id: int = None,
+    pay_at_store_required: bool = False,
+    pay_at_store_amount: int = 0,
+    base_fee: int = 0,
+    distance_km: float = 0,
+    rain_extra: int = 0,
+    high_demand_extra: int = 0,
+    night_extra: int = 0,
+    additional_incentive: int = 0,
+    total_fee: int = 0,
+    instructions: str = None,
     requires_cash: bool = False,
     cash_required_amount: int = 0,
     pickup_lat: float = None,
@@ -3947,13 +4149,19 @@ def create_order(
     dropoff_lng: float = None,
     quote_source: str = None,
     ally_admin_id_snapshot: int = None,
+    creator_admin_id: int = None,
 ):
-    """Crea un pedido en estado PENDING y devuelve su id."""
+    """Crea un pedido en estado PENDING y devuelve su id.
+
+    Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
+    Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
+    """
     conn = get_connection()
     cur = conn.cursor()
     order_id = _insert_returning_id(cur, f"""
         INSERT INTO orders (
             ally_id,
+            creator_admin_id,
             courier_id,
             status,
             customer_name,
@@ -3981,9 +4189,10 @@ def create_order(
             quote_source,
             ally_admin_id_snapshot,
             courier_admin_id_snapshot
-        ) VALUES ({P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
+        creator_admin_id,
         customer_name,
         customer_phone,
         customer_address,
