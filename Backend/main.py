@@ -8252,7 +8252,11 @@ def cotizar_resultado_callback(update, context):
         context.user_data.pop("cotizar_result_dropoff_lng", None)
         context.user_data.pop("cotizar_pickup", None)
         context.user_data.pop("cotizar_ally_id", None)
-        query.edit_message_text("Cotizacion completada.")
+        try:
+            query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        query.message.reply_text("Cotizacion completada.")
         return ConversationHandler.END
 
     if query.data == "cotizar_crear_ruta":
