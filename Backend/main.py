@@ -209,6 +209,8 @@ from services import (
     get_pending_route_stops,
     ally_get_order_for_incentive,
     ally_increment_order_incentive,
+    admin_get_order_for_incentive,
+    admin_increment_order_incentive,
     courier_get_earnings_history,
     courier_get_earnings_by_date_key,
     get_totales_registros,
@@ -270,7 +272,7 @@ from services import (
     unblock_courier_for_ally,
     get_blocked_courier_ids_for_ally,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
     init_db,
     force_platform_admin,
@@ -978,6 +980,8 @@ ALERTAS_OFERTA_INPUT = 965
 INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
+
+OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
@@ -5426,6 +5430,126 @@ def pedido_incentivo_existing_monto_handler(update, context):
 
     keyboard = _pedido_incentivo_keyboard(order_id=int(order_id))
     update.message.reply_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
+
+
+# ── Sugerencia de incentivo T+5 (aplica a todos los pedidos: aliados y admin) ──
+
+def offer_suggest_inc_fixed_callback(update, context):
+    """Botones +1500/+2000/+3000 de la sugerencia T+5."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # offer_inc_{order_id}x{delta}
+    try:
+        parts = data.replace("offer_inc_", "").split("x")
+        order_id = int(parts[0])
+        delta = int(parts[1])
+    except Exception:
+        query.edit_message_text("Error al procesar el incentivo.")
+        return
+
+    telegram_id = update.effective_user.id
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    # Determinar si el creador es aliado o admin
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    if creator_admin_id:
+        ok, updated, courier_tid, msg = admin_increment_order_incentive(telegram_id, order_id, delta)
+    else:
+        ok, updated, courier_tid, msg = ally_increment_order_incentive(telegram_id, order_id, delta)
+
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    # Re-ofertar a todos los couriers y re-programar T+5
+    repost_count = repost_order_to_couriers(order_id, context)
+
+    total_fee = int(updated["total_fee"] or 0)
+    incentive = int(updated["additional_incentive"] or 0)
+    query.edit_message_text(
+        "Incentivo agregado: +${:,}\n"
+        "Tarifa total del pedido: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, total_fee, repost_count
+        )
+    )
+
+
+def offer_suggest_inc_otro_start(update, context):
+    """Boton 'Otro monto' de la sugerencia T+5."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # offer_inc_otro_{order_id}
+    try:
+        order_id = int(data.replace("offer_inc_otro_", ""))
+    except Exception:
+        query.edit_message_text("Error al procesar la solicitud.")
+        return ConversationHandler.END
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] not in ("PENDING", "PUBLISHED"):
+        query.edit_message_text("Este pedido ya no permite agregar incentivo.")
+        return ConversationHandler.END
+
+    context.user_data["offer_suggest_edit_order_id"] = order_id
+    query.edit_message_text("Ingresa el monto del incentivo que deseas agregar (en pesos COP, solo numeros):")
+    return OFFER_SUGGEST_INC_MONTO
+
+
+def offer_suggest_inc_monto_handler(update, context):
+    """Recibe monto libre de incentivo de la sugerencia T+5."""
+    order_id = context.user_data.get("offer_suggest_edit_order_id")
+    if not order_id:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return OFFER_SUGGEST_INC_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto (maximo $200,000).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    telegram_id = update.effective_user.id
+    order = get_order_by_id(order_id)
+    creator_admin_id = order.get("creator_admin_id") if (order and hasattr(order, "get")) else (order["creator_admin_id"] if order else None)
+
+    if creator_admin_id:
+        ok, updated, courier_tid, msg = admin_increment_order_incentive(telegram_id, int(order_id), delta)
+    else:
+        ok, updated, courier_tid, msg = ally_increment_order_incentive(telegram_id, int(order_id), delta)
+
+    context.user_data.pop("offer_suggest_edit_order_id", None)
+
+    if not ok:
+        update.message.reply_text(msg)
+        return ConversationHandler.END
+
+    repost_count = repost_order_to_couriers(int(order_id), context)
+    total_fee = int(updated["total_fee"] or 0)
+    incentive = int(updated["additional_incentive"] or 0)
+    update.message.reply_text(
+        "Incentivo agregado: +${:,}\n"
+        "Tarifa total del pedido: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, total_fee, repost_count
+        )
+    )
     return ConversationHandler.END
 
 
@@ -10623,6 +10747,24 @@ pedido_incentivo_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+# Conversación para "Otro monto" de la sugerencia T+5 (aplica a aliados y admins)
+offer_suggest_inc_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(offer_suggest_inc_otro_start, pattern=r"^offer_inc_otro_\d+$"),
+    ],
+    states={
+        OFFER_SUGGEST_INC_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command, offer_suggest_inc_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
 # Conversación para gestión de ubicaciones del aliado ("Mis ubicaciones")
 ally_locs_conv = ConversationHandler(
     entry_points=[
@@ -14514,6 +14656,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(courier_earnings_callback, pattern=r"^courier_earn_"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
@@ -14553,6 +14696,7 @@ def main():
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
+    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado

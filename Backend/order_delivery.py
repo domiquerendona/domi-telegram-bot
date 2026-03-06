@@ -33,6 +33,7 @@ from db import (
     upsert_order_pickup_confirmation,
     review_order_pickup_confirmation,
     reset_offer_queue,
+    clear_offer_queue,
     set_order_status,
     upsert_order_accounting_settlement,
     get_courier_link_balance,
@@ -125,6 +126,7 @@ ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
 ARRIVAL_DEADLINE_SECONDS = 20 * 60     # 20 min: auto-liberar
 ARRIVAL_RADIUS_KM = 0.1                # 100 metros
 ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia pickup
+OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
 
 
 def _offer_reply_markup(order_id):
@@ -188,6 +190,112 @@ def _cancel_arrival_jobs(context, order_id):
     ]:
         for job in context.job_queue.get_jobs_by_name(name):
             job.schedule_removal()
+
+
+def _cancel_no_response_job(context, order_id):
+    """Cancela el job de sugerencia de incentivo T+5 para un pedido."""
+    for job in context.job_queue.get_jobs_by_name("offer_no_response_{}".format(order_id)):
+        job.schedule_removal()
+
+
+def _offer_no_response_job(context):
+    """Job T+5: si el pedido sigue PUBLISHED, sugiere al creador que agregue incentivo."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    # Obtener telegram_id del creador (aliado o admin)
+    creator_chat_id = None
+    try:
+        creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+        if creator_admin_id:
+            admin = get_admin_by_id(int(creator_admin_id))
+            if admin:
+                user = get_user_by_id(admin["user_id"])
+                if user:
+                    creator_chat_id = int(user["telegram_id"])
+        elif order["ally_id"]:
+            ally = get_ally_by_id(int(order["ally_id"]))
+            if ally:
+                user = get_user_by_id(ally["user_id"])
+                if user:
+                    creator_chat_id = int(user["telegram_id"])
+    except Exception as e:
+        print("[T+5] Error obteniendo creador para pedido {}: {}".format(order_id, e))
+        return
+
+    if not creator_chat_id:
+        return
+
+    total_fee = int(order["total_fee"] or 0)
+    incentive = int(order["additional_incentive"] or 0)
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("+$1,500", callback_data="offer_inc_{}x1500".format(order_id)),
+            InlineKeyboardButton("+$2,000", callback_data="offer_inc_{}x2000".format(order_id)),
+            InlineKeyboardButton("+$3,000", callback_data="offer_inc_{}x3000".format(order_id)),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data="offer_inc_otro_{}".format(order_id))],
+    ])
+
+    msg = (
+        "Pedido #{} lleva 5 minutos sin ser aceptado.\n\n"
+        "Tarifa actual: ${:,}".format(order_id, total_fee)
+    )
+    if incentive > 0:
+        msg += " (incluye incentivo de ${:,})".format(incentive)
+    msg += (
+        "\n\nEs posible que haya alta demanda. "
+        "Los repartidores suelen preferir los pedidos mejor pagos.\n"
+        "Agrega un incentivo para agilizar la toma:"
+    )
+
+    try:
+        context.bot.send_message(
+            chat_id=creator_chat_id,
+            text=msg,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        print("[T+5] Error enviando sugerencia para pedido {}: {}".format(order_id, e))
+
+
+def repost_order_to_couriers(order_id, context):
+    """Re-oferta un pedido a todos los couriers activos (usado tras agregar incentivo).
+
+    Limpia la cola existente, resetea los excluded_couriers y relanza el ciclo de ofertas.
+    No verifica saldo del aliado/admin (ya fue verificado al crear el pedido).
+    """
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return 0
+
+    # Limpiar cola existente y excluded_couriers en memoria
+    clear_offer_queue(order_id)
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+
+    ally_id = order["ally_id"]
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    admin_id_override = None
+    if creator_admin_id:
+        admin_id_override = int(creator_admin_id)
+
+    # Re-lanzar ciclo sin verificar saldo (skip_fee_check=True)
+    count = publish_order_to_couriers(
+        order_id=order_id,
+        ally_id=ally_id,
+        context=context,
+        admin_id_override=admin_id_override,
+        skip_fee_check=True,
+    )
+    return count
 
 
 def _offer_reminder_job(context):
@@ -288,6 +396,7 @@ def publish_order_to_couriers(
     pickup_barrio=None,
     dropoff_city=None,
     dropoff_barrio=None,
+    skip_fee_check=False,
 ):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
@@ -295,11 +404,14 @@ def publish_order_to_couriers(
     2. Crea la cola de ofertas en BD.
     3. Envía la primera oferta.
     4. Programa timeout de 30s con JobQueue.
+
+    skip_fee_check=True: omitir verificación de saldo (usado en re-oferta tras incentivo).
+    ally_id=None: pedido especial creado por admin (no aplica fee de aliado).
     """
     admin_id = None
     if admin_id_override is not None:
         admin_id = int(admin_id_override)
-    else:
+    elif ally_id is not None:
         admin_link = get_approved_admin_link_for_ally(ally_id)
         if not admin_link:
             print("[WARN] Aliado sin admin aprobado, no se puede publicar pedido")
@@ -310,17 +422,19 @@ def publish_order_to_couriers(
         return 0
 
     # Verificacion previa de saldo del aliado y del admin antes de ofertar.
-    ally_ok, ally_code = check_service_fee_available(
-        target_type="ALLY",
-        target_id=ally_id,
-        admin_id=admin_id,
-    )
-    if not ally_ok:
-        print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
-        _notify_recharge_needed_to_ally(context, ally_id)
-        if ally_code == "ADMIN_SIN_SALDO":
-            _notify_recharge_needed_to_admin(context, admin_id)
-        return 0
+    # Omitida para pedidos de admin (no hay aliado) y en re-ofertas (ya fue verificado).
+    if ally_id is not None and not skip_fee_check:
+        ally_ok, ally_code = check_service_fee_available(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=admin_id,
+        )
+        if not ally_ok:
+            print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
+            _notify_recharge_needed_to_ally(context, ally_id)
+            if ally_code == "ADMIN_SIN_SALDO":
+                _notify_recharge_needed_to_admin(context, admin_id)
+            return 0
 
     requires_cash = bool(order["requires_cash"])
     cash_amount = int(order["cash_required_amount"] or 0)
@@ -330,7 +444,8 @@ def publish_order_to_couriers(
     p_lng = order["pickup_lng"] if "pickup_lng" in order.keys() else None
     pickup_location_id = order["pickup_location_id"] if "pickup_location_id" in order.keys() else None
     pickup_loc_row = None
-    if p_lat is None and pickup_location_id:
+    # Solo buscar en ally_locations si hay ally_id (pedidos de aliado)
+    if p_lat is None and pickup_location_id and ally_id is not None:
         loc = get_ally_location_by_id(pickup_location_id, ally_id)
         if loc:
             pickup_loc_row = loc
@@ -374,7 +489,8 @@ def publish_order_to_couriers(
 
     if not filtered:
         print("[WARN] Pedido {} sin oferta: todos los couriers sin saldo operativo".format(order_id))
-        _notify_recharge_needed_to_ally(context, ally_id)
+        if ally_id is not None:
+            _notify_recharge_needed_to_ally(context, ally_id)
         return 0
 
     courier_ids = [c["courier_id"] for c in filtered]
@@ -382,7 +498,7 @@ def publish_order_to_couriers(
     set_order_status(order_id, "PUBLISHED", "published_at")
 
     # Guardar datos del ciclo para re-consulta en reintentos
-    if pickup_loc_row is None and pickup_location_id:
+    if pickup_loc_row is None and pickup_location_id and ally_id is not None:
         try:
             pickup_loc_row = get_ally_location_by_id(pickup_location_id, ally_id)
         except Exception:
@@ -392,7 +508,7 @@ def publish_order_to_couriers(
         if pickup_loc_row:
             pickup_city = pickup_city if pickup_city is not None else pickup_loc_row.get("city")
             pickup_barrio = pickup_barrio if pickup_barrio is not None else pickup_loc_row.get("barrio")
-        else:
+        elif ally_id is not None:
             default_loc = get_default_ally_location(ally_id)
             if default_loc:
                 pickup_city = pickup_city if pickup_city is not None else default_loc.get("city")
@@ -419,6 +535,16 @@ def publish_order_to_couriers(
     }
 
     _send_next_offer(order_id, context)
+
+    # Programar sugerencia de incentivo si nadie acepta en T+5
+    _cancel_no_response_job(context, order_id)
+    context.job_queue.run_once(
+        _offer_no_response_job,
+        OFFER_NO_RESPONSE_SECONDS,
+        context={"order_id": order_id},
+        name="offer_no_response_{}".format(order_id),
+    )
+
     return len(courier_ids)
 
 
@@ -1047,6 +1173,7 @@ def _admin_order_cancel(update, context, data):
     had_courier = order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
 
+    _cancel_no_response_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
@@ -1572,8 +1699,9 @@ def _handle_accept(update, context, order_id):
         )
         return
 
-    # Cancelar el job de timeout
+    # Cancelar jobs de timeout y sugerencia de incentivo
     _cancel_offer_jobs(context, order_id, current["queue_id"])
+    _cancel_no_response_job(context, order_id)
 
     # Marcar oferta como aceptada
     mark_offer_response(current["queue_id"], "ACCEPTED")
@@ -1901,7 +2029,8 @@ def _handle_cancel_ally(update, context, order_id):
     # Cancelar jobs de arrival si estaba en estado ACCEPTED
     _cancel_arrival_jobs(context, order_id)
 
-    # Cancelar jobs de timeout si estaba en ciclo de ofertas
+    # Cancelar jobs de timeout y sugerencia si estaba en ciclo de ofertas
+    _cancel_no_response_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
