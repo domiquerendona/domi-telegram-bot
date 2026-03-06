@@ -228,7 +228,8 @@ Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
-| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5) |
+| `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales) |
+| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
@@ -285,6 +286,8 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
+| `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
 
@@ -845,6 +848,172 @@ Re-exportadas en `services.py`.
 
 ---
 
+## Sistema de Incentivos (order_delivery.py + main.py)
+
+### Incentivo al crear pedido (aliado)
+
+Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de confirmar, el aliado puede agregar un incentivo adicional con botones fijos (+$1.000, +$1.500, +$2.000, +$3.000) o monto libre.
+
+- Estado: `PEDIDO_INCENTIVO_MONTO = 60`
+- ConversationHandler: `pedido_incentivo_conv` (entry point: `pedido_add_incentivo_{id}`)
+- DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
+- `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
+
+### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
+
+Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar el pedido, si sigue en status `PUBLISHED` (ningún courier lo aceptó), se envía un mensaje al creador sugiriendo agregar incentivo.
+
+**Constante:** `OFFER_NO_RESPONSE_SECONDS = 300` (order_delivery.py)
+
+**Flujo:**
+1. `publish_order_to_couriers()` programa job `offer_no_response_{order_id}` con T+5.
+2. Al dispararse: `_offer_no_response_job(context)` — verifica que el pedido siga en `PUBLISHED`, obtiene `telegram_id` del creador (aliado o admin), envía mensaje con botones.
+3. Si courier acepta antes del T+5: `_cancel_no_response_job(context, order_id)` cancela el job.
+4. Si aliado/admin cancela el pedido: también se cancela el job.
+5. La sugerencia es única (no se repite si el admin no agrega incentivo).
+
+**Botones de la sugerencia:** `offer_inc_{id}x1500`, `offer_inc_{id}x2000`, `offer_inc_{id}x3000`, `offer_inc_otro_{id}`
+
+**Al agregar incentivo desde la sugerencia:**
+- `offer_suggest_inc_fixed_callback` (patrón `^offer_inc_\d+x(1500|2000|3000)$`)
+- `offer_suggest_inc_otro_start` → estado `OFFER_SUGGEST_INC_MONTO = 915` → `offer_suggest_inc_monto_handler`
+- Llama `ally_increment_order_incentive` o `admin_increment_order_incentive` según tipo de pedido
+- Llama `repost_order_to_couriers(order_id, context)` → re-oferta a todos los couriers activos + reinicia T+5
+
+**Re-oferta (`repost_order_to_couriers`):**
+- Limpia `excluded_couriers` del `bot_data` para ese pedido
+- Llama `clear_offer_queue(order_id)` (borra queue en BD)
+- Llama `publish_order_to_couriers(order_id, ally_id, context, skip_fee_check=True, ...)`
+- `skip_fee_check=True` omite verificación de saldo (ya verificada al crear el pedido)
+
+**Funciones clave:**
+- `order_delivery.py`: `_cancel_no_response_job`, `_offer_no_response_job`, `repost_order_to_couriers`
+- `main.py`: `offer_suggest_inc_fixed_callback`, `offer_suggest_inc_otro_start`, `offer_suggest_inc_monto_handler`, `offer_suggest_inc_conv`
+- `services.py`: `admin_get_order_for_incentive(telegram_id, order_id)`, `admin_increment_order_incentive(telegram_id, order_id, delta)`
+- `db.py`: `clear_offer_queue(order_id)`
+
+---
+
+## Pedido Especial del Admin (IMPLEMENTADO 2026-03-06)
+
+Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con tarifa libre (sin cálculo automático) y sin débito de saldo.
+
+### Características
+
+- **Sin fee check**: el fee check del aliado se omite completamente (`skip_fee_check=True`).
+- **Tarifa manual**: el admin ingresa el monto que pagará al courier.
+- **Sin débito de saldo**: el pago se maneja fuera del sistema.
+- **`creator_admin_id`**: nueva columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
+- **`ally_id = NULL`**: los pedidos especiales de admin no tienen `ally_id`.
+- **Direcciones de recogida**: el admin gestiona sus propias ubicaciones de pickup en `admin_locations`.
+- **Incentivos opcionales**: se pueden agregar incentivos (+$1.500/+$2.000/+$3.000/libre) antes de publicar.
+- **T+5 aplica igual**: si nadie acepta en 5 min, recibe la sugerencia de incentivo.
+
+### Tabla `admin_locations`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `id` | BIGSERIAL/INTEGER | PK |
+| `admin_id` | BIGINT | FK → admins.id |
+| `label` | TEXT | Nombre/etiqueta de la ubicación |
+| `address` | TEXT | Dirección completa |
+| `city` | TEXT | Ciudad |
+| `barrio` | TEXT | Barrio |
+| `phone` | TEXT | Teléfono del punto (opcional) |
+| `lat` | REAL | Latitud |
+| `lng` | REAL | Longitud |
+| `is_default` | INTEGER | 1 = default del admin |
+| `use_count` | INTEGER | Contador de usos |
+| `is_frequent` | INTEGER | 1 = dirección frecuente |
+| `last_used_at` | TIMESTAMP | Última vez usada |
+| `created_at` | TIMESTAMP | Fecha de creación |
+
+### Funciones en `db.py`
+
+- `create_admin_location(admin_id, label, address, city, barrio, phone=None, lat=None, lng=None) → int`
+- `get_admin_locations(admin_id) → list`
+- `get_admin_location_by_id(location_id, admin_id) → dict`
+- `get_default_admin_location(admin_id) → dict`
+- `set_default_admin_location(location_id, admin_id)`
+- `increment_admin_location_usage(location_id, admin_id)`
+
+Todas re-exportadas en `services.py`.
+
+### Flujo de creación (`admin_pedido_conv` en `main.py`)
+
+```
+Entry: callback admin_nuevo_pedido
+  → admin_nuevo_pedido_start()
+  → Estado ADMIN_PEDIDO_PICKUP (908)
+
+ADMIN_PEDIDO_PICKUP:
+  admin_pedido_pickup_callback  → selecciona ubicación guardada → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_nueva_dir_start  → pide texto → ADMIN_PEDIDO_PICKUP
+  admin_pedido_pickup_text_handler → geocodifica → muestra confirmación
+  admin_pedido_geo_pickup_callback (si/no) → confirma pickup → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_pickup_gps_handler → guarda GPS → ADMIN_PEDIDO_CUST_NAME
+
+ADMIN_PEDIDO_CUST_NAME (909): admin_pedido_cust_name_handler → ADMIN_PEDIDO_CUST_PHONE
+ADMIN_PEDIDO_CUST_PHONE (910): admin_pedido_cust_phone_handler → ADMIN_PEDIDO_CUST_ADDR
+
+ADMIN_PEDIDO_CUST_ADDR (911):
+  admin_pedido_cust_addr_handler → geocodifica → muestra confirmación
+  admin_pedido_geo_callback (si/no) → confirma → ADMIN_PEDIDO_TARIFA
+  admin_pedido_cust_gps_handler → guarda GPS → ADMIN_PEDIDO_TARIFA
+
+ADMIN_PEDIDO_TARIFA (912): admin_pedido_tarifa_handler → ADMIN_PEDIDO_INSTRUC
+
+ADMIN_PEDIDO_INSTRUC (913):
+  admin_pedido_instruc_handler / admin_pedido_sin_instruc_callback → preview
+  admin_pedido_inc_fijo_callback (1500/2000/3000) → actualiza preview
+  admin_pedido_inc_otro_callback → ADMIN_PEDIDO_INC_MONTO
+  admin_pedido_confirmar_callback → crea pedido → publica → END
+
+ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADMIN_PEDIDO_INSTRUC
+```
+
+### Estados
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `ADMIN_PEDIDO_PICKUP` | 908 | Selección de punto de recogida |
+| `ADMIN_PEDIDO_CUST_NAME` | 909 | Nombre del cliente |
+| `ADMIN_PEDIDO_CUST_PHONE` | 910 | Teléfono del cliente |
+| `ADMIN_PEDIDO_CUST_ADDR` | 911 | Dirección de entrega (con geocoding) |
+| `ADMIN_PEDIDO_TARIFA` | 912 | Tarifa manual al courier |
+| `ADMIN_PEDIDO_INSTRUC` | 913 | Instrucciones + preview final |
+| `OFFER_SUGGEST_INC_MONTO` | 915 | Monto libre en sugerencia T+5 |
+| `ADMIN_PEDIDO_INC_MONTO` | 916 | Monto libre de incentivo en creación admin |
+
+### User data keys del flujo (prefijo `admin_ped_`)
+
+| Clave | Contenido |
+|-------|-----------|
+| `admin_ped_admin_id` | ID interno del admin en DB |
+| `admin_ped_pickup_id` | ID de admin_location (None si GPS/nueva) |
+| `admin_ped_pickup_addr` | Dirección de recogida (texto) |
+| `admin_ped_pickup_lat/lng` | Coordenadas de recogida |
+| `admin_ped_pickup_city/barrio` | Ciudad/barrio de recogida |
+| `admin_ped_geo_pickup_pending` | Dict con geo pendiente de confirmar (pickup) |
+| `admin_ped_cust_name/phone/addr` | Datos del cliente |
+| `admin_ped_dropoff_lat/lng` | Coordenadas de entrega |
+| `admin_ped_dropoff_city/barrio` | Ciudad/barrio de entrega |
+| `admin_ped_geo_cust_pending` | Dict con geo pendiente de confirmar (entrega) |
+| `admin_ped_tarifa` | Tarifa manual (int, COP) |
+| `admin_ped_incentivo` | Incentivo adicional (int, COP, default 0) |
+| `admin_ped_instruc` | Instrucciones para el courier |
+
+### Publicación del pedido admin
+
+En `admin_pedido_confirmar_callback`:
+1. `create_order(ally_id=None, creator_admin_id=admin_id, ...)` — crea el pedido
+2. `publish_order_to_couriers(order_id, None, context, admin_id_override=admin_id, skip_fee_check=True)` — publica a todos los couriers activos
+3. `increment_admin_location_usage(pickup_location_id, admin_id)` — si ubicación guardada
+
+**Nota:** `skip_fee_check=True` es necesario porque los pedidos de admin no tienen deducción de saldo. El fee check del aliado se omite automáticamente cuando `ally_id=None`.
+
+---
+
 ## Cotizador y Uso de APIs (Control de Costos)
 
 El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota diaria limitada.
@@ -1088,4 +1257,4 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 
 ---
 
-*Última actualización: 2026-03-03*
+*Última actualización: 2026-03-06*

@@ -175,6 +175,11 @@ from services import (
     delete_ally_location,
     increment_pickup_usage,
     set_frequent_pickup,
+    create_admin_location,
+    get_admin_locations,
+    get_admin_location_by_id,
+    get_default_admin_location,
+    increment_admin_location_usage,
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
@@ -982,6 +987,15 @@ INGRESO_METODO = 971
 INGRESO_NOTA = 972
 
 OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5
+
+# Estados para pedido especial del Admin Local
+ADMIN_PEDIDO_PICKUP    = 908   # Seleccionar/crear dirección de recogida
+ADMIN_PEDIDO_CUST_NAME = 909   # Nombre del cliente
+ADMIN_PEDIDO_CUST_PHONE= 910   # Teléfono del cliente
+ADMIN_PEDIDO_CUST_ADDR = 911   # Dirección de entrega (texto/GPS/geocoding)
+ADMIN_PEDIDO_TARIFA    = 912   # Tarifa manualmente ingresada
+ADMIN_PEDIDO_INSTRUC   = 913   # Instrucciones adicionales
+ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicación)
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
@@ -5550,6 +5564,492 @@ def offer_suggest_inc_monto_handler(update, context):
             delta, total_fee, repost_count
         )
     )
+    return ConversationHandler.END
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PEDIDO ESPECIAL ADMIN
+# ─────────────────────────────────────────────────────────────────────────
+
+def _admin_ped_preview_text(ctx):
+    """Construye texto y teclado del preview del pedido especial del admin."""
+    tarifa = int(ctx.get("admin_ped_tarifa") or 0)
+    incentivo = int(ctx.get("admin_ped_incentivo") or 0)
+    total = tarifa + incentivo
+    instruc = ctx.get("admin_ped_instruc") or "Ninguna"
+    text = (
+        "Resumen del pedido especial:\n\n"
+        "Recogida: {}\n"
+        "Cliente: {} / {}\n"
+        "Entrega: {}\n"
+        "Tarifa al courier: ${:,}\n"
+        "{}"
+        "Instrucciones: {}\n\n"
+        "Total oferta: ${:,}"
+    ).format(
+        ctx.get("admin_ped_pickup_addr", ""),
+        ctx.get("admin_ped_cust_name", ""),
+        ctx.get("admin_ped_cust_phone", ""),
+        ctx.get("admin_ped_cust_addr", ""),
+        tarifa,
+        "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
+        instruc,
+        total,
+    )
+    keyboard = [
+        [InlineKeyboardButton("Confirmar y publicar", callback_data="admin_pedido_confirmar")],
+        [
+            InlineKeyboardButton("+$1,500", callback_data="admin_pedido_inc_1500"),
+            InlineKeyboardButton("+$2,000", callback_data="admin_pedido_inc_2000"),
+            InlineKeyboardButton("+$3,000", callback_data="admin_pedido_inc_3000"),
+        ],
+        [InlineKeyboardButton("Otro incentivo", callback_data="admin_pedido_inc_otro")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def admin_nuevo_pedido_start(update, context):
+    """Entrada al flujo de pedido especial del admin. Verifica y muestra puntos de recogida."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin or (admin.get("status") or "").upper() != "APPROVED":
+        query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
+        return ConversationHandler.END
+    admin_id = admin["id"]
+    # Limpiar datos anteriores del flujo
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    context.user_data["admin_ped_admin_id"] = admin_id
+    locations = get_admin_locations(admin_id)
+    keyboard = []
+    for loc in locations:
+        label = loc["label"] if loc["label"] else loc["address"]
+        keyboard.append([InlineKeyboardButton(label, callback_data="admin_pedido_pickup_{}".format(loc["id"]))])
+    keyboard.append([InlineKeyboardButton("Nueva direccion de recogida", callback_data="admin_pedido_nueva_dir")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "Pedido especial — Punto de recogida\n\nSelecciona el punto de recogida:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_callback(update, context):
+    """Selecciona ubicacion de recogida existente y avanza a nombre del cliente."""
+    query = update.callback_query
+    query.answer()
+    loc_id = int(query.data.split("_")[-1])
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    loc = get_admin_location_by_id(loc_id, admin_id)
+    if not loc:
+        query.edit_message_text("Ubicacion no encontrada. Intenta de nuevo.")
+        return ADMIN_PEDIDO_PICKUP
+    context.user_data["admin_ped_pickup_id"] = loc_id
+    context.user_data["admin_ped_pickup_addr"] = loc["address"]
+    context.user_data["admin_ped_pickup_lat"] = loc.get("lat")
+    context.user_data["admin_ped_pickup_lng"] = loc.get("lng")
+    context.user_data["admin_ped_pickup_city"] = loc.get("city", "")
+    context.user_data["admin_ped_pickup_barrio"] = loc.get("barrio", "")
+    query.edit_message_text(
+        "Recogida: {}\n\nNombre del cliente:".format(loc["address"])
+    )
+    return ADMIN_PEDIDO_CUST_NAME
+
+
+def admin_pedido_nueva_dir_start(update, context):
+    """Pide al admin que escriba la nueva direccion de recogida."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Escribe la direccion del punto de recogida (o envia tu ubicacion GPS):"
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_text_handler(update, context):
+    """Geocodifica el texto ingresado como nueva direccion de recogida."""
+    texto = update.message.text.strip()
+    geo = resolve_location(texto)
+    if not geo:
+        update.message.reply_text(
+            "No pude encontrar esa direccion. Intentalo de nuevo o envia tu ubicacion GPS."
+        )
+        return ADMIN_PEDIDO_PICKUP
+    context.user_data["admin_ped_geo_pickup_pending"] = {
+        "address": geo.get("address", texto),
+        "lat": geo.get("lat"),
+        "lng": geo.get("lng"),
+        "city": geo.get("city", ""),
+        "barrio": geo.get("barrio", ""),
+        "original_text": texto,
+    }
+    keyboard = [[
+        InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_pickup_si"),
+        InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_pickup_no"),
+    ]]
+    update.message.reply_text(
+        "Encontre: {}\n\nEs esta la direccion correcta?".format(geo.get("address", texto)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_gps_handler(update, context):
+    """Guarda la ubicacion GPS enviada como nueva direccion de recogida."""
+    location = update.message.location
+    lat, lng = location.latitude, location.longitude
+    context.user_data["admin_ped_pickup_id"] = None
+    context.user_data["admin_ped_pickup_addr"] = "GPS ({:.5f}, {:.5f})".format(lat, lng)
+    context.user_data["admin_ped_pickup_lat"] = lat
+    context.user_data["admin_ped_pickup_lng"] = lng
+    context.user_data["admin_ped_pickup_city"] = ""
+    context.user_data["admin_ped_pickup_barrio"] = ""
+    update.message.reply_text("Punto de recogida guardado.\n\nNombre del cliente:")
+    return ADMIN_PEDIDO_CUST_NAME
+
+
+def admin_pedido_geo_pickup_callback(update, context):
+    """Confirma o rechaza geocodificacion del punto de recogida."""
+    query = update.callback_query
+    query.answer()
+    pending = context.user_data.get("admin_ped_geo_pickup_pending", {})
+    if query.data == "admin_pedido_geo_pickup_si":
+        context.user_data["admin_ped_pickup_id"] = None
+        context.user_data["admin_ped_pickup_addr"] = pending.get("address", "")
+        context.user_data["admin_ped_pickup_lat"] = pending.get("lat")
+        context.user_data["admin_ped_pickup_lng"] = pending.get("lng")
+        context.user_data["admin_ped_pickup_city"] = pending.get("city", "")
+        context.user_data["admin_ped_pickup_barrio"] = pending.get("barrio", "")
+        context.user_data.pop("admin_ped_geo_pickup_pending", None)
+        query.edit_message_text(
+            "Recogida: {}\n\nNombre del cliente:".format(context.user_data["admin_ped_pickup_addr"])
+        )
+        return ADMIN_PEDIDO_CUST_NAME
+    else:
+        original = pending.get("original_text", "")
+        seen = [pending["address"]] if pending.get("address") else []
+        next_geo = resolve_location_next(original, seen) if original else None
+        if next_geo:
+            context.user_data["admin_ped_geo_pickup_pending"] = {
+                "address": next_geo.get("address", ""),
+                "lat": next_geo.get("lat"),
+                "lng": next_geo.get("lng"),
+                "city": next_geo.get("city", ""),
+                "barrio": next_geo.get("barrio", ""),
+                "original_text": original,
+            }
+            keyboard = [[
+                InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_pickup_si"),
+                InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_pickup_no"),
+            ]]
+            query.edit_message_text(
+                "Otro resultado: {}\n\nEs esta la direccion correcta?".format(next_geo.get("address", "")),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return ADMIN_PEDIDO_PICKUP
+        else:
+            query.edit_message_text(
+                "No encontre mas resultados. Escribe la direccion nuevamente o envia GPS:"
+            )
+            context.user_data.pop("admin_ped_geo_pickup_pending", None)
+            return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_cust_name_handler(update, context):
+    """Captura nombre del cliente."""
+    nombre = update.message.text.strip()
+    if not nombre:
+        update.message.reply_text("El nombre no puede estar vacio.")
+        return ADMIN_PEDIDO_CUST_NAME
+    context.user_data["admin_ped_cust_name"] = nombre
+    update.message.reply_text("Telefono del cliente (minimo 7 digitos):")
+    return ADMIN_PEDIDO_CUST_PHONE
+
+
+def admin_pedido_cust_phone_handler(update, context):
+    """Captura telefono del cliente."""
+    phone = update.message.text.strip()
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) < 7:
+        update.message.reply_text("Telefono invalido. Ingresa minimo 7 digitos.")
+        return ADMIN_PEDIDO_CUST_PHONE
+    context.user_data["admin_ped_cust_phone"] = phone
+    update.message.reply_text("Direccion de entrega del cliente (escribe o envia GPS):")
+    return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_cust_addr_handler(update, context):
+    """Geocodifica la direccion de entrega del cliente."""
+    texto = update.message.text.strip()
+    geo = resolve_location(texto)
+    if not geo:
+        update.message.reply_text(
+            "No pude encontrar esa direccion. Intentalo de nuevo o envia GPS."
+        )
+        return ADMIN_PEDIDO_CUST_ADDR
+    context.user_data["admin_ped_geo_cust_pending"] = {
+        "address": geo.get("address", texto),
+        "lat": geo.get("lat"),
+        "lng": geo.get("lng"),
+        "city": geo.get("city", ""),
+        "barrio": geo.get("barrio", ""),
+        "original_text": texto,
+    }
+    keyboard = [[
+        InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_si"),
+        InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_no"),
+    ]]
+    update.message.reply_text(
+        "Encontre: {}\n\nEs esta la direccion de entrega correcta?".format(geo.get("address", texto)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_cust_gps_handler(update, context):
+    """Guarda la ubicacion GPS enviada como direccion de entrega."""
+    location = update.message.location
+    lat, lng = location.latitude, location.longitude
+    context.user_data["admin_ped_cust_addr"] = "GPS ({:.5f}, {:.5f})".format(lat, lng)
+    context.user_data["admin_ped_dropoff_lat"] = lat
+    context.user_data["admin_ped_dropoff_lng"] = lng
+    context.user_data["admin_ped_dropoff_city"] = ""
+    context.user_data["admin_ped_dropoff_barrio"] = ""
+    update.message.reply_text(
+        "Direccion de entrega registrada.\n\nTarifa al courier (ingresa el monto en pesos):"
+    )
+    return ADMIN_PEDIDO_TARIFA
+
+
+def admin_pedido_geo_callback(update, context):
+    """Confirma o rechaza geocodificacion de la direccion de entrega del cliente."""
+    query = update.callback_query
+    query.answer()
+    pending = context.user_data.get("admin_ped_geo_cust_pending", {})
+    if query.data == "admin_pedido_geo_si":
+        context.user_data["admin_ped_cust_addr"] = pending.get("address", "")
+        context.user_data["admin_ped_dropoff_lat"] = pending.get("lat")
+        context.user_data["admin_ped_dropoff_lng"] = pending.get("lng")
+        context.user_data["admin_ped_dropoff_city"] = pending.get("city", "")
+        context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
+        context.user_data.pop("admin_ped_geo_cust_pending", None)
+        query.edit_message_text(
+            "Entrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+                context.user_data["admin_ped_cust_addr"]
+            )
+        )
+        return ADMIN_PEDIDO_TARIFA
+    else:
+        original = pending.get("original_text", "")
+        seen = [pending["address"]] if pending.get("address") else []
+        next_geo = resolve_location_next(original, seen) if original else None
+        if next_geo:
+            context.user_data["admin_ped_geo_cust_pending"] = {
+                "address": next_geo.get("address", ""),
+                "lat": next_geo.get("lat"),
+                "lng": next_geo.get("lng"),
+                "city": next_geo.get("city", ""),
+                "barrio": next_geo.get("barrio", ""),
+                "original_text": original,
+            }
+            keyboard = [[
+                InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_si"),
+                InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_no"),
+            ]]
+            query.edit_message_text(
+                "Otro resultado: {}\n\nEs esta la direccion de entrega correcta?".format(
+                    next_geo.get("address", "")
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return ADMIN_PEDIDO_CUST_ADDR
+        else:
+            query.edit_message_text(
+                "No encontre mas resultados. Escribe la direccion nuevamente o envia GPS:"
+            )
+            context.user_data.pop("admin_ped_geo_cust_pending", None)
+            return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_tarifa_handler(update, context):
+    """Captura la tarifa manual al courier."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "")
+    if not texto.isdigit() or int(texto) <= 0:
+        update.message.reply_text("Ingresa un monto valido en pesos (numero entero mayor que 0).")
+        return ADMIN_PEDIDO_TARIFA
+    tarifa = int(texto)
+    if tarifa > 500000:
+        update.message.reply_text("La tarifa parece muy alta (maximo $500,000). Verifica el monto.")
+        return ADMIN_PEDIDO_TARIFA
+    context.user_data["admin_ped_tarifa"] = tarifa
+    context.user_data.setdefault("admin_ped_incentivo", 0)
+    keyboard = [[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]]
+    update.message.reply_text(
+        "Tarifa: ${:,}\n\nInstrucciones adicionales para el courier (o toca 'Sin instrucciones'):".format(tarifa),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_instruc_handler(update, context):
+    """Guarda instrucciones y muestra preview del pedido."""
+    context.user_data["admin_ped_instruc"] = update.message.text.strip()
+    text, markup = _admin_ped_preview_text(context.user_data)
+    update.message.reply_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_sin_instruc_callback(update, context):
+    """Sin instrucciones: guarda vacio y muestra preview."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["admin_ped_instruc"] = ""
+    text, markup = _admin_ped_preview_text(context.user_data)
+    query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_inc_fijo_callback(update, context):
+    """Agrega incentivo fijo al preview del pedido especial admin."""
+    query = update.callback_query
+    query.answer()
+    delta = int(query.data.split("_")[-1])
+    actual = int(context.user_data.get("admin_ped_incentivo") or 0)
+    context.user_data["admin_ped_incentivo"] = actual + delta
+    text, markup = _admin_ped_preview_text(context.user_data)
+    query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_inc_otro_callback(update, context):
+    """Solicita monto libre de incentivo."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Escribe el monto del incentivo adicional (en pesos):")
+    return ADMIN_PEDIDO_INC_MONTO
+
+
+def admin_pedido_inc_monto_handler(update, context):
+    """Captura monto libre de incentivo y regresa al preview."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "")
+    if not texto.isdigit() or int(texto) <= 0:
+        update.message.reply_text("Ingresa un monto valido mayor que 0.")
+        return ADMIN_PEDIDO_INC_MONTO
+    delta = int(texto)
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto (maximo $200,000).")
+        return ADMIN_PEDIDO_INC_MONTO
+    actual = int(context.user_data.get("admin_ped_incentivo") or 0)
+    context.user_data["admin_ped_incentivo"] = actual + delta
+    text, markup = _admin_ped_preview_text(context.user_data)
+    update.message.reply_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_confirmar_callback(update, context):
+    """Crea y publica el pedido especial del admin."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Usa 'Nuevo pedido especial' de nuevo.")
+        return ConversationHandler.END
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    incentivo = int(context.user_data.get("admin_ped_incentivo") or 0)
+    total_fee = tarifa + incentivo
+    pickup_location_id = context.user_data.get("admin_ped_pickup_id")
+    pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
+    pickup_lat = context.user_data.get("admin_ped_pickup_lat")
+    pickup_lng = context.user_data.get("admin_ped_pickup_lng")
+    pickup_city = context.user_data.get("admin_ped_pickup_city", "")
+    pickup_barrio = context.user_data.get("admin_ped_pickup_barrio", "")
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+    cust_phone = context.user_data.get("admin_ped_cust_phone", "")
+    cust_addr = context.user_data.get("admin_ped_cust_addr", "")
+    dropoff_lat = context.user_data.get("admin_ped_dropoff_lat")
+    dropoff_lng = context.user_data.get("admin_ped_dropoff_lng")
+    dropoff_city = context.user_data.get("admin_ped_dropoff_city", "")
+    dropoff_barrio = context.user_data.get("admin_ped_dropoff_barrio", "")
+    instruc = context.user_data.get("admin_ped_instruc", "")
+    try:
+        order_id = create_order(
+            ally_id=None,
+            creator_admin_id=admin_id,
+            customer_name=cust_name,
+            customer_phone=cust_phone,
+            customer_address=cust_addr,
+            customer_city=dropoff_city,
+            customer_barrio=dropoff_barrio,
+            pickup_location_id=pickup_location_id,
+            pay_at_store_required=False,
+            pay_at_store_amount=0,
+            base_fee=tarifa,
+            distance_km=0.0,
+            rain_extra=0,
+            high_demand_extra=0,
+            night_extra=0,
+            additional_incentive=incentivo,
+            total_fee=total_fee,
+            instructions=instruc,
+            requires_cash=False,
+            cash_required_amount=0,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            dropoff_lat=dropoff_lat,
+            dropoff_lng=dropoff_lng,
+            quote_source="admin",
+            ally_admin_id_snapshot=admin_id,
+        )
+    except Exception as e:
+        print("[ERROR] admin_pedido_confirmar_callback create_order:", e)
+        query.edit_message_text("Error al crear el pedido. Intenta de nuevo.")
+        return ConversationHandler.END
+    if pickup_location_id:
+        increment_admin_location_usage(pickup_location_id, admin_id)
+    published_count = 0
+    try:
+        published_count = publish_order_to_couriers(
+            order_id,
+            None,
+            context,
+            admin_id_override=admin_id,
+            pickup_city=pickup_city,
+            pickup_barrio=pickup_barrio,
+            dropoff_city=dropoff_city,
+            dropoff_barrio=dropoff_barrio,
+            skip_fee_check=True,
+        )
+    except Exception as e:
+        print("[WARN] admin_pedido_confirmar_callback publish:", e)
+    query.edit_message_text(
+        "Pedido especial publicado.\n"
+        "ID: #{}\n"
+        "Tarifa: ${:,}{}\n"
+        "Ofertando a {} repartidores activos.".format(
+            order_id,
+            total_fee,
+            " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
+            published_count,
+        )
+    )
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    return ConversationHandler.END
+
+
+def admin_pedido_cancelar_callback(update, context):
+    """Cancela el flujo de pedido especial del admin."""
+    query = update.callback_query
+    query.answer()
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    query.edit_message_text("Pedido cancelado.")
     return ConversationHandler.END
 
 
@@ -10765,6 +11265,53 @@ offer_suggest_inc_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+# Conversación para crear pedido especial del Admin Local/Plataforma
+admin_pedido_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_nuevo_pedido_start, pattern=r"^admin_nuevo_pedido$"),
+    ],
+    states={
+        ADMIN_PEDIDO_PICKUP: [
+            CallbackQueryHandler(admin_pedido_pickup_callback, pattern=r"^admin_pedido_pickup_\d+$"),
+            CallbackQueryHandler(admin_pedido_nueva_dir_start, pattern=r"^admin_pedido_nueva_dir$"),
+            CallbackQueryHandler(admin_pedido_geo_pickup_callback, pattern=r"^admin_pedido_geo_pickup_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.location, admin_pedido_pickup_gps_handler),
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_pickup_text_handler),
+        ],
+        ADMIN_PEDIDO_CUST_NAME: [
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_name_handler),
+        ],
+        ADMIN_PEDIDO_CUST_PHONE: [
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_phone_handler),
+        ],
+        ADMIN_PEDIDO_CUST_ADDR: [
+            CallbackQueryHandler(admin_pedido_geo_callback, pattern=r"^admin_pedido_geo_(si|no)$"),
+            MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_addr_handler),
+        ],
+        ADMIN_PEDIDO_TARIFA: [
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_tarifa_handler),
+        ],
+        ADMIN_PEDIDO_INSTRUC: [
+            CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
+            CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
+            CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_instruc_handler),
+        ],
+        ADMIN_PEDIDO_INC_MONTO: [
+            MessageHandler(Filters.text & ~Filters.command, admin_pedido_inc_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
 # Conversación para gestión de ubicaciones del aliado ("Mis ubicaciones")
 ally_locs_conv = ConversationHandler(
     entry_points=[
@@ -11235,6 +11782,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
+            [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -11280,6 +11828,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
+        [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
@@ -14697,6 +15246,7 @@ def main():
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin Local/Plataforma
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
