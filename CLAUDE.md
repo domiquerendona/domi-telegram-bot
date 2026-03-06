@@ -228,7 +228,9 @@ Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
-| `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales) |
+| `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
+| `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
+| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`. |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
@@ -1257,4 +1259,76 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 
 ---
 
-*Última actualización: 2026-03-06*
+## Agendas del Admin (IMPLEMENTADO 2026-03-07)
+
+El Admin Local y el Admin de Plataforma tienen dos agendas propias:
+
+1. **Agenda de clientes de entrega** (`admin_customers` + `admin_customer_addresses`): registrar clientes recurrentes que solicitan domicilios, con sus datos de entrega. Espejo exacto de la agenda `ally_customers`.
+2. **Mis Direcciones** (`admin_locations`): gestión CRUD completa de los puntos de recogida del admin. Antes solo se podían agregar durante el pedido; ahora tiene UI de gestión independiente.
+
+### Flujo `admin_clientes_conv`
+
+Entry: callback `admin_mis_clientes` (botón en menú admin)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_CUST_MENU` | 925 | Menú principal |
+| `ADMIN_CUST_NUEVO_NOMBRE` | 926 | Nombre del nuevo cliente |
+| `ADMIN_CUST_NUEVO_TELEFONO` | 927 | Teléfono del nuevo cliente |
+| `ADMIN_CUST_NUEVO_NOTAS` | 928 | Notas internas del cliente |
+| `ADMIN_CUST_NUEVO_DIR_LABEL` | 929 | Etiqueta de la primera dirección |
+| `ADMIN_CUST_NUEVO_DIR_TEXT` | 930 | Dirección (con geocoding) |
+| `ADMIN_CUST_BUSCAR` | 931 | Búsqueda por nombre/teléfono |
+| `ADMIN_CUST_VER` | 932 | Detalle del cliente |
+| `ADMIN_CUST_EDITAR_NOMBRE` | 933 | Editar nombre |
+| `ADMIN_CUST_EDITAR_TELEFONO` | 934 | Editar teléfono |
+| `ADMIN_CUST_EDITAR_NOTAS` | 935 | Editar notas |
+| `ADMIN_CUST_DIR_NUEVA_LABEL` | 936 | Etiqueta de nueva dirección |
+| `ADMIN_CUST_DIR_NUEVA_TEXT` | 937 | Nueva dirección (geocoding) |
+| `ADMIN_CUST_DIR_EDITAR_LABEL` | 938 | Editar etiqueta de dirección |
+| `ADMIN_CUST_DIR_EDITAR_TEXT` | 939 | Editar dirección |
+| `ADMIN_CUST_DIR_EDITAR_NOTA` | 940 | Editar nota de entrega |
+| `ADMIN_CUST_DIR_CIUDAD` | 941 | Ciudad de la dirección |
+| `ADMIN_CUST_DIR_BARRIO` | 942 | Barrio (punto de persistencia) |
+| `ADMIN_CUST_DIR_CORREGIR` | 943 | Corregir/agregar coordenadas |
+
+**Prefijo callbacks**: `acust_`
+**Prefijo user_data**: `acust_`
+**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`
+
+### Flujo `admin_dirs_conv`
+
+Entry: callback `admin_mis_dirs` (botón en menú admin)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_DIRS_MENU` | 945 | Lista de ubicaciones de recogida |
+| `ADMIN_DIRS_NUEVA_LABEL` | 946 | Nombre del lugar (etiqueta) |
+| `ADMIN_DIRS_NUEVA_TEXT` | 947 | Dirección (con geocoding) |
+| `ADMIN_DIRS_NUEVA_TEL` | 948 | Teléfono del punto (opcional) |
+| `ADMIN_DIRS_VER` | 949 | Detalle de una ubicación |
+
+**Prefijo callbacks**: `adirs_`
+**Prefijo user_data**: `adirs_`
+**Funciones DB**: `get_admin_locations`, `get_admin_location_by_id`, `create_admin_location`, `update_admin_location`, `archive_admin_location`
+
+### Integración en `admin_pedido_conv`
+
+Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar de mis clientes". El admin puede:
+- Escribir el nombre directamente (flujo manual existente)
+- Seleccionar de su agenda → ver sus direcciones guardadas → seleccionar una (salta a `ADMIN_PEDIDO_TARIFA`) o ingresar nueva (va a `ADMIN_PEDIDO_CUST_ADDR`)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar |
+| `ADMIN_PEDIDO_SEL_CUST_ADDR` | 918 | Seleccionar dirección del cliente |
+
+**Callbacks nuevos en `admin_pedido_conv`**:
+- `admin_pedido_sel_cust` → `admin_pedido_sel_cust_handler`
+- `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
+- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected`
+- `acust_pedido_addr_nueva` → `admin_pedido_addr_nueva`
+
+---
+
+*Última actualización: 2026-03-07*

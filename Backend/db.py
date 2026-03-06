@@ -1064,6 +1064,46 @@ def init_db():
     # Índice para búsqueda por cliente
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customer_addresses_customer_id ON ally_customer_addresses(customer_id)")
 
+    # H) TABLAS PARA AGENDA DEL ADMIN (admin_customers)
+    # ============================================================
+
+    # Tabla: admin_customers (clientes recurrentes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_id ON admin_customers(admin_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_phone ON admin_customers(admin_id, phone)")
+
+    # Tabla: admin_customer_addresses (direcciones de clientes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_customer_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            label TEXT,
+            address_text TEXT NOT NULL,
+            city TEXT,
+            barrio TEXT,
+            notes TEXT,
+            lat REAL,
+            lng REAL,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (customer_id) REFERENCES admin_customers(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id)")
+
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
     order_columns = [col[1] for col in cur.fetchall()]
@@ -1179,6 +1219,12 @@ def init_db():
             "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
         )
+
+    # Migración: agregar status a admin_locations (soft delete)
+    cur.execute("PRAGMA table_info(admin_locations)")
+    admin_loc_cols = [col[1] for col in cur.fetchall()]
+    if 'status' not in admin_loc_cols:
+        cur.execute("ALTER TABLE admin_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
 
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
@@ -1579,6 +1625,9 @@ def _init_db_postgres():
 
     # terms_versions
     _pg_add_col("terms_versions", "is_active", "INTEGER DEFAULT 1")
+
+    # admin_locations: agregar status para soft delete
+    _pg_add_col("admin_locations", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
 
     # 3) Migraciones de datos (idempotentes)
 
@@ -3972,7 +4021,7 @@ def get_admin_locations(admin_id: int):
         SELECT id, admin_id, label, address, city, barrio, phone, is_default,
                lat, lng, use_count, is_frequent, last_used_at, created_at
         FROM admin_locations
-        WHERE admin_id = {P}
+        WHERE admin_id = {P} AND (status IS NULL OR status = 'ACTIVE')
         ORDER BY is_default DESC, is_frequent DESC, use_count DESC, id ASC;
     """, (admin_id,))
     rows = cur.fetchall()
@@ -5533,6 +5582,329 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# ============================================================
+# CLIENTES RECURRENTES DEL ADMIN (admin_customers)
+# ============================================================
+
+def create_admin_customer(admin_id: int, name: str, phone: str, notes: str = None) -> int:
+    """Crea un cliente recurrente para un admin. Retorna el customer_id creado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    customer_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_customers (admin_id, name, phone, notes, status, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, 'ACTIVE', {now_sql}, {now_sql})
+    """, (admin_id, name.strip(), normalize_phone(phone), notes))
+    conn.commit()
+    conn.close()
+    return customer_id
+
+
+def update_admin_customer(customer_id: int, admin_id: int, name: str, phone: str, notes: str = None) -> bool:
+    """Actualiza un cliente recurrente del admin (validando ownership). Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET name = {P}, phone = {P}, notes = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (name.strip(), normalize_phone(phone), notes, customer_id, admin_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_admin_customer(customer_id: int, admin_id: int) -> bool:
+    """Archiva (soft delete) un cliente recurrente del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET status = 'INACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (customer_id, admin_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_admin_customer(customer_id: int, admin_id: int) -> bool:
+    """Restaura un cliente archivado del admin. Retorna True si se restauró."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET status = 'ACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'INACTIVE'
+    """, (customer_id, admin_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_admin_customer_by_id(customer_id: int, admin_id: int = None):
+    """Obtiene un cliente del admin por ID. Si se pasa admin_id, valida ownership."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if admin_id:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE id = {P} AND admin_id = {P}
+        """, (customer_id, admin_id))
+    else:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE id = {P}
+        """, (customer_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_admin_customers(admin_id: int, limit: int = 20, include_inactive: bool = False):
+    """Lista los clientes recurrentes de un admin (últimos primero)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P}
+            ORDER BY updated_at DESC
+            LIMIT {P}
+        """, (admin_id, limit))
+    else:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P} AND status = 'ACTIVE'
+            ORDER BY updated_at DESC
+            LIMIT {P}
+        """, (admin_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def search_admin_customers(admin_id: int, query: str, limit: int = 10):
+    """Busca clientes del admin por nombre o teléfono (solo activos)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    search_term = f"%{query.strip()}%"
+    cur.execute(f"""
+        SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+        FROM admin_customers
+        WHERE admin_id = {P} AND status = 'ACTIVE'
+          AND (name LIKE {P} OR phone LIKE {P})
+        ORDER BY updated_at DESC
+        LIMIT {P}
+    """, (admin_id, search_term, search_term, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admin_customer_by_phone(admin_id: int, phone: str):
+    """Busca un cliente ACTIVO del admin por teléfono exacto (normalizado)."""
+    phone_norm = normalize_phone(phone or "")
+    if not phone_norm:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+        FROM admin_customers
+        WHERE admin_id = {P} AND status = 'ACTIVE' AND phone = {P}
+        LIMIT 1
+    """, (admin_id, phone_norm))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+# ============================================================
+# DIRECCIONES DE CLIENTES DEL ADMIN (admin_customer_addresses)
+# ============================================================
+
+def create_admin_customer_address(
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> int:
+    """Crea una dirección para un cliente del admin. Retorna el address_id creado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    address_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_customer_addresses
+        (customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'ACTIVE', {now_sql}, {now_sql})
+    """, (customer_id, label, address_text.strip(), city, barrio, notes, lat, lng))
+    conn.commit()
+    conn.close()
+    return address_id
+
+
+def update_admin_customer_address(
+    address_id: int,
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> bool:
+    """Actualiza una dirección de cliente del admin (validando ownership). Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET label = {P}, address_text = {P}, city = {P}, barrio = {P}, notes = {P},
+            lat = {P}, lng = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (label, address_text.strip(), city, barrio, notes, lat, lng, address_id, customer_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_admin_customer_address(address_id: int, customer_id: int) -> bool:
+    """Archiva (soft delete) una dirección de cliente del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET status = 'INACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_admin_customer_address(address_id: int, customer_id: int) -> bool:
+    """Restaura una dirección archivada de cliente del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET status = 'ACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'INACTIVE'
+    """, (address_id, customer_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_admin_customer_address_by_id(address_id: int, customer_id: int = None):
+    """Obtiene una dirección de cliente del admin por ID. Si se pasa customer_id, valida ownership."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if customer_id:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE id = {P} AND customer_id = {P}
+        """, (address_id, customer_id))
+    else:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE id = {P}
+        """, (address_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_admin_customer_addresses(customer_id: int, include_inactive: bool = False):
+    """Lista las direcciones de un cliente del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE customer_id = {P}
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    else:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE customer_id = {P} AND status = 'ACTIVE'
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ============================================================
+# GESTIÓN DE admin_locations (soft delete y edición)
+# ============================================================
+
+def archive_admin_location(location_id: int, admin_id: int) -> bool:
+    """Archiva (soft delete) una dirección de recogida del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET status = 'INACTIVE'
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (location_id, admin_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def update_admin_location(
+    location_id: int,
+    admin_id: int,
+    label: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> bool:
+    """Actualiza una dirección de recogida del admin. Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET label = {P}, address = {P}, city = {P}, barrio = {P}, phone = {P}, lat = {P}, lng = {P}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (label, address, city, barrio, phone, lat, lng, location_id, admin_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def get_last_order_by_ally(ally_id: int):

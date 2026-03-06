@@ -276,6 +276,22 @@ from services import (
     block_courier_for_ally,
     unblock_courier_for_ally,
     get_blocked_courier_ids_for_ally,
+    archive_admin_location,
+    update_admin_location,
+    create_admin_customer,
+    update_admin_customer,
+    archive_admin_customer,
+    restore_admin_customer,
+    get_admin_customer_by_id,
+    get_admin_customer_by_phone,
+    list_admin_customers,
+    search_admin_customers,
+    create_admin_customer_address,
+    update_admin_customer_address,
+    archive_admin_customer_address,
+    restore_admin_customer_address,
+    get_admin_customer_address_by_id,
+    list_admin_customer_addresses,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
@@ -1003,6 +1019,44 @@ ALLY_LOCS_ADD_COORDS = 921   # Agregar: esperando GPS / link / coords
 ALLY_LOCS_ADD_LABEL  = 922   # Agregar: esperando etiqueta / nombre
 ALLY_LOCS_ADD_CITY   = 923   # Agregar: esperando ciudad
 ALLY_LOCS_ADD_BARRIO = 924   # Agregar: esperando barrio/sector
+
+# =========================
+# Estados para agenda de clientes del Admin Local/Plataforma
+# =========================
+ADMIN_CUST_MENU              = 925
+ADMIN_CUST_NUEVO_NOMBRE      = 926
+ADMIN_CUST_NUEVO_TELEFONO    = 927
+ADMIN_CUST_NUEVO_NOTAS       = 928
+ADMIN_CUST_NUEVO_DIR_LABEL   = 929
+ADMIN_CUST_NUEVO_DIR_TEXT    = 930
+ADMIN_CUST_BUSCAR            = 931
+ADMIN_CUST_VER               = 932
+ADMIN_CUST_EDITAR_NOMBRE     = 933
+ADMIN_CUST_EDITAR_TELEFONO   = 934
+ADMIN_CUST_EDITAR_NOTAS      = 935
+ADMIN_CUST_DIR_NUEVA_LABEL   = 936
+ADMIN_CUST_DIR_NUEVA_TEXT    = 937
+ADMIN_CUST_DIR_EDITAR_LABEL  = 938
+ADMIN_CUST_DIR_EDITAR_TEXT   = 939
+ADMIN_CUST_DIR_EDITAR_NOTA   = 940
+ADMIN_CUST_DIR_CIUDAD        = 941
+ADMIN_CUST_DIR_BARRIO        = 942
+ADMIN_CUST_DIR_CORREGIR      = 943
+
+# =========================
+# Estados para gestion de ubicaciones de recogida del Admin (Mis Direcciones)
+# =========================
+ADMIN_DIRS_MENU         = 945
+ADMIN_DIRS_NUEVA_LABEL  = 946
+ADMIN_DIRS_NUEVA_TEXT   = 947
+ADMIN_DIRS_NUEVA_TEL    = 948
+ADMIN_DIRS_VER          = 949
+
+# =========================
+# Estados para seleccion de cliente/direccion en pedido admin
+# =========================
+ADMIN_PEDIDO_SEL_CUST      = 917
+ADMIN_PEDIDO_SEL_CUST_ADDR = 918
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -5654,8 +5708,10 @@ def admin_pedido_pickup_callback(update, context):
     context.user_data["admin_ped_pickup_lng"] = loc.get("lng")
     context.user_data["admin_ped_pickup_city"] = loc.get("city", "")
     context.user_data["admin_ped_pickup_barrio"] = loc.get("barrio", "")
+    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
     query.edit_message_text(
-        "Recogida: {}\n\nNombre del cliente:".format(loc["address"])
+        "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(loc["address"]),
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ADMIN_PEDIDO_CUST_NAME
 
@@ -5708,7 +5764,11 @@ def admin_pedido_pickup_gps_handler(update, context):
     context.user_data["admin_ped_pickup_lng"] = lng
     context.user_data["admin_ped_pickup_city"] = ""
     context.user_data["admin_ped_pickup_barrio"] = ""
-    update.message.reply_text("Punto de recogida guardado.\n\nNombre del cliente:")
+    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+    update.message.reply_text(
+        "Punto de recogida guardado.\n\nNombre del cliente (o selecciona de tu agenda):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ADMIN_PEDIDO_CUST_NAME
 
 
@@ -5725,8 +5785,12 @@ def admin_pedido_geo_pickup_callback(update, context):
         context.user_data["admin_ped_pickup_city"] = pending.get("city", "")
         context.user_data["admin_ped_pickup_barrio"] = pending.get("barrio", "")
         context.user_data.pop("admin_ped_geo_pickup_pending", None)
+        keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
         query.edit_message_text(
-            "Recogida: {}\n\nNombre del cliente:".format(context.user_data["admin_ped_pickup_addr"])
+            "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
+                context.user_data["admin_ped_pickup_addr"]
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ADMIN_PEDIDO_CUST_NAME
     else:
@@ -5768,6 +5832,109 @@ def admin_pedido_cust_name_handler(update, context):
     context.user_data["admin_ped_cust_name"] = nombre
     update.message.reply_text("Telefono del cliente (minimo 7 digitos):")
     return ADMIN_PEDIDO_CUST_PHONE
+
+
+def admin_pedido_sel_cust_handler(update, context):
+    """Muestra lista de clientes del admin para seleccionar en el pedido."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Cancela y vuelve a crear el pedido.")
+        return ConversationHandler.END
+
+    customers = list_admin_customers(admin_id, limit=15, include_inactive=False)
+    if not customers:
+        keyboard = [[InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")]]
+        query.edit_message_text(
+            "No tienes clientes guardados en tu agenda.\n\n"
+            "Escribe el nombre del cliente directamente:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_PEDIDO_CUST_NAME
+
+    keyboard = []
+    for c in customers:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    query.edit_message_text(
+        "Selecciona el cliente de tu agenda:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_SEL_CUST
+
+
+def admin_pedido_cust_selected(update, context):
+    """Cliente seleccionado de la agenda. Muestra sus direcciones guardadas."""
+    query = update.callback_query
+    query.answer()
+    customer_id = int(query.data.replace("acust_pedido_sel_", ""))
+    admin_id = context.user_data.get("admin_ped_admin_id")
+
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return ADMIN_PEDIDO_SEL_CUST
+
+    context.user_data["admin_ped_cust_name"] = customer["name"]
+    context.user_data["admin_ped_cust_phone"] = customer["phone"]
+
+    addresses = list_admin_customer_addresses(customer_id)
+    keyboard = []
+    for addr in addresses:
+        label = addr["label"] or "Sin etiqueta"
+        btn_text = "{}: {}".format(label, addr["address_text"][:30])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_addr_{}".format(addr["id"]))])
+    keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="acust_pedido_addr_nueva")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    query.edit_message_text(
+        "Cliente: {} ({})\n\nSelecciona la direccion de entrega:".format(
+            customer["name"], customer["phone"]
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_SEL_CUST_ADDR
+
+
+def admin_pedido_addr_selected(update, context):
+    """Direccion seleccionada de la agenda. Avanza directamente a TARIFA."""
+    query = update.callback_query
+    query.answer()
+    address_id = int(query.data.replace("acust_pedido_addr_", ""))
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+
+    # Buscar la direccion por customer_id no es requerido aqui, solo necesitamos el id
+    # Necesitamos buscar por address_id sin restriccion de customer (es del admin)
+    # Usamos get_admin_customer_address_by_id con customer_id=None
+    address = get_admin_customer_address_by_id(address_id, customer_id=None)
+    if not address:
+        query.edit_message_text("Direccion no encontrada. Intenta nuevamente.")
+        return ADMIN_PEDIDO_SEL_CUST_ADDR
+
+    context.user_data["admin_ped_cust_addr"] = address["address_text"]
+    context.user_data["admin_ped_dropoff_lat"] = address["lat"]
+    context.user_data["admin_ped_dropoff_lng"] = address["lng"]
+    context.user_data["admin_ped_dropoff_city"] = address["city"] or ""
+    context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
+
+    query.edit_message_text(
+        "Cliente: {}\nEntrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+            cust_name, address["address_text"]
+        )
+    )
+    return ADMIN_PEDIDO_TARIFA
+
+
+def admin_pedido_addr_nueva(update, context):
+    """Admin eligio ingresar nueva direccion manualmente."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Direccion de entrega del cliente (escribe o envia GPS):")
+    return ADMIN_PEDIDO_CUST_ADDR
 
 
 def admin_pedido_cust_phone_handler(update, context):
@@ -9531,6 +9698,1087 @@ def clientes_dir_corregir_coords_location_handler(update, context):
 
 
 # =========================
+# Agenda de clientes del Admin (admin_clientes_conv)
+# Prefijo callbacks: acust_
+# Prefijo user_data: acust_
+# =========================
+
+def admin_clientes_cmd(update, context):
+    """Entry point de la agenda de clientes del admin. Verifica que sea admin APPROVED."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+
+    if not db_user:
+        query.edit_message_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    admin = get_admin_by_telegram_id(user.id)
+    if not admin:
+        query.edit_message_text("Este menu es solo para administradores.")
+        return ConversationHandler.END
+
+    if admin["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como administrador aun no ha sido aprobado.")
+        return ConversationHandler.END
+
+    for key in list(context.user_data.keys()):
+        if key.startswith("acust_"):
+            del context.user_data[key]
+    context.user_data["acust_admin_id"] = admin["id"]
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+
+def _admin_clientes_mostrar_menu(update, context, edit_message=False):
+    """Muestra el menu principal de la agenda de clientes del admin."""
+    keyboard = [
+        [InlineKeyboardButton("Nuevo cliente", callback_data="acust_nuevo")],
+        [InlineKeyboardButton("Buscar cliente", callback_data="acust_buscar")],
+        [InlineKeyboardButton("Mis clientes", callback_data="acust_lista")],
+        [InlineKeyboardButton("Clientes archivados", callback_data="acust_archivados")],
+        [InlineKeyboardButton("Cerrar", callback_data="acust_cerrar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "AGENDA DE CLIENTES\n\nSelecciona una opcion:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+    return ADMIN_CUST_MENU
+
+
+def admin_clientes_menu_callback(update, context):
+    """Maneja los callbacks del menu de clientes del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("acust_admin_id")
+
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Vuelve al menu e inicia de nuevo.")
+        return ConversationHandler.END
+
+    if data == "acust_nuevo":
+        query.edit_message_text("NUEVO CLIENTE\n\nEscribe el nombre del cliente:")
+        return ADMIN_CUST_NUEVO_NOMBRE
+
+    elif data == "acust_buscar":
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        return ADMIN_CUST_BUSCAR
+
+    elif data == "acust_lista":
+        customers = list_admin_customers(admin_id, limit=10, include_inactive=False)
+        if not customers:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="acust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes guardados.\n\n"
+                "Usa 'Nuevo cliente' para agregar uno.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ADMIN_CUST_MENU
+
+        keyboard = []
+        for c in customers:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
+
+        query.edit_message_text(
+            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    elif data == "acust_archivados":
+        customers = list_admin_customers(admin_id, limit=20, include_inactive=True)
+        archived = [c for c in customers if c["status"] == "INACTIVE"]
+
+        if not archived:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="acust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes archivados.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ADMIN_CUST_MENU
+
+        keyboard = []
+        for c in archived:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_restaurar_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
+
+        query.edit_message_text(
+            "CLIENTES ARCHIVADOS\n\nSelecciona uno para restaurar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    elif data == "acust_volver_menu":
+        return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "acust_cerrar":
+        query.edit_message_text("Agenda de clientes cerrada.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("acust_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    elif data.startswith("acust_ver_"):
+        customer_id = int(data.replace("acust_ver_", ""))
+        return _admin_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("acust_restaurar_"):
+        customer_id = int(data.replace("acust_restaurar_", ""))
+        if restore_admin_customer(customer_id, admin_id):
+            query.edit_message_text("Cliente restaurado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo restaurar el cliente.")
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    return ADMIN_CUST_MENU
+
+
+def _admin_clientes_ver_cliente(query, context, customer_id):
+    """Muestra detalles de un cliente del admin y sus opciones."""
+    admin_id = context.user_data.get("acust_admin_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return ADMIN_CUST_MENU
+
+    context.user_data["acust_current_customer_id"] = customer_id
+
+    addresses = list_admin_customer_addresses(customer_id)
+    addr_text = ""
+    if addresses:
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            addr_text += "- {}: {}...\n".format(label, addr["address_text"][:35])
+    else:
+        addr_text = "Sin direcciones guardadas\n"
+
+    nota_interna = customer["notes"] or "Sin notas"
+
+    keyboard = [
+        [InlineKeyboardButton("Direcciones", callback_data="acust_dirs")],
+        [InlineKeyboardButton("Editar", callback_data="acust_editar")],
+        [InlineKeyboardButton("Archivar", callback_data="acust_archivar")],
+        [InlineKeyboardButton("Volver", callback_data="acust_volver_menu")],
+    ]
+
+    query.edit_message_text(
+        "Cliente: {}\n"
+        "Telefono: {}\n\n"
+        "Nota interna:\n{}\n\n"
+        "Direcciones guardadas:\n{}".format(
+            customer["name"], customer["phone"], nota_interna, addr_text
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_CUST_VER
+
+
+def admin_clientes_ver_callback(update, context):
+    """Maneja callbacks de la vista de cliente del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+
+    if data == "acust_dirs":
+        addresses = list_admin_customer_addresses(customer_id)
+        keyboard = []
+
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            btn_text = "{}: {}...".format(label, addr["address_text"][:25])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_dir_ver_{}".format(addr["id"]))])
+
+        keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="acust_dir_nueva")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_ver_{}".format(customer_id))])
+
+        query.edit_message_text(
+            "DIRECCIONES DEL CLIENTE\n\nSelecciona una para editar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_editar":
+        keyboard = [
+            [InlineKeyboardButton("Editar nombre", callback_data="acust_edit_nombre")],
+            [InlineKeyboardButton("Editar telefono", callback_data="acust_edit_telefono")],
+            [InlineKeyboardButton("Editar notas", callback_data="acust_edit_notas")],
+            [InlineKeyboardButton("Volver", callback_data="acust_ver_{}".format(customer_id))],
+        ]
+        query.edit_message_text(
+            "Que deseas editar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_edit_nombre":
+        query.edit_message_text("Escribe el nuevo nombre del cliente:")
+        return ADMIN_CUST_EDITAR_NOMBRE
+
+    elif data == "acust_edit_telefono":
+        query.edit_message_text("Escribe el nuevo telefono del cliente:")
+        return ADMIN_CUST_EDITAR_TELEFONO
+
+    elif data == "acust_edit_notas":
+        query.edit_message_text("Escribe las nuevas notas del cliente (o 'ninguna' para borrar):")
+        return ADMIN_CUST_EDITAR_NOTAS
+
+    elif data == "acust_archivar":
+        if archive_admin_customer(customer_id, admin_id):
+            query.edit_message_text("Cliente archivado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo archivar el cliente.")
+        context.user_data.pop("acust_current_customer_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    elif data == "acust_dir_nueva":
+        query.edit_message_text("NUEVA DIRECCION\n\nEscribe la etiqueta (Casa, Trabajo, Otro):")
+        return ADMIN_CUST_DIR_NUEVA_LABEL
+
+    elif data.startswith("acust_dir_ver_"):
+        address_id = int(data.replace("acust_dir_ver_", ""))
+        address = get_admin_customer_address_by_id(address_id, customer_id)
+        if not address:
+            query.edit_message_text("Direccion no encontrada.")
+            return ADMIN_CUST_VER
+
+        context.user_data["acust_current_address_id"] = address_id
+        label = address["label"] or "Sin etiqueta"
+        nota_entrega = address["notes"] or "Sin nota"
+        lat = address["lat"]
+        lng = address["lng"]
+
+        if lat is not None and lng is not None:
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
+            coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng))
+            btn_coords = "Corregir coordenadas"
+        else:
+            coords_text = "Sin coordenadas"
+            btn_coords = "Agregar coordenadas"
+
+        keyboard = [
+            [InlineKeyboardButton("Editar", callback_data="acust_dir_editar")],
+            [InlineKeyboardButton("Editar nota entrega", callback_data="acust_dir_edit_nota")],
+            [InlineKeyboardButton(btn_coords, callback_data="acust_dir_corregir_coords")],
+            [InlineKeyboardButton("Archivar", callback_data="acust_dir_archivar")],
+            [InlineKeyboardButton("Volver", callback_data="acust_dirs")],
+        ]
+
+        query.edit_message_text(
+            "{}\n"
+            "{}\n\n"
+            "Nota para entrega:\n{}\n\n"
+            "{}".format(label, address["address_text"], nota_entrega, coords_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_dir_corregir_coords":
+        query.edit_message_text(
+            "Corregir / agregar coordenadas\n\n"
+            "Envia un pin de ubicacion de Telegram, un link de Google Maps, "
+            "o escribe las coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para volver."
+        )
+        context.user_data["acust_geo_mode"] = "corregir_coords"
+        return ADMIN_CUST_DIR_CORREGIR
+
+    elif data == "acust_dir_editar":
+        query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
+        return ADMIN_CUST_DIR_EDITAR_LABEL
+
+    elif data == "acust_dir_edit_nota":
+        query.edit_message_text(
+            "Escribe la nota para entrega.\n"
+            "Esta nota sera visible para el repartidor.\n\n"
+            "Escribe 'ninguna' para borrar la nota:"
+        )
+        return ADMIN_CUST_DIR_EDITAR_NOTA
+
+    elif data == "acust_dir_archivar":
+        address_id = context.user_data.get("acust_current_address_id")
+        if archive_admin_customer_address(address_id, customer_id):
+            query.edit_message_text("Direccion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la direccion.")
+        context.user_data.pop("acust_current_address_id", None)
+        return _admin_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("acust_ver_"):
+        cid = int(data.replace("acust_ver_", ""))
+        return _admin_clientes_ver_cliente(query, context, cid)
+
+    elif data == "acust_volver_menu":
+        context.user_data.pop("acust_current_customer_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+    return ADMIN_CUST_VER
+
+
+def admin_clientes_nuevo_nombre(update, context):
+    """Recibe nombre del nuevo cliente del admin."""
+    context.user_data["acust_new_customer_name"] = update.message.text.strip()
+    update.message.reply_text("Escribe el telefono del cliente:")
+    return ADMIN_CUST_NUEVO_TELEFONO
+
+
+def admin_clientes_nuevo_telefono(update, context):
+    """Recibe telefono del nuevo cliente del admin."""
+    context.user_data["acust_new_customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
+    return ADMIN_CUST_NUEVO_NOTAS
+
+
+def admin_clientes_nuevo_notas(update, context):
+    """Recibe notas del nuevo cliente del admin."""
+    notas = update.message.text.strip()
+    if notas.lower() == "ninguna":
+        notas = None
+    context.user_data["acust_new_customer_notes"] = notas
+    update.message.reply_text("Escribe la etiqueta de la direccion (Casa, Trabajo, Otro):")
+    return ADMIN_CUST_NUEVO_DIR_LABEL
+
+
+def admin_clientes_nuevo_dir_label(update, context):
+    """Recibe etiqueta de direccion del nuevo cliente del admin."""
+    context.user_data["acust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_CUST_NUEVO_DIR_TEXT
+
+
+def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
+    """Aplica el pipeline de geocoding para resolver una direccion en la agenda del admin."""
+    loc = resolve_location(texto)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return None
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["acust_geo_formatted"] = loc.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        return estado
+
+    return loc
+
+
+def admin_clientes_nuevo_dir_text(update, context):
+    """Recibe direccion y prepara creacion del nuevo cliente del admin."""
+    address_text = update.message.text.strip()
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, address_text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_NUEVO_DIR_TEXT
+    )
+    if resolved is None:
+        return ADMIN_CUST_NUEVO_DIR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["acust_geo_mode"] = "nuevo_cliente"
+        context.user_data["acust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_mode"] = "nuevo_cliente"
+    context.user_data["acust_pending_address_text"] = address_to_save
+    context.user_data["acust_pending_lat"] = lat
+    context.user_data["acust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_buscar(update, context):
+    """Busca clientes del admin por nombre o telefono."""
+    query_text = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+
+    results = search_admin_customers(admin_id, query_text, limit=10)
+    if not results:
+        keyboard = [
+            [InlineKeyboardButton("Agregar nuevo cliente", callback_data="acust_nuevo")],
+            [InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")],
+        ]
+        update.message.reply_text(
+            "No se encontraron clientes con '{}'.".format(query_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    keyboard = []
+    for c in results:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")])
+
+    update.message.reply_text(
+        "Resultados para '{}':".format(query_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_CUST_MENU
+
+
+def admin_clientes_editar_nombre(update, context):
+    """Actualiza el nombre del cliente del admin."""
+    nuevo_nombre = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, nuevo_nombre, customer["phone"], customer["notes"])
+        update.message.reply_text("Nombre actualizado a: {}".format(nuevo_nombre))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_editar_telefono(update, context):
+    """Actualiza el telefono del cliente del admin."""
+    nuevo_telefono = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, customer["name"], nuevo_telefono, customer["notes"])
+        update.message.reply_text("Telefono actualizado a: {}".format(nuevo_telefono))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_editar_notas(update, context):
+    """Actualiza las notas del cliente del admin."""
+    nuevas_notas = update.message.text.strip()
+    if nuevas_notas.lower() == "ninguna":
+        nuevas_notas = None
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, customer["name"], customer["phone"], nuevas_notas)
+        update.message.reply_text("Notas actualizadas.")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_nueva_label(update, context):
+    """Recibe etiqueta de nueva direccion para cliente del admin."""
+    context.user_data["acust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_CUST_DIR_NUEVA_TEXT
+
+
+def admin_clientes_dir_nueva_text(update, context):
+    """Crea nueva direccion para cliente del admin."""
+    address_text = update.message.text.strip()
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, address_text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_DIR_NUEVA_TEXT
+    )
+    if resolved is None:
+        return ADMIN_CUST_DIR_NUEVA_TEXT
+    if isinstance(resolved, int):
+        context.user_data["acust_geo_mode"] = "dir_nueva"
+        context.user_data["acust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_mode"] = "dir_nueva"
+    context.user_data["acust_pending_address_text"] = address_to_save
+    context.user_data["acust_pending_lat"] = lat
+    context.user_data["acust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_geo_callback(update, context):
+    """Confirma/rechaza geocoding de direccion en agenda de clientes del admin."""
+    query = update.callback_query
+    query.answer()
+
+    mode = context.user_data.get("acust_geo_mode")
+    if not mode:
+        query.edit_message_text("Sesion de geocodificacion expirada. Escribe la direccion nuevamente.")
+        return ADMIN_CUST_MENU
+
+    if query.data == "acust_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data.pop("acust_geo_formatted", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
+            return ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
+
+        if mode == "corregir_coords":
+            context.user_data.pop("acust_geo_mode", None)
+            customer_id = context.user_data.get("acust_current_customer_id")
+            address_id = context.user_data.get("acust_current_address_id")
+            address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+            if not address:
+                query.edit_message_text("Error: direccion no encontrada.")
+                return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+            try:
+                update_admin_customer_address(
+                    address_id=address_id,
+                    customer_id=customer_id,
+                    label=address["label"],
+                    address_text=address["address_text"],
+                    city=address["city"] or "",
+                    barrio=address["barrio"] or "",
+                    notes=address["notes"],
+                    lat=lat,
+                    lng=lng,
+                )
+                query.edit_message_text(
+                    "Coordenadas actualizadas.\n"
+                    "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+                )
+            except Exception as e:
+                query.edit_message_text("Error al actualizar: {}".format(str(e)))
+            return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+        original_text = context.user_data.get("acust_geo_address_input", "")
+        context.user_data["acust_pending_mode"] = mode
+        context.user_data["acust_pending_address_text"] = original_text
+        context.user_data["acust_pending_lat"] = lat
+        context.user_data["acust_pending_lng"] = lng
+        query.edit_message_text("Escribe la ciudad de la direccion:")
+        return ADMIN_CUST_DIR_CIUDAD
+
+    estado = ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
+    return _geo_siguiente_o_gps(query, context, "acust_geo_si", "acust_geo_no", estado)
+
+
+def admin_clientes_dir_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la direccion:",
+        "acust_pending_city",
+        ADMIN_CUST_DIR_CIUDAD,
+        ADMIN_CUST_DIR_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la direccion:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def admin_clientes_dir_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la direccion:",
+        "acust_pending_barrio",
+        ADMIN_CUST_DIR_BARRIO,
+        ADMIN_CUST_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == ADMIN_CUST_DIR_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("acust_pending_barrio", "")
+
+    mode = context.user_data.get("acust_pending_mode")
+    address_text = context.user_data.get("acust_pending_address_text", "")
+    lat = context.user_data.get("acust_pending_lat")
+    lng = context.user_data.get("acust_pending_lng")
+    city = context.user_data.get("acust_pending_city", "")
+    notes = context.user_data.get("acust_pending_notes")
+
+    if mode == "nuevo_cliente":
+        admin_id = context.user_data.get("acust_admin_id")
+        name = context.user_data.get("acust_new_customer_name")
+        phone = context.user_data.get("acust_new_customer_phone")
+        customer_notes = context.user_data.get("acust_new_customer_notes")
+        label = context.user_data.get("acust_new_address_label")
+        try:
+            customer_id = create_admin_customer(admin_id, name, phone, customer_notes)
+            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")]]
+            update.message.reply_text(
+                "Cliente '{}' creado exitosamente.\n\n"
+                "Telefono: {}\n"
+                "Direccion ({}): {}".format(name, phone, label, address_text),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as e:
+            update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+
+        for key in [
+            "acust_new_customer_name", "acust_new_customer_phone", "acust_new_customer_notes",
+            "acust_new_address_label", "acust_geo_mode", "acust_geo_address_input",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return ADMIN_CUST_MENU
+
+    if mode == "dir_nueva":
+        customer_id = context.user_data.get("acust_current_customer_id")
+        label = context.user_data.get("acust_new_address_label")
+        try:
+            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "acust_new_address_label", "acust_geo_mode", "acust_geo_address_input",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    if mode == "dir_editar":
+        customer_id = context.user_data.get("acust_current_customer_id")
+        address_id = context.user_data.get("acust_current_address_id")
+        label = context.user_data.get("acust_edit_address_label")
+        try:
+            update_admin_customer_address(
+                address_id=address_id,
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                notes=notes,
+                lat=lat,
+                lng=lng,
+            )
+            update.message.reply_text("Direccion actualizada.")
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "acust_edit_address_label", "acust_current_address_id",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    update.message.reply_text("Error: sesion expirada. Intenta de nuevo desde el menu.")
+    for key in [
+        "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+        "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_editar_label(update, context):
+    """Recibe nueva etiqueta para editar direccion del admin."""
+    context.user_data["acust_edit_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la nueva direccion completa:")
+    return ADMIN_CUST_DIR_EDITAR_TEXT
+
+
+def admin_clientes_dir_editar_text(update, context):
+    """Actualiza direccion existente del admin."""
+    address_text = update.message.text.strip()
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_edit_address_label", None)
+        context.user_data.pop("acust_current_address_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["acust_pending_mode"] = "dir_editar"
+    context.user_data["acust_pending_address_text"] = address_text
+    context.user_data["acust_pending_lat"] = address.get("lat") if hasattr(address, "get") else address["lat"]
+    context.user_data["acust_pending_lng"] = address.get("lng") if hasattr(address, "get") else address["lng"]
+    context.user_data["acust_pending_notes"] = address.get("notes") if hasattr(address, "get") else address["notes"]
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_dir_editar_nota(update, context):
+    """Actualiza la nota para entrega de una direccion del admin."""
+    nota_text = update.message.text.strip()
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+
+    address = get_admin_customer_address_by_id(address_id, customer_id)
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    nueva_nota = None if nota_text.lower() == "ninguna" else nota_text
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"],
+            barrio=address["barrio"],
+            notes=nueva_nota,
+            lat=address["lat"],
+            lng=address["lng"]
+        )
+        if nueva_nota:
+            update.message.reply_text("Nota para entrega actualizada.")
+        else:
+            update.message.reply_text("Nota para entrega eliminada.")
+    except Exception as e:
+        update.message.reply_text("Error: {}".format(str(e)))
+
+    context.user_data.pop("acust_current_address_id", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_corregir_handler(update, context):
+    """Recibe texto/link para corregir coordenadas de una direccion del cliente del admin."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["acust_geo_mode"] = "corregir_coords"
+    context.user_data["acust_geo_address_input"] = text
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_DIR_CORREGIR
+    )
+    if resolved is None:
+        return ADMIN_CUST_DIR_CORREGIR
+    if isinstance(resolved, int):
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    if lat is None or lng is None:
+        update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
+        return ADMIN_CUST_DIR_CORREGIR
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("acust_geo_mode", None)
+    context.user_data.pop("acust_geo_address_input", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_corregir_location_handler(update, context):
+    """Recibe pin GPS para corregir coordenadas de una direccion del cliente del admin."""
+    loc = update.message.location
+    lat = loc.latitude
+    lng = loc.longitude
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("acust_geo_mode", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+# =========================
+# Gestion de ubicaciones de recogida del Admin (admin_dirs_conv)
+# Prefijo callbacks: adirs_
+# Prefijo user_data: adirs_
+# =========================
+
+def admin_dirs_cmd(update, context):
+    """Entry point de gestion de ubicaciones de recogida del admin."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+
+    if not db_user:
+        query.edit_message_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    admin = get_admin_by_telegram_id(user.id)
+    if not admin:
+        query.edit_message_text("Este menu es solo para administradores.")
+        return ConversationHandler.END
+
+    if admin["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como administrador aun no ha sido aprobado.")
+        return ConversationHandler.END
+
+    for key in list(context.user_data.keys()):
+        if key.startswith("adirs_"):
+            del context.user_data[key]
+    context.user_data["adirs_admin_id"] = admin["id"]
+
+    return _admin_dirs_mostrar_menu(update, context, edit_message=True)
+
+
+def _admin_dirs_mostrar_menu(update, context, edit_message=False):
+    """Muestra la lista de ubicaciones de recogida del admin."""
+    admin_id = context.user_data.get("adirs_admin_id")
+    locations = get_admin_locations(admin_id)
+
+    keyboard = []
+    if locations:
+        for loc in locations:
+            label = loc["label"] or loc["address"]
+            btn_text = "{}: {}".format(label, loc["address"][:25])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="adirs_ver_{}".format(loc["id"]))])
+
+    keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="adirs_nueva")])
+    keyboard.append([InlineKeyboardButton("Cerrar", callback_data="adirs_cerrar")])
+
+    text = "MIS DIRECCIONES DE RECOGIDA\n\nSelecciona una para editar o agrega una nueva:"
+    if not locations:
+        text = "MIS DIRECCIONES DE RECOGIDA\n\nNo tienes direcciones guardadas.\nAgrega tu primera ubicacion de recogida:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        update.effective_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return ADMIN_DIRS_MENU
+
+
+def admin_dirs_menu_callback(update, context):
+    """Maneja los callbacks del menu de ubicaciones del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("adirs_admin_id")
+
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Vuelve al menu e inicia de nuevo.")
+        return ConversationHandler.END
+
+    if data == "adirs_nueva":
+        query.edit_message_text("NUEVA UBICACION\n\nEscribe el nombre del lugar (ej: Tienda Principal, Casa):")
+        return ADMIN_DIRS_NUEVA_LABEL
+
+    elif data == "adirs_volver_menu":
+        return _admin_dirs_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "adirs_cerrar":
+        query.edit_message_text("Mis direcciones cerrado.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("adirs_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    elif data.startswith("adirs_ver_"):
+        loc_id = int(data.replace("adirs_ver_", ""))
+        return _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id)
+
+    elif data.startswith("adirs_archivar_"):
+        loc_id = int(data.replace("adirs_archivar_", ""))
+        if archive_admin_location(loc_id, admin_id):
+            query.edit_message_text("Ubicacion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la ubicacion.")
+        return _admin_dirs_mostrar_menu(update, context, edit_message=False)
+
+    elif data.startswith("adirs_editar_"):
+        loc_id = int(data.replace("adirs_editar_", ""))
+        context.user_data["adirs_editing_id"] = loc_id
+        query.edit_message_text("EDITAR UBICACION\n\nEscribe el nuevo nombre del lugar:")
+        return ADMIN_DIRS_NUEVA_LABEL
+
+    return ADMIN_DIRS_MENU
+
+
+def _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id):
+    """Muestra detalles de una ubicacion de recogida del admin."""
+    from services import get_admin_location_by_id
+    loc = get_admin_location_by_id(loc_id, admin_id)
+    if not loc:
+        query.edit_message_text("Ubicacion no encontrada.")
+        return ADMIN_DIRS_MENU
+
+    context.user_data["adirs_current_id"] = loc_id
+    label = loc["label"] or "Sin etiqueta"
+    phone_text = loc["phone"] or "Sin telefono"
+    lat = loc["lat"]
+    lng = loc["lng"]
+    coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng)) if lat and lng else "Sin coordenadas"
+
+    if lat and lng:
+        try:
+            context.bot.send_location(
+                chat_id=query.message.chat_id,
+                latitude=float(lat),
+                longitude=float(lng),
+            )
+        except Exception:
+            pass
+
+    keyboard = [
+        [InlineKeyboardButton("Editar", callback_data="adirs_editar_{}".format(loc_id))],
+        [InlineKeyboardButton("Archivar", callback_data="adirs_archivar_{}".format(loc_id))],
+        [InlineKeyboardButton("Volver", callback_data="adirs_volver_menu")],
+    ]
+
+    query.edit_message_text(
+        "{}\n{}\n\nTelefono: {}\n{}".format(label, loc["address"], phone_text, coords_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_DIRS_VER
+
+
+def admin_dirs_nueva_label_handler(update, context):
+    """Recibe label de nueva ubicacion (o editando existente)."""
+    context.user_data["adirs_new_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_DIRS_NUEVA_TEXT
+
+
+def admin_dirs_nueva_text_handler(update, context):
+    """Recibe direccion de nueva ubicacion (o editando). Geocodifica."""
+    address_text = update.message.text.strip()
+    admin_id = context.user_data.get("adirs_admin_id")
+    label = context.user_data.get("adirs_new_label", "")
+    editing_id = context.user_data.get("adirs_editing_id")
+
+    loc = resolve_location(address_text)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con coordenadas (ej: 4.81,-75.69) o un link de Google Maps."
+        )
+        return ADMIN_DIRS_NUEVA_TEXT
+
+    lat = loc.get("lat")
+    lng = loc.get("lng")
+    address_to_save = loc.get("formatted_address") or address_text
+    city = loc.get("city") or ""
+    barrio = loc.get("barrio") or ""
+
+    context.user_data["adirs_pending_address"] = address_to_save
+    context.user_data["adirs_pending_lat"] = lat
+    context.user_data["adirs_pending_lng"] = lng
+    context.user_data["adirs_pending_city"] = city
+    context.user_data["adirs_pending_barrio"] = barrio
+
+    update.message.reply_text(
+        "Escribe el telefono del punto de recogida (o 'ninguno' si no hay):"
+    )
+    return ADMIN_DIRS_NUEVA_TEL
+
+
+def admin_dirs_nueva_tel_handler(update, context):
+    """Recibe telefono y guarda la ubicacion de recogida."""
+    tel_text = update.message.text.strip()
+    phone = None if tel_text.lower() == "ninguno" else tel_text
+    admin_id = context.user_data.get("adirs_admin_id")
+    label = context.user_data.get("adirs_new_label", "")
+    address = context.user_data.get("adirs_pending_address", "")
+    city = context.user_data.get("adirs_pending_city", "")
+    barrio = context.user_data.get("adirs_pending_barrio", "")
+    lat = context.user_data.get("adirs_pending_lat")
+    lng = context.user_data.get("adirs_pending_lng")
+    editing_id = context.user_data.pop("adirs_editing_id", None)
+
+    try:
+        if editing_id:
+            update_admin_location(editing_id, admin_id, label, address, city, barrio, phone=phone, lat=lat, lng=lng)
+            update.message.reply_text("Ubicacion actualizada: {}".format(label))
+        else:
+            create_admin_location(admin_id, label, address, city, barrio, phone=phone, lat=lat, lng=lng)
+            update.message.reply_text("Ubicacion guardada: {}".format(label))
+    except Exception as e:
+        update.message.reply_text("Error al guardar: {}".format(str(e)))
+
+    for key in ["adirs_new_label", "adirs_pending_address", "adirs_pending_lat",
+                "adirs_pending_lng", "adirs_pending_city", "adirs_pending_barrio"]:
+        context.user_data.pop(key, None)
+
+    return _admin_dirs_mostrar_menu(update, context, edit_message=False)
+
+
+# =========================
 # Panel "Agenda del aliado" (/agenda)
 # =========================
 
@@ -11251,6 +12499,108 @@ pedido_incentivo_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+admin_clientes_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_clientes_cmd, pattern=r"^admin_mis_clientes$"),
+    ],
+    states={
+        ADMIN_CUST_MENU: [
+            CallbackQueryHandler(admin_clientes_menu_callback, pattern=r"^acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+        ],
+        ADMIN_CUST_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_nombre)
+        ],
+        ADMIN_CUST_NUEVO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_telefono)
+        ],
+        ADMIN_CUST_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_notas)
+        ],
+        ADMIN_CUST_NUEVO_DIR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_dir_label)
+        ],
+        ADMIN_CUST_NUEVO_DIR_TEXT: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_dir_text)
+        ],
+        ADMIN_CUST_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_buscar)
+        ],
+        ADMIN_CUST_VER: [
+            CallbackQueryHandler(admin_clientes_ver_callback, pattern=r"^acust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
+        ],
+        ADMIN_CUST_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_nombre)
+        ],
+        ADMIN_CUST_EDITAR_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_telefono)
+        ],
+        ADMIN_CUST_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_notas)
+        ],
+        ADMIN_CUST_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_nueva_label)
+        ],
+        ADMIN_CUST_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_nueva_text)
+        ],
+        ADMIN_CUST_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_label)
+        ],
+        ADMIN_CUST_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_text)
+        ],
+        ADMIN_CUST_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_nota)
+        ],
+        ADMIN_CUST_DIR_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_ciudad_handler)
+        ],
+        ADMIN_CUST_DIR_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_barrio_handler)
+        ],
+        ADMIN_CUST_DIR_CORREGIR: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.location, admin_clientes_dir_corregir_location_handler),
+            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_corregir_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+admin_dirs_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_dirs_cmd, pattern=r"^admin_mis_dirs$"),
+    ],
+    states={
+        ADMIN_DIRS_MENU: [
+            CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(nueva|volver_menu|cerrar|ver_\d+|archivar_\d+|editar_\d+)$")
+        ],
+        ADMIN_DIRS_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_label_handler)
+        ],
+        ADMIN_DIRS_NUEVA_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_text_handler)
+        ],
+        ADMIN_DIRS_NUEVA_TEL: [
+            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_tel_handler)
+        ],
+        ADMIN_DIRS_VER: [
+            CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(editar_\d+|archivar_\d+|volver_menu)$")
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
 # Conversación para "Otro monto" de la sugerencia T+5 (aplica a aliados y admins)
 offer_suggest_inc_conv = ConversationHandler(
     entry_points=[
@@ -11284,7 +12634,17 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command, admin_pedido_pickup_text_handler),
         ],
         ADMIN_PEDIDO_CUST_NAME: [
+            CallbackQueryHandler(admin_pedido_sel_cust_handler, pattern=r"^admin_pedido_sel_cust$"),
             MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_name_handler),
+        ],
+        ADMIN_PEDIDO_SEL_CUST: [
+            CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+        ],
+        ADMIN_PEDIDO_SEL_CUST_ADDR: [
+            CallbackQueryHandler(admin_pedido_addr_selected, pattern=r"^acust_pedido_addr_\d+$"),
+            CallbackQueryHandler(admin_pedido_addr_nueva, pattern=r"^acust_pedido_addr_nueva$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_CUST_PHONE: [
             MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_phone_handler),
@@ -11787,6 +13147,8 @@ def mi_admin(update, context):
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+            [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
+            [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -11833,6 +13195,8 @@ def mi_admin(update, context):
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+        [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
+        [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
@@ -15250,6 +16614,8 @@ def main():
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin
+    dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin Local/Plataforma
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta

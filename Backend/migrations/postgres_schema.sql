@@ -269,8 +269,38 @@ CREATE TABLE IF NOT EXISTS admin_locations (
     use_count INTEGER DEFAULT 0,
     is_frequent INTEGER DEFAULT 0,
     last_used_at TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS admin_customers (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_id ON admin_customers(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_phone ON admin_customers(admin_id, phone);
+
+CREATE TABLE IF NOT EXISTS admin_customer_addresses (
+    id BIGSERIAL PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    label TEXT,
+    address_text TEXT NOT NULL,
+    city TEXT,
+    barrio TEXT,
+    notes TEXT,
+    lat REAL,
+    lng REAL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id);
 
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
