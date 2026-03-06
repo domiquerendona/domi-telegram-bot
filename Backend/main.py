@@ -728,6 +728,11 @@ _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
 
+# Regex y filtro compartido para "Cancelar" / "Volver al menu".
+# Nota: se usa para evitar que ese texto sea consumido como input normal en estados con texto.
+CANCELAR_VOLVER_MENU_REGEX = r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'
+CANCELAR_VOLVER_MENU_FILTER = Filters.regex(CANCELAR_VOLVER_MENU_REGEX)
+
 
 def _handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt):
     """Helper para validar y almacenar teléfono en flujos de registro."""
@@ -11180,16 +11185,16 @@ agenda_conv = ConversationHandler(
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ubicacion)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_ubicacion)
         ],
         DIRECCIONES_PICKUP_NUEVA_DETALLES: [
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_detalles)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_detalles)
         ],
         DIRECCIONES_PICKUP_NUEVA_CIUDAD: [
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ciudad)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_ciudad)
         ],
         DIRECCIONES_PICKUP_NUEVA_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_barrio)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_barrio)
         ],
         DIRECCIONES_PICKUP_GUARDAR: [
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
@@ -11198,62 +11203,62 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
         ],
         CLIENTES_NUEVO_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
         ],
         CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
         ],
         CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
             CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_nombre)
         ],
         CLIENTES_EDITAR_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_telefono)
         ],
         CLIENTES_EDITAR_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_notas)
         ],
         CLIENTES_DIR_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_label)
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_text)
         ],
         CLIENTES_DIR_CIUDAD: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_ciudad_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_ciudad_handler)
         ],
         CLIENTES_DIR_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_barrio_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_barrio_handler)
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_nota)
         ],
         CLIENTES_DIR_CORREGIR_COORDS: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_corregir_coords_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
@@ -11275,56 +11280,56 @@ clientes_conv = ConversationHandler(
             CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
         ],
         CLIENTES_NUEVO_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
         ],
         CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
         ],
         CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
             CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_nombre)
         ],
         CLIENTES_EDITAR_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_telefono)
         ],
         CLIENTES_EDITAR_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_notas)
         ],
         CLIENTES_DIR_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_label)
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_text)
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_nota)
         ],
         CLIENTES_DIR_CORREGIR_COORDS: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_corregir_coords_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
@@ -11338,19 +11343,19 @@ clientes_conv = ConversationHandler(
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
-        ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command, ally_name)],
-        ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command, ally_owner)],
-        ALLY_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, ally_document)],
-        ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
-        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
-        ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
-        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
+        ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_name)],
+        ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_owner)],
+        ALLY_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_document)],
+        ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_phone)],
+        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_city)],
+        ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_barrio)],
+        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_address)],
         ALLY_UBICACION: [
             CallbackQueryHandler(ally_geo_ubicacion_callback, pattern=r"^ally_geo_"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_ubicacion_handler),
         ],
-        ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, ally_confirm)],
+        ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_confirm)],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
     fallbacks=[
@@ -11366,48 +11371,48 @@ courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
     states={
         COURIER_FULLNAME: [
-            MessageHandler(Filters.text & ~Filters.command, courier_fullname)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_fullname)
         ],
         COURIER_IDNUMBER: [
-            MessageHandler(Filters.text & ~Filters.command, courier_idnumber)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_idnumber)
         ],
         COURIER_PHONE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_phone)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_phone)
         ],
         COURIER_CITY: [
-            MessageHandler(Filters.text & ~Filters.command, courier_city)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_city)
         ],
         COURIER_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, courier_barrio)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_barrio)
         ],
         COURIER_RESIDENCE_ADDRESS: [
-            MessageHandler(Filters.text & ~Filters.command, courier_residence_address)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_address)
         ],
         COURIER_RESIDENCE_LOCATION: [
             CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
             MessageHandler(Filters.location, courier_residence_location),
-            MessageHandler(Filters.text & ~Filters.command, courier_residence_location),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_location),
         ],
         COURIER_PLATE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_plate)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_plate)
         ],
         COURIER_BIKETYPE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_biketype)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_biketype)
         ],
         COURIER_CEDULA_FRONT: [
             MessageHandler(Filters.photo, courier_cedula_front),
-            MessageHandler(Filters.text & ~Filters.command, courier_cedula_front),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_cedula_front),
         ],
         COURIER_CEDULA_BACK: [
             MessageHandler(Filters.photo, courier_cedula_back),
-            MessageHandler(Filters.text & ~Filters.command, courier_cedula_back),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_cedula_back),
         ],
         COURIER_SELFIE: [
             MessageHandler(Filters.photo, courier_selfie),
-            MessageHandler(Filters.text & ~Filters.command, courier_selfie),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_selfie),
         ],
         COURIER_CONFIRM: [
-            MessageHandler(Filters.text & ~Filters.command, courier_confirm)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_confirm)
         ],
         COURIER_TEAM: [
             CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team:")
@@ -12256,19 +12261,19 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_pickup_geo_callback, pattern=r"^ruta_pickup_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ubicacion_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_ubicacion_handler),
         ],
         RUTA_PICKUP_NUEVA_DETALLES: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_detalles_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_detalles_handler),
         ],
         RUTA_PICKUP_NUEVA_CIUDAD: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ciudad_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_ciudad_handler),
         ],
         RUTA_PICKUP_NUEVA_BARRIO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_barrio_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_barrio_handler),
         ],
         RUTA_PICKUP_GUARDAR: [
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
@@ -12281,36 +12286,36 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_PARADA_NOMBRE: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_nombre_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_nombre_handler),
         ],
         RUTA_PARADA_TELEFONO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_telefono_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_telefono_handler),
         ],
         RUTA_PARADA_UBICACION: [
             CallbackQueryHandler(ruta_parada_geo_callback, pattern=r"^ruta_parada_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_parada_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_ubicacion_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ubicacion_handler),
         ],
         RUTA_PARADA_DIRECCION: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_direccion_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_direccion_handler),
         ],
         RUTA_PARADA_CIUDAD: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_ciudad_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ciudad_handler),
         ],
         RUTA_PARADA_BARRIO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_barrio_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_barrio_handler),
         ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
         ],
         RUTA_DISTANCIA_KM: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_distancia_km_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
@@ -12387,41 +12392,41 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_BUSCAR_CLIENTE: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_buscar_cliente)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_buscar_cliente)
         ],
         PEDIDO_SELECCIONAR_DIRECCION: [
             CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^(pedido_(nueva_dir|sel_addr_\d+)|guardar_dir_cliente_(si|no))$")
         ],
         PEDIDO_INSTRUCCIONES_EXTRA: [
             CallbackQueryHandler(pedido_instrucciones_callback, pattern=r"^pedido_instr_"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_instrucciones_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_instrucciones_text)
         ],
         PEDIDO_TIPO_SERVICIO: [
             CallbackQueryHandler(pedido_tipo_servicio_callback, pattern=r"^pedido_tipo_"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_tipo_servicio)
         ],
         PEDIDO_COMPRAS_CANTIDAD: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_compras_cantidad_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_compras_cantidad_handler)
         ],
         PEDIDO_NOMBRE: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_nombre_cliente)
         ],
         PEDIDO_TELEFONO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_telefono_cliente)
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             CallbackQueryHandler(pedido_geo_ubicacion_callback, pattern=r"^pedido_geo_"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
             CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
@@ -12434,19 +12439,19 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_pickup_geo_callback, pattern=r"^pickup_geo_"),
             MessageHandler(Filters.location, pedido_pickup_nueva_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_ubicacion_handler)
         ],
         PEDIDO_PICKUP_NUEVA_DETALLES: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_detalles_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_detalles_handler)
         ],
         PEDIDO_PICKUP_NUEVA_CIUDAD: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ciudad_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_ciudad_handler),
         ],
         PEDIDO_PICKUP_NUEVA_BARRIO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_barrio_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_barrio_handler),
         ],
         PEDIDO_PICKUP_GUARDAR: [
             CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
@@ -12457,18 +12462,18 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_VALOR_BASE: [
             CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto)
         ],
         PEDIDO_CONFIRMACION: [
             CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
             CallbackQueryHandler(pedido_incentivo_fixed_callback, pattern=r"^pedido_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(pedido_incentivo_otro_start, pattern=r"^pedido_inc_otro$"),
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_confirmacion)
         ],
         PEDIDO_INCENTIVO_MONTO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_incentivo_monto_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_incentivo_monto_handler),
         ],
         PEDIDO_GUARDAR_CLIENTE: [
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
@@ -12489,7 +12494,7 @@ pedido_incentivo_conv = ConversationHandler(
     states={
         PEDIDO_INCENTIVO_MONTO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_incentivo_existing_monto_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_incentivo_existing_monto_handler),
         ],
     },
     fallbacks=[
@@ -12508,62 +12513,62 @@ admin_clientes_conv = ConversationHandler(
             CallbackQueryHandler(admin_clientes_menu_callback, pattern=r"^acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         ADMIN_CUST_NUEVO_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_nombre)
         ],
         ADMIN_CUST_NUEVO_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_telefono)
         ],
         ADMIN_CUST_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_notas)
         ],
         ADMIN_CUST_NUEVO_DIR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_dir_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_label)
         ],
         ADMIN_CUST_NUEVO_DIR_TEXT: [
             CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_nuevo_dir_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_text)
         ],
         ADMIN_CUST_BUSCAR: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_buscar)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_buscar)
         ],
         ADMIN_CUST_VER: [
             CallbackQueryHandler(admin_clientes_ver_callback, pattern=r"^acust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         ADMIN_CUST_EDITAR_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_nombre)
         ],
         ADMIN_CUST_EDITAR_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_telefono)
         ],
         ADMIN_CUST_EDITAR_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_editar_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_notas)
         ],
         ADMIN_CUST_DIR_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_nueva_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_nueva_label)
         ],
         ADMIN_CUST_DIR_NUEVA_TEXT: [
             CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_nueva_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_nueva_text)
         ],
         ADMIN_CUST_DIR_EDITAR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_label)
         ],
         ADMIN_CUST_DIR_EDITAR_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_text)
         ],
         ADMIN_CUST_DIR_EDITAR_NOTA: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_editar_nota)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_nota)
         ],
         ADMIN_CUST_DIR_CIUDAD: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_ciudad_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_ciudad_handler)
         ],
         ADMIN_CUST_DIR_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_barrio_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_barrio_handler)
         ],
         ADMIN_CUST_DIR_CORREGIR: [
             CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
             MessageHandler(Filters.location, admin_clientes_dir_corregir_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, admin_clientes_dir_corregir_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_corregir_handler),
         ],
     },
     fallbacks=[
@@ -12582,13 +12587,13 @@ admin_dirs_conv = ConversationHandler(
             CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(nueva|volver_menu|cerrar|ver_\d+|archivar_\d+|editar_\d+)$")
         ],
         ADMIN_DIRS_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_label_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_label_handler)
         ],
         ADMIN_DIRS_NUEVA_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_text_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_text_handler)
         ],
         ADMIN_DIRS_NUEVA_TEL: [
-            MessageHandler(Filters.text & ~Filters.command, admin_dirs_nueva_tel_handler)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_tel_handler)
         ],
         ADMIN_DIRS_VER: [
             CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(editar_\d+|archivar_\d+|volver_menu)$")
@@ -12609,7 +12614,7 @@ offer_suggest_inc_conv = ConversationHandler(
     states={
         OFFER_SUGGEST_INC_MONTO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, offer_suggest_inc_monto_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, offer_suggest_inc_monto_handler),
         ],
     },
     fallbacks=[
@@ -12631,11 +12636,11 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_geo_pickup_callback, pattern=r"^admin_pedido_geo_pickup_(si|no)$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.location, admin_pedido_pickup_gps_handler),
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_pickup_text_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_pickup_text_handler),
         ],
         ADMIN_PEDIDO_CUST_NAME: [
             CallbackQueryHandler(admin_pedido_sel_cust_handler, pattern=r"^admin_pedido_sel_cust$"),
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_name_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_name_handler),
         ],
         ADMIN_PEDIDO_SEL_CUST: [
             CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
@@ -12647,15 +12652,15 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_CUST_PHONE: [
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_phone_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_phone_handler),
         ],
         ADMIN_PEDIDO_CUST_ADDR: [
             CallbackQueryHandler(admin_pedido_geo_callback, pattern=r"^admin_pedido_geo_(si|no)$"),
             MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_cust_addr_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
         ],
         ADMIN_PEDIDO_TARIFA: [
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_tarifa_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
         ],
         ADMIN_PEDIDO_INSTRUC: [
             CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
@@ -12663,10 +12668,10 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
             CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_instruc_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_instruc_handler),
         ],
         ADMIN_PEDIDO_INC_MONTO: [
-            MessageHandler(Filters.text & ~Filters.command, admin_pedido_inc_monto_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_inc_monto_handler),
         ],
     },
     fallbacks=[
@@ -12687,16 +12692,16 @@ ally_locs_conv = ConversationHandler(
         ],
         ALLY_LOCS_ADD_COORDS: [
             MessageHandler(Filters.location, ally_locs_add_coords_location),
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_coords),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_coords),
         ],
         ALLY_LOCS_ADD_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_label),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_label),
         ],
         ALLY_LOCS_ADD_CITY: [
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_city),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_city),
         ],
         ALLY_LOCS_ADD_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_barrio),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_barrio),
         ],
     },
     fallbacks=[
@@ -12724,17 +12729,17 @@ cotizar_conv = ConversationHandler(
             CallbackQueryHandler(cotizar_pickup_callback, pattern=r"^cotizar_pickup_"),
         ],
         COTIZAR_DISTANCIA: [
-            MessageHandler(Filters.text & ~Filters.command, cotizar_distancia),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_distancia),
         ],
         COTIZAR_RECOGIDA: [
             CallbackQueryHandler(cotizar_recogida_geo_callback, pattern=r"^cotizar_recogida_geo_"),
             MessageHandler(Filters.location, cotizar_recogida_location),
-            MessageHandler(Filters.text & ~Filters.command, cotizar_recogida),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_recogida),
         ],
         COTIZAR_ENTREGA: [
             CallbackQueryHandler(cotizar_entrega_geo_callback, pattern=r"^cotizar_entrega_geo_"),
             MessageHandler(Filters.location, cotizar_entrega_location),
-            MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_entrega),
         ],
         COTIZAR_RESULTADO: [
             CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|crear_ruta|cerrar)$"),
@@ -13084,7 +13089,7 @@ def config_alertas_oferta_input(update, context):
 tarifas_conv = ConversationHandler(
     entry_points=[CommandHandler("tarifas", tarifas_start)],
     states={
-        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
+        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, tarifas_set_valor)]
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
@@ -16637,11 +16642,11 @@ def main():
         ],
         states={
             RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
-            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
+            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
             RECARGAR_COMPROBANTE: [
                 MessageHandler(Filters.photo, recargar_comprobante),
-                MessageHandler(Filters.text & ~Filters.command, recargar_comprobante_texto),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recargar_comprobante_texto),
             ],
         },
         fallbacks=[
@@ -16662,10 +16667,10 @@ def main():
         ],
         states={
             PAGO_MENU: [CallbackQueryHandler(pagos_callback, pattern=r"^pagos_")],
-            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
-            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command, pago_banco)],
-            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command, pago_titular)],
-            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command, pago_instrucciones)],
+            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_telefono)],
+            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_banco)],
+            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_titular)],
+            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_instrucciones)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
@@ -16682,9 +16687,9 @@ def main():
             CallbackQueryHandler(ingreso_iniciar_callback, pattern=r"^ingreso_iniciar$"),
         ],
         states={
-            INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command, ingreso_monto_handler)],
+            INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_monto_handler)],
             INGRESO_METODO: [CallbackQueryHandler(ingreso_metodo_callback, pattern=r"^ingreso_")],
-            INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command, ingreso_nota_handler)],
+            INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_nota_handler)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
@@ -16704,31 +16709,31 @@ def main():
         ],
 
         states={
-            LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
-            LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
-            LOCAL_ADMIN_TEAMNAME: [MessageHandler(Filters.text & ~Filters.command, admin_teamname)],
-            LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
-            LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
-            LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
-            LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, admin_residence_address)],
+            LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_name)],
+            LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_document)],
+            LOCAL_ADMIN_TEAMNAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_teamname)],
+            LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_phone)],
+            LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_city)],
+            LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_barrio)],
+            LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_residence_address)],
             LOCAL_ADMIN_RESIDENCE_LOCATION: [
                 CallbackQueryHandler(admin_geo_ubicacion_callback, pattern=r"^admin_geo_"),
                 MessageHandler(Filters.location, admin_residence_location),
-                MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_residence_location),
             ],
             LOCAL_ADMIN_CEDULA_FRONT: [
                 MessageHandler(Filters.photo, admin_cedula_front),
-                MessageHandler(Filters.text & ~Filters.command, admin_cedula_front),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_cedula_front),
             ],
             LOCAL_ADMIN_CEDULA_BACK: [
                 MessageHandler(Filters.photo, admin_cedula_back),
-                MessageHandler(Filters.text & ~Filters.command, admin_cedula_back),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_cedula_back),
             ],
             LOCAL_ADMIN_SELFIE: [
                 MessageHandler(Filters.photo, admin_selfie),
-                MessageHandler(Filters.text & ~Filters.command, admin_selfie),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_selfie),
             ],
-            LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, admin_confirm)],
+            LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_confirm)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
@@ -16738,7 +16743,7 @@ def main():
         ],
     )
     dp.add_handler(admin_conv)
-    dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command, chgreq_reject_reason_handler))
+    dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, chgreq_reject_reason_handler))
 
     dp.add_handler(MessageHandler(
         Filters.text & Filters.regex(r'^\d[\d.,\$]*$') & ~Filters.command,
