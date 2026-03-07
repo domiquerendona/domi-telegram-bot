@@ -16590,6 +16590,21 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
+
+    # -------------------------
+    # Conversaciones completas
+    # -------------------------
+    dp.add_handler(ally_conv)          # /soy_aliado
+    dp.add_handler(courier_conv)       # /soy_repartidor
+    dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
+    dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
+    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    # Estos tres deben ir ANTES del handler global ^admin_ para que sus entry points no sean interceptados
+    dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
+    dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
+    dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
+
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
     # Configuracion de tarifas (botones pricing_*)
@@ -16615,19 +16630,6 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-
-    # -------------------------
-    # Conversaciones completas
-    # -------------------------
-    dp.add_handler(ally_conv)          # /soy_aliado
-    dp.add_handler(courier_conv)       # /soy_repartidor
-    dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
-    dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
-    dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
-    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
-    dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin
-    dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin
-    dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin Local/Plataforma
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
