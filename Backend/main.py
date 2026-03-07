@@ -16364,15 +16364,16 @@ def _courier_activate_common(update, context, reply_func):
         return
 
     # Verificar que tiene equipo activo y saldo suficiente para activarse
-    admin_link = get_admin_link_for_courier(courier["id"])
-    if not admin_link or admin_link.get("link_status") != "APPROVED":
+    admin_link = get_approved_admin_link_for_courier(courier["id"])
+    admin_id = _row_value(admin_link, "admin_id")
+    if not admin_id:
         reply_func(
             "No puedes activarte porque no tienes un equipo activo asignado. "
             "Contacta a tu administrador."
         )
         return
 
-    saldo = get_courier_link_balance(courier["id"], admin_link["admin_id"])
+    saldo = int(_row_value(admin_link, "balance", 0) or 0)
     if saldo < 300:
         reply_func(
             "No puedes activarte porque tu saldo es insuficiente.\n\n"
