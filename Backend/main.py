@@ -8165,7 +8165,7 @@ def cotizar_pickup_callback(update, context):
         except (ValueError, IndexError):
             query.edit_message_text("Error: intenta /cotizar de nuevo.")
             return ConversationHandler.END
-        loc = get_ally_location_by_id(loc_id)
+        loc = get_ally_location_by_id(loc_id, ally_id)
         if not loc or loc.get("lat") is None:
             return _cotizar_mostrar_lista(query, ally_id, "SIN GPS - ELIGE OTRA")
         context.user_data["cotizar_pickup"] = {
