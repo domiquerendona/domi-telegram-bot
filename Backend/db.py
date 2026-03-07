@@ -74,7 +74,7 @@ def _sync_ally_link_status(cur, ally_id: int, status: str, now_sql: str):
     """Sincroniza admin_allies.status con el nuevo estado del aliado."""
     if status == "APPROVED":
         cur.execute(
-            f"SELECT id FROM admin_allies WHERE ally_id = {P} ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id FROM admin_allies WHERE ally_id = {P} ORDER BY updated_at DESC LIMIT 1",
             (ally_id,),
         )
         link_row = cur.fetchone()
@@ -100,7 +100,7 @@ def _sync_courier_link_status(cur, courier_id: int, status: str, now_sql: str):
     """Sincroniza admin_couriers.status con el nuevo estado del repartidor."""
     if status == "APPROVED":
         cur.execute(
-            f"SELECT id FROM admin_couriers WHERE courier_id = {P} ORDER BY created_at DESC LIMIT 1",
+            f"SELECT id FROM admin_couriers WHERE courier_id = {P} ORDER BY updated_at DESC LIMIT 1",
             (courier_id,),
         )
         link_row = cur.fetchone()
@@ -222,7 +222,7 @@ def get_or_create_identity(phone: str, document_number: str, full_name: str = No
         conflict = cur.fetchone()
         if conflict:
             conn.close()
-            raise ValueError("Esta cédula ya está registrada con otro teléfono.")
+            return _row_value(conflict, "id", 0)
 
     # 3) Crear nueva identidad con documento real o placeholder
     final_doc = doc_n if doc_n else placeholder
@@ -455,6 +455,27 @@ def init_db():
             UNIQUE(api_name, usage_date)
         );
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS api_usage_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_name TEXT NOT NULL,
+            api_operation TEXT NOT NULL,
+            usage_date TEXT NOT NULL,
+            success INTEGER DEFAULT 1,
+            blocked INTEGER DEFAULT 0,
+            units INTEGER DEFAULT 1,
+            units_kind TEXT DEFAULT 'call',
+            cost_usd REAL DEFAULT 0,
+            http_status INTEGER,
+            provider_status TEXT,
+            error_message TEXT,
+            meta_json TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_date ON api_usage_events(api_name, usage_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_op_date ON api_usage_events(api_name, api_operation, usage_date)")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS map_distance_cache (
@@ -781,6 +802,27 @@ def init_db():
         );
     """)
 
+    # Tabla: admin_locations (direcciones de recogida del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            barrio TEXT NOT NULL,
+            phone TEXT,
+            lat REAL,
+            lng REAL,
+            is_default INTEGER DEFAULT 0,
+            use_count INTEGER DEFAULT 0,
+            is_frequent INTEGER DEFAULT 0,
+            last_used_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+
     # Tabla: profile_change_requests (solicitudes de cambio de perfil)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS profile_change_requests (
@@ -843,7 +885,8 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ally_id INTEGER NOT NULL,
+            ally_id INTEGER,
+            creator_admin_id INTEGER,
             courier_id INTEGER,
             status TEXT DEFAULT 'PENDING',
             customer_name TEXT NOT NULL,
@@ -1021,6 +1064,46 @@ def init_db():
     # Índice para búsqueda por cliente
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_customer_addresses_customer_id ON ally_customer_addresses(customer_id)")
 
+    # H) TABLAS PARA AGENDA DEL ADMIN (admin_customers)
+    # ============================================================
+
+    # Tabla: admin_customers (clientes recurrentes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_id ON admin_customers(admin_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_phone ON admin_customers(admin_id, phone)")
+
+    # Tabla: admin_customer_addresses (direcciones de clientes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_customer_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            label TEXT,
+            address_text TEXT NOT NULL,
+            city TEXT,
+            barrio TEXT,
+            notes TEXT,
+            lat REAL,
+            lng REAL,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (customer_id) REFERENCES admin_customers(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id)")
+
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
     order_columns = [col[1] for col in cur.fetchall()]
@@ -1070,6 +1153,14 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN ally_admin_id_snapshot INTEGER")
     if 'courier_admin_id_snapshot' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN courier_admin_id_snapshot INTEGER")
+    if 'courier_arrived_at' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_arrived_at TEXT")
+    if 'courier_accepted_lat' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lat REAL")
+    if 'courier_accepted_lng' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lng REAL")
+    if 'creator_admin_id' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN creator_admin_id INTEGER")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -1104,6 +1195,10 @@ def init_db():
     except Exception:
         pass
     try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN live_location_expires_at TEXT;")
+    except Exception:
+        pass
+    try:
         cur.execute("ALTER TABLE couriers ADD COLUMN availability_status TEXT DEFAULT 'INACTIVE';")
     except Exception:
         pass
@@ -1124,6 +1219,12 @@ def init_db():
             "INSERT INTO terms_versions (role, version, url, sha256, is_active) VALUES (?, ?, ?, ?, ?)",
             ('ALLY', 'ALLY_V1', 'https://domiquerendona.com/terms/ally', sha256_hash, 1)
         )
+
+    # Migración: agregar status a admin_locations (soft delete)
+    cur.execute("PRAGMA table_info(admin_locations)")
+    admin_loc_cols = [col[1] for col in cur.fetchall()]
+    if 'status' not in admin_loc_cols:
+        cur.execute("ALTER TABLE admin_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
 
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
@@ -1469,6 +1570,7 @@ def _init_db_postgres():
         ("residence_address", "TEXT"),
         ("residence_lat", "REAL"),
         ("residence_lng", "REAL"),
+        ("live_location_expires_at", "TIMESTAMP"),
         ("cedula_front_file_id", "TEXT"),
         ("cedula_back_file_id", "TEXT"),
         ("selfie_file_id", "TEXT"),
@@ -1494,9 +1596,21 @@ def _init_db_postgres():
         ("dropoff_lat", "REAL"),
         ("dropoff_lng", "REAL"),
         ("quote_source", "TEXT"),
+        ("courier_arrived_at", "TIMESTAMP"),
+        ("courier_accepted_lat", "REAL"),
+        ("courier_accepted_lng", "REAL"),
         ("canceled_by", "TEXT"),
+        ("creator_admin_id", "BIGINT"),
     ]:
         _pg_add_col("orders", col, ctype)
+
+    # ally_id en orders: permite NULL para pedidos creados por admin
+    cur.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'orders' AND column_name = 'ally_id' AND is_nullable = 'NO'"
+    )
+    if cur.fetchone():
+        cur.execute("ALTER TABLE orders ALTER COLUMN ally_id DROP NOT NULL")
 
     # map_link_cache
     for col, ctype in [
@@ -1511,6 +1625,9 @@ def _init_db_postgres():
 
     # terms_versions
     _pg_add_col("terms_versions", "is_active", "INTEGER DEFAULT 1")
+
+    # admin_locations: agregar status para soft delete
+    _pg_add_col("admin_locations", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
 
     # 3) Migraciones de datos (idempotentes)
 
@@ -2136,6 +2253,15 @@ def reset_offer_queue(order_id: int):
     conn.close()
 
 
+def clear_offer_queue(order_id: int):
+    """Elimina todos los registros de la cola de ofertas de un pedido para permitir re-oferta completa."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM order_offer_queue WHERE order_id = {P};", (order_id,))
+    conn.commit()
+    conn.close()
+
+
 def delete_offer_queue(order_id: int):
     """Elimina la cola de ofertas de un pedido (al cancelar o completar)."""
     conn = get_connection()
@@ -2221,7 +2347,7 @@ def deactivate_courier(courier_id: int):
     conn.close()
 
 
-def update_courier_live_location(courier_id: int, lat: float, lng: float):
+def update_courier_live_location(courier_id: int, lat: float, lng: float, live_period_seconds: int = None):
     """Actualiza ubicacion en vivo y mantiene availability_status en estado estandar."""
     retries = 5
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -2229,13 +2355,39 @@ def update_courier_live_location(courier_id: int, lat: float, lng: float):
         conn = get_connection()
         try:
             cur = conn.cursor()
+            set_clauses = [
+                f"live_lat = {P}",
+                f"live_lng = {P}",
+                "live_location_active = 1",
+                f"live_location_updated_at = {now_sql}",
+                "availability_status = 'APPROVED'",
+            ]
+            params = [lat, lng]
+
+            if live_period_seconds is not None:
+                try:
+                    seconds = int(live_period_seconds)
+                except Exception:
+                    seconds = None
+                if seconds and seconds > 0:
+                    if DB_ENGINE == "postgres":
+                        set_clauses.append(
+                            f"live_location_expires_at = NOW() + ({P} * INTERVAL '1 second')"
+                        )
+                        params.append(seconds)
+                    else:
+                        set_clauses.append(
+                            f"live_location_expires_at = datetime('now', {P})"
+                        )
+                        params.append(f"+{seconds} seconds")
+
+            params.append(courier_id)
             cur.execute(
-                f"UPDATE couriers SET live_lat = {P}, live_lng = {P}, "
-                f"live_location_active = 1, live_location_updated_at = {now_sql}, "
-                f"availability_status = 'APPROVED' WHERE id = {P};",
-                (lat, lng, courier_id))
+                f"UPDATE couriers SET {', '.join(set_clauses)} WHERE id = {P};",
+                tuple(params),
+            )
             conn.commit()
-            return
+            return True
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "database is locked" in message and attempt < retries - 1:
@@ -2280,18 +2432,30 @@ def get_courier_availability(courier_id: int) -> str:
     return "INACTIVE"
 
 
-def expire_stale_live_locations(timeout_seconds: int = 120):
+def expire_stale_live_locations(stale_timeout_seconds: int = 900):
     """
-    Marca como INACTIVE a couriers con live_location vencida.
+    Desactiva completamente couriers con live_location vencida.
+    - Regla principal: si live_location_expires_at ya paso.
+    - Regla secundaria (fallback): si expires_at IS NULL y no hay updates en stale_timeout_seconds.
+      El fallback NO aplica cuando expires_at esta definido y aun es futuro.
     Retorna la lista de courier_ids afectados.
     """
     retries = 5
     if DB_ENGINE == "postgres":
-        threshold_sql = f"NOW() - ({P} * INTERVAL '1 second')"
-        threshold_param = (timeout_seconds,)
+        stale_threshold_sql = f"NOW() - ({P} * INTERVAL '1 second')"
+        condition_sql = (
+            f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < NOW()) "
+            f"OR (live_location_expires_at IS NULL AND "
+            f"(live_location_updated_at IS NULL OR live_location_updated_at < {stale_threshold_sql})))"
+        )
+        condition_params = (stale_timeout_seconds,)
     else:
-        threshold_sql = f"datetime('now', {P} || ' seconds')"
-        threshold_param = ('-' + str(timeout_seconds),)
+        condition_sql = (
+            f"((live_location_expires_at IS NOT NULL AND live_location_expires_at < datetime('now')) "
+            f"OR (live_location_expires_at IS NULL AND "
+            f"(live_location_updated_at IS NULL OR live_location_updated_at < datetime('now', {P}))))"
+        )
+        condition_params = (f"-{stale_timeout_seconds} seconds",)
     for attempt in range(retries):
         conn = get_connection()
         try:
@@ -2302,18 +2466,19 @@ def expire_stale_live_locations(timeout_seconds: int = 120):
                 SELECT id FROM couriers
                 WHERE availability_status = 'APPROVED'
                   AND live_location_active = 1
-                  AND live_location_updated_at < {threshold_sql}
-            """, threshold_param)
+                  AND {condition_sql}
+            """, condition_params)
             expired = [row[0] if not isinstance(row, dict) else row["id"] for row in cur.fetchall()]
 
             if expired:
                 cur.execute(f"""
                     UPDATE couriers
-                    SET availability_status = 'INACTIVE', live_location_active = 0
+                    SET availability_status = 'INACTIVE', live_location_active = 0,
+                        is_active = 0, available_cash = 0
                     WHERE availability_status = 'APPROVED'
                       AND live_location_active = 1
-                      AND live_location_updated_at < {threshold_sql}
-                """, threshold_param)
+                      AND {condition_sql}
+                """, condition_params)
                 conn.commit()
 
             return expired
@@ -2448,25 +2613,94 @@ def release_order_from_courier(order_id: int):
     conn.close()
 
 
-def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
+def set_courier_arrived(order_id: int):
+    """Marca la llegada GPS del courier al punto de recogida. Idempotente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE orders SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        (order_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_courier_accepted_location(order_id: int, lat: float, lng: float):
+    """Guarda la posición del courier en el momento de aceptar (base para T+5)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE orders SET courier_accepted_lat = {P}, courier_accepted_lng = {P} WHERE id = {P};",
+        (lat, lng, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_active_order_for_courier(courier_id: int):
+    """Retorna el pedido activo asignado a este courier (ACCEPTED/PICKED_UP), o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT *
+        FROM orders
+        WHERE courier_id = {P}
+          AND status IN ('ACCEPTED', 'PICKED_UP')
+        ORDER BY accepted_at DESC
+        LIMIT 1;
+        """,
+        (courier_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_active_route_for_courier(courier_id: int):
+    """Retorna la ruta activa asignada a este courier (ACCEPTED), o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT *
+        FROM routes
+        WHERE courier_id = {P}
+          AND status = 'ACCEPTED'
+        ORDER BY accepted_at DESC
+        LIMIT 1;
+        """,
+        (courier_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                                       requires_cash: bool = False,
                                       cash_required_amount: int = 0,
                                       pickup_lat: float = None,
                                       pickup_lng: float = None):
     """
-    Devuelve couriers elegibles para un pedido, filtrados por:
-    - Aprobados y activos en el equipo
+    Devuelve couriers elegibles para un pedido en la red cooperativa.
+    Busca TODOS los couriers activos sin restriccion de equipo/admin.
+    Cada courier opera bajo su propio admin (cuya comision se cobra por separado).
+
+    Filtros:
+    - Vinculo APPROVED con cualquier admin (is_active garantizado por el vinculo)
     - No eliminados
-    - is_active = 1 (courier se activo y declaro base)
+    - is_active = 1 (courier declaro base)
+    - live_location_active = 1 (courier compartiendo GPS en vivo)
     - No vetados por el aliado (si ally_id dado)
     - Con base suficiente (si requires_cash)
 
     Ordenamiento inteligente:
-    1. APPROVED + live_location_active=1 primero, por distancia al pickup
-    2. APPROVED + live_location_active=0 segundo, por distancia
-    3. INACTIVE al final por available_cash DESC (fallback)
+    1. Por distancia al pickup si hay coordenadas (max 7 km)
+    2. Por available_cash DESC como fallback
 
-    Si no hay pickup_lat/lng, usa el orden por available_cash DESC como antes.
+    admin_id: ignorado (conservado por compatibilidad de llamadas existentes).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -2478,13 +2712,13 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
-        WHERE ac.admin_id = {P}
-          AND ac.status = 'APPROVED'
+        WHERE ac.status = 'APPROVED'
           AND c.status = 'APPROVED'
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
           AND c.is_active = 1
+          AND c.live_location_active = 1
     """
-    params = [admin_id]
+    params = []
 
     if ally_id:
         query += f"""
@@ -2568,7 +2802,36 @@ def get_eligible_couriers_for_order(admin_id: int, ally_id: int = None,
 
         result.sort(key=_sort_key)
 
+        # Filtrar por radio maximo de 7 km desde el punto de recogida.
+        # Repartidores sin coordenadas conocidas quedan excluidos del radio.
+        MAX_OFFER_RADIUS_KM = 7.0
+        within = []
+        for c in result:
+            clat = c.get("live_lat") or c.get("residence_lat")
+            clng = c.get("live_lng") or c.get("residence_lng")
+            if clat is not None and clng is not None:
+                if _haversine(pickup_lat, pickup_lng, clat, clng) <= MAX_OFFER_RADIUS_KM:
+                    within.append(c)
+        result = within
+
     return result
+
+
+def get_approved_admin_id_for_courier(courier_id: int):
+    """Retorna el admin_id del vínculo APPROVED activo del repartidor, o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT admin_id FROM admin_couriers
+        WHERE courier_id = {P} AND status = 'APPROVED'
+        ORDER BY updated_at DESC
+        LIMIT 1;
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return int(_row_value(row, "admin_id", 0))
 
 
 def list_ally_links_by_admin(admin_id: int, limit: int = 20, offset: int = 0):
@@ -3403,6 +3666,57 @@ def get_couriers_by_admin_and_status(admin_id, status):
     return rows
     
 
+def get_pending_allies_by_admin(admin_id):
+    """Devuelve aliados con vínculo PENDING para un admin (espejo de get_pending_couriers_by_admin)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            a.barrio
+        FROM admin_allies aa
+        JOIN allies a ON a.id = aa.ally_id
+        WHERE aa.admin_id = {P}
+          AND aa.status = 'PENDING'
+          AND a.status != 'REJECTED'
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY aa.created_at ASC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_allies_by_admin_and_status(admin_id, status):
+    """Lista aliados de un admin por estado del vínculo (espejo de get_couriers_by_admin_and_status)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            a.barrio,
+            aa.balance,
+            aa.status
+        FROM admin_allies aa
+        JOIN allies a ON a.id = aa.ally_id
+        WHERE aa.admin_id = {P}
+          AND aa.status = {P}
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY a.business_name ASC
+    """, (admin_id, status))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def create_admin_courier_link(admin_id: int, courier_id: int):
     conn = get_connection()
     cur = conn.cursor()
@@ -3668,6 +3982,166 @@ def update_ally_location_coords(location_id: int, lat: float, lng: float):
     conn.close()
 
 
+# ---------- DIRECCIONES DE ADMIN (admin_locations) ----------
+
+def create_admin_location(
+    admin_id: int,
+    label: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str = None,
+    lat: float = None,
+    lng: float = None,
+    is_default: bool = False,
+):
+    """Crea una dirección de recogida para un admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if is_default:
+        cur.execute(
+            f"UPDATE admin_locations SET is_default = 0 WHERE admin_id = {P};",
+            (admin_id,),
+        )
+    location_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_locations (
+            admin_id, label, address, city, barrio, phone, is_default, lat, lng
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+    """, (admin_id, label, address, city, barrio, phone, 1 if is_default else 0, lat, lng))
+    conn.commit()
+    conn.close()
+    return location_id
+
+
+def get_admin_locations(admin_id: int):
+    """Devuelve todas las direcciones de un admin ordenadas por prioridad."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE admin_id = {P} AND (status IS NULL OR status = 'ACTIVE')
+        ORDER BY is_default DESC, is_frequent DESC, use_count DESC, id ASC;
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": _row_value(row, "id"),
+            "admin_id": _row_value(row, "admin_id"),
+            "label": _row_value(row, "label"),
+            "address": _row_value(row, "address"),
+            "city": _row_value(row, "city"),
+            "barrio": _row_value(row, "barrio"),
+            "phone": _row_value(row, "phone"),
+            "is_default": _row_value(row, "is_default"),
+            "lat": _row_value(row, "lat"),
+            "lng": _row_value(row, "lng"),
+            "use_count": _row_value(row, "use_count") or 0,
+            "is_frequent": _row_value(row, "is_frequent") or 0,
+            "last_used_at": _row_value(row, "last_used_at"),
+        }
+        for row in rows
+    ]
+
+
+def get_admin_location_by_id(location_id: int, admin_id: int):
+    """Devuelve una dirección específica de un admin como dict (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE id = {P} AND admin_id = {P}
+        LIMIT 1;
+    """, (location_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": _row_value(row, "id"),
+        "admin_id": _row_value(row, "admin_id"),
+        "label": _row_value(row, "label"),
+        "address": _row_value(row, "address"),
+        "city": _row_value(row, "city"),
+        "barrio": _row_value(row, "barrio"),
+        "phone": _row_value(row, "phone"),
+        "is_default": _row_value(row, "is_default"),
+        "lat": _row_value(row, "lat"),
+        "lng": _row_value(row, "lng"),
+        "use_count": _row_value(row, "use_count") or 0,
+        "is_frequent": _row_value(row, "is_frequent") or 0,
+        "last_used_at": _row_value(row, "last_used_at"),
+    }
+
+
+def get_default_admin_location(admin_id: int):
+    """Devuelve la dirección principal de un admin como dict (o None)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, label, address, city, barrio, phone, is_default,
+               lat, lng, use_count, is_frequent, last_used_at, created_at
+        FROM admin_locations
+        WHERE admin_id = {P} AND is_default = 1
+        ORDER BY id ASC
+        LIMIT 1;
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": _row_value(row, "id"),
+        "admin_id": _row_value(row, "admin_id"),
+        "label": _row_value(row, "label"),
+        "address": _row_value(row, "address"),
+        "city": _row_value(row, "city"),
+        "barrio": _row_value(row, "barrio"),
+        "phone": _row_value(row, "phone"),
+        "is_default": _row_value(row, "is_default"),
+        "lat": _row_value(row, "lat"),
+        "lng": _row_value(row, "lng"),
+        "use_count": _row_value(row, "use_count") or 0,
+        "is_frequent": _row_value(row, "is_frequent") or 0,
+        "last_used_at": _row_value(row, "last_used_at"),
+    }
+
+
+def set_default_admin_location(location_id: int, admin_id: int):
+    """Marca una dirección como principal para ese admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE admin_locations SET is_default = 0 WHERE admin_id = {P};",
+        (admin_id,),
+    )
+    cur.execute(
+        f"UPDATE admin_locations SET is_default = 1 WHERE id = {P} AND admin_id = {P};",
+        (location_id, admin_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def increment_admin_location_usage(location_id: int, admin_id: int):
+    """Incrementa use_count y actualiza last_used_at para una admin location."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET use_count = COALESCE(use_count, 0) + 1,
+            last_used_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P};
+    """, (location_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
 def increment_pickup_usage(location_id: int, ally_id: int):
     """Incrementa use_count y actualiza last_used_at para una pickup."""
     conn = get_connection()
@@ -3699,23 +4173,23 @@ def set_frequent_pickup(location_id: int, ally_id: int, is_frequent: bool):
 # ---------- PEDIDOS (orders) ----------
 
 def create_order(
-    ally_id: int,
-    customer_name: str,
-    customer_phone: str,
-    customer_address: str,
-    customer_city: str,
-    customer_barrio: str,
-    pickup_location_id: int,
-    pay_at_store_required: bool,
-    pay_at_store_amount: int,
-    base_fee: int,
-    distance_km: float,
-    rain_extra: int,
-    high_demand_extra: int,
-    night_extra: int,
-    additional_incentive: int,
-    total_fee: int,
-    instructions: str,
+    ally_id: int = None,
+    customer_name: str = None,
+    customer_phone: str = None,
+    customer_address: str = None,
+    customer_city: str = None,
+    customer_barrio: str = None,
+    pickup_location_id: int = None,
+    pay_at_store_required: bool = False,
+    pay_at_store_amount: int = 0,
+    base_fee: int = 0,
+    distance_km: float = 0,
+    rain_extra: int = 0,
+    high_demand_extra: int = 0,
+    night_extra: int = 0,
+    additional_incentive: int = 0,
+    total_fee: int = 0,
+    instructions: str = None,
     requires_cash: bool = False,
     cash_required_amount: int = 0,
     pickup_lat: float = None,
@@ -3724,13 +4198,19 @@ def create_order(
     dropoff_lng: float = None,
     quote_source: str = None,
     ally_admin_id_snapshot: int = None,
+    creator_admin_id: int = None,
 ):
-    """Crea un pedido en estado PENDING y devuelve su id."""
+    """Crea un pedido en estado PENDING y devuelve su id.
+
+    Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
+    Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
+    """
     conn = get_connection()
     cur = conn.cursor()
     order_id = _insert_returning_id(cur, f"""
         INSERT INTO orders (
             ally_id,
+            creator_admin_id,
             courier_id,
             status,
             customer_name,
@@ -3758,9 +4238,10 @@ def create_order(
             quote_source,
             ally_admin_id_snapshot,
             courier_admin_id_snapshot
-        ) VALUES ({P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
+        creator_admin_id,
         customer_name,
         customer_phone,
         customer_address,
@@ -3808,6 +4289,23 @@ def set_order_status(order_id: int, status: str, timestamp_field: str = None):
     else:
         cur.execute(f"UPDATE orders SET status = {P} WHERE id = {P};", (status, order_id))
 
+    conn.commit()
+    conn.close()
+
+
+def add_order_incentive(order_id: int, delta: int):
+    """Incrementa additional_incentive y total_fee de un pedido por delta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE orders
+        SET additional_incentive = COALESCE(additional_incentive, 0) + {P},
+            total_fee = COALESCE(total_fee, 0) + {P}
+        WHERE id = {P};
+        """,
+        (delta, delta, order_id),
+    )
     conn.commit()
     conn.close()
 
@@ -3923,6 +4421,62 @@ def get_all_orders(status_filter: str = None, limit: int = 20):
 
     query += f" ORDER BY created_at DESC LIMIT {P};"
     params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ---------- ESTADÍSTICAS DE TIEMPOS DE ENTREGA ----------
+
+def get_courier_delivery_time_stats(admin_id=None, courier_id=None, days=30):
+    """
+    Devuelve estadísticas de tiempos de entrega por repartidor.
+    admin_id: si se provee, filtra al equipo actual del admin (admin_couriers APPROVED).
+    courier_id: si se provee, filtra a ese repartidor específico.
+    days: ventana de tiempo en días hacia atrás desde hoy (default 30).
+    Retorna lista de filas con: courier_id, full_name, total_entregados,
+    avg_llegada_seg, avg_entrega_seg, avg_total_seg.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if DB_ENGINE == "postgres":
+        time_filter = f"o.delivered_at >= NOW() - INTERVAL '{days} days'"
+        avg_llegada = "AVG(EXTRACT(EPOCH FROM (o.courier_arrived_at - o.accepted_at)))"
+        avg_entrega = "AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.pickup_confirmed_at)))"
+        avg_total   = "AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.accepted_at)))"
+    else:
+        time_filter = f"o.delivered_at >= datetime('now', '-{days} days')"
+        avg_llegada = "AVG(CAST(strftime('%s', o.courier_arrived_at) AS INTEGER) - CAST(strftime('%s', o.accepted_at) AS INTEGER))"
+        avg_entrega = "AVG(CAST(strftime('%s', o.delivered_at) AS INTEGER) - CAST(strftime('%s', o.pickup_confirmed_at) AS INTEGER))"
+        avg_total   = "AVG(CAST(strftime('%s', o.delivered_at) AS INTEGER) - CAST(strftime('%s', o.accepted_at) AS INTEGER))"
+
+    query = f"""
+        SELECT
+            o.courier_id,
+            c.full_name,
+            COUNT(*) AS total_entregados,
+            {avg_llegada} AS avg_llegada_seg,
+            {avg_entrega} AS avg_entrega_seg,
+            {avg_total}   AS avg_total_seg
+        FROM orders o
+        JOIN couriers c ON c.id = o.courier_id
+    """
+    params = []
+
+    if admin_id is not None:
+        query += f" JOIN admin_couriers ac ON ac.courier_id = o.courier_id AND ac.admin_id = {P} AND ac.status = 'APPROVED'"
+        params.append(admin_id)
+
+    query += f" WHERE o.status = 'DELIVERED' AND {time_filter} AND o.accepted_at IS NOT NULL AND o.delivered_at IS NOT NULL"
+
+    if courier_id is not None:
+        query += f" AND o.courier_id = {P}"
+        params.append(courier_id)
+
+    query += " GROUP BY o.courier_id, c.full_name ORDER BY avg_total_seg ASC"
 
     cur.execute(query, params)
     rows = cur.fetchall()
@@ -4519,7 +5073,8 @@ def get_admin_link_for_courier(courier_id: int):
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
             a.team_code AS team_code,
-            ac.status AS link_status
+            ac.status AS link_status,
+            ac.balance
         FROM admin_couriers ac
         JOIN admins a ON a.id = ac.admin_id
         WHERE ac.courier_id = {P}
@@ -4544,7 +5099,8 @@ def get_admin_link_for_ally(ally_id: int):
             a.id AS admin_id,
             COALESCE(a.team_name, a.full_name) AS team_name,
             a.team_code AS team_code,
-            aa.status AS link_status
+            aa.status AS link_status,
+            aa.balance
         FROM admin_allies aa
         JOIN admins a ON a.id = aa.admin_id
         WHERE aa.ally_id = {P}
@@ -5028,6 +5584,329 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
     return rows
 
 
+# ============================================================
+# CLIENTES RECURRENTES DEL ADMIN (admin_customers)
+# ============================================================
+
+def create_admin_customer(admin_id: int, name: str, phone: str, notes: str = None) -> int:
+    """Crea un cliente recurrente para un admin. Retorna el customer_id creado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    customer_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_customers (admin_id, name, phone, notes, status, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, 'ACTIVE', {now_sql}, {now_sql})
+    """, (admin_id, name.strip(), normalize_phone(phone), notes))
+    conn.commit()
+    conn.close()
+    return customer_id
+
+
+def update_admin_customer(customer_id: int, admin_id: int, name: str, phone: str, notes: str = None) -> bool:
+    """Actualiza un cliente recurrente del admin (validando ownership). Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET name = {P}, phone = {P}, notes = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (name.strip(), normalize_phone(phone), notes, customer_id, admin_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_admin_customer(customer_id: int, admin_id: int) -> bool:
+    """Archiva (soft delete) un cliente recurrente del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET status = 'INACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (customer_id, admin_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_admin_customer(customer_id: int, admin_id: int) -> bool:
+    """Restaura un cliente archivado del admin. Retorna True si se restauró."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET status = 'ACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND admin_id = {P} AND status = 'INACTIVE'
+    """, (customer_id, admin_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_admin_customer_by_id(customer_id: int, admin_id: int = None):
+    """Obtiene un cliente del admin por ID. Si se pasa admin_id, valida ownership."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if admin_id:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE id = {P} AND admin_id = {P}
+        """, (customer_id, admin_id))
+    else:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE id = {P}
+        """, (customer_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_admin_customers(admin_id: int, limit: int = 20, include_inactive: bool = False):
+    """Lista los clientes recurrentes de un admin (últimos primero)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P}
+            ORDER BY updated_at DESC
+            LIMIT {P}
+        """, (admin_id, limit))
+    else:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P} AND status = 'ACTIVE'
+            ORDER BY updated_at DESC
+            LIMIT {P}
+        """, (admin_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def search_admin_customers(admin_id: int, query: str, limit: int = 10):
+    """Busca clientes del admin por nombre o teléfono (solo activos)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    search_term = f"%{query.strip()}%"
+    cur.execute(f"""
+        SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+        FROM admin_customers
+        WHERE admin_id = {P} AND status = 'ACTIVE'
+          AND (name LIKE {P} OR phone LIKE {P})
+        ORDER BY updated_at DESC
+        LIMIT {P}
+    """, (admin_id, search_term, search_term, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admin_customer_by_phone(admin_id: int, phone: str):
+    """Busca un cliente ACTIVO del admin por teléfono exacto (normalizado)."""
+    phone_norm = normalize_phone(phone or "")
+    if not phone_norm:
+        return None
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+        FROM admin_customers
+        WHERE admin_id = {P} AND status = 'ACTIVE' AND phone = {P}
+        LIMIT 1
+    """, (admin_id, phone_norm))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+# ============================================================
+# DIRECCIONES DE CLIENTES DEL ADMIN (admin_customer_addresses)
+# ============================================================
+
+def create_admin_customer_address(
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> int:
+    """Crea una dirección para un cliente del admin. Retorna el address_id creado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    address_id = _insert_returning_id(cur, f"""
+        INSERT INTO admin_customer_addresses
+        (customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'ACTIVE', {now_sql}, {now_sql})
+    """, (customer_id, label, address_text.strip(), city, barrio, notes, lat, lng))
+    conn.commit()
+    conn.close()
+    return address_id
+
+
+def update_admin_customer_address(
+    address_id: int,
+    customer_id: int,
+    label: str,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    notes: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> bool:
+    """Actualiza una dirección de cliente del admin (validando ownership). Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET label = {P}, address_text = {P}, city = {P}, barrio = {P}, notes = {P},
+            lat = {P}, lng = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (label, address_text.strip(), city, barrio, notes, lat, lng, address_id, customer_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def archive_admin_customer_address(address_id: int, customer_id: int) -> bool:
+    """Archiva (soft delete) una dirección de cliente del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET status = 'INACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def restore_admin_customer_address(address_id: int, customer_id: int) -> bool:
+    """Restaura una dirección archivada de cliente del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET status = 'ACTIVE', updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'INACTIVE'
+    """, (address_id, customer_id))
+    restored = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return restored
+
+
+def get_admin_customer_address_by_id(address_id: int, customer_id: int = None):
+    """Obtiene una dirección de cliente del admin por ID. Si se pasa customer_id, valida ownership."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if customer_id:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE id = {P} AND customer_id = {P}
+        """, (address_id, customer_id))
+    else:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE id = {P}
+        """, (address_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_admin_customer_addresses(customer_id: int, include_inactive: bool = False):
+    """Lista las direcciones de un cliente del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if include_inactive:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE customer_id = {P}
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    else:
+        cur.execute(f"""
+            SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
+            FROM admin_customer_addresses
+            WHERE customer_id = {P} AND status = 'ACTIVE'
+            ORDER BY created_at DESC
+        """, (customer_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ============================================================
+# GESTIÓN DE admin_locations (soft delete y edición)
+# ============================================================
+
+def archive_admin_location(location_id: int, admin_id: int) -> bool:
+    """Archiva (soft delete) una dirección de recogida del admin. Retorna True si se archivó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET status = 'INACTIVE'
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (location_id, admin_id))
+    archived = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return archived
+
+
+def update_admin_location(
+    location_id: int,
+    admin_id: int,
+    label: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str = None,
+    lat: float = None,
+    lng: float = None,
+) -> bool:
+    """Actualiza una dirección de recogida del admin. Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_locations
+        SET label = {P}, address = {P}, city = {P}, barrio = {P}, phone = {P}, lat = {P}, lng = {P}
+        WHERE id = {P} AND admin_id = {P} AND status = 'ACTIVE'
+    """, (label, address, city, barrio, phone, lat, lng, location_id, admin_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def get_last_order_by_ally(ally_id: int):
     """
     Obtiene el último pedido creado por un aliado (para repetir pedido).
@@ -5157,6 +6036,124 @@ def increment_api_usage(api_name: str):
     """, (api_name,))
     conn.commit()
     conn.close()
+
+
+# ---------- API USAGE EVENTS (COST TRACKING) ----------
+def record_api_usage_event(
+    api_name: str,
+    api_operation: str,
+    *,
+    success: bool = True,
+    blocked: bool = False,
+    units: int = 1,
+    units_kind: str = "call",
+    cost_usd: float = 0.0,
+    http_status: int = None,
+    provider_status: str = None,
+    error_message: str = None,
+    meta: dict = None,
+):
+    """
+    Registra un evento de uso de API (con estimación de costo) y también incrementa api_usage_daily
+    de forma atómica.
+    """
+    if not api_name or not api_operation:
+        return
+    today_sql = "CURRENT_DATE::text" if DB_ENGINE == "postgres" else "date('now')"
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    meta_json = None
+    if meta is not None:
+        try:
+            import json
+            meta_json = json.dumps(meta, ensure_ascii=False)
+        except Exception:
+            meta_json = None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    try:
+        cur.execute(
+            f"""
+                INSERT INTO api_usage_events
+                    (api_name, api_operation, usage_date, success, blocked, units, units_kind,
+                     cost_usd, http_status, provider_status, error_message, meta_json, created_at)
+                VALUES
+                    ({P}, {P}, {today_sql}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {now_sql})
+            """,
+            (
+                api_name,
+                api_operation,
+                1 if success else 0,
+                1 if blocked else 0,
+                int(units or 0),
+                units_kind or "call",
+                float(cost_usd or 0.0),
+                http_status,
+                provider_status,
+                error_message,
+                meta_json,
+            ),
+        )
+
+        cur.execute(
+            f"""
+                INSERT INTO api_usage_daily (api_name, usage_date, call_count)
+                VALUES ({P}, {today_sql}, 1)
+                ON CONFLICT(api_name, usage_date) DO UPDATE SET
+                  call_count = api_usage_daily.call_count + 1
+            """,
+            (api_name,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_api_usage_cost_summary(api_name: str, date_from: str, date_to: str):
+    """
+    Resumen por operación (count, total_cost_usd, avg_cost_usd) entre fechas inclusivas (YYYY-MM-DD).
+    """
+    if not api_name or not date_from or not date_to:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+            SELECT
+              api_operation,
+              COUNT(*) AS events,
+              SUM(cost_usd) AS total_cost_usd,
+              AVG(cost_usd) AS avg_cost_usd,
+              SUM(CASE WHEN blocked = 1 THEN 1 ELSE 0 END) AS blocked_events,
+              SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_events
+            FROM api_usage_events
+            WHERE api_name = {P}
+              AND usage_date >= {P}
+              AND usage_date <= {P}
+            GROUP BY api_operation
+            ORDER BY events DESC
+        """,
+        (api_name, date_from, date_to),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    results = []
+    for r in rows or []:
+        results.append(
+            {
+                "api_operation": _row_value(r, "api_operation", None, 0),
+                "events": int(_row_value(r, "events", 0, 1) or 0),
+                "total_cost_usd": float(_row_value(r, "total_cost_usd", 0.0, 2) or 0.0),
+                "avg_cost_usd": float(_row_value(r, "avg_cost_usd", 0.0, 3) or 0.0),
+                "blocked_events": int(_row_value(r, "blocked_events", 0, 4) or 0),
+                "success_events": int(_row_value(r, "success_events", 0, 5) or 0),
+            }
+        )
+    return results
 
 
 # ============================================================
@@ -5403,6 +6400,93 @@ def list_pending_recharges_for_admin(admin_id: int):
         WHERE rr.admin_id = {P} AND rr.status = 'PENDING'
         ORDER BY rr.created_at ASC
     """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_all_pending_recharges(limit=50):
+    """Lista todas las solicitudes PENDING de todos los admins con nombre de admin y destinatario."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT rr.id, rr.target_type, rr.target_id, rr.amount, rr.method, rr.created_at,
+               COALESCE(a.team_name, a.full_name) AS admin_name,
+               rr.admin_id,
+               CASE
+                   WHEN rr.target_type = 'COURIER' THEN c.full_name
+                   WHEN rr.target_type = 'ALLY'    THEN al.business_name
+                   WHEN rr.target_type = 'ADMIN'   THEN COALESCE(ad2.team_name, ad2.full_name)
+                   ELSE 'Desconocido'
+               END AS target_name,
+               rr.proof_file_id
+        FROM recharge_requests rr
+        JOIN admins a ON a.id = rr.admin_id
+        LEFT JOIN couriers c  ON rr.target_type = 'COURIER' AND rr.target_id = c.id
+        LEFT JOIN allies al   ON rr.target_type = 'ALLY'    AND rr.target_id = al.id
+        LEFT JOIN admins ad2  ON rr.target_type = 'ADMIN'   AND rr.target_id = ad2.id
+        WHERE rr.status = 'PENDING'
+        ORDER BY rr.created_at ASC
+        LIMIT {P}
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admins_with_pending_count():
+    """
+    Retorna todos los admins locales APPROVED con su conteo de solicitudes PENDING
+    y su balance. Incluye telegram_id del usuario para poder notificarlos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT a.id AS admin_id,
+               COALESCE(a.team_name, a.full_name) AS admin_name,
+               a.status,
+               a.balance,
+               u.telegram_id,
+               COUNT(rr.id) AS pending_count
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN recharge_requests rr ON rr.admin_id = a.id AND rr.status = 'PENDING'
+        WHERE a.is_deleted = 0
+          AND a.team_code != 'PLATFORM'
+          AND a.status = 'APPROVED'
+        GROUP BY a.id, a.full_name, a.team_name, a.status, a.balance, u.telegram_id
+        ORDER BY pending_count DESC, a.balance ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def list_recharge_ledger(limit=20, offset=0):
+    """Ultimas entradas del ledger tipo RECHARGE con nombres de origen y destino."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT l.id, l.from_type, l.from_id, l.to_type, l.to_id,
+               l.amount, l.ref_id, l.note, l.created_at,
+               CASE l.from_type
+                   WHEN 'PLATFORM' THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.from_id)
+                   WHEN 'ADMIN'    THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.from_id)
+                   WHEN 'EXTERNAL' THEN 'Externo'
+                   ELSE l.from_type
+               END AS from_name,
+               CASE l.to_type
+                   WHEN 'COURIER'  THEN (SELECT full_name      FROM couriers WHERE id = l.to_id)
+                   WHEN 'ALLY'     THEN (SELECT business_name  FROM allies   WHERE id = l.to_id)
+                   WHEN 'ADMIN'    THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.to_id)
+                   WHEN 'PLATFORM' THEN (SELECT COALESCE(team_name, full_name) FROM admins WHERE id = l.to_id)
+                   ELSE l.to_type
+               END AS to_name
+        FROM ledger l
+        WHERE l.kind = 'RECHARGE'
+        ORDER BY l.created_at DESC
+        LIMIT {P} OFFSET {P}
+    """, (limit, offset))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -6246,6 +7330,27 @@ def assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot):
         WHERE id = {P}
         """,
         (courier_id, courier_admin_id_snapshot, route_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def release_route_from_courier(route_id):
+    """Libera una ruta aceptada: limpia courier y la vuelve a publicar (PUBLISHED)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET courier_id = NULL,
+            courier_admin_id_snapshot = NULL,
+            status = 'PUBLISHED',
+            accepted_at = NULL,
+            published_at = {now_sql}
+        WHERE id = {P}
+        """,
+        (route_id,),
     )
     conn.commit()
     conn.close()

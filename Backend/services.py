@@ -9,7 +9,8 @@ from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     set_setting,
     count_admin_allies, count_admin_allies_with_min_balance,
-    get_api_usage_today, increment_api_usage,
+    get_api_usage_today, record_api_usage_event,
+    get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
@@ -18,6 +19,7 @@ from db import (
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
+    get_approved_admin_id_for_courier,
     upsert_reference_alias_candidate,
     list_reference_alias_candidates,
     get_reference_alias_candidate_by_id,
@@ -85,6 +87,9 @@ from db import (
     expire_stale_live_locations,
     get_pending_couriers,
     get_pending_couriers_by_admin,
+    get_pending_allies_by_admin,
+    get_allies_by_admin_and_status,
+    get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
     get_all_couriers,
@@ -93,12 +98,16 @@ from db import (
     get_admin_link_for_courier,
     get_admin_link_for_ally,
     get_courier_link_balance,
+    get_approved_admin_id_for_courier,
     create_order,
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
+    add_order_incentive,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_daily_earnings_history,
+    get_courier_earnings_by_date,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -127,6 +136,9 @@ from db import (
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
     list_pending_recharges_for_admin,
+    list_all_pending_recharges,
+    get_admins_with_pending_count,
+    list_recharge_ledger,
     get_admin_payment_info,
     update_admin_payment_info,
     update_recharge_proof,
@@ -156,6 +168,39 @@ from db import (
     reset_route_offer_queue,
     get_all_online_couriers,
     get_active_orders_without_courier,
+    block_courier_for_ally,
+    unblock_courier_for_ally,
+    get_blocked_courier_ids_for_ally,
+    set_courier_arrived,
+    set_courier_accepted_location,
+    get_active_order_for_courier,
+    get_active_route_for_courier,
+    get_courier_delivery_time_stats,
+    # Re-exports admin_locations
+    create_admin_location,
+    get_admin_locations,
+    get_admin_location_by_id,
+    get_default_admin_location,
+    set_default_admin_location,
+    increment_admin_location_usage,
+    archive_admin_location,
+    update_admin_location,
+    create_admin_customer,
+    update_admin_customer,
+    archive_admin_customer,
+    restore_admin_customer,
+    get_admin_customer_by_id,
+    get_admin_customer_by_phone,
+    list_admin_customers,
+    search_admin_customers,
+    create_admin_customer_address,
+    update_admin_customer_address,
+    archive_admin_customer_address,
+    restore_admin_customer_address,
+    get_admin_customer_address_by_id,
+    list_admin_customer_addresses,
+    # Re-exports offer queue
+    clear_offer_queue,
 )
 import math
 import re
@@ -332,6 +377,40 @@ def can_call_google_today() -> bool:
     return result
 
 
+def _google_cost_usd(api_operation: str) -> float:
+    """
+    Lee costo estimado por operación desde env.
+
+    Env var: GOOGLE_COST_USD_{API_OPERATION}
+    Ej: GOOGLE_COST_USD_PLACE_DETAILS, GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT
+    """
+    import os
+    if not api_operation:
+        return 0.0
+    key = f"GOOGLE_COST_USD_{api_operation.upper()}"
+    raw = os.environ.get(key, "") or ""
+    try:
+        return float(raw) if raw.strip() else 0.0
+    except Exception:
+        return 0.0
+
+
+def get_google_maps_cost_summary(days: int = 7):
+    """
+    Resumen de costo estimado de Google Maps por operación en los últimos N días.
+    """
+    try:
+        from datetime import date, timedelta
+        d = int(days or 0)
+        if d <= 0:
+            d = 7
+        to_date = date.today().isoformat()
+        from_date = (date.today() - timedelta(days=d - 1)).isoformat()
+        return get_api_usage_cost_summary("google_maps", from_date, to_date)
+    except Exception:
+        return []
+
+
 def extract_place_id_from_url(url: str) -> Optional[str]:
     """Extrae place_id de una URL de Google Maps si existe."""
     if not url:
@@ -363,10 +442,23 @@ def google_place_details(place_id: str) -> Optional[Dict[str, Any]]:
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data.get("status") == "OK" and data.get("result"):
+        status = data.get("status")
+        ok = status == "OK" and bool(data.get("result"))
+        record_api_usage_event(
+            "google_maps",
+            "place_details",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("place_details"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_places"},
+        )
+        if ok:
             result = data["result"]
             geo = result.get("geometry", {}).get("location", {})
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -399,12 +491,24 @@ def google_geocode_forward(query: str) -> Optional[Dict[str, Any]]:
         data = r.json()
         status = data.get("status")
         logger.warning("[GEOCODE] query=%r status=%s", query, status)
-        if status == "OK" and data.get("results"):
+        ok = status == "OK" and bool(data.get("results"))
+        record_api_usage_event(
+            "google_maps",
+            "geocode_forward",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("geocode_forward"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_geocode"},
+        )
+        if ok:
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
             fa = result.get("formatted_address")
             logger.warning("[GEOCODE] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -442,12 +546,24 @@ def google_places_text_search(query: str) -> Optional[Dict[str, Any]]:
         data = r.json()
         status = data.get("status")
         logger.warning("[PLACES] query=%r status=%s", query, status)
-        if status == "OK" and data.get("results"):
+        ok = status == "OK" and bool(data.get("results"))
+        record_api_usage_event(
+            "google_maps",
+            "places_text_search",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("places_text_search"),
+            http_status=getattr(r, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_textsearch"},
+        )
+        if ok:
             result = data["results"][0]
             geo = result.get("geometry", {}).get("location", {})
             fa = result.get("formatted_address") or result.get("name", "")
             logger.warning("[PLACES] found: %s lat=%s lng=%s", fa, geo.get("lat"), geo.get("lng"))
-            increment_api_usage("google_maps")
             return {
                 "lat": geo.get("lat"),
                 "lng": geo.get("lng"),
@@ -562,7 +678,21 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
 
-        if data.get("status") != "OK":
+        status = data.get("status")
+        ok = status == "OK"
+        record_api_usage_event(
+            "google_maps",
+            "distance_matrix_coords",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("distance_matrix_coords"),
+            http_status=getattr(response, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_distance_matrix", "mode": "coords"},
+        )
+        if not ok:
             return None
 
         rows = data.get("rows", [])
@@ -579,7 +709,6 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -1112,7 +1241,21 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
 
-        if data.get("status") != "OK":
+        status = data.get("status")
+        ok = status == "OK"
+        record_api_usage_event(
+            "google_maps",
+            "distance_matrix_text",
+            success=ok,
+            units=1,
+            units_kind="call",
+            cost_usd=_google_cost_usd("distance_matrix_text"),
+            http_status=getattr(response, "status_code", None),
+            provider_status=status,
+            error_message=data.get("error_message"),
+            meta={"provider": "google_distance_matrix", "mode": "text"},
+        )
+        if not ok:
             return None
 
         rows = data.get("rows", [])
@@ -1129,7 +1272,6 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
 
         distance_meters = element.get("distance", {}).get("value", 0)
         distance_km = distance_meters / 1000.0
-        increment_api_usage("google_maps")
         return round(distance_km, 2)
 
     except Exception:
@@ -1507,15 +1649,39 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 ),
             )
         elif target_type == "COURIER":
+            if is_platform:
+                # Plataforma: acreditar en vínculo directo plataforma-courier (crear si no existe)
+                cur.execute(
+                    "UPDATE admin_couriers"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE courier_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
+                    now_literal = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+                    cur.execute(
+                        "INSERT INTO admin_couriers"
+                        " (admin_id, courier_id, status, balance, is_active, created_at, updated_at)"
+                        " VALUES (" + ", ".join([P] * 5) + ", " + now_literal + ", " + now_literal + ")",
+                        (admin_id, target_id, "APPROVED", amount, 1),
+                    )
+            else:
+                # Admin local: acreditar en su vínculo (cualquier status, incluyendo INACTIVE)
+                cur.execute(
+                    "UPDATE admin_couriers"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE courier_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return False, "No hay vinculo con este admin para acreditar saldo al courier."
+            # Interruptor de ganancias: desactivar todos los otros vinculos del courier
             cur.execute(
-                "UPDATE admin_couriers"
-                " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                " WHERE courier_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
-                (amount, target_id, admin_id),
+                "UPDATE admin_couriers SET status = 'INACTIVE', updated_at = " + now_sql +
+                " WHERE courier_id = " + P + " AND admin_id != " + P,
+                (target_id, admin_id),
             )
-            if cur.rowcount != 1:
-                conn.rollback()
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
@@ -1527,15 +1693,39 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 ),
             )
         elif target_type == "ALLY":
+            if is_platform:
+                # Plataforma: acreditar en vínculo directo plataforma-aliado (crear si no existe)
+                cur.execute(
+                    "UPDATE admin_allies"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE ally_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
+                    now_literal = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+                    cur.execute(
+                        "INSERT INTO admin_allies"
+                        " (admin_id, ally_id, status, balance, created_at, updated_at)"
+                        " VALUES (" + ", ".join([P] * 4) + ", " + now_literal + ", " + now_literal + ")",
+                        (admin_id, target_id, "APPROVED", amount),
+                    )
+            else:
+                # Admin local: acreditar en su vínculo (cualquier status, incluyendo INACTIVE)
+                cur.execute(
+                    "UPDATE admin_allies"
+                    " SET balance = balance + " + P + ", status = 'APPROVED', updated_at = " + now_sql +
+                    " WHERE ally_id = " + P + " AND admin_id = " + P,
+                    (amount, target_id, admin_id),
+                )
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return False, "No hay vinculo con este admin para acreditar saldo al aliado."
+            # Interruptor de ganancias: desactivar todos los otros vinculos del aliado
             cur.execute(
-                "UPDATE admin_allies"
-                " SET balance = balance + " + P + ", updated_at = " + now_sql +
-                " WHERE ally_id = " + P + " AND admin_id = " + P + " AND status = 'APPROVED'",
-                (amount, target_id, admin_id),
+                "UPDATE admin_allies SET status = 'INACTIVE', updated_at = " + now_sql +
+                " WHERE ally_id = " + P + " AND admin_id != " + P,
+                (target_id, admin_id),
             )
-            if cur.rowcount != 1:
-                conn.rollback()
-                return False, "No hay vinculo APPROVED con este admin para acreditar saldo."
             cur.execute(
                 "INSERT INTO ledger"
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
@@ -1695,6 +1885,184 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
             return False, "ADMIN_SIN_SALDO"
 
     return True, "OK"
+
+
+def can_courier_activate(courier_id: int) -> Tuple[bool, str]:
+    """
+    Verifica si el repartidor tiene saldo operativo suficiente para activarse.
+    Requiere al menos $300 en admin_couriers.balance (fee minimo por servicio).
+    Retorna (puede_activarse, mensaje_error).
+    """
+    MIN_BALANCE = 300
+    admin_id = get_approved_admin_id_for_courier(courier_id)
+    if admin_id is None:
+        return False, "No tienes un administrador aprobado. Contacta a tu admin."
+    balance = get_courier_link_balance(courier_id, admin_id)
+    if balance < MIN_BALANCE:
+        return False, (
+            "No puedes activarte: tu saldo operativo es ${:,}.\n"
+            "Necesitas al menos ${:,} para recibir pedidos.\n"
+            "Solicita una recarga a tu administrador.".format(balance, MIN_BALANCE)
+        )
+    return True, "OK"
+
+
+def ally_get_order_for_incentive(telegram_id: int, order_id: int) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    """
+    Retorna pedido si pertenece al aliado y está en estado elegible para incentivo.
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return False, None, "No se encontro tu usuario."
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        return False, None, "No tienes perfil de aliado."
+
+    order = get_order_by_id(order_id)
+    if not order:
+        return False, None, "Pedido no encontrado."
+
+    if int(order["ally_id"]) != int(ally["id"]):
+        return False, None, "No tienes permiso para modificar este pedido."
+
+    if order["status"] not in ("PENDING", "PUBLISHED", "ACCEPTED"):
+        return False, None, "Este pedido ya no permite incentivo (estado: {}).".format(order["status"])
+
+    return True, order, "OK"
+
+
+def ally_increment_order_incentive(telegram_id: int, order_id: int, delta: int) -> Tuple[bool, Optional[Dict[str, Any]], Optional[int], str]:
+    """
+    Incrementa incentivo adicional del pedido (solo aliado dueño).
+    Retorna (ok, updated_order, courier_telegram_id, message).
+    """
+    ok, order, msg = ally_get_order_for_incentive(telegram_id, order_id)
+    if not ok:
+        return False, None, None, msg
+
+    if delta is None:
+        return False, None, None, "Monto invalido."
+
+    try:
+        delta = int(delta)
+    except Exception:
+        return False, None, None, "Monto invalido."
+
+    if delta <= 0:
+        return False, None, None, "El incentivo debe ser mayor a 0."
+
+    if delta > 200000:
+        return False, None, None, "El incentivo es demasiado alto."
+
+    add_order_incentive(int(order_id), int(delta))
+    updated = get_order_by_id(order_id)
+
+    courier_telegram_id = None
+    try:
+        courier_id = updated["courier_id"]
+        if courier_id:
+            courier = get_courier_by_id(courier_id)
+            if courier:
+                courier_user = get_user_by_id(courier["user_id"])
+                if courier_user and courier_user.get("telegram_id"):
+                    courier_telegram_id = int(courier_user["telegram_id"])
+    except Exception:
+        courier_telegram_id = None
+
+    return True, updated, courier_telegram_id, "OK"
+
+
+def admin_get_order_for_incentive(telegram_id: int, order_id: int) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    """
+    Retorna pedido si fue creado por el admin y está en estado elegible para incentivo.
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return False, None, "No se encontro tu usuario."
+
+    admin = get_admin_by_user_id(user["id"])
+    if not admin:
+        return False, None, "No tienes perfil de administrador."
+
+    order = get_order_by_id(order_id)
+    if not order:
+        return False, None, "Pedido no encontrado."
+
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    if not creator_admin_id or int(creator_admin_id) != int(admin["id"]):
+        return False, None, "No tienes permiso para modificar este pedido."
+
+    if order["status"] not in ("PENDING", "PUBLISHED", "ACCEPTED"):
+        return False, None, "Este pedido ya no permite incentivo (estado: {}).".format(order["status"])
+
+    return True, order, "OK"
+
+
+def admin_increment_order_incentive(telegram_id: int, order_id: int, delta: int) -> Tuple[bool, Optional[Dict[str, Any]], Optional[int], str]:
+    """
+    Incrementa incentivo adicional del pedido especial (solo admin creador).
+    Retorna (ok, updated_order, courier_telegram_id, message).
+    """
+    ok, order, msg = admin_get_order_for_incentive(telegram_id, order_id)
+    if not ok:
+        return False, None, None, msg
+
+    if delta is None:
+        return False, None, None, "Monto invalido."
+
+    try:
+        delta = int(delta)
+    except Exception:
+        return False, None, None, "Monto invalido."
+
+    if delta <= 0:
+        return False, None, None, "El incentivo debe ser mayor a 0."
+
+    if delta > 200000:
+        return False, None, None, "El incentivo es demasiado alto."
+
+    add_order_incentive(int(order_id), int(delta))
+    updated = get_order_by_id(order_id)
+
+    courier_telegram_id = None
+    try:
+        courier_id = updated["courier_id"]
+        if courier_id:
+            courier = get_courier_by_id(courier_id)
+            if courier:
+                courier_user = get_user_by_id(courier["user_id"])
+                if courier_user and courier_user.get("telegram_id"):
+                    courier_telegram_id = int(courier_user["telegram_id"])
+    except Exception:
+        courier_telegram_id = None
+
+    return True, updated, courier_telegram_id, "OK"
+
+
+def courier_get_earnings_history(telegram_id: int, days: int = 7) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna historial diario de ganancias del courier (según liquidaciones contables).
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    rows = get_courier_daily_earnings_history(int(courier["id"]), days=days)
+    return True, courier, rows, "OK"
+
+
+def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna detalle de ganancias para una fecha (YYYY-MM-DD) del courier.
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    try:
+        rows = get_courier_earnings_by_date(int(courier["id"]), date_key)
+    except Exception as e:
+        return False, courier, [], str(e)
+    return True, courier, rows, "OK"
 
 
 # TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
