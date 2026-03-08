@@ -3058,6 +3058,30 @@ def nuevo_pedido(update, context):
                 )
             return ConversationHandler.END
 
+
+        # Verificar saldo ANTES de iniciar el flujo para no perder tiempo
+        _admin_link_early = get_approved_admin_link_for_ally(ally["id"])
+        _admin_id_early = _admin_link_early["admin_id"] if _admin_link_early else None
+        if not _admin_id_early:
+            _platform_admin_early = get_platform_admin()
+            _admin_id_early = _platform_admin_early["id"] if _platform_admin_early else None
+        if _admin_id_early:
+            _fee_ok, _fee_code = check_service_fee_available(
+                target_type="ALLY",
+                target_id=ally["id"],
+                admin_id=_admin_id_early,
+            )
+            if not _fee_ok:
+                if message:
+                    if _fee_code == "ADMIN_SIN_SALDO":
+                        message.reply_text(
+                            "Tu administrador no tiene saldo suficiente para operar. Contacta a tu admin o recarga con plataforma."
+                        )
+                    else:
+                        message.reply_text(
+                            "No tienes saldo suficiente para crear un pedido. Recarga para continuar."
+                        )
+                return ConversationHandler.END
         if not ensure_terms(update, context, user.id, role="ALLY"):
             print("[DEBUG][nuevo_pedido] blocked_by_terms=True", flush=True)
             return ConversationHandler.END
