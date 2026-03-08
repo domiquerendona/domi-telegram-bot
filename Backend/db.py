@@ -2969,6 +2969,29 @@ def set_setting(key: str, value: str):
     conn.close()
 
 
+def sync_all_courier_link_statuses():
+    """
+    Sincroniza admin_couriers.status para todos los repartidores.
+    - APPROVED courier: el vinculo con updated_at mas reciente queda APPROVED, el resto INACTIVE.
+    - No-APPROVED courier: todos sus vinculos quedan INACTIVE.
+    Idempotente. Se llama al arranque del bot para reparar datos historicos.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute("SELECT id, status FROM couriers WHERE is_deleted IS NULL OR is_deleted = 0")
+    couriers = cur.fetchall()
+    fixed = 0
+    for c in couriers:
+        cid = _row_value(c, "id", 0)
+        cstatus = _row_value(c, "status", default="")
+        _sync_courier_link_status(cur, cid, cstatus if cstatus == "APPROVED" else "INACTIVE", now_sql)
+        fixed += 1
+    conn.commit()
+    conn.close()
+    print(f"[BOOT] sync_all_courier_link_statuses: {fixed} couriers procesados")
+
+
 def ensure_pricing_defaults():
     """
     Inicializa valores por defecto de tarifas de precio en settings.
