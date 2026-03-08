@@ -2958,14 +2958,14 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
 
 
 def get_all_local_admins():
-    """Lista todos los administradores locales con status APPROVED."""
+    """Lista todos los administradores locales con status APPROVED (excluye plataforma)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT id, full_name, city, team_name
         FROM admins
         WHERE status = 'APPROVED'
-          AND is_platform_admin = 0
+          AND (team_code IS NULL OR team_code != 'PLATFORM')
           AND (is_deleted IS NULL OR is_deleted = 0)
         ORDER BY city, full_name
     """)
