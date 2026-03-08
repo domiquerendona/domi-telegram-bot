@@ -16361,12 +16361,15 @@ def _courier_activate_common(update, context, reply_func):
 
     courier = get_courier_by_user_id(user["id"])
     if not courier or courier["status"] != "APPROVED":
+        c_status = courier["status"] if courier else "NO_COURIER_ROW"
+        print(f"[DEBUG][activar] tg={telegram_id} courier_status={c_status}")
         reply_func("No tienes perfil de repartidor activo.")
         return
 
     # Verificar que tiene equipo activo y saldo suficiente para activarse
     admin_link = get_approved_admin_link_for_courier(courier["id"])
     admin_id = _row_value(admin_link, "admin_id")
+    print(f"[DEBUG][activar] tg={telegram_id} courier_id={courier['id']} courier_status={courier['status']} admin_link={dict(admin_link) if admin_link else None}")
     if not admin_id:
         reply_func(
             "No puedes activarte porque no tienes un equipo activo asignado. "
