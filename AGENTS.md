@@ -434,7 +434,7 @@ por qué
 
 7. Git y ramas
 
-Nunca trabajar directamente sobre main.
+Nunca trabajar directamente sobre main, excepto cuando el usuario lo ordene explÃ­citamente para promover trabajo ya integrado en staging hacia main (merge staging â†’ main y push a origin/main), siempre que no viole la regla 7B.
 
 Confirmar siempre la rama activa antes de modificar código.
 
