@@ -6696,7 +6696,16 @@ def repartidores_pendientes(update, context):
     # Obtener pendientes según rol
     try:
         if es_admin_plataforma_flag:
-            pendientes = get_pending_couriers()  # global (tabla couriers)
+            # Combinar: nuevos registros (couriers.status=PENDING) + solicitudes de union (admin_couriers.status=PENDING)
+            nuevos = list(get_pending_couriers())
+            join_requests = list(get_pending_couriers_by_admin(admin_id))
+            seen_ids = set()
+            pendientes = []
+            for c in nuevos + join_requests:
+                cid = c.get("courier_id") or c.get("id")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    pendientes.append(c)
         else:
             pendientes = get_pending_couriers_by_admin(admin_id)  # por equipo (tabla admin_couriers)
     except Exception as e:
