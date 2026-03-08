@@ -15036,6 +15036,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
             deactivate_other_approved_admin_courier_links(courier_id, admin_id)
+            update_courier_status(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_courier_status APPROVED:", e)
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")

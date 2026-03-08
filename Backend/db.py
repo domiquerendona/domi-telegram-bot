@@ -3751,9 +3751,15 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
                 INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
                 VALUES ({P}, {P}, 'PENDING', 0, {now_sql})
             """, (admin_id, courier_id))
+    # Si el courier ya está APPROVED, sincronizar el nuevo vínculo inmediatamente
+    cur.execute(f"SELECT status FROM couriers WHERE id = {P}", (courier_id,))
+    c_row = cur.fetchone()
+    if _row_value(c_row, "status", default="") == "APPROVED":
+        _sync_courier_link_status(cur, courier_id, "APPROVED", now_sql)
+
     conn.commit()
     conn.close()
-    
+
 
 def update_ally_status(ally_id: int, status: str, changed_by: str = None):
     """Actualiza el estado de un aliado (PENDING, APPROVED, REJECTED) y sincroniza admin_allies."""
