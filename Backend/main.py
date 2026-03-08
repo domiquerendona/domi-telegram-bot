@@ -3810,7 +3810,7 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     context.user_data["distance_source"] = cotizacion.get("distance_source", "")
 
     # Mostrar resumen con botones de confirmacion
-    keyboard = [
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -5254,6 +5254,7 @@ def construir_resumen_pedido(context):
     resumen += (
         "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
         "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Deseas agregar un incentivo antes de confirmar? (Tambien puedes hacerlo despues de publicar)\n\n"
         "Confirmas este pedido?"
     )
     return resumen
@@ -5443,6 +5444,12 @@ def pedido_incentivo_existing_fixed_callback(update, context):
         query.edit_message_text(msg)
         return
 
+    # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
+    try:
+        repost_order_to_couriers(order_id, context)
+    except Exception:
+        pass
+
     if courier_telegram_id:
         try:
             incentive = int(order["additional_incentive"] or 0)
@@ -5519,6 +5526,12 @@ def pedido_incentivo_existing_monto_handler(update, context):
         return ConversationHandler.END
 
     context.user_data.pop("pedido_incentivo_edit_order_id", None)
+
+    # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
+    try:
+        repost_order_to_couriers(int(order_id), context)
+    except Exception:
+        pass
 
     if courier_telegram_id:
         try:
@@ -6511,9 +6524,35 @@ def pedido_confirmacion_callback(update, context):
                     text=preview,
                     reply_markup=get_preview_buttons()
                 )
+                try:
+                    context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=(
+                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
+                            "Pedido: #{}".format(order_id)
+                        ),
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
+                        ),
+                    )
+                except Exception:
+                    pass
                 return PEDIDO_GUARDAR_CLIENTE
             else:
                 # Cliente existente: éxito directo + menú
+                try:
+                    context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=(
+                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
+                            "Pedido: #{}".format(order_id)
+                        ),
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
+                        ),
+                    )
+                except Exception:
+                    pass
                 context.user_data.clear()
                 if published_count == 0:
                     show_main_menu(
