@@ -2957,6 +2957,23 @@ def upsert_admin_courier_link(admin_id: int, courier_id: int, status: str = "PEN
     conn.close()
 
 
+def get_all_local_admins():
+    """Lista todos los administradores locales con status APPROVED."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, full_name, city, team_name
+        FROM admins
+        WHERE status = 'APPROVED'
+          AND is_platform_admin = 0
+          AND (is_deleted IS NULL OR is_deleted = 0)
+        ORDER BY city, full_name
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def set_setting(key: str, value: str):
     conn = get_connection()
     cur = conn.cursor()

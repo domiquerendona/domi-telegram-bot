@@ -193,6 +193,7 @@ from services import (
     get_pending_couriers,
     get_pending_couriers_by_admin,
     get_pending_allies_by_admin,
+    get_all_local_admins,
     get_allies_by_admin_and_status,
     get_couriers_by_admin_and_status,
     update_courier_status,
@@ -1767,7 +1768,10 @@ def menu_button_handler(update, context):
                 msg += "/soy_repartidor - Registrarme como repartidor\n"
             if "/soy_admin" in missing_cmds:
                 msg += "/soy_admin - Registrarme como administrador"
-        update.message.reply_text(msg)
+        ayuda_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Solicitar unirme a un equipo", callback_data="solequipo_start")
+        ]])
+        update.message.reply_text(msg, reply_markup=ayuda_markup)
         return
     elif text == "Menu":
         return start(update, context)
@@ -16369,9 +16373,23 @@ def _courier_activate_common(update, context, reply_func):
     admin_link = get_approved_admin_link_for_courier(courier["id"])
     admin_id = _row_value(admin_link, "admin_id")
     if not admin_id:
-        reply_func(
-            "No puedes activarte porque no tienes un equipo activo asignado. "
-            "Contacta a tu administrador."
+        admins = get_all_local_admins()
+        if not admins:
+            reply_func(
+                "No tienes equipo activo asignado. Contacta al soporte."
+            )
+            return
+        keyboard = [
+            [InlineKeyboardButton(
+                f"{_row_value(a, 'full_name')} - {_row_value(a, 'city')}",
+                callback_data=f"solequipo_courier_sel_{_row_value(a, 'id')}"
+            )]
+            for a in admins
+        ]
+        update.effective_message.reply_text(
+            "No tienes equipo activo asignado.\n\n"
+            "Selecciona un administrador para solicitar unirte a su equipo:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
@@ -16505,6 +16523,129 @@ def global_error_handler(update, context):
     print(traceback.format_exc(), flush=True)
 
 
+def solequipo_start_callback(update, context):
+    """Muestra lista de admins para solicitar union a un equipo (desde Ayuda)."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    ally = get_ally_by_user_id(user["id"])
+
+    if courier and courier["status"] == "APPROVED":
+        prefix = "solequipo_courier_sel_"
+        role_text = "repartidor"
+    elif ally and ally["status"] == "APPROVED":
+        prefix = "solequipo_ally_sel_"
+        role_text = "aliado"
+    else:
+        query.edit_message_text(
+            "Esta opcion solo esta disponible para repartidores y aliados aprobados."
+        )
+        return
+
+    admins = get_all_local_admins()
+    if not admins:
+        query.edit_message_text("No hay administradores disponibles en este momento.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(
+            f"{_row_value(a, 'full_name')} - {_row_value(a, 'city')}",
+            callback_data=f"{prefix}{_row_value(a, 'id')}"
+        )]
+        for a in admins
+    ]
+    query.edit_message_text(
+        f"Como {role_text}, selecciona el administrador al que deseas unirte:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+def solequipo_courier_sel_callback(update, context):
+    """Courier confirma solicitud de union a un admin."""
+    query = update.callback_query
+    query.answer()
+    target_admin_id = int(query.data.replace("solequipo_courier_sel_", ""))
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier or courier["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de repartidor activo.")
+        return
+
+    upsert_admin_courier_link(target_admin_id, courier["id"], "PENDING")
+
+    admin = get_admin_by_id(target_admin_id)
+    if admin:
+        admin_user = get_user_by_id(_row_value(admin, "user_id"))
+        if admin_user:
+            try:
+                context.bot.send_message(
+                    chat_id=_row_value(admin_user, "telegram_id"),
+                    text=(
+                        f"El repartidor {courier['full_name']} ha solicitado unirse a tu equipo.\n"
+                        "Revisa tus repartidores pendientes para aprobarlo."
+                    )
+                )
+            except Exception:
+                pass
+
+    query.edit_message_text(
+        "Solicitud enviada. El administrador recibira tu peticion y podra aprobarte "
+        "desde su panel de repartidores pendientes."
+    )
+
+
+def solequipo_ally_sel_callback(update, context):
+    """Ally confirma solicitud de union a un admin."""
+    query = update.callback_query
+    query.answer()
+    target_admin_id = int(query.data.replace("solequipo_ally_sel_", ""))
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de aliado activo.")
+        return
+
+    upsert_admin_ally_link(target_admin_id, ally["id"], "PENDING")
+
+    admin = get_admin_by_id(target_admin_id)
+    if admin:
+        admin_user = get_user_by_id(_row_value(admin, "user_id"))
+        if admin_user:
+            try:
+                context.bot.send_message(
+                    chat_id=_row_value(admin_user, "telegram_id"),
+                    text=(
+                        f"El aliado {ally['business_name']} ha solicitado unirse a tu equipo.\n"
+                        "Revisa tus aliados pendientes para aprobarlo."
+                    )
+                )
+            except Exception:
+                pass
+
+    query.edit_message_text(
+        "Solicitud enviada. El administrador recibira tu peticion y podra aprobarte "
+        "desde su panel de aliados pendientes."
+    )
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
@@ -16595,6 +16736,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
+    dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
+    dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))
+    dp.add_handler(CallbackQueryHandler(solequipo_ally_sel_callback, pattern=r"^solequipo_ally_sel_\d+$"))
 
     # -------------------------
     # Conversaciones completas

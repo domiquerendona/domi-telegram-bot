@@ -176,6 +176,7 @@ from db import (
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_courier_delivery_time_stats,
+    get_all_local_admins,
     # Re-exports admin_locations
     create_admin_location,
     get_admin_locations,
