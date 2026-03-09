@@ -14,11 +14,11 @@ from web.users.repository import get_user_by_id
 # Dependencia que obtiene el usuario autenticado (mock o JWT en el futuro)
 from web.auth.dependencies import get_current_user
 
-# Schema de respuesta para serializar el usuario aprobado
-from web.schemas.user import UserResponse
+# Schemas de respuesta
+from web.schemas.user import UserResponse, AdminResponse
 
-# Funciones de acceso a datos para ubicaciones en tiempo real
-from db import get_all_online_couriers, get_active_orders_without_courier
+# Funciones de acceso a datos
+from db import get_all_online_couriers, get_active_orders_without_courier, get_all_admins, update_admin_status_by_id
 
 
 # Router para endpoints administrativos
@@ -52,6 +52,64 @@ def approve_user_endpoint(
 
     # Retorna el usuario aprobado serializado con UserResponse
     return user
+
+
+@router.get("/admins", response_model=list[AdminResponse])
+def list_admins(admin=Depends(get_current_user)):
+    """Lista todos los administradores locales. Solo accesible por el admin de plataforma."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    rows = get_all_admins()
+    result = []
+    for r in rows:
+        result.append({
+            "id": r["id"] if hasattr(r, "__getitem__") else r[0],
+            "full_name": r["full_name"] if hasattr(r, "__getitem__") else r[2],
+            "phone": r["phone"] if hasattr(r, "__getitem__") else r[3],
+            "city": r["city"] if hasattr(r, "__getitem__") else r[4],
+            "barrio": r["barrio"] if hasattr(r, "__getitem__") else r[5],
+            "status": r["status"] if hasattr(r, "__getitem__") else r[6],
+            "team_name": r["team_name"] if hasattr(r, "__getitem__") else r[8],
+            "document_number": r["document_number"] if hasattr(r, "__getitem__") else r[9],
+            "created_at": str(r["created_at"]) if hasattr(r, "__getitem__") else str(r[7]),
+        })
+    return result
+
+
+@router.post("/admins/{admin_id}/approve")
+def approve_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
+    """Aprueba un administrador local pendiente."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    update_admin_status_by_id(admin_id, "APPROVED")
+    return {"ok": True}
+
+
+@router.post("/admins/{admin_id}/reject")
+def reject_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
+    """Rechaza un administrador local."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    update_admin_status_by_id(admin_id, "REJECTED")
+    return {"ok": True}
+
+
+@router.post("/admins/{admin_id}/deactivate")
+def deactivate_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
+    """Inactiva un administrador local aprobado."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    update_admin_status_by_id(admin_id, "INACTIVE")
+    return {"ok": True}
+
+
+@router.post("/admins/{admin_id}/reactivate")
+def reactivate_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
+    """Reactiva un administrador local inactivo."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    update_admin_status_by_id(admin_id, "APPROVED")
+    return {"ok": True}
 
 
 @router.get("/couriers/active-locations")

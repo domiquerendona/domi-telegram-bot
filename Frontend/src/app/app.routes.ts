@@ -9,6 +9,7 @@ import { MapaComponent } from './features/superadmin/mapa/mapa.component';
 import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
 import { UsersComponent } from './features/superadmin/users/users';
 import { SettingsComponent } from './features/superadmin/settings/settings';
+import { AdministradoresComponent } from './features/superadmin/administradores/administradores';
 import { TerminosComponent } from './features/superadmin/legal/terminos';
 import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
 import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
@@ -35,10 +36,15 @@ export const routes: Routes = [
         component: DashboardComponent, // Componente que se carga (Dashboard)
         data: { title: 'Dashboard' }   // Metadata opcional (por ejemplo, para título de página)
       },
-      { 
+      {
         path: 'users',              // Ruta para usuarios: "/superadmin/users"
         component: UsersComponent,  // Componente que se muestra
         data: { title: 'Usuarios' } // Metadata
+      },
+      {
+        path: 'administradores',
+        component: AdministradoresComponent,
+        data: { title: 'Administradores' }
       },
       { 
         path: 'settings',           // Ruta para configuración: "/superadmin/settings"
