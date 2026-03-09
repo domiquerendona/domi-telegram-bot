@@ -584,3 +584,40 @@ def cancel_order_endpoint(order_id: int, admin=Depends(get_current_user)):
 
     cancel_order(order_id, "ADMIN")
     return {"ok": True, "order_id": order_id}
+
+
+@router.get("/settings/pricing")
+def get_pricing_settings(admin=Depends(get_current_user)):
+    """Retorna las tarifas de precios configuradas en settings."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    from db import get_setting
+    keys = [
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    ]
+    return {k: get_setting(k) for k in keys}
+
+
+@router.post("/settings/pricing")
+def update_pricing_settings(payload: dict, admin=Depends(get_current_user)):
+    """Actualiza las tarifas de precios en settings."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    from db import set_setting
+    allowed = {
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    }
+    for k, v in payload.items():
+        if k in allowed:
+            set_setting(k, str(v))
+    return {"ok": True}
