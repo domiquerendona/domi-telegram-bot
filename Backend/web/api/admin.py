@@ -368,3 +368,88 @@ def get_saldos(admin=Depends(get_current_user)):
             for r in allies_rows
         ],
     }
+
+
+@router.get("/ganancias")
+def get_ganancias(admin=Depends(get_current_user)):
+    """Retorna resumen de ganancias del sistema a partir del ledger."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Resumen por periodo: hoy / esta semana / este mes
+    cur.execute("""
+        SELECT
+            SUM(CASE WHEN date(created_at) = date('now') THEN amount ELSE 0 END) AS hoy,
+            SUM(CASE WHEN created_at >= date('now', 'weekday 0', '-7 days') THEN amount ELSE 0 END) AS semana,
+            SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now') THEN amount ELSE 0 END) AS mes,
+            SUM(amount) AS total
+        FROM ledger
+        WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
+    """)
+    resumen_row = cur.fetchone()
+
+    # Ganancias por admin (todos los tiempos)
+    cur.execute("""
+        SELECT a.full_name, SUM(l.amount) AS total
+        FROM ledger l
+        JOIN admins a ON a.id = l.to_id
+        WHERE l.kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND l.to_type = 'ADMIN'
+        GROUP BY l.to_id, a.full_name
+        ORDER BY total DESC
+    """)
+    por_admin_rows = cur.fetchall()
+
+    # Historial reciente (últimas 50 entradas de ganancias)
+    cur.execute("""
+        SELECT l.id, l.kind, l.amount, l.from_type, l.from_id, l.note, l.created_at,
+               a.full_name AS admin_nombre
+        FROM ledger l
+        LEFT JOIN admins a ON a.id = l.to_id AND l.to_type = 'ADMIN'
+        WHERE l.kind IN ('FEE_INCOME', 'PLATFORM_FEE', 'INCOME')
+        ORDER BY l.created_at DESC
+        LIMIT 50
+    """)
+    historial_rows = cur.fetchall()
+    conn.close()
+
+    def rv(row, key, idx, default=0):
+        try:
+            v = row[key]
+            return v if v is not None else default
+        except (KeyError, TypeError, IndexError):
+            try:
+                v = row[idx]
+                return v if v is not None else default
+            except Exception:
+                return default
+
+    return {
+        "resumen": {
+            "hoy": rv(resumen_row, "hoy", 0) or 0,
+            "semana": rv(resumen_row, "semana", 1) or 0,
+            "mes": rv(resumen_row, "mes", 2) or 0,
+            "total": rv(resumen_row, "total", 3) or 0,
+        },
+        "por_admin": [
+            {
+                "nombre": rv(r, "full_name", 0, ""),
+                "total": rv(r, "total", 1) or 0,
+            }
+            for r in por_admin_rows
+        ],
+        "historial": [
+            {
+                "id": rv(r, "id", 0),
+                "kind": rv(r, "kind", 1, ""),
+                "amount": rv(r, "amount", 2) or 0,
+                "from_type": rv(r, "from_type", 3, ""),
+                "note": rv(r, "note", 5, "") or "",
+                "created_at": str(rv(r, "created_at", 6, "")) or "",
+                "admin_nombre": rv(r, "admin_nombre", 7, "") or "",
+            }
+            for r in historial_rows
+        ],
+    }

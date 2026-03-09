@@ -14,6 +14,7 @@ import { RepartidoresComponent } from './features/superadmin/repartidores/repart
 import { AliadosComponent } from './features/superadmin/aliados/aliados';
 import { OrdersComponent } from './features/superadmin/orders/orders';
 import { SaldosComponent } from './features/superadmin/saldos/saldos';
+import { GananciasComponent } from './features/superadmin/ganancias/ganancias';
 import { TerminosComponent } from './features/superadmin/legal/terminos';
 import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
 import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
@@ -69,6 +70,11 @@ export const routes: Routes = [
         path: 'saldos',
         component: SaldosComponent,
         data: { title: 'Saldos' }
+      },
+      {
+        path: 'ganancias',
+        component: GananciasComponent,
+        data: { title: 'Ganancias' }
       },
       { 
         path: 'settings',           // Ruta para configuración: "/superadmin/settings"
