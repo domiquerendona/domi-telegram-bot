@@ -69,30 +69,10 @@ interface Admin {
                 </span>
               </td>
               <td class="acciones">
-                <button
-                  *ngIf="a.status === 'PENDING'"
-                  class="btn aprobar"
-                  (click)="accion(a.id, 'approve')">
-                  Aprobar
-                </button>
-                <button
-                  *ngIf="a.status === 'PENDING'"
-                  class="btn rechazar"
-                  (click)="accion(a.id, 'reject')">
-                  Rechazar
-                </button>
-                <button
-                  *ngIf="a.status === 'APPROVED'"
-                  class="btn inactivar"
-                  (click)="accion(a.id, 'deactivate')">
-                  Inactivar
-                </button>
-                <button
-                  *ngIf="a.status === 'INACTIVE'"
-                  class="btn reactivar"
-                  (click)="accion(a.id, 'reactivate')">
-                  Reactivar
-                </button>
+                <button *ngIf="a.status === 'PENDING'" class="btn aprobar" (click)="accion(a, 'approve')">Aprobar</button>
+                <button *ngIf="a.status === 'PENDING'" class="btn rechazar" (click)="accion(a, 'reject')">Rechazar</button>
+                <button *ngIf="a.status === 'APPROVED'" class="btn inactivar" (click)="accion(a, 'deactivate')">Inactivar</button>
+                <button *ngIf="a.status === 'INACTIVE'" class="btn reactivar" (click)="accion(a, 'reactivate')">Reactivar</button>
                 <span *ngIf="a.status === 'REJECTED'" class="sin-accion">—</span>
               </td>
             </tr>
@@ -256,14 +236,14 @@ export class AdministradoresComponent implements OnInit {
   admins = signal<Admin[]>([]);
   cargando = signal(true);
   error = signal('');
-  filtroActivo = signal('TODOS');
+  filtroActivo = signal('PENDING');
 
   filtroOpciones = [
-    { label: 'Todos', valor: 'TODOS' },
     { label: 'Pendientes', valor: 'PENDING' },
     { label: 'Aprobados', valor: 'APPROVED' },
     { label: 'Inactivos', valor: 'INACTIVE' },
     { label: 'Rechazados', valor: 'REJECTED' },
+    { label: 'Todos', valor: 'TODOS' },
   ];
 
   constructor(private http: HttpClient) {}
@@ -303,10 +283,14 @@ export class AdministradoresComponent implements OnInit {
     return map[status] ?? status;
   }
 
-  accion(adminId: number, tipo: string) {
-    this.http.post(`http://localhost:8000/admin/admins/${adminId}/${tipo}`, {}).subscribe({
+  accion(a: Admin, tipo: string) {
+    const labels: Record<string, string> = {
+      approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
+    };
+    if (!confirm(`¿${labels[tipo] ?? tipo} a ${a.full_name}?`)) return;
+    this.http.post(`http://localhost:8000/admin/admins/${a.id}/${tipo}`, {}).subscribe({
       next: () => this.cargar(),
-      error: () => alert('Error al ejecutar la acción.')
+      error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });
   }
 }
