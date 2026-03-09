@@ -50,6 +50,18 @@ import { NgIf } from '@angular/common';
           <span *ngIf="!collapsed()">Administradores</span>
         </a>
 
+        <a routerLink="/superadmin/repartidores"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">delivery_dining</span>
+          <span *ngIf="!collapsed()">Repartidores</span>
+        </a>
+
+        <a routerLink="/superadmin/aliados"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">storefront</span>
+          <span *ngIf="!collapsed()">Aliados</span>
+        </a>
+
         <a routerLink="/superadmin/orders"
            routerLinkActive="active">
           <span class="material-symbols-outlined">inventory_2</span>

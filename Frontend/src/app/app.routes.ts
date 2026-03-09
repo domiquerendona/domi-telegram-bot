@@ -10,6 +10,8 @@ import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
 import { UsersComponent } from './features/superadmin/users/users';
 import { SettingsComponent } from './features/superadmin/settings/settings';
 import { AdministradoresComponent } from './features/superadmin/administradores/administradores';
+import { RepartidoresComponent } from './features/superadmin/repartidores/repartidores';
+import { AliadosComponent } from './features/superadmin/aliados/aliados';
 import { TerminosComponent } from './features/superadmin/legal/terminos';
 import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
 import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
@@ -45,6 +47,16 @@ export const routes: Routes = [
         path: 'administradores',
         component: AdministradoresComponent,
         data: { title: 'Administradores' }
+      },
+      {
+        path: 'repartidores',
+        component: RepartidoresComponent,
+        data: { title: 'Repartidores' }
+      },
+      {
+        path: 'aliados',
+        component: AliadosComponent,
+        data: { title: 'Aliados' }
       },
       { 
         path: 'settings',           // Ruta para configuración: "/superadmin/settings"

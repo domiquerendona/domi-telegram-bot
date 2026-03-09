@@ -40,3 +40,32 @@ class AdminResponse(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+class CourierResponse(BaseModel):
+    id: int
+    full_name: str
+    phone: str
+    city: str
+    barrio: str
+    status: str
+    id_number: str
+    plate: str
+    bike_type: str
+
+    class Config:
+        use_enum_values = True
+
+
+class AllyResponse(BaseModel):
+    id: int
+    business_name: str
+    owner_name: str
+    phone: str
+    city: str
+    barrio: str
+    status: str
+    address: str
+
+    class Config:
+        use_enum_values = True

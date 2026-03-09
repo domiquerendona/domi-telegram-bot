@@ -15,10 +15,15 @@ from web.users.repository import get_user_by_id
 from web.auth.dependencies import get_current_user
 
 # Schemas de respuesta
-from web.schemas.user import UserResponse, AdminResponse
+from web.schemas.user import UserResponse, AdminResponse, CourierResponse, AllyResponse
 
 # Funciones de acceso a datos
-from db import get_all_online_couriers, get_active_orders_without_courier, get_all_admins, update_admin_status_by_id
+from db import (
+    get_all_online_couriers, get_active_orders_without_courier,
+    get_all_admins, update_admin_status_by_id,
+    get_all_couriers, update_courier_status_by_id,
+    get_all_allies, update_ally_status_by_id,
+)
 
 
 # Router para endpoints administrativos
@@ -109,6 +114,89 @@ def reactivate_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
     if not is_admin(admin):
         raise HTTPException(status_code=403, detail="No autorizado")
     update_admin_status_by_id(admin_id, "APPROVED")
+    return {"ok": True}
+
+
+@router.get("/couriers", response_model=list[CourierResponse])
+def list_couriers(admin=Depends(get_current_user)):
+    """Lista todos los repartidores."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    rows = get_all_couriers()
+    return [{
+        "id": r["id"], "full_name": r["full_name"], "phone": r["phone"],
+        "city": r["city"], "barrio": r["barrio"], "status": r["status"],
+        "id_number": r["id_number"] or "", "plate": r["plate"] or "",
+        "bike_type": r["bike_type"] or "",
+    } for r in rows]
+
+
+@router.post("/couriers/{courier_id}/approve")
+def approve_courier(courier_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_courier_status_by_id(courier_id, "APPROVED")
+    return {"ok": True}
+
+
+@router.post("/couriers/{courier_id}/reject")
+def reject_courier(courier_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_courier_status_by_id(courier_id, "REJECTED")
+    return {"ok": True}
+
+
+@router.post("/couriers/{courier_id}/deactivate")
+def deactivate_courier(courier_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_courier_status_by_id(courier_id, "INACTIVE")
+    return {"ok": True}
+
+
+@router.post("/couriers/{courier_id}/reactivate")
+def reactivate_courier(courier_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_courier_status_by_id(courier_id, "APPROVED")
+    return {"ok": True}
+
+
+@router.get("/allies", response_model=list[AllyResponse])
+def list_allies(admin=Depends(get_current_user)):
+    """Lista todos los aliados."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    rows = get_all_allies()
+    return [{
+        "id": r["id"], "business_name": r["business_name"], "owner_name": r["owner_name"],
+        "phone": r["phone"], "city": r["city"], "barrio": r["barrio"],
+        "status": r["status"], "address": r["address"] or "",
+    } for r in rows]
+
+
+@router.post("/allies/{ally_id}/approve")
+def approve_ally(ally_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_ally_status_by_id(ally_id, "APPROVED")
+    return {"ok": True}
+
+
+@router.post("/allies/{ally_id}/reject")
+def reject_ally(ally_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_ally_status_by_id(ally_id, "REJECTED")
+    return {"ok": True}
+
+
+@router.post("/allies/{ally_id}/deactivate")
+def deactivate_ally(ally_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_ally_status_by_id(ally_id, "INACTIVE")
+    return {"ok": True}
+
+
+@router.post("/allies/{ally_id}/reactivate")
+def reactivate_ally(ally_id: int, admin=Depends(get_current_user)):
+    if not is_admin(admin): raise HTTPException(status_code=403, detail="No autorizado")
+    update_ally_status_by_id(ally_id, "APPROVED")
     return {"ok": True}
 
 
