@@ -39,6 +39,19 @@ El sistema reemplaza el grupo de WhatsApp con un flujo estructurado:
 - El repartidor entrega y lo marca en el bot.
 - El sistema registra automáticamente las comisiones correspondientes en el libro contable.
 
+### Ciclo de pedido actualizado
+
+0 min → pedido publicado  
+5 min → sugerencia de incentivo adicional  
+10 min → expiración automática  
+
+### Cancelación del aliado
+
+≤60 segundos desde creación → cancelación sin costo  
+>60 segundos desde creación → cobro de $300  
+Expiración automática → cobro de $300  
+Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+
 Todo queda registrado. Ningún pedido se pierde. Ningún repartidor acepta dos veces el mismo pedido. Los datos del cliente están protegidos.
 
 ### Los actores

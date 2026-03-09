@@ -865,6 +865,21 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 - DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
 - `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
 
+### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
+
+**Ciclo de pedido**
+
+0 min → pedido publicado  
+5 min → sugerencia de incentivo adicional  
+10 min → expiración automática  
+
+**Cancelación del aliado**
+
+≤60 segundos desde creación → cancelación sin costo  
+>60 segundos desde creación → cobro de $300  
+Expiración automática → cobro de $300  
+Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 
 Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar el pedido, si sigue en status `PUBLISHED` (ningún courier lo aceptó), se envía un mensaje al creador sugiriendo agregar incentivo.

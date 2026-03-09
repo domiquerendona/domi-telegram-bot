@@ -97,6 +97,21 @@ Si ningún repartidor acepta el pedido antes de que expire, el aliado paga $300 
 
 Si un pedido especial de admin no es tomado por ningún repartidor, no se genera ningún cobro.
 
+---
+
+## Ciclo de pedido actualizado
+
+0 min → pedido publicado  
+5 min → sugerencia de incentivo adicional  
+10 min → expiración automática  
+
+## Cancelación del aliado
+
+≤60 segundos desde creación → cancelación sin costo  
+>60 segundos desde creación → cobro de $300  
+Expiración automática → cobro de $300  
+Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+
 **El saldo es prepago.** Tanto los aliados como los repartidores necesitan tener saldo suficiente para que su pedido o su oferta sean válidos. El saldo lo recarga el administrador local a sus miembros, y el administrador local debe tener saldo propio para hacerlo. El admin de plataforma registra ingresos externos para fondear su propio saldo operativo.
 
 ---
