@@ -15305,6 +15305,40 @@ def admin_local_callback(update, context):
                 print("[ERROR] local_ally_approve:", e)
                 query.edit_message_text("Error aprobando aliado. Revisa logs.")
                 return
+
+            try:
+                credit_welcome_balance("ALLY", ally_id_val, admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (local ally approve):", e)
+
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        f"SELECT users.telegram_id AS telegram_id "
+                        f"FROM users JOIN allies ON allies.user_id = users.id "
+                        f"WHERE allies.id = {P}",
+                        (ally_id_val,),
+                    )
+                    row = cur.fetchone()
+                finally:
+                    conn.close()
+                ally_telegram_id = row["telegram_id"] if row else None
+                if ally_telegram_id:
+                    context.bot.send_message(
+                        chat_id=ally_telegram_id,
+                        text=(
+                            "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+                            "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
+                            "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
+                            "o no. Sin presión.\n\n"
+                            "Usa /menu para ver tus opciones."
+                        ),
+                    )
+            except Exception as e:
+                print("[WARN] Error notificando aliado (local approve):", e)
+
             _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
             query.edit_message_text(
                 "✅ Aliado aprobado en tu equipo.",
@@ -15581,6 +15615,11 @@ def ally_approval_callback(update, context):
                 keep_admin_id = get_platform_admin_id()
             upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
+
+            try:
+                credit_welcome_balance("ALLY", ally_id, keep_admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (platform ally approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vinculo APPROVED de ally {ally_id}: {e}")
 
@@ -15597,18 +15636,20 @@ def ally_approval_callback(update, context):
         u = get_user_by_id(ally_user_id)
         ally_telegram_id = u["telegram_id"]
 
-        context.bot.send_message(
-            chat_id=ally_telegram_id,
-            text=(
-                "Tu registro como aliado '{}' ha sido {}.\n"
-                "{}"
-            ).format(
-                business_name,
-                "APROBADO" if accion == "approve" else "RECHAZADO",
-                "Ya puedes usar el bot para crear pedidos." if accion == "approve"
-                else "Si crees que es un error, comunícate con el administrador."
+        if accion == "approve":
+            msg = (
+                "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+                "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
+                "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
+                "o no. Sin presión.\n\n"
+                "Usa /menu para ver tus opciones."
             )
-        )
+        else:
+            msg = (
+                "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
+                "Si crees que es un error, comunícate con el administrador."
+            ).format(business_name)
+        context.bot.send_message(chat_id=ally_telegram_id, text=msg)
     except Exception as e:
         print("Error notificando aliado:", e)
 
