@@ -68,7 +68,6 @@ import { RouterModule } from '@angular/router';
 .footer{
   background:#081a33;
   color:#d1d5db;
-  margin-top:40px;
 }
 
 /* CONTENIDO PRINCIPAL */
