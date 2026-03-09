@@ -67,10 +67,10 @@ interface Courier {
                 </span>
               </td>
               <td class="acciones">
-                <button *ngIf="c.status === 'PENDING'" class="btn aprobar" (click)="accion(c.id, 'approve')">Aprobar</button>
-                <button *ngIf="c.status === 'PENDING'" class="btn rechazar" (click)="accion(c.id, 'reject')">Rechazar</button>
-                <button *ngIf="c.status === 'APPROVED'" class="btn inactivar" (click)="accion(c.id, 'deactivate')">Inactivar</button>
-                <button *ngIf="c.status === 'INACTIVE'" class="btn reactivar" (click)="accion(c.id, 'reactivate')">Reactivar</button>
+                <button *ngIf="c.status === 'PENDING'" class="btn aprobar" (click)="accion(c, 'approve')">Aprobar</button>
+                <button *ngIf="c.status === 'PENDING'" class="btn rechazar" (click)="accion(c, 'reject')">Rechazar</button>
+                <button *ngIf="c.status === 'APPROVED'" class="btn inactivar" (click)="accion(c, 'deactivate')">Inactivar</button>
+                <button *ngIf="c.status === 'INACTIVE'" class="btn reactivar" (click)="accion(c, 'reactivate')">Reactivar</button>
                 <span *ngIf="c.status === 'REJECTED'" class="sin-accion">—</span>
               </td>
             </tr>
@@ -120,14 +120,14 @@ export class RepartidoresComponent implements OnInit {
   couriers = signal<Courier[]>([]);
   cargando = signal(true);
   error = signal('');
-  filtroActivo = signal('TODOS');
+  filtroActivo = signal('PENDING');
 
   filtroOpciones = [
-    { label: 'Todos', valor: 'TODOS' },
     { label: 'Pendientes', valor: 'PENDING' },
     { label: 'Aprobados', valor: 'APPROVED' },
     { label: 'Inactivos', valor: 'INACTIVE' },
     { label: 'Rechazados', valor: 'REJECTED' },
+    { label: 'Todos', valor: 'TODOS' },
   ];
 
   constructor(private http: HttpClient) {}
@@ -152,10 +152,14 @@ export class RepartidoresComponent implements OnInit {
     return { PENDING: 'Pendiente', APPROVED: 'Aprobado', INACTIVE: 'Inactivo', REJECTED: 'Rechazado' }[s] ?? s;
   }
 
-  accion(id: number, tipo: string) {
-    this.http.post(`http://localhost:8000/admin/couriers/${id}/${tipo}`, {}).subscribe({
+  accion(c: Courier, tipo: string) {
+    const labels: Record<string, string> = {
+      approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
+    };
+    if (!confirm(`¿${labels[tipo] ?? tipo} a ${c.full_name}?`)) return;
+    this.http.post(`http://localhost:8000/admin/couriers/${c.id}/${tipo}`, {}).subscribe({
       next: () => this.cargar(),
-      error: () => alert('Error al ejecutar la acción.')
+      error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });
   }
 }
