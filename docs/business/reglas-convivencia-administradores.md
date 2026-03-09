@@ -1,6 +1,6 @@
 # Domiquerendona — Reglas de convivencia entre administradores
 
-*Última actualización: 2026-03-08*
+*Última actualización: 2026-03-09*
 
 ---
 
@@ -89,3 +89,36 @@ Un aliado que trabaja directamente con un repartidor gana acceso a una persona; 
 Esta frase no es solo un argumento de venta. Es la descripción exacta de cómo está construido el sistema. El administrador que lo entiende y lo opera bien tiene más pedidos disponibles para sus repartidores y más capacidad de atención para sus aliados que si operara en aislamiento.
 
 La regla de convivencia es simple: cada quien cuida su equipo, la red cuida a todos.
+
+---
+
+## 8. Movilidad entre equipos
+
+Ni los aliados ni los repartidores son propiedad de ningún administrador. Son personas o negocios que eligieron trabajar con un equipo, y conservan la libertad de solicitar un cambio si sus circunstancias o preferencias cambian.
+
+**Cuándo puede solicitarse un cambio de equipo:**
+
+- El miembro está inconforme con el trato o las condiciones que le ofrece su administrador actual.
+- El miembro desea trabajar con otro equipo que considera más conveniente para su operación.
+- El administrador actual dejó de operar, se retiró de la red o no le brinda condiciones adecuadas de funcionamiento.
+
+**Cómo debe ocurrir el cambio:**
+
+El cambio debe ser iniciado por el propio aliado o repartidor, no por otro administrador. Un administrador no debe captar activamente miembros de otro equipo ofreciéndoles beneficios o condiciones especiales con el fin de debilitar a un competidor dentro de la red. Eso sería captación desleal y va en contra del principio de convivencia de la red.
+
+El cambio no debe ejecutarse de forma abrupta si hay operaciones en curso. Debe existir un periodo de transición breve y razonable para que las operaciones activas del miembro se cierren correctamente antes de que el nuevo vínculo entre en vigor. La duración exacta de este periodo dependerá de las circunstancias, pero el principio es proteger la estabilidad de la red y no afectar pedidos ni saldos en tránsito.
+
+**Efectos del cambio:**
+
+- Las comisiones futuras, una vez efectivo el cambio, corresponden al nuevo administrador.
+- Las operaciones pasadas y los registros contables históricos no se modifican.
+- Las comisiones ya causadas antes del cambio no se transfieren.
+
+**Objetivos de esta regla:**
+
+- Evitar la retención forzada de miembros que quieren salir.
+- Evitar el "robo" agresivo o desleal de miembros entre administradores.
+- Proteger la libertad de cada persona para trabajar donde se sienta mejor tratada.
+- Mantener la estabilidad operativa de la red durante las transiciones.
+
+**La red funciona mejor cuando cada persona puede trabajar en el equipo donde se siente mejor tratada y mejor apoyada.** Un administrador que cuida bien a su equipo no necesita retenerlo; el equipo se queda porque quiere quedarse. Esa es la base de una red que crece de forma sostenible.

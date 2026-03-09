@@ -1,6 +1,6 @@
 # Domiquerendona — Pitch y explicación completa
 
-*Última actualización: 2026-03-08*
+*Última actualización: 2026-03-09*
 
 ---
 
@@ -97,6 +97,20 @@ El repartidor no "se va" a otro equipo cuando toma un pedido de otro aliado. Sig
 Lo que sí podría preocupar es la salida definitiva de un repartidor: que el repartidor decida cambiarse de administrador. Pero eso no ocurre automáticamente por trabajar en la red compartida; requiere una decisión activa. Y si un repartidor decide cambiarse, la razón suele ser una diferencia de trato o de condiciones con su administrador actual, no el hecho de haber interactuado con aliados de otros equipos.
 
 En resumen: la red compartida amplía las oportunidades del repartidor y, por extensión, los ingresos de su administrador. No hay motivo estructural para que eso debilite la relación entre ambos.
+
+---
+
+### ¿Qué pasa si un aliado o repartidor ya no quiere seguir con su administrador actual?
+
+Esta pregunta aparece tarde o temprano en cualquier red con múltiples administradores, y tiene una respuesta clara.
+
+Domiquerendona no considera a las personas propiedad de ningún administrador. Un aliado o un repartidor que desee cambiarse de equipo puede solicitarlo. La plataforma reconoce esa libertad como un principio de gobernanza, no como una excepción.
+
+El cambio se organiza de forma ordenada: no ocurre de manera inmediata si hay operaciones en curso, y existe un periodo de transición para que todo quede cerrado correctamente antes de que el nuevo vínculo entre en vigor.
+
+Desde que el cambio se hace efectivo, las comisiones futuras de ese miembro pasan al nuevo administrador. Las operaciones históricas y los registros contables pasados no se modifican.
+
+Esta regla tiene una consecuencia directa: obliga a todos los administradores a cuidar bien a su equipo. Un administrador que trata bien a sus aliados y repartidores, que recarga a tiempo y que apoya su operación, no necesita preocuparse por la movilidad. Su equipo se queda porque quiere quedarse. Eso crea una red más sana para todos.
 
 ---
 

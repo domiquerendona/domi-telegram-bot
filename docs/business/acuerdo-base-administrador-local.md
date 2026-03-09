@@ -1,6 +1,6 @@
 # Acuerdo base de participación — Administrador local Domiquerendona
 
-*Última actualización: 2026-03-08*
+*Última actualización: 2026-03-09*
 
 ---
 
@@ -111,7 +111,25 @@ Los cambios que afecten el modelo de comisiones, el sistema de saldos o las regl
 
 ---
 
-## 10. Principio de colaboración
+## 10. Movilidad de aliados y repartidores entre equipos
+
+El administrador local entiende y acepta que los aliados y repartidores vinculados a la red conservan su libertad de solicitar cambio de equipo. Esta libertad es un principio de gobernanza de Domiquerendona, no una excepción.
+
+**Inicio del cambio.** El cambio de equipo debe originarse por decisión del propio aliado o repartidor. El administrador local no debe captar activamente miembros de otros equipos de forma desleal o engañosa. La captación desleal —ofrecer condiciones especiales o presionar a miembros ajenos para que abandonen su equipo actual— es una violación al principio de buena fe de la red.
+
+**Rol de la plataforma.** La plataforma puede intervenir como facilitadora para registrar y ordenar la transición cuando sea necesario, especialmente si hay operaciones en curso o si existe conflicto entre las partes.
+
+**Efectos sobre comisiones.** El cambio de equipo no altera comisiones históricas ya causadas. A partir de la fecha efectiva del cambio, las comisiones futuras generadas por ese aliado o repartidor corresponderán al nuevo administrador.
+
+**Lo que el administrador no puede hacer.** El administrador local no puede bloquear injustificadamente la salida de un miembro que desea cambiarse de equipo. El sistema puede registrar el cambio con intervención de la plataforma si el administrador se niega a procesarlo sin causa válida.
+
+**Lo que otro administrador no puede hacer.** Un administrador no puede captar miembros ajenos de forma activa, desleal o engañosa. Acercarse directamente a miembros de otro equipo para ofrecerles condiciones especiales con el fin de debilitarlo es una conducta que va contra las reglas de convivencia de la red y puede derivar en suspensión.
+
+Esta regla protege tanto la libertad de los miembros como la estabilidad y buena fe de la red en su conjunto.
+
+---
+
+## 11. Principio de colaboración
 
 Domiquerendona es una red construida sobre la confianza entre sus participantes. La plataforma provee la infraestructura; los administradores locales proveen el tejido humano y operativo de la red.
 
