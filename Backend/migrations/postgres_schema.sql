@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS couriers (
     live_lng REAL,
     live_location_active INTEGER DEFAULT 0,
     live_location_updated_at TIMESTAMP,
+    live_location_expires_at TIMESTAMP,
     availability_status TEXT DEFAULT 'INACTIVE',
     rejection_type TEXT,
     rejection_reason TEXT,
@@ -142,6 +143,25 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
     call_count INTEGER DEFAULT 0,
     UNIQUE(api_name, usage_date)
 );
+
+CREATE TABLE IF NOT EXISTS api_usage_events (
+    id BIGSERIAL PRIMARY KEY,
+    api_name TEXT NOT NULL,
+    api_operation TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    success INTEGER DEFAULT 1,
+    blocked INTEGER DEFAULT 0,
+    units INTEGER DEFAULT 1,
+    units_kind TEXT DEFAULT 'call',
+    cost_usd REAL DEFAULT 0,
+    http_status INTEGER,
+    provider_status TEXT,
+    error_message TEXT,
+    meta_json TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_date ON api_usage_events(api_name, usage_date);
+CREATE INDEX IF NOT EXISTS idx_api_usage_events_api_op_date ON api_usage_events(api_name, api_operation, usage_date);
 
 CREATE TABLE IF NOT EXISTS map_distance_cache (
     id BIGSERIAL PRIMARY KEY,
@@ -235,9 +255,57 @@ CREATE TABLE IF NOT EXISTS ally_courier_blocks (
 -- E) TABLAS DE PEDIDOS
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS admin_locations (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    label TEXT NOT NULL,
+    address TEXT NOT NULL,
+    city TEXT NOT NULL,
+    barrio TEXT NOT NULL,
+    phone TEXT,
+    lat REAL,
+    lng REAL,
+    is_default INTEGER DEFAULT 0,
+    use_count INTEGER DEFAULT 0,
+    is_frequent INTEGER DEFAULT 0,
+    last_used_at TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS admin_customers (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_id ON admin_customers(admin_id);
+CREATE INDEX IF NOT EXISTS idx_admin_customers_admin_phone ON admin_customers(admin_id, phone);
+
+CREATE TABLE IF NOT EXISTS admin_customer_addresses (
+    id BIGSERIAL PRIMARY KEY,
+    customer_id BIGINT NOT NULL,
+    label TEXT,
+    address_text TEXT NOT NULL,
+    city TEXT,
+    barrio TEXT,
+    notes TEXT,
+    lat REAL,
+    lng REAL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id);
+
 CREATE TABLE IF NOT EXISTS orders (
     id BIGSERIAL PRIMARY KEY,
-    ally_id BIGINT NOT NULL,
+    ally_id BIGINT,
+    creator_admin_id BIGINT,
     courier_id BIGINT,
     status TEXT DEFAULT 'PENDING',
     customer_name TEXT NOT NULL,
@@ -264,6 +332,9 @@ CREATE TABLE IF NOT EXISTS orders (
     dropoff_lng REAL,
     quote_source TEXT,
     canceled_by TEXT,
+    courier_arrived_at TIMESTAMP,
+    courier_accepted_lat REAL,
+    courier_accepted_lng REAL,
     created_at TIMESTAMP DEFAULT NOW(),
     published_at TIMESTAMP,
     accepted_at TIMESTAMP,

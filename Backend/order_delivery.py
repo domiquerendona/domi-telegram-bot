@@ -33,6 +33,7 @@ from db import (
     upsert_order_pickup_confirmation,
     review_order_pickup_confirmation,
     reset_offer_queue,
+    clear_offer_queue,
     set_order_status,
     upsert_order_accounting_settlement,
     get_courier_link_balance,
@@ -42,6 +43,7 @@ from db import (
     get_pending_route_stops,
     update_route_status,
     assign_route_to_courier,
+    release_route_from_courier,
     deliver_route_stop,
     cancel_route,
     create_route_offer_queue,
@@ -52,11 +54,79 @@ from db import (
     delete_route_offer_queue,
     reset_route_offer_queue,
 )
-from services import apply_service_fee, check_service_fee_available
+from datetime import datetime
+from db import (
+    add_courier_rating,
+    block_courier_for_ally,
+    deactivate_courier,
+    set_courier_arrived,
+    set_courier_accepted_location,
+    get_active_order_for_courier,
+    get_active_route_for_courier,
+    get_courier_delivery_time_stats,
+    get_approved_admin_id_for_courier,
+)
+from services import apply_service_fee, check_service_fee_available, haversine_km
+
+
+def _format_duration(seconds):
+    """Convierte segundos a texto legible: 'X min' o 'Xh Ymin'. Retorna 'N/D' si es None."""
+    if seconds is None or seconds < 0:
+        return "N/D"
+    minutes = int(seconds) // 60
+    if minutes < 60:
+        return "{} min".format(minutes)
+    hours = minutes // 60
+    mins = minutes % 60
+    return "{}h {}min".format(hours, mins)
+
+
+def _get_order_durations(order, delivered_now=False):
+    """
+    Calcula duraciones de cada etapa del pedido.
+    delivered_now=True: usa datetime.utcnow() como delivered_at (recien marcado DELIVERED).
+    Retorna dict con claves: llegada_aliado, entrega_cliente, tiempo_total (en segundos).
+    Cada clave solo se incluye si ambos extremos del intervalo estan disponibles.
+    """
+    def _parse(val):
+        if val is None:
+            return None
+        if hasattr(val, 'timetuple'):  # ya es objeto datetime (Postgres)
+            return val
+        s = str(val).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                return datetime.strptime(s[:len(fmt)], fmt)
+            except ValueError:
+                continue
+        return None
+
+    from db import _row_value as _rv
+    accepted    = _parse(_rv(order, "accepted_at"))
+    arrived     = _parse(_rv(order, "courier_arrived_at"))
+    pickup_conf = _parse(_rv(order, "pickup_confirmed_at"))
+    delivered   = datetime.utcnow() if delivered_now else _parse(_rv(order, "delivered_at"))
+
+    result = {}
+    if accepted and arrived:
+        result["llegada_aliado"] = (arrived - accepted).total_seconds()
+    if pickup_conf and delivered:
+        result["entrega_cliente"] = (delivered - pickup_conf).total_seconds()
+    if accepted and delivered:
+        result["tiempo_total"] = (delivered - accepted).total_seconds()
+    return result
 
 
 OFFER_TIMEOUT_SECONDS = 30
 MAX_CYCLE_SECONDS = 420  # 7 minutos
+
+ARRIVAL_INACTIVITY_SECONDS = 5 * 60    # 5 min: Rappi-style
+ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
+ARRIVAL_DEADLINE_SECONDS = 20 * 60     # 20 min: auto-liberar
+ARRIVAL_RADIUS_KM = 0.1                # 100 metros
+ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia pickup
+OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
 
 
 def _offer_reply_markup(order_id):
@@ -109,6 +179,123 @@ def _cancel_offer_jobs(context, order_id, queue_id):
         jobs = context.job_queue.get_jobs_by_name(reminder_prefix + str(idx))
         for job in jobs:
             job.schedule_removal()
+
+
+def _cancel_arrival_jobs(context, order_id):
+    """Cancela los 3 jobs de tracking de llegada programados al aceptar el pedido."""
+    for name in [
+        "arr_inactive_{}".format(order_id),
+        "arr_warn_{}".format(order_id),
+        "arr_deadline_{}".format(order_id),
+    ]:
+        for job in context.job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
+
+
+def _cancel_no_response_job(context, order_id):
+    """Cancela el job de sugerencia de incentivo T+5 para un pedido."""
+    for job in context.job_queue.get_jobs_by_name("offer_no_response_{}".format(order_id)):
+        job.schedule_removal()
+
+
+def _offer_no_response_job(context):
+    """Job T+5: si el pedido sigue PUBLISHED, sugiere al creador que agregue incentivo."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    # Obtener telegram_id del creador (aliado o admin)
+    creator_chat_id = None
+    try:
+        creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+        if creator_admin_id:
+            admin = get_admin_by_id(int(creator_admin_id))
+            if admin:
+                user = get_user_by_id(admin["user_id"])
+                if user:
+                    creator_chat_id = int(user["telegram_id"])
+        elif order["ally_id"]:
+            ally = get_ally_by_id(int(order["ally_id"]))
+            if ally:
+                user = get_user_by_id(ally["user_id"])
+                if user:
+                    creator_chat_id = int(user["telegram_id"])
+    except Exception as e:
+        print("[T+5] Error obteniendo creador para pedido {}: {}".format(order_id, e))
+        return
+
+    if not creator_chat_id:
+        return
+
+    total_fee = int(order["total_fee"] or 0)
+    incentive = int(order["additional_incentive"] or 0)
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("+$1,500", callback_data="offer_inc_{}x1500".format(order_id)),
+            InlineKeyboardButton("+$2,000", callback_data="offer_inc_{}x2000".format(order_id)),
+            InlineKeyboardButton("+$3,000", callback_data="offer_inc_{}x3000".format(order_id)),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data="offer_inc_otro_{}".format(order_id))],
+    ])
+
+    msg = (
+        "Pedido #{} lleva 5 minutos sin ser aceptado.\n\n"
+        "Tarifa actual: ${:,}".format(order_id, total_fee)
+    )
+    if incentive > 0:
+        msg += " (incluye incentivo de ${:,})".format(incentive)
+    msg += (
+        "\n\nEs posible que haya alta demanda. "
+        "Los repartidores suelen preferir los pedidos mejor pagos.\n"
+        "Agrega un incentivo para agilizar la toma:"
+    )
+
+    try:
+        context.bot.send_message(
+            chat_id=creator_chat_id,
+            text=msg,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        print("[T+5] Error enviando sugerencia para pedido {}: {}".format(order_id, e))
+
+
+def repost_order_to_couriers(order_id, context):
+    """Re-oferta un pedido a todos los couriers activos (usado tras agregar incentivo).
+
+    Limpia la cola existente, resetea los excluded_couriers y relanza el ciclo de ofertas.
+    No verifica saldo del aliado/admin (ya fue verificado al crear el pedido).
+    """
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return 0
+
+    # Limpiar cola existente y excluded_couriers en memoria
+    clear_offer_queue(order_id)
+    context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+
+    ally_id = order["ally_id"]
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    admin_id_override = None
+    if creator_admin_id:
+        admin_id_override = int(creator_admin_id)
+
+    # Re-lanzar ciclo sin verificar saldo (skip_fee_check=True)
+    count = publish_order_to_couriers(
+        order_id=order_id,
+        ally_id=ally_id,
+        context=context,
+        admin_id_override=admin_id_override,
+        skip_fee_check=True,
+    )
+    return count
 
 
 def _offer_reminder_job(context):
@@ -200,18 +387,31 @@ def _notify_recharge_needed_to_courier(context, courier_id):
         print("[WARN] No se pudo notificar saldo insuficiente al courier {}: {}".format(courier_id, e))
 
 
-def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None):
+def publish_order_to_couriers(
+    order_id,
+    ally_id,
+    context,
+    admin_id_override=None,
+    pickup_city=None,
+    pickup_barrio=None,
+    dropoff_city=None,
+    dropoff_barrio=None,
+    skip_fee_check=False,
+):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
     1. Busca couriers elegibles (filtrados por veto, base, activación).
     2. Crea la cola de ofertas en BD.
     3. Envía la primera oferta.
     4. Programa timeout de 30s con JobQueue.
+
+    skip_fee_check=True: omitir verificación de saldo (usado en re-oferta tras incentivo).
+    ally_id=None: pedido especial creado por admin (no aplica fee de aliado).
     """
     admin_id = None
     if admin_id_override is not None:
         admin_id = int(admin_id_override)
-    else:
+    elif ally_id is not None:
         admin_link = get_approved_admin_link_for_ally(ally_id)
         if not admin_link:
             print("[WARN] Aliado sin admin aprobado, no se puede publicar pedido")
@@ -222,17 +422,19 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
         return 0
 
     # Verificacion previa de saldo del aliado y del admin antes de ofertar.
-    ally_ok, ally_code = check_service_fee_available(
-        target_type="ALLY",
-        target_id=ally_id,
-        admin_id=admin_id,
-    )
-    if not ally_ok:
-        print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
-        _notify_recharge_needed_to_ally(context, ally_id)
-        if ally_code == "ADMIN_SIN_SALDO":
-            _notify_recharge_needed_to_admin(context, admin_id)
-        return 0
+    # Omitida para pedidos de admin (no hay aliado) y en re-ofertas (ya fue verificado).
+    if ally_id is not None and not skip_fee_check:
+        ally_ok, ally_code = check_service_fee_available(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=admin_id,
+        )
+        if not ally_ok:
+            print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
+            _notify_recharge_needed_to_ally(context, ally_id)
+            if ally_code == "ADMIN_SIN_SALDO":
+                _notify_recharge_needed_to_admin(context, admin_id)
+            return 0
 
     requires_cash = bool(order["requires_cash"])
     cash_amount = int(order["cash_required_amount"] or 0)
@@ -241,14 +443,18 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
     p_lat = order["pickup_lat"] if "pickup_lat" in order.keys() else None
     p_lng = order["pickup_lng"] if "pickup_lng" in order.keys() else None
     pickup_location_id = order["pickup_location_id"] if "pickup_location_id" in order.keys() else None
-    if p_lat is None and pickup_location_id:
+    pickup_loc_row = None
+    # Solo buscar en ally_locations si hay ally_id (pedidos de aliado)
+    if p_lat is None and pickup_location_id and ally_id is not None:
         loc = get_ally_location_by_id(pickup_location_id, ally_id)
         if loc:
+            pickup_loc_row = loc
             p_lat = loc["lat"] if "lat" in loc.keys() else None
             p_lng = loc["lng"] if "lng" in loc.keys() else None
 
+    # Red cooperativa: buscar en TODOS los couriers activos, sin filtro de equipo.
+    # Cada courier opera bajo su propio admin; el fee se cobra a cada uno por separado.
     eligible = get_eligible_couriers_for_order(
-        admin_id=admin_id,
         ally_id=ally_id,
         requires_cash=requires_cash,
         cash_required_amount=cash_amount,
@@ -259,51 +465,86 @@ def publish_order_to_couriers(order_id, ally_id, context, admin_id_override=None
         print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
         return 0
 
-    # Verificacion previa de saldo por courier y admin antes de ofertar.
+    # Verificacion previa de saldo por courier usando el admin PROPIO de cada courier.
     filtered = []
-    admin_without_balance = False
     couriers_without_balance = []
     for c in eligible:
         courier_id = c["courier_id"]
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id is None:
+            couriers_without_balance.append(courier_id)
+            continue
         ok, code = check_service_fee_available(
             target_type="COURIER",
             target_id=courier_id,
-            admin_id=admin_id,
+            admin_id=courier_admin_id,
         )
         if ok:
             filtered.append(c)
         else:
-            if code == "ADMIN_SIN_SALDO":
-                admin_without_balance = True
-            else:
-                couriers_without_balance.append(courier_id)
-
-    if admin_without_balance:
-        print("[WARN] Pedido {} sin oferta por saldo admin insuficiente".format(order_id))
-        _notify_recharge_needed_to_admin(context, admin_id)
-        _notify_recharge_needed_to_ally(context, ally_id)
-        return 0
+            couriers_without_balance.append(courier_id)
 
     for courier_id in couriers_without_balance:
         _notify_recharge_needed_to_courier(context, courier_id)
 
     if not filtered:
         print("[WARN] Pedido {} sin oferta: todos los couriers sin saldo operativo".format(order_id))
-        _notify_recharge_needed_to_ally(context, ally_id)
+        if ally_id is not None:
+            _notify_recharge_needed_to_ally(context, ally_id)
         return 0
 
     courier_ids = [c["courier_id"] for c in filtered]
     create_offer_queue(order_id, courier_ids)
     set_order_status(order_id, "PUBLISHED", "published_at")
 
-    # Guardar timestamp de inicio del ciclo
+    # Guardar datos del ciclo para re-consulta en reintentos
+    if pickup_loc_row is None and pickup_location_id and ally_id is not None:
+        try:
+            pickup_loc_row = get_ally_location_by_id(pickup_location_id, ally_id)
+        except Exception:
+            pickup_loc_row = None
+
+    if pickup_city is None or pickup_barrio is None:
+        if pickup_loc_row:
+            pickup_city = pickup_city if pickup_city is not None else pickup_loc_row.get("city")
+            pickup_barrio = pickup_barrio if pickup_barrio is not None else pickup_loc_row.get("barrio")
+        elif ally_id is not None:
+            default_loc = get_default_ally_location(ally_id)
+            if default_loc:
+                pickup_city = pickup_city if pickup_city is not None else default_loc.get("city")
+                pickup_barrio = pickup_barrio if pickup_barrio is not None else default_loc.get("barrio")
+
+    if dropoff_city is None:
+        dropoff_city = _row_value(order, "customer_city")
+    if dropoff_barrio is None:
+        dropoff_barrio = _row_value(order, "customer_barrio")
+
     context.bot_data.setdefault("offer_cycles", {})[order_id] = {
         "started_at": __import__("time").time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
+        "pickup_lat": p_lat,
+        "pickup_lng": p_lng,
+        "pickup_city": pickup_city,
+        "pickup_barrio": pickup_barrio,
+        "dropoff_city": dropoff_city,
+        "dropoff_barrio": dropoff_barrio,
+        "requires_cash": requires_cash,
+        "cash_amount": cash_amount,
+        "excluded_couriers": set(),
     }
 
     _send_next_offer(order_id, context)
+
+    # Programar sugerencia de incentivo si nadie acepta en T+5
+    _cancel_no_response_job(context, order_id)
+    context.job_queue.run_once(
+        _offer_no_response_job,
+        OFFER_NO_RESPONSE_SECONDS,
+        context={"order_id": order_id},
+        name="offer_no_response_{}".format(order_id),
+    )
+
     return len(courier_ids)
 
 
@@ -321,7 +562,30 @@ def _send_next_offer(order_id, context):
 
     mark_offer_as_offered(next_offer["queue_id"])
 
-    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(order)
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+
+    # Calcular distancia y ETA del courier al punto de recogida
+    courier_dist_km = None
+    try:
+        courier_data = get_courier_by_id(next_offer["courier_id"])
+        if courier_data:
+            c_lat = _row_value(courier_data, "live_lat") or _row_value(courier_data, "residence_lat")
+            c_lng = _row_value(courier_data, "live_lng") or _row_value(courier_data, "residence_lng")
+            if c_lat and c_lng and pickup_lat is not None and pickup_lng is not None:
+                courier_dist_km = haversine_km(float(c_lat), float(c_lng),
+                                               float(pickup_lat), float(pickup_lng))
+    except Exception:
+        pass
+
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id, {}) or {}
+    offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(
+        order,
+        courier_dist_km=courier_dist_km,
+        pickup_city_override=cycle_info.get("pickup_city"),
+        pickup_barrio_override=cycle_info.get("pickup_barrio"),
+        dropoff_city_override=cycle_info.get("dropoff_city"),
+        dropoff_barrio_override=cycle_info.get("dropoff_barrio"),
+    )
     reply_markup = _offer_reply_markup(order_id)
 
     try:
@@ -340,6 +604,28 @@ def _send_next_offer(order_id, context):
         mark_offer_response(next_offer["queue_id"], "EXPIRED")
         _send_next_offer(order_id, context)
         return
+
+    # Enviar mapas (recogida + entrega)
+    try:
+        if pickup_lat is not None and pickup_lng is not None:
+            context.bot.send_location(
+                chat_id=next_offer["telegram_id"],
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+    except Exception:
+        pass
+
+    try:
+        dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
+        if dropoff_lat is not None and dropoff_lng is not None:
+            context.bot.send_location(
+                chat_id=next_offer["telegram_id"],
+                latitude=float(dropoff_lat),
+                longitude=float(dropoff_lng),
+            )
+    except Exception:
+        pass
 
     # Programar timeout de 30 segundos
     context.job_queue.run_once(
@@ -400,7 +686,8 @@ def _offer_timeout_job(context):
 
 
 def _try_restart_cycle(order_id, context):
-    """Reinicia el ciclo si no se superan los 7 minutos. Si se superan, cancela."""
+    """Reinicia el ciclo re-consultando couriers elegibles actuales dentro del radio.
+    Captura repartidores que hayan entrado al radio desde el inicio del ciclo."""
     cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
     if not cycle_info:
         return
@@ -412,7 +699,30 @@ def _try_restart_cycle(order_id, context):
         _expire_order(order_id, cycle_info, context)
         return
 
-    reset_offer_queue(order_id)
+    admin_id = cycle_info["admin_id"]
+    ally_id = cycle_info["ally_id"]
+    p_lat = cycle_info.get("pickup_lat")
+    p_lng = cycle_info.get("pickup_lng")
+    requires_cash = cycle_info.get("requires_cash", False)
+    cash_amount = cycle_info.get("cash_amount", 0)
+    excluded = cycle_info.get("excluded_couriers", set())
+
+    fresh = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+        pickup_lat=p_lat,
+        pickup_lng=p_lng,
+    )
+    courier_ids = [c["courier_id"] for c in fresh if c["courier_id"] not in excluded]
+
+    if not courier_ids:
+        _expire_order(order_id, cycle_info, context)
+        return
+
+    delete_offer_queue(order_id)
+    create_offer_queue(order_id, courier_ids)
     _send_next_offer(order_id, context)
 
 
@@ -502,10 +812,20 @@ def ally_active_orders(update, context):
             )
 
             if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
-                keyboard = [[InlineKeyboardButton(
-                    "Cancelar pedido",
-                    callback_data="order_cancel_{}".format(order["id"]),
-                )]]
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            "Aumentar incentivo",
+                            callback_data="pedido_inc_menu_{}".format(order["id"]),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "Cancelar pedido",
+                            callback_data="order_cancel_{}".format(order["id"]),
+                        )
+                    ],
+                ]
                 update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 update.message.reply_text(text)
@@ -581,6 +901,7 @@ def admin_orders_panel(update, context, admin_id, is_platform=False):
         [InlineKeyboardButton("Pedidos entregados", callback_data="admpedidos_list_DELIVERED_{}".format(admin_id))],
         [InlineKeyboardButton("Pedidos cancelados", callback_data="admpedidos_list_CANCELLED_{}".format(admin_id))],
         [InlineKeyboardButton("Todos los pedidos", callback_data="admpedidos_list_ALL_{}".format(admin_id))],
+        [InlineKeyboardButton("Estadisticas de entrega", callback_data="admpedidos_stats_{}".format(admin_id))],
     ]
 
     query.edit_message_text(
@@ -607,6 +928,10 @@ def admin_orders_callback(update, context):
         return _admin_order_detail(update, context, data)
     if data.startswith("admpedidos_cancel_"):
         return _admin_order_cancel(update, context, data)
+    if data.startswith("admpedidos_statsdetail_"):
+        return _admin_courier_delivery_stats(update, context, data)
+    if data.startswith("admpedidos_stats_"):
+        return _admin_delivery_stats_panel(update, context, data)
     return None
 
 
@@ -750,6 +1075,16 @@ def _admin_order_detail(update, context, data):
 
     canceled_by = order["canceled_by"] if "canceled_by" in order.keys() and order["canceled_by"] else "N/A"
 
+    durations = _get_order_durations(order)
+    dur_lines = []
+    if "llegada_aliado" in durations:
+        dur_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "entrega_cliente" in durations:
+        dur_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
+    if "tiempo_total" in durations:
+        dur_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+    dur_block = ("Tiempos del pedido:\n" + "\n".join(dur_lines) + "\n\n") if dur_lines else ""
+
     text = (
         "Pedido #{}\n\n"
         "Estado: {}\n"
@@ -838,6 +1173,7 @@ def _admin_order_cancel(update, context, data):
     had_courier = order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
 
+    _cancel_no_response_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
@@ -882,7 +1218,7 @@ def order_courier_callback(update, context):
     """
     Maneja botones de ofertas y ciclo de vida de pedidos.
     Patterns:
-    - ^order_(accept|reject|busy|pickup|delivered|release|cancel)_\\d+$
+    - ^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel)_\\d+$
     - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
@@ -896,6 +1232,15 @@ def order_courier_callback(update, context):
         order_id = int(data.replace("order_pickupconfirm_reject_", ""))
         return _handle_pickup_confirmation_by_ally(update, context, order_id, approve=False)
 
+    if data.startswith("order_find_another_"):
+        order_id = int(data.replace("order_find_another_", ""))
+        return _handle_find_another_courier(update, context, order_id)
+    if data.startswith("order_wait_courier_"):
+        order_id = int(data.replace("order_wait_courier_", ""))
+        return _handle_wait_courier(update, context, order_id)
+    if data.startswith("order_call_courier_"):
+        order_id = int(data.replace("order_call_courier_", ""))
+        return _handle_call_courier(update, context, order_id)
     if data.startswith("order_accept_"):
         order_id = int(data.replace("order_accept_", ""))
         return _handle_accept(update, context, order_id)
@@ -908,17 +1253,410 @@ def order_courier_callback(update, context):
     if data.startswith("order_pickup_"):
         order_id = int(data.replace("order_pickup_", ""))
         return _handle_pickup(update, context, order_id)
+    if data.startswith("order_delivered_confirm_"):
+        order_id = int(data.replace("order_delivered_confirm_", ""))
+        keyboard = [[
+            InlineKeyboardButton("Si", callback_data="order_delivered_{}".format(order_id)),
+            InlineKeyboardButton("No", callback_data="order_delivered_cancel_{}".format(order_id)),
+        ]]
+        query.edit_message_text(
+            "Ya entregaste el pedido #{}?".format(order_id),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+    if data.startswith("order_delivered_cancel_"):
+        order_id = int(data.replace("order_delivered_cancel_", ""))
+        query.edit_message_text("Ok. El pedido #{} sigue en curso.".format(order_id))
+        return
     if data.startswith("order_delivered_"):
         order_id = int(data.replace("order_delivered_", ""))
         return _handle_delivered(update, context, order_id)
+    if data.startswith("order_release_abort_"):
+        order_id = int(data.replace("order_release_abort_", ""))
+        query.edit_message_text("Ok. El pedido #{} sigue en curso.".format(order_id))
+        return
+    if data.startswith("order_release_reason_"):
+        # order_release_reason_{order_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo procesar la razon de liberacion.")
+            return
+        order_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_release_reason_selected(update, context, order_id, reason_code)
+    if data.startswith("order_release_confirm_"):
+        # order_release_confirm_{order_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo confirmar la liberacion.")
+            return
+        order_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_release(update, context, order_id, reason_code=reason_code)
     if data.startswith("order_release_"):
-        order_id = int(data.replace("order_release_", ""))
-        return _handle_release(update, context, order_id)
+        # order_release_{order_id}
+        parts = data.split("_")
+        if len(parts) < 3:
+            query.edit_message_text("No se pudo procesar la liberacion.")
+            return
+        order_id = int(parts[2])
+        return _handle_release_reason_menu(update, context, order_id)
     if data.startswith("order_cancel_"):
         order_id = int(data.replace("order_cancel_", ""))
         return _handle_cancel_ally(update, context, order_id)
     return None
 
+
+def _handle_release_reason_menu(update, context, order_id):
+    """Muestra razones válidas antes de permitir que el courier libere el pedido."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para liberar este pedido.")
+        return
+
+    arrived_at = _row_value(order, "courier_arrived_at")
+    arrived_line = ""
+    if arrived_at:
+        arrived_line = (
+            "\n\nIMPORTANTE: Ya reportaste tu llegada al punto de recogida. "
+            "Liberar en este punto solo se permite por motivos serios."
+        )
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+
+    lines = [
+        "Vas a liberar el pedido #{}.".format(order_id),
+        "",
+        "Liberar un pedido sin motivo valido es una falta grave. "
+        "Liberar para evitar la comision puede terminar en suspension o expulsion.",
+        "Selecciona un motivo:",
+    ]
+    text = "\n".join(lines) + arrived_line
+
+    kb = []
+    for code, label in reason_labels.items():
+        kb.append([InlineKeyboardButton(label, callback_data="order_release_reason_{}_{}".format(order_id, code))])
+    kb.append([InlineKeyboardButton("Cancelar", callback_data="order_release_abort_{}".format(order_id))])
+
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+def _handle_release_reason_selected(update, context, order_id, reason_code):
+    """Pide confirmación final antes de liberar el pedido."""
+    query = update.callback_query
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+
+    keyboard = [[
+        InlineKeyboardButton(
+            "Confirmar liberacion",
+            callback_data="order_release_confirm_{}_{}".format(order_id, reason_code),
+        ),
+        InlineKeyboardButton(
+            "Cancelar",
+            callback_data="order_release_abort_{}".format(order_id),
+        ),
+    ]]
+    query.edit_message_text(
+        "Confirmas que vas a liberar el pedido #{}?\n\nMotivo: {}\n\n"
+        "Esta accion se revisa por el admin. Si es injustificada, puede haber sancion.".format(
+            order_id,
+            reason_label,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timers de llegada (post-aceptación)
+# ---------------------------------------------------------------------------
+
+def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
+    """
+    Libera un pedido ACCEPTED por inactividad o deadline, excluye al courier
+    y reinicia el ciclo de ofertas. Usado por T+5, T+20 y cuando el aliado
+    solicita otro repartidor.
+    """
+    import time as _time
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+
+    _cancel_arrival_jobs(context, order_id)
+    release_order_from_courier(order_id)
+
+    cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
+    excluded = set(cycle.get("excluded_couriers", set()))
+    excluded.add(courier_id)
+
+    # Notificar al courier
+    try:
+        c = get_courier_by_id(courier_id)
+        if c:
+            cu = get_user_by_id(c["user_id"])
+            if cu:
+                context.bot.send_message(
+                    chat_id=cu["telegram_id"],
+                    text="El pedido #{} fue liberado automaticamente ({}).".format(order_id, reason),
+                )
+    except Exception:
+        pass
+
+    # Notificar al aliado
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if ally:
+            au = get_user_by_id(ally["user_id"])
+            if au:
+                context.bot.send_message(
+                    chat_id=au["telegram_id"],
+                    text=(
+                        "El repartidor fue liberado del pedido #{} por {}. "
+                        "Buscando otro repartidor..."
+                    ).format(order_id, reason),
+                )
+    except Exception:
+        pass
+
+    # Reiniciar ciclo excluyendo al courier liberado
+    ally_id = order["ally_id"]
+    admin_link = get_approved_admin_link_for_ally(ally_id)
+    admin_id = admin_link["admin_id"] if admin_link else cycle.get("admin_id")
+    if not admin_id:
+        return
+
+    p_lat = cycle.get("pickup_lat")
+    p_lng = cycle.get("pickup_lng")
+    if p_lat is None or p_lng is None:
+        p_lat, p_lng = _get_pickup_coords(order)
+
+    requires_cash = bool(order["requires_cash"])
+    cash_amount = int(order["cash_required_amount"] or 0)
+
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id, ally_id=ally_id,
+        requires_cash=requires_cash, cash_required_amount=cash_amount,
+        pickup_lat=p_lat, pickup_lng=p_lng,
+    )
+    eligible = [c for c in eligible if c["courier_id"] not in excluded]
+
+    if eligible:
+        courier_ids = [c["courier_id"] for c in eligible]
+        delete_offer_queue(order_id)
+        create_offer_queue(order_id, courier_ids)
+        context.bot_data.setdefault("offer_cycles", {})[order_id] = {
+            "started_at": _time.time(),
+            "admin_id": admin_id, "ally_id": ally_id,
+            "pickup_lat": p_lat, "pickup_lng": p_lng,
+            "pickup_city": cycle.get("pickup_city") if cycle else None,
+            "pickup_barrio": cycle.get("pickup_barrio") if cycle else None,
+            "dropoff_city": cycle.get("dropoff_city") if cycle else None,
+            "dropoff_barrio": cycle.get("dropoff_barrio") if cycle else None,
+            "requires_cash": requires_cash, "cash_amount": cash_amount,
+            "excluded_couriers": excluded,
+        }
+        _send_next_offer(order_id, context)
+    else:
+        try:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                au = get_user_by_id(ally["user_id"])
+                if au:
+                    context.bot.send_message(
+                        chat_id=au["telegram_id"],
+                        text="No hay mas repartidores disponibles para el pedido #{}.".format(order_id),
+                    )
+        except Exception:
+            pass
+
+
+def _arrival_inactivity_job(context):
+    """T+5: si el courier no se movio >=50m hacia el pickup, libera el pedido (Rappi-style)."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+    if order["courier_arrived_at"]:
+        return
+
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+    accepted_lat = order["courier_accepted_lat"] if "courier_accepted_lat" in order.keys() else None
+    accepted_lng = order["courier_accepted_lng"] if "courier_accepted_lng" in order.keys() else None
+
+    if not all([pickup_lat, pickup_lng, accepted_lat, accepted_lng]):
+        return  # Sin datos de posición, no podemos evaluar
+
+    courier = get_courier_by_id(order["courier_id"])
+    if not courier:
+        return
+
+    current_lat = _row_value(courier, "live_lat") or accepted_lat
+    current_lng = _row_value(courier, "live_lng") or accepted_lng
+
+    dist_at_acceptance = haversine_km(float(accepted_lat), float(accepted_lng),
+                                      float(pickup_lat), float(pickup_lng))
+    dist_now = haversine_km(float(current_lat), float(current_lng),
+                            float(pickup_lat), float(pickup_lng))
+
+    moved_toward_pickup = dist_at_acceptance - dist_now
+    if moved_toward_pickup < ARRIVAL_MOVEMENT_THRESHOLD_KM:
+        _release_order_by_timeout(order_id, order["courier_id"], context,
+                                  reason="inactividad (no se movio en 5 min)")
+
+
+def _arrival_warn_ally_job(context):
+    """T+15: notifica al aliado que el courier no ha llegado y le da opciones."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+    if order["courier_arrived_at"]:
+        return
+
+    courier = get_courier_by_id(order["courier_id"])
+    courier_name = courier["full_name"] if courier else "El repartidor"
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    courier_tg_id = courier_user["telegram_id"] if courier_user else None
+
+    # Notificar al aliado
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if ally:
+            au = get_user_by_id(ally["user_id"])
+            if au:
+                keyboard = [
+                    [InlineKeyboardButton(
+                        "Buscar otro repartidor",
+                        callback_data="order_find_another_{}".format(order_id),
+                    )],
+                    [InlineKeyboardButton(
+                        "Seguir esperando",
+                        callback_data="order_wait_courier_{}".format(order_id),
+                    )],
+                ]
+                if courier:
+                    keyboard.insert(1, [InlineKeyboardButton(
+                        "Llamar al repartidor",
+                        callback_data="order_call_courier_{}".format(order_id),
+                    )])
+                context.bot.send_message(
+                    chat_id=au["telegram_id"],
+                    text=(
+                        "Han pasado 15 minutos y {} no ha reportado su llegada "
+                        "al punto de recogida del pedido #{}.\n\nQue deseas hacer?"
+                    ).format(courier_name, order_id),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+    except Exception as e:
+        print("[WARN] _arrival_warn_ally_job: {}".format(e))
+
+    # Notificar al courier
+    if courier_tg_id:
+        try:
+            context.bot.send_message(
+                chat_id=courier_tg_id,
+                text=(
+                    "El aliado fue notificado de que llevas 15 minutos sin reportar "
+                    "llegada al pedido #{}. Reporta tu llegada o el pedido "
+                    "sera liberado automaticamente en 5 minutos."
+                ).format(order_id),
+            )
+        except Exception:
+            pass
+
+
+def _arrival_deadline_job(context):
+    """T+20: libera automáticamente el pedido si el courier no llegó."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+    if order["courier_arrived_at"]:
+        return
+    _release_order_by_timeout(order_id, order["courier_id"], context,
+                               reason="timeout de llegada (20 min)")
+
+
+def check_courier_arrival_at_pickup(courier_id, lat, lng, context):
+    """
+    Verifica si el courier está a <=100m del pickup de su pedido activo (ACCEPTED).
+    Si es así, marca la llegada y notifica al aliado para confirmación.
+    Llamada desde courier_live_location_handler en main.py en cada actualización.
+    """
+    order = get_active_order_for_courier(courier_id)
+    if not order:
+        return
+    arrived_at = order["courier_arrived_at"] if "courier_arrived_at" in order.keys() else None
+    if arrived_at:
+        return  # Ya estaba marcado
+
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+    if not pickup_lat or not pickup_lng:
+        return
+
+    dist_km = haversine_km(float(lat), float(lng), float(pickup_lat), float(pickup_lng))
+    if dist_km > ARRIVAL_RADIUS_KM:
+        return  # Aún lejos
+
+    # Llegó al radio de 100m
+    set_courier_arrived(order["id"])
+    _cancel_arrival_jobs(context, order["id"])
+
+    courier = get_courier_by_id(courier_id)
+    courier_name = courier["full_name"] if courier else "El repartidor"
+
+    upsert_order_pickup_confirmation(order["id"], courier_id, order["ally_id"], "PENDING")
+    _notify_ally_courier_arrived(context, order, courier_name)
+
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    if courier_user:
+        try:
+            context.bot.send_message(
+                chat_id=courier_user["telegram_id"],
+                text=(
+                    "Detectamos que estas en el punto de recogida del pedido #{}. "
+                    "Esperando confirmacion del aliado para entregarte los datos del cliente."
+                ).format(order["id"]),
+            )
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 
 def _handle_accept(update, context, order_id):
     query = update.callback_query
@@ -943,8 +1681,27 @@ def _handle_accept(update, context, order_id):
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
-    # Cancelar el job de timeout
+    active_order = get_active_order_for_courier(courier["id"])
+    if active_order and active_order["id"] != order_id:
+        query.edit_message_text(
+            "No puedes aceptar un nuevo pedido porque ya tienes un pedido en curso (#{}).".format(
+                active_order["id"]
+            )
+        )
+        return
+
+    active_route = get_active_route_for_courier(courier["id"])
+    if active_route:
+        query.edit_message_text(
+            "No puedes aceptar un nuevo pedido porque ya tienes una ruta en curso (#{}).".format(
+                active_route["id"]
+            )
+        )
+        return
+
+    # Cancelar jobs de timeout y sugerencia de incentivo
     _cancel_offer_jobs(context, order_id, current["queue_id"])
+    _cancel_no_response_job(context, order_id)
 
     # Marcar oferta como aceptada
     mark_offer_response(current["queue_id"], "ACCEPTED")
@@ -959,21 +1716,26 @@ def _handle_accept(update, context, order_id):
     pickup_lat, pickup_lng = _get_pickup_coords(order)
     keyboard = []
     keyboard.extend(_build_navigation_rows(pickup_lat, pickup_lng))
-    keyboard.append([InlineKeyboardButton("Confirmar recogida", callback_data="order_pickup_{}".format(order_id))])
     keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
+
+    customer_city = _row_value(order, "customer_city") or ""
+    customer_barrio = _row_value(order, "customer_barrio") or ""
+    destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
 
     query.edit_message_text(
         "Pedido #{} aceptado.\n\n"
         "Recoge en: {}\n"
-        "Entrega en: {}\n"
-        "Cliente: {}\n"
-        "Telefono cliente: {}\n\n"
-        "Dirigete al punto de recogida.".format(
+        "Destino: {}\n"
+        "Tarifa: ${:,}\n\n"
+        "Dirigete ahora al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
+        "Manten tu GPS encendido.\n"
+        "Tienes 15 minutos para llegar al punto de recogida.\n"
+        "Si no puedes llegar, presiona \"Liberar pedido\".\n"
+        "El aliado confirmara tu llegada antes de entregarte los datos del cliente.".format(
             order_id,
             _get_pickup_address(order),
-            order["customer_address"] or "No disponible",
-            order["customer_name"] or "No disponible",
-            order["customer_phone"] or "No disponible",
+            destino_area,
+            int(order["total_fee"] or 0),
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -986,6 +1748,37 @@ def _handle_accept(update, context, order_id):
             )
         except Exception:
             pass
+
+    # Guardar posición del courier al aceptar (base para detección de inactividad T+5)
+    try:
+        c_data = get_courier_by_id(courier_id)
+        if c_data:
+            c_lat = _row_value(c_data, "live_lat") or _row_value(c_data, "residence_lat")
+            c_lng = _row_value(c_data, "live_lng") or _row_value(c_data, "residence_lng")
+            if c_lat and c_lng:
+                set_courier_accepted_location(order_id, float(c_lat), float(c_lng))
+    except Exception:
+        pass
+
+    # Programar 3 timers de llegada
+    context.job_queue.run_once(
+        _arrival_inactivity_job,
+        ARRIVAL_INACTIVITY_SECONDS,
+        context={"order_id": order_id},
+        name="arr_inactive_{}".format(order_id),
+    )
+    context.job_queue.run_once(
+        _arrival_warn_ally_job,
+        ARRIVAL_WARN_SECONDS,
+        context={"order_id": order_id},
+        name="arr_warn_{}".format(order_id),
+    )
+    context.job_queue.run_once(
+        _arrival_deadline_job,
+        ARRIVAL_DEADLINE_SECONDS,
+        context={"order_id": order_id},
+        name="arr_deadline_{}".format(order_id),
+    )
 
     # Limpiar bot_data del ciclo de ofertas
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
@@ -1048,7 +1841,67 @@ def _handle_busy(update, context, order_id):
     _send_next_offer(order_id, context)
 
 
-def _handle_release(update, context, order_id):
+def _handle_find_another_courier(update, context, order_id):
+    """Aliado solicita buscar otro repartidor cuando el courier no llega."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido ya no esta disponible para esta accion.")
+        return
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != order["ally_id"]:
+        query.answer("No tienes permiso para esta accion.")
+        return
+    query.edit_message_text("Buscando otro repartidor para el pedido #{}...".format(order_id))
+    _release_order_by_timeout(order_id, order["courier_id"], context,
+                              reason="solicitado por el aliado")
+
+
+def _handle_call_courier(update, context, order_id):
+    """Aliado solicita el teléfono del repartidor para poder llamarlo."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    courier_id = _row_value(order, "courier_id") if order else None
+    if not order or order["status"] != "ACCEPTED" or not courier_id:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Este pedido ya no esta disponible para esta accion.",
+        )
+        return
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != order["ally_id"]:
+        query.answer("No tienes permiso para esta accion.")
+        return
+
+    courier = get_courier_by_id(courier_id)
+    courier_phone = _row_value(courier, "phone") if courier else None
+    if not courier_phone:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Telefono del repartidor no disponible para el pedido #{}.".format(order_id),
+        )
+        return
+
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Telefono del repartidor para el pedido #{}: {}".format(order_id, courier_phone),
+    )
+
+
+def _handle_wait_courier(update, context, order_id):
+    """Aliado decide seguir esperando al courier."""
+    query = update.callback_query
+    query.edit_message_text(
+        "De acuerdo, seguimos esperando al repartidor para el pedido #{}.".format(order_id)
+    )
+
+
+def _handle_release(update, context, order_id, reason_code=None):
     """Courier libera un pedido aceptado. Vuelve a PUBLISHED y re-inicia ofertas."""
     query = update.callback_query
     order = get_order_by_id(order_id)
@@ -1066,10 +1919,29 @@ def _handle_release(update, context, order_id):
         query.edit_message_text("No tienes permiso para liberar este pedido.")
         return
 
-    release_order_from_courier(order_id)
-    query.edit_message_text("Pedido #{} liberado. Sera ofrecido a otros repartidores.".format(order_id))
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "aliado_no_entrega": "El aliado no entrega el pedido",
+        "pedido_incorrecto": "Pedido incorrecto / no coincide",
+        "sin_productos": "No hay productos disponibles",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
 
-    _notify_ally_order_released(context, order)
+    arrived_at = _row_value(order, "courier_arrived_at")
+    arrived_flag = "SI" if arrived_at else "NO"
+
+    _cancel_arrival_jobs(context, order_id)
+    release_order_from_courier(order_id)
+    query.edit_message_text(
+        "Pedido #{} liberado.\n"
+        "Motivo: {}\n\n"
+        "Este pedido sera ofrecido a otros repartidores.".format(order_id, reason_label)
+    )
+
+    _notify_ally_order_released(context, order, reason_label=reason_label)
+    _notify_admin_order_released(context, order, courier, reason_label=reason_label, arrived_flag=arrived_flag)
 
     # Re-iniciar ciclo de ofertas
     ally_id = order["ally_id"]
@@ -1084,6 +1956,15 @@ def _handle_release(update, context, order_id):
         print("[WARN] No se pudo reofertar pedido {}: sin admin operativo".format(order_id))
         return
 
+    # Preservar couriers excluidos del ciclo anterior y agregar el que libero el pedido
+    prev_cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
+    excluded = set(prev_cycle.get("excluded_couriers", set()))
+    excluded.add(courier["id"])
+
+    # Recuperar coordenadas de recogida del ciclo anterior
+    p_lat = prev_cycle.get("pickup_lat")
+    p_lng = prev_cycle.get("pickup_lng")
+
     requires_cash = bool(order["requires_cash"])
     cash_amount = int(order["cash_required_amount"] or 0)
 
@@ -1092,7 +1973,12 @@ def _handle_release(update, context, order_id):
         ally_id=ally_id,
         requires_cash=requires_cash,
         cash_required_amount=cash_amount,
+        pickup_lat=p_lat,
+        pickup_lng=p_lng,
     )
+    # Excluir al courier que libero y a cualquier otro excluido previamente
+    eligible = [c for c in eligible if c["courier_id"] not in excluded]
+
     if eligible:
         import time
         courier_ids = [c["courier_id"] for c in eligible]
@@ -1103,6 +1989,15 @@ def _handle_release(update, context, order_id):
             "started_at": time.time(),
             "admin_id": admin_id,
             "ally_id": ally_id,
+            "pickup_lat": p_lat,
+            "pickup_lng": p_lng,
+            "pickup_city": prev_cycle.get("pickup_city"),
+            "pickup_barrio": prev_cycle.get("pickup_barrio"),
+            "dropoff_city": prev_cycle.get("dropoff_city"),
+            "dropoff_barrio": prev_cycle.get("dropoff_barrio"),
+            "requires_cash": requires_cash,
+            "cash_amount": cash_amount,
+            "excluded_couriers": excluded,
         }
         _send_next_offer(order_id, context)
 
@@ -1131,7 +2026,11 @@ def _handle_cancel_ally(update, context, order_id):
     had_courier = order["status"] == "ACCEPTED" and order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
 
-    # Cancelar jobs de timeout si estaba en ciclo de ofertas
+    # Cancelar jobs de arrival si estaba en estado ACCEPTED
+    _cancel_arrival_jobs(context, order_id)
+
+    # Cancelar jobs de timeout y sugerencia si estaba en ciclo de ofertas
+    _cancel_no_response_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
@@ -1229,6 +2128,8 @@ def _handle_delivered(update, context, order_id):
         query.edit_message_text("Pedido no encontrado.")
         return
 
+    _cancel_arrival_jobs(context, order_id)
+
     if order["status"] != "PICKED_UP":
         query.edit_message_text("Este pedido no esta en estado de entrega.")
         return
@@ -1241,21 +2142,25 @@ def _handle_delivered(update, context, order_id):
 
     courier_id = courier["id"]
     ally_id = order["ally_id"]
-    admin_link = get_approved_admin_link_for_ally(ally_id)
-    if admin_link:
-        admin_id = admin_link["admin_id"]
-    else:
+
+    # Red cooperativa: fee del aliado → su propio admin; fee del courier → su propio admin.
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id)
+    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
+
+    # Usar snapshot guardado en _handle_accept; fallback al admin actual del courier
+    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+    if courier_admin_id is None:
         courier_admin_link = get_approved_admin_link_for_courier(courier_id)
-        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+        courier_admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
     fee_ally_ok = False
     fee_courier_ok = False
 
-    if admin_id:
+    if ally_admin_id:
         ally_ok, ally_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
-            admin_id=admin_id,
+            admin_id=ally_admin_id,
             ref_type="ORDER",
             ref_id=order_id,
         )
@@ -1264,10 +2169,11 @@ def _handle_delivered(update, context, order_id):
         else:
             print("[WARN] No se pudo cobrar fee al aliado: {}".format(ally_msg))
 
+    if courier_admin_id:
         courier_ok, courier_msg = apply_service_fee(
             target_type="COURIER",
             target_id=courier_id,
-            admin_id=admin_id,
+            admin_id=courier_admin_id,
             ref_type="ORDER",
             ref_id=order_id,
         )
@@ -1275,15 +2181,31 @@ def _handle_delivered(update, context, order_id):
             fee_courier_ok = True
             # Notificar al courier si su saldo quedo insuficiente para el proximo servicio
             try:
-                new_balance = get_courier_link_balance(courier_id, admin_id)
+                new_balance = get_courier_link_balance(courier_id, courier_admin_id)
                 if new_balance < 300:
-                    _notify_recharge_needed_to_courier(context, courier_id)
+                    deactivate_courier(courier_id)
+                    try:
+                        courier_row = get_courier_by_id(courier_id)
+                        if courier_row:
+                            user = get_user_by_id(courier_row["user_id"])
+                            if user and user.get("telegram_id"):
+                                context.bot.send_message(
+                                    chat_id=user["telegram_id"],
+                                    text=(
+                                        "Has sido desactivado automaticamente.\n\n"
+                                        "Tu saldo operativo quedo en ${:,} tras el cobro del servicio "
+                                        "y necesitas al menos $300 para seguir recibiendo pedidos.\n\n"
+                                        "Solicita una recarga a tu administrador y vuelve a activarte.".format(new_balance)
+                                    ),
+                                )
+                    except Exception:
+                        pass
             except Exception as e:
                 print("[WARN] No se pudo verificar saldo post-fee del courier {}: {}".format(courier_id, e))
         else:
             if courier_msg == "ADMIN_SIN_SALDO":
                 try:
-                    admin_row = get_admin_by_id(admin_id)
+                    admin_row = get_admin_by_id(courier_admin_id)
                     if admin_row:
                         admin_user = get_user_by_id(admin_row["user_id"])
                         if admin_user and admin_user.get("telegram_id"):
@@ -1325,42 +2247,84 @@ def _handle_delivered(update, context, order_id):
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)
 
-    if fee_ally_ok and fee_courier_ok:
-        query.edit_message_text(
-            "Pedido #{} entregado exitosamente.\n\n"
-            "Se descontaron $300 de tu saldo por este servicio.".format(order_id)
-        )
-    elif fee_courier_ok:
-        query.edit_message_text(
-            "Pedido #{} entregado exitosamente.\n\n"
-            "Se descontaron $300 de tu saldo por este servicio.".format(order_id)
-        )
+    durations = _get_order_durations(order, delivered_now=True)
+
+    time_lines = []
+    if "llegada_aliado" in durations:
+        time_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "entrega_cliente" in durations:
+        time_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
+    if "tiempo_total" in durations:
+        time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+
+    time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+
+
+    if fee_courier_ok:
+        courier_msg = (
+            "Pedido #{} entregado exitosamente.{}\n\n"
+            "Se descontaron $300 de tu saldo por este servicio."
+        ).format(order_id, time_block)
     else:
-        query.edit_message_text("Pedido #{} entregado exitosamente.".format(order_id))
+        courier_msg = "Pedido #{} entregado exitosamente.{}".format(order_id, time_block)
 
-    _notify_ally_delivered(context, order)
+    query.edit_message_text(courier_msg)
+
+    _notify_ally_delivered(context, order, durations)
 
 
-def _build_offer_text(order):
+def _build_offer_text(
+    order,
+    courier_dist_km=None,
+    pickup_city_override=None,
+    pickup_barrio_override=None,
+    dropoff_city_override=None,
+    dropoff_barrio_override=None,
+):
     """Construye el texto de oferta para el courier."""
-    pickup_address = _get_pickup_address(order)
+    pickup_city, pickup_barrio = _get_pickup_area(order)
+    if pickup_city_override is not None:
+        pickup_city = pickup_city_override
+    if pickup_barrio_override is not None:
+        pickup_barrio = pickup_barrio_override
+
+    dropoff_city, dropoff_barrio = _get_dropoff_area(order)
+    if dropoff_city_override is not None:
+        dropoff_city = dropoff_city_override
+    if dropoff_barrio_override is not None:
+        dropoff_barrio = dropoff_barrio_override
+
     distance_km = order["distance_km"] or 0
     total_fee = int(order["total_fee"] or 0)
+    additional_incentive = int(order["additional_incentive"] or 0)
 
     text = (
         "OFERTA DISPONIBLE\n\n"
         "Pedido: #{}\n"
-        "Recoge en: {}\n"
-        "Entrega en: {}\n"
-        "Distancia: {:.1f} km\n"
-        "Pago: ${:,}\n"
+        "Recoges en el barrio o sector {} de la ciudad de {}\n"
+        "Entrega en el barrio o sector {} de la ciudad de {}\n"
+        "Distancia de entrega: {:.1f} km\n"
+        "Pago total: ${:,}\n"
     ).format(
         order["id"],
-        pickup_address,
-        order["customer_address"] or "No disponible",
+        (pickup_barrio or "No disponible"),
+        (pickup_city or "No disponible"),
+        (dropoff_barrio or "No disponible"),
+        (dropoff_city or "No disponible"),
         distance_km,
         total_fee,
     )
+
+    if courier_dist_km is not None:
+        eta_min = max(1, round(courier_dist_km / 25 * 60))
+        text += "Tu distancia al punto de recogida: {:.1f} km (~{} min)\n".format(
+            courier_dist_km, eta_min
+        )
+
+    if additional_incentive > 0:
+        base_fee = max(0, total_fee - additional_incentive)
+        text += "Pago base: ${:,}\n".format(int(base_fee))
+        text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
 
     cash_amount = order["cash_required_amount"] or 0
     if order["requires_cash"] and cash_amount > 0:
@@ -1370,6 +2334,8 @@ def _build_offer_text(order):
     instructions = order["instructions"] or ""
     if instructions.strip():
         text += "\nInstrucciones: {}\n".format(instructions.strip())
+
+    text += "\nAviso: una vez aceptado tienes 15 min para llegar al punto de recogida.\n"
 
     return text
 
@@ -1424,6 +2390,26 @@ def _get_pickup_coords(order):
     return None, None
 
 
+def _get_pickup_area(order):
+    pickup_location_id = _row_value(order, "pickup_location_id")
+    ally_id = _row_value(order, "ally_id")
+
+    if pickup_location_id and ally_id:
+        location = get_ally_location_by_id(pickup_location_id, ally_id)
+        if location:
+            return _row_value(location, "city"), _row_value(location, "barrio")
+
+    default_loc = get_default_ally_location(ally_id) if ally_id else None
+    if default_loc:
+        return _row_value(default_loc, "city"), _row_value(default_loc, "barrio")
+
+    return None, None
+
+
+def _get_dropoff_area(order):
+    return _row_value(order, "customer_city"), _row_value(order, "customer_barrio")
+
+
 def _get_dropoff_coords(order):
     lat = _row_value(order, "dropoff_lat")
     lng = _row_value(order, "dropoff_lng")
@@ -1460,9 +2446,49 @@ def _notify_ally_order_accepted(context, order, courier_name):
                 "Tu pedido #{} fue aceptado por el repartidor {}.\n"
                 "El repartidor se dirige al punto de recogida."
             ).format(order["id"], courier_name),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "Llamar al repartidor",
+                    callback_data="order_call_courier_{}".format(order["id"]),
+                )
+            ]]),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar al aliado: {}".format(e))
+
+
+def _notify_ally_courier_arrived(context, order, courier_name):
+    """Notifica al aliado que el courier llegó al punto de recogida (GPS detectado)."""
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if not ally:
+            return
+        ally_user = get_user_by_id(ally["user_id"])
+        if not ally_user or not ally_user.get("telegram_id"):
+            return
+        order_id = order["id"]
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "Confirmar llegada",
+                    callback_data="order_pickupconfirm_approve_{}".format(order_id),
+                ),
+                InlineKeyboardButton(
+                    "No ha llegado",
+                    callback_data="order_pickupconfirm_reject_{}".format(order_id),
+                ),
+            ]
+        ])
+        context.bot.send_message(
+            chat_id=ally_user["telegram_id"],
+            text=(
+                "El repartidor {} esta en tu punto de recogida (pedido #{}).\n\n"
+                "Confirma su llegada para que reciba los datos del cliente y proceda a entregar."
+            ).format(courier_name, order_id),
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        print("[WARN] _notify_ally_courier_arrived: {}".format(e))
 
 
 def _notify_ally_pickup(context, order, courier_name):
@@ -1563,8 +2589,8 @@ def _notify_courier_pickup_rejected(context, order):
         print("[WARN] No se pudo notificar rechazo de recogida al courier: {}".format(e))
 
 
-def _notify_ally_delivered(context, order):
-    """Notifica al aliado que el pedido fue entregado."""
+def _notify_ally_delivered(context, order, durations=None):
+    """Notifica al aliado que el pedido fue entregado y solicita calificacion del servicio."""
     try:
         ally = get_ally_by_id(order["ally_id"])
         if not ally:
@@ -1572,12 +2598,121 @@ def _notify_ally_delivered(context, order):
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
             return
+
+        courier = get_courier_by_id(order["courier_id"]) if order.get("courier_id") else None
+        courier_name = (courier["full_name"] if courier else None) or "el repartidor"
+        order_id = order["id"]
+
+        time_lines = []
+        if durations:
+            if "llegada_aliado" in durations:
+                time_lines.append("  Llegada del repartidor: {}".format(_format_duration(durations["llegada_aliado"])))
+            if "entrega_cliente" in durations:
+                time_lines.append("  Tiempo de entrega: {}".format(_format_duration(durations["entrega_cliente"])))
+        time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+
+
+        keyboard = [[
+            InlineKeyboardButton("1", callback_data="rating_star_{}_1".format(order_id)),
+            InlineKeyboardButton("2", callback_data="rating_star_{}_2".format(order_id)),
+            InlineKeyboardButton("3", callback_data="rating_star_{}_3".format(order_id)),
+            InlineKeyboardButton("4", callback_data="rating_star_{}_4".format(order_id)),
+            InlineKeyboardButton("5", callback_data="rating_star_{}_5".format(order_id)),
+        ]]
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
-            text="Tu pedido #{} fue entregado exitosamente.".format(order["id"]),
+            text=(
+                "Pedido #{} entregado exitosamente por {}.{}\n\n"
+                "Como calificarias el servicio?\n"
+                "1 = Muy malo  |  5 = Excelente"
+            ).format(order_id, courier_name, time_block),
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar entrega al aliado: {}".format(e))
+
+def handle_rating_callback(update, context):
+    """Maneja la calificacion del servicio por parte del aliado tras la entrega."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data.startswith("rating_star_"):
+        parts = data.split("_")
+        order_id = int(parts[2])
+        stars = int(parts[3])
+
+        order = get_order_by_id(order_id)
+        if not order or not order.get("courier_id"):
+            query.edit_message_text("Pedido no encontrado.")
+            return
+
+        courier_id = order["courier_id"]
+        try:
+            add_courier_rating(order_id, courier_id, stars)
+        except Exception as e:
+            print("[WARN] No se pudo registrar calificacion orden {}: {}".format(order_id, e))
+
+        if stars >= 4:
+            query.edit_message_text(
+                "Gracias por tu calificacion ({}/5). "
+                "Seguiremos mejorando el servicio.".format(stars)
+            )
+            return
+
+        # Calificacion baja: ofrecer bloquear al courier
+        courier = get_courier_by_id(courier_id)
+        courier_name = (courier["full_name"] if courier else None) or "este repartidor"
+        keyboard = [[
+            InlineKeyboardButton(
+                "Si, bloquear",
+                callback_data="rating_block_{}_{}".format(courier_id, order_id),
+            ),
+            InlineKeyboardButton(
+                "No, gracias",
+                callback_data="rating_skip_{}".format(order_id),
+            ),
+        ]]
+        query.edit_message_text(
+            "Calificacion guardada ({}/5).\n\n"
+            "Deseas bloquear a {} para que tus pedidos no le lleguen?".format(
+                stars, courier_name
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    elif data.startswith("rating_block_"):
+        # rating_block_{courier_id}_{order_id}
+        parts = data.split("_")
+        courier_id = int(parts[2])
+
+        telegram_id = update.effective_user.id
+        user = get_user_by_telegram_id(telegram_id)
+        if not user:
+            query.edit_message_text("Usuario no encontrado.")
+            return
+
+        ally = get_ally_by_user_id(user["id"])
+        if not ally:
+            query.edit_message_text("Solo aliados pueden bloquear repartidores.")
+            return
+
+        try:
+            block_courier_for_ally(ally["id"], courier_id)
+        except Exception as e:
+            print("[WARN] No se pudo bloquear courier {}: {}".format(courier_id, e))
+
+        courier = get_courier_by_id(courier_id)
+        courier_name = (courier["full_name"] if courier else None) or "el repartidor"
+        query.edit_message_text(
+            "{} fue bloqueado. No recibira mas tus ofertas.\n"
+            "Puedes desbloquearlo en cualquier momento desde Mis repartidores.".format(courier_name)
+        )
+
+    elif data.startswith("rating_skip_"):
+        query.edit_message_text(
+            "Gracias por tu calificacion. Seguiremos mejorando el servicio."
+        )
 
 
 def _notify_courier_order_cancelled(context, order):
@@ -1599,7 +2734,7 @@ def _notify_courier_order_cancelled(context, order):
         print("[WARN] No se pudo notificar cancelacion al courier: {}".format(e))
 
 
-def _notify_ally_order_released(context, order):
+def _notify_ally_order_released(context, order, reason_label=None):
     """Notifica al aliado que el courier libero el pedido."""
     try:
         ally = get_ally_by_id(order["ally_id"])
@@ -1608,15 +2743,54 @@ def _notify_ally_order_released(context, order):
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
             return
+        reason_line = ""
+        if reason_label:
+            reason_line = "\nMotivo: {}".format(reason_label)
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text=(
-                "El repartidor libero tu pedido #{}. "
+                "El repartidor libero tu pedido #{}.{}\n"
                 "Estamos buscando otro repartidor."
-            ).format(order["id"]),
+            ).format(order["id"], reason_line),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar liberacion al aliado: {}".format(e))
+
+
+def _notify_admin_order_released(context, order, courier, reason_label, arrived_flag):
+    """Notifica al admin del equipo (si existe) cuando un courier libera un pedido."""
+    try:
+        admin_id = _row_value(order, "courier_admin_id_snapshot")
+        if not admin_id:
+            courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
+            admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+        if not admin_id:
+            return
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user.get("telegram_id"):
+            return
+        courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text=(
+                "ALERTA: liberacion de pedido\n\n"
+                "Pedido: #{}\n"
+                "Courier: {}\n"
+                "Llego al pickup: {}\n"
+                "Motivo: {}\n\n"
+                "Accion: revisar si es justificado. Liberar para evitar comision es falta grave."
+            ).format(
+                order["id"],
+                courier_name,
+                arrived_flag,
+                reason_label,
+            ),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar liberacion al admin: {}".format(e))
 
 
 # ===== FLUJO DE RUTAS MULTI-PARADA =====
@@ -1841,6 +3015,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
             callback_data="ruta_entregar_{}_{}".format(route_id, seq)
         )
     ])
+    keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
     stop_instructions = stop.get("instructions") or ""
     instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
@@ -1894,6 +3069,24 @@ def _handle_route_accept(update, context, route_id):
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
+    active_order = get_active_order_for_courier(courier["id"])
+    if active_order:
+        query.edit_message_text(
+            "No puedes aceptar una nueva ruta porque ya tienes un pedido en curso (#{}).".format(
+                active_order["id"]
+            )
+        )
+        return
+
+    active_route = get_active_route_for_courier(courier["id"])
+    if active_route and active_route["id"] != route_id:
+        query.edit_message_text(
+            "No puedes aceptar una nueva ruta porque ya tienes una ruta en curso (#{}).".format(
+                active_route["id"]
+            )
+        )
+        return
+
     _cancel_route_offer_jobs(context, route_id, current["queue_id"])
     mark_route_offer_response(current["queue_id"], "ACCEPTED")
 
@@ -1913,12 +3106,14 @@ def _handle_route_accept(update, context, route_id):
     pickup_lng = route.get("pickup_lng")
 
     keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
+    keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
     query.edit_message_text(
         "Ruta #{} aceptada.\n\n"
         "Recoge en: {}\n"
         "Total de paradas: {}\n\n"
-        "Dirigete al punto de recogida. "
+        "Dirigete al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
+        "Si no puedes completar la ruta, presiona \"Liberar ruta\".\n"
         "Recibes los detalles de cada parada a medida que avanzas.".format(
             route_id,
             pickup_address,
@@ -2062,8 +3257,9 @@ def _notify_ally_route_delivered(context, route):
 
 def handle_route_callback(update, context):
     """
-    Dispatcher de callbacks ruta_aceptar_*, ruta_rechazar_*, ruta_ocupado_*, ruta_entregar_*.
-    Registrar en main.py como CallbackQueryHandler con pattern r'^ruta_(aceptar|rechazar|ocupado|entregar)_'.
+    Dispatcher de callbacks ruta_aceptar_*, ruta_rechazar_*, ruta_ocupado_*, ruta_entregar_*,
+    ruta_liberar_* (flujo responsable con motivo).
+    Registrar en main.py como CallbackQueryHandler con pattern r'^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_'.
     """
     query = update.callback_query
     query.answer()
@@ -2091,4 +3287,215 @@ def handle_route_callback(update, context):
             except ValueError:
                 pass
 
+    if data.startswith("ruta_liberar_abort_"):
+        route_id = int(data.replace("ruta_liberar_abort_", ""))
+        query.edit_message_text("Ok. La ruta #{} sigue en curso.".format(route_id))
+        return
+
+    if data.startswith("ruta_liberar_motivo_"):
+        # ruta_liberar_motivo_{route_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo procesar el motivo de liberacion.")
+            return
+        route_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_route_release_reason_selected(update, context, route_id, reason_code)
+
+    if data.startswith("ruta_liberar_confirmar_"):
+        # ruta_liberar_confirmar_{route_id}_{reason}
+        parts = data.split("_")
+        if len(parts) < 5:
+            query.edit_message_text("No se pudo confirmar la liberacion.")
+            return
+        route_id = int(parts[3])
+        reason_code = parts[4]
+        return _handle_route_release_confirm(update, context, route_id, reason_code)
+
+    if data.startswith("ruta_liberar_"):
+        route_id = int(data.replace("ruta_liberar_", ""))
+        return _handle_route_release_menu(update, context, route_id)
+
     return None
+
+
+def _handle_route_release_menu(update, context, route_id):
+    """Muestra razones antes de permitir que el courier libere una ruta aceptada."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route.get("status") != "ACCEPTED":
+        query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("No tienes permiso para liberar esta ruta.")
+        return
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+
+    text = (
+        "Vas a liberar la ruta #{}.\n\n"
+        "Liberar una ruta sin motivo valido es una falta grave.\n"
+        "Solo el aliado puede cancelar el servicio; esto solo libera y re-oferta la ruta.\n\n"
+        "Selecciona un motivo:"
+    ).format(route_id)
+
+    kb = []
+    for code, label in reason_labels.items():
+        kb.append([InlineKeyboardButton(label, callback_data="ruta_liberar_motivo_{}_{}".format(route_id, code))])
+    kb.append([InlineKeyboardButton("Cancelar", callback_data="ruta_liberar_abort_{}".format(route_id))])
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+def _handle_route_release_reason_selected(update, context, route_id, reason_code):
+    """Pide confirmación final antes de liberar la ruta."""
+    query = update.callback_query
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+    keyboard = [[
+        InlineKeyboardButton(
+            "Confirmar liberacion",
+            callback_data="ruta_liberar_confirmar_{}_{}".format(route_id, reason_code),
+        ),
+        InlineKeyboardButton(
+            "Cancelar",
+            callback_data="ruta_liberar_abort_{}".format(route_id),
+        ),
+    ]]
+    query.edit_message_text(
+        "Confirmas que vas a liberar la ruta #{}?\n\nMotivo: {}\n\n"
+        "Esta accion se revisa por el admin. Si es injustificada, puede haber sancion.".format(
+            route_id,
+            reason_label,
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _handle_route_release_confirm(update, context, route_id, reason_code):
+    """Libera la ruta y la re-oferta a otros couriers, excluyendo al que la liberó."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route.get("status") != "ACCEPTED":
+        query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
+        return
+
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("No tienes permiso para liberar esta ruta.")
+        return
+
+    reason_labels = {
+        "falla_mecanica": "Falla mecanica / accidente con el vehiculo",
+        "emergencia": "Emergencia personal / seguridad",
+        "no_puedo_continuar": "No puedo continuar la ruta",
+        "pedido_incorrecto": "Datos incorrectos / ruta inconsistente",
+        "otro_admin": "Otro (debe revisarlo el admin)",
+    }
+    reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
+
+    ally_id = route.get("ally_id")
+    link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    admin_id = link["admin_id"] if link else None
+    if not admin_id:
+        courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
+        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+
+    delete_route_offer_queue(route_id)
+    release_route_from_courier(route_id)
+
+    query.edit_message_text(
+        "Ruta #{} liberada.\nMotivo: {}\n\nSera ofrecida a otros repartidores.".format(
+            route_id,
+            reason_label,
+        )
+    )
+
+    try:
+        ally = get_ally_by_id(ally_id) if ally_id else None
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user.get("telegram_id"):
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text=(
+                        "El repartidor libero tu ruta #{}.\n"
+                        "Motivo: {}\n"
+                        "Estamos buscando otro repartidor."
+                    ).format(route_id, reason_label),
+                )
+    except Exception:
+        pass
+
+    try:
+        if admin_id:
+            admin = get_admin_by_id(admin_id)
+            if admin:
+                admin_user = get_user_by_id(admin["user_id"])
+                if admin_user and admin_user.get("telegram_id"):
+                    courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+                    context.bot.send_message(
+                        chat_id=admin_user["telegram_id"],
+                        text=(
+                            "ALERTA: liberacion de ruta\n\n"
+                            "Ruta: #{}\n"
+                            "Courier: {}\n"
+                            "Motivo: {}\n\n"
+                            "Accion: revisar si es justificado."
+                        ).format(route_id, courier_name, reason_label),
+                    )
+    except Exception:
+        pass
+
+    if not admin_id or not ally_id:
+        return
+
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=False,
+        cash_required_amount=0,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+    )
+    eligible = [c for c in eligible if c["courier_id"] != courier["id"]]
+    if not eligible:
+        return
+
+    courier_ids = [c["courier_id"] for c in eligible]
+    create_route_offer_queue(route_id, courier_ids)
+    update_route_status(route_id, "PUBLISHED", "published_at")
+
+    import time
+    context.bot_data.setdefault("route_offer_cycles", {})[route_id] = {
+        "started_at": time.time(),
+        "admin_id": admin_id,
+        "ally_id": ally_id,
+        "excluded_couriers": {courier["id"]},
+    }
+    _send_next_route_offer(route_id, context)

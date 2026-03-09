@@ -16,7 +16,11 @@ Este archivo describe la estructura del proyecto, flujos de trabajo y convencion
 
 Los actores principales del sistema son:
 - **Platform Admin**: administrador global de la plataforma (un solo usuario).
-- **Admin Local**: administra un equipo de repartidores y aliados en una zona.
+- **Admin Local**: administra un equipo de repartidores y aliados en una zona. Sus atribuciones son:
+  - Aprobar o rechazar miembros pendientes de su equipo (repartidores y aliados).
+  - Inactivar miembros activos (`APPROVED` → `INACTIVE`) y reactivarlos (`INACTIVE` → `APPROVED`).
+  - **NO puede** rechazar definitivamente (`REJECTED`) — esa acción es exclusiva del Admin de Plataforma.
+  - Gestiona pedidos de su equipo y aprueba recargas de saldo a sus miembros.
 - **Aliado (Ally)**: negocio asociado (restaurante, tienda, etc.) que genera pedidos.
 - **Repartidor (Courier)**: entrega los pedidos.
 - **Cliente (Customer)**: destinatario del pedido (no tiene cuenta en el bot).
@@ -224,7 +228,10 @@ Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
-| `orders` | Pedidos con todo su ciclo de vida |
+| `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
+| `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
+| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`. |
+| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
@@ -246,6 +253,7 @@ Cada flujo usa prefijos exclusivos en sus claves. **PROHIBIDO** compartir claves
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
+| Agenda clientes (coordenadas) | `clientes_geo_mode` (`corregir_coords` al agregar/corregir coords), `current_customer_id`, `current_address_id`, `clientes_geo_address_input` |
 
 ### Convención de `callback_data`
 
@@ -264,13 +272,13 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `config_` | Configuración del sistema |
 | `cotizar_` | Flujo de cotización de envío |
 | `courier_` | Acciones de repartidor |
-| `cust_` | Acciones de cliente |
+| `cust_` | Acciones de cliente. Incluye: `cust_dir_corregir_coords` (abre flujo para agregar/corregir coords de una dirección guardada), `cust_geo_si` / `cust_geo_no` (confirmar geocoding en flujo de dirección) |
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
 | `pagos_` | Sistema de pagos |
-| `pedido_` | Flujo de creación de pedidos |
+| `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente) |
 | `perfil_` | Cambios de perfil |
 | `pickup_` | Selección de punto de recogida |
 | `preview_` | Previsualización de pedido |
@@ -280,8 +288,27 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
+| `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
+
+### Repartidor: Pedidos en curso
+
+En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en curso" para el repartidor:
+- Muestra el pedido activo (`orders.status` en `ACCEPTED`/`PICKED_UP`) y/o la ruta activa (`routes.status` en `ACCEPTED`).
+- Botones:
+  - Si `orders.status == ACCEPTED`:
+    - "Solicitar confirmacion de recogida" → `order_pickup_{id}`.
+    - "Liberar pedido" → `order_release_{id}` → requiere motivo y confirmación (`order_release_reason_{id}_{reason}` → `order_release_confirm_{id}_{reason}`).
+  - Si `orders.status == PICKED_UP`:
+    - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
+  - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
+  - "Liberar ruta" → `ruta_liberar_{route_id}` → requiere motivo y confirmación (`ruta_liberar_motivo_{route_id}_{reason}` → `ruta_liberar_confirmar_{route_id}_{reason}`).
+- Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
+  - Al liberar un pedido, se notifica al admin del equipo para revisión del motivo.
+  - Al liberar pedido o ruta, el servicio se re-oferta a otros repartidores excluyendo al courier que liberó (no se le vuelve a ofrecer a él).
+  - Solo el aliado puede CANCELAR el servicio; el courier solo puede LIBERAR para re-ofertar (con motivo y revisión).
 
 ### Helpers de Input Reutilizables (`main.py`)
 
@@ -495,40 +522,36 @@ CORS configurado para permitir `http://localhost:4200` en desarrollo.
 | Rama/Prefijo | Tipo | Uso |
 |---|---|---|
 | `main` | Permanente | Producción (Railway PROD). **Nunca trabajar directamente aquí.** |
-| `staging` | Permanente | Integración y pruebas previas a producción. **Nunca borrar.** |
-| `claude/` | Temporal | Ramas de trabajo de agentes IA. Se borran tras merge a staging. |
-| `verify/` | Temporal | Validar cambios estructurales de BD antes de merge a staging/main. |
+| `staging` | Permanente | **Rama de trabajo e integración.** Aquí se desarrolla, se hace commit y se hace push. **Nunca borrar.** |
+| `claude/` | Temporal | Opcional. Solo si se necesita aislar experimentos; luego se mergea a staging. |
+| `verify/` | Temporal | **Obligatoria** para cambios estructurales de BD; luego se mergea a staging. |
 | `luisa-web` | Permanente | Rama de la colaboradora Luisa. **NUNCA borrar.** |
 
 ### Flujo de Trabajo
 
 ```
-claude/*  ──merge──►  staging  ──(validado)──►  main
-verify/*  ──merge──►  staging                  (PROD)
-                       (entorno DEV:
-                        BOT_TOKEN DEV
-                        DATABASE_URL separada)
+staging   ──(validado)──►  main
+verify/*  ──merge──►  staging  ──(validado)──►  main
+                        (entorno DEV:
+                         BOT_TOKEN DEV
+                         DATABASE_URL separada)
 ```
 
 ```bash
-# 1. Siempre crear ramas desde origin/main actualizado
-git fetch origin
-git checkout -b claude/nombre-tarea-ID origin/main
-
-# 2. Verificar rama activa antes de cualquier cambio
-git branch --show-current
-
-# 3. Mergear a staging primero (NUNCA directo a main)
+# 1. Trabajar SIEMPRE en staging
 git checkout staging
-git merge claude/nombre-tarea-ID --no-ff -m "merge: descripción"
+git pull --ff-only origin staging
+
+# 2. Implementar cambios, validar, commit y push
+python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
+git add -A
+git commit -m "feat: descripción"
 git push origin staging
 
-# 4. Validar funcionalmente en staging
+# 3. Validar funcionalmente en staging
 
-# 5. Solo cuando esté validado, mergear staging a main
-git checkout main
-git merge staging --no-ff -m "release: descripción"
-git push origin main
+# 4. Solo cuando esté validado, mergear staging a main
+# (Proceso de release según políticas del equipo)
 ```
 
 ### Verificación de Compatibilidad Estructural (Obligatorio Antes de Merge)
@@ -663,6 +686,68 @@ Admin aprueba recarga a repartidor o aliado
 - Función en db.py: `register_platform_income(admin_id, amount, method, note)`
 - Re-exportada en services.py; importada en main.py desde services.py
 
+### Recarga Directa con Plataforma como Fallback
+
+Un aliado o repartidor puede siempre solicitar recarga directamente al Admin de Plataforma, aunque pertenezca a un equipo de Admin Local. Los casos habilitados son:
+1. El Admin Local no tiene saldo suficiente.
+2. El Admin Local no responde o no procesa la recarga.
+
+**Regla del interruptor de ganancias:**
+El saldo recargado pertenece a quien lo aportó. Las ganancias generadas por ese saldo fluyen hacia el mismo aportante:
+- Saldo aportado por Admin Local → ganancias al Admin Local.
+- Saldo aportado por Plataforma → ganancias a Plataforma.
+
+Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local, el flujo de ganancias vuelve al Admin Local. El Admin Local que no recarga a tiempo pierde las ganancias de ese usuario mientras el saldo activo provenga de plataforma.
+
+**Implementación técnica (IMPLEMENTADO 2026-03-03):**
+- `main.py → recargar_monto`: muestra "Plataforma" siempre para COURIER/ALLY.
+- `main.py → recargar_admin_callback`: permite `platform_id` aunque no esté en `approved_links`. Detecta admin PENDING y redirige a Plataforma.
+- `services.py → approve_recharge_request`: cuando Plataforma aprueba para COURIER/ALLY, crea o actualiza un vínculo directo `admin_couriers`/`admin_allies` con `admin_id = platform_id`. El vínculo plataforma queda `APPROVED`; todos los otros vínculos del usuario quedan `INACTIVE`. Ledger registra `PLATFORM → COURIER/ALLY`. Cuando Admin Local re-recarga, el vínculo local pasa a `APPROVED` y plataforma a `INACTIVE` (interruptor).
+- `db.py → _sync_courier_link_status` y `_sync_ally_link_status`: usan `updated_at DESC` (no `created_at`) para determinar el vínculo activo en cambios de estado. Garantiza que el vínculo del último financiador siempre sea el activo.
+
+**Restricciones absolutas:**
+- PROHIBIDO bloquear la opción plataforma por ausencia de vínculo `admin_couriers`/`admin_allies`.
+- PROHIBIDO aprobar si `admins.balance` (plataforma) < monto solicitado.
+- Todo movimiento debe registrarse en ledger con el origen correcto.
+
+### Red Cooperativa — Todos los Couriers para Todos los Aliados (IMPLEMENTADO 2026-03-03)
+
+La plataforma opera como una **red cooperativa**: cualquier repartidor activo (de cualquier admin) puede tomar pedidos de cualquier aliado (de cualquier admin). No existen equipos aislados.
+
+**Regla de elegibilidad:**
+- `get_eligible_couriers_for_order` en `db.py` NO filtra por `admin_id`. Retorna todos los repartidores con `admin_couriers.status = 'APPROVED'` y `couriers.status = 'APPROVED'`.
+- El parámetro `admin_id` existe pero es opcional (`admin_id=None`) y se ignora en la query.
+
+**Modelo de comisiones (simétrico):**
+- Aliado crea pedido → fee al aliado → comisión va al **admin del aliado**.
+- Courier acepta pedido → fee al courier → comisión va al **admin del courier**.
+- Cada admin gana solo de sus propios miembros, sin importar con quién interactúan.
+
+**Flujo técnico post-implementación:**
+```
+Aliado (Admin A) crea pedido
+  → publish_order_to_couriers(admin_id=A)
+  → check_service_fee_available(ALLY, ally_id, admin_id=A)   # A debe tener saldo
+  → get_eligible_couriers_for_order(ally_id=X)               # Sin filtro → TODOS los couriers activos
+  → Para cada courier: get_approved_admin_id_for_courier(courier_id) → courier_admin_id
+    → check_service_fee_available(COURIER, courier_id, courier_admin_id)
+    → Solo pasan couriers con saldo en su propio admin
+
+Courier (Admin B) acepta
+  → courier_admin_id_snapshot = B (guardado en orders al aceptar)
+
+Courier entrega
+  → apply_service_fee(ALLY, ally_id, admin_id=A)              → Admin A cobra comisión
+  → apply_service_fee(COURIER, courier_id, admin_id=B)        → Admin B cobra comisión
+```
+
+**Archivos modificados:**
+- `db.py → get_eligible_couriers_for_order`: sin filtro `AND ac.admin_id = {P}`, `params = []`
+- `order_delivery.py → publish_order_to_couriers`: fee check usa `get_approved_admin_id_for_courier(courier_id)` por courier; elimina lógica de `admin_without_balance` global
+- `order_delivery.py → _handle_delivered`: `ally_admin_id` desde `get_approved_admin_link_for_ally`; `courier_admin_id` desde `order["courier_admin_id_snapshot"]` con fallback a `get_approved_admin_link_for_courier`; cada fee usa su propio admin; balance post-fee usa `courier_admin_id`
+
+---
+
 ### Sincronización de Estado en Tablas de Vínculo
 
 `admin_allies.status` y `admin_couriers.status` son campos independientes de `allies.status` y `couriers.status`. Ambos **siempre deben estar sincronizados**.
@@ -675,8 +760,259 @@ Admin aprueba recarga a repartidor o aliado
 - Ambos se llaman dentro de `update_ally_status()`, `update_ally_status_by_id()`, `update_courier_status()`, `update_courier_status_by_id()`, antes de `conn.commit()`.
 
 **Comportamiento del sync:**
-- Si `status == "APPROVED"`: el vínculo más reciente (por `created_at`) → `APPROVED`; el resto → `INACTIVE`.
+- Si `status == "APPROVED"`: el vínculo más recientemente actualizado (por `updated_at DESC`) → `APPROVED`; el resto → `INACTIVE`. El `updated_at` se actualiza en cada recarga, por lo que el último financiador es siempre el equipo activo.
 - Si `status != "APPROVED"`: todos los vínculos del usuario → `INACTIVE`.
+
+---
+
+## Sistema de Tracking de Llegada (order_delivery.py)
+
+Implementado en commit `b06fc3e`. Controla el ciclo post-aceptación del courier hasta la confirmación de llegada al punto de recogida.
+
+### Flujo completo
+
+```
+Oferta publicada → courier acepta
+  ↓ _handle_accept
+  - Mensaje SIN datos del cliente (solo barrio destino + tarifa + pickup address)
+  - Mensaje incluye instruccion explicita: navegar al pickup (Google Maps/Waze) y liberar si no puede llegar
+  - Guarda courier_accepted_lat/lng en orders (base para T+5)
+  - Programa 3 jobs:
+      arr_inactive_{id}  T+5 min
+      arr_warn_{id}      T+15 min
+      arr_deadline_{id}  T+20 min
+
+  T+5:  ¿Movimiento ≥50m hacia pickup? No → _release_order_by_timeout
+  T+15: Notificar aliado (Buscar otro / Llamar / Seguir esperando) + advertir courier
+  T+20: _release_order_by_timeout automático
+
+  (En paralelo, cada live location update llama check_courier_arrival_at_pickup)
+  GPS detecta ≤100m del pickup:
+    → set_courier_arrived (idempotente)
+    → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
+    → upsert_order_pickup_confirmation(PENDING)
+    → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
+
+  Aliado confirma (order_pickupconfirm_approve_):
+    → _handle_pickup_confirmation_by_ally(approve=True)
+    → status = PICKED_UP
+    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta (en oferta solo ve mapas + ciudad/barrio)
+```
+
+- Para rutas: `order_delivery.py â†’ _handle_route_accept` tambiÃ©n incluye instrucciÃ³n de navegaciÃ³n al pickup (Google Maps/Waze) y opciÃ³n de liberar ruta.
+
+### Constantes (order_delivery.py)
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Timeout de inactividad Rappi-style |
+| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Notificación al aliado |
+| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Auto-liberación |
+| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio de detección de llegada |
+| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.05 (50 m) | Movimiento mínimo hacia pickup en T+5 |
+
+### Funciones nuevas en order_delivery.py
+
+| Función | Descripción |
+|---------|-------------|
+| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Pública. Llamada desde main.py en cada live location |
+| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs por nombre |
+| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 y T+20) |
+| `_arrival_inactivity_job(context)` | Job T+5 |
+| `_arrival_warn_ally_job(context)` | Job T+15 |
+| `_arrival_deadline_job(context)` | Job T+20 |
+| `_notify_ally_courier_arrived(context, order, courier_name)` | Notificación al aliado con botones |
+| `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
+| `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
+
+### Nuevas columnas en `orders`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp cuando GPS detecta llegada (≤100m). NULL = no llegó aún |
+| `courier_accepted_lat` | REAL | Latitud del courier al momento de aceptar (base para T+5) |
+| `courier_accepted_lng` | REAL | Longitud del courier al momento de aceptar (base para T+5) |
+
+### Nuevas funciones en db.py
+
+- `set_courier_arrived(order_id)` — idempotente, solo actúa si `courier_arrived_at IS NULL`
+- `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
+- `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
+- `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
+
+Re-exportadas en `services.py`.
+
+### Pendientes (NO implementado aún)
+
+- Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
+- Botón explícito "Llegué" para courier (hoy es detección automática por live location).
+- Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.
+
+---
+
+## Sistema de Incentivos (order_delivery.py + main.py)
+
+### Incentivo al crear pedido (aliado)
+
+Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de confirmar, el aliado puede agregar un incentivo adicional con botones fijos (+$1.000, +$1.500, +$2.000, +$3.000) o monto libre.
+
+- Estado: `PEDIDO_INCENTIVO_MONTO = 60`
+- ConversationHandler: `pedido_incentivo_conv` (entry point: `pedido_add_incentivo_{id}`)
+- DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
+- `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
+
+### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
+
+Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar el pedido, si sigue en status `PUBLISHED` (ningún courier lo aceptó), se envía un mensaje al creador sugiriendo agregar incentivo.
+
+**Constante:** `OFFER_NO_RESPONSE_SECONDS = 300` (order_delivery.py)
+
+**Flujo:**
+1. `publish_order_to_couriers()` programa job `offer_no_response_{order_id}` con T+5.
+2. Al dispararse: `_offer_no_response_job(context)` — verifica que el pedido siga en `PUBLISHED`, obtiene `telegram_id` del creador (aliado o admin), envía mensaje con botones.
+3. Si courier acepta antes del T+5: `_cancel_no_response_job(context, order_id)` cancela el job.
+4. Si aliado/admin cancela el pedido: también se cancela el job.
+5. La sugerencia es única (no se repite si el admin no agrega incentivo).
+
+**Botones de la sugerencia:** `offer_inc_{id}x1500`, `offer_inc_{id}x2000`, `offer_inc_{id}x3000`, `offer_inc_otro_{id}`
+
+**Al agregar incentivo desde la sugerencia:**
+- `offer_suggest_inc_fixed_callback` (patrón `^offer_inc_\d+x(1500|2000|3000)$`)
+- `offer_suggest_inc_otro_start` → estado `OFFER_SUGGEST_INC_MONTO = 915` → `offer_suggest_inc_monto_handler`
+- Llama `ally_increment_order_incentive` o `admin_increment_order_incentive` según tipo de pedido
+- Llama `repost_order_to_couriers(order_id, context)` → re-oferta a todos los couriers activos + reinicia T+5
+
+**Re-oferta (`repost_order_to_couriers`):**
+- Limpia `excluded_couriers` del `bot_data` para ese pedido
+- Llama `clear_offer_queue(order_id)` (borra queue en BD)
+- Llama `publish_order_to_couriers(order_id, ally_id, context, skip_fee_check=True, ...)`
+- `skip_fee_check=True` omite verificación de saldo (ya verificada al crear el pedido)
+
+**Funciones clave:**
+- `order_delivery.py`: `_cancel_no_response_job`, `_offer_no_response_job`, `repost_order_to_couriers`
+- `main.py`: `offer_suggest_inc_fixed_callback`, `offer_suggest_inc_otro_start`, `offer_suggest_inc_monto_handler`, `offer_suggest_inc_conv`
+- `services.py`: `admin_get_order_for_incentive(telegram_id, order_id)`, `admin_increment_order_incentive(telegram_id, order_id, delta)`
+- `db.py`: `clear_offer_queue(order_id)`
+
+---
+
+## Pedido Especial del Admin (IMPLEMENTADO 2026-03-06)
+
+Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con tarifa libre (sin cálculo automático) y sin débito de saldo.
+
+### Características
+
+- **Sin fee check**: el fee check del aliado se omite completamente (`skip_fee_check=True`).
+- **Tarifa manual**: el admin ingresa el monto que pagará al courier.
+- **Sin débito de saldo**: el pago se maneja fuera del sistema.
+- **`creator_admin_id`**: nueva columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
+- **`ally_id = NULL`**: los pedidos especiales de admin no tienen `ally_id`.
+- **Direcciones de recogida**: el admin gestiona sus propias ubicaciones de pickup en `admin_locations`.
+- **Incentivos opcionales**: se pueden agregar incentivos (+$1.500/+$2.000/+$3.000/libre) antes de publicar.
+- **T+5 aplica igual**: si nadie acepta en 5 min, recibe la sugerencia de incentivo.
+
+### Tabla `admin_locations`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `id` | BIGSERIAL/INTEGER | PK |
+| `admin_id` | BIGINT | FK → admins.id |
+| `label` | TEXT | Nombre/etiqueta de la ubicación |
+| `address` | TEXT | Dirección completa |
+| `city` | TEXT | Ciudad |
+| `barrio` | TEXT | Barrio |
+| `phone` | TEXT | Teléfono del punto (opcional) |
+| `lat` | REAL | Latitud |
+| `lng` | REAL | Longitud |
+| `is_default` | INTEGER | 1 = default del admin |
+| `use_count` | INTEGER | Contador de usos |
+| `is_frequent` | INTEGER | 1 = dirección frecuente |
+| `last_used_at` | TIMESTAMP | Última vez usada |
+| `created_at` | TIMESTAMP | Fecha de creación |
+
+### Funciones en `db.py`
+
+- `create_admin_location(admin_id, label, address, city, barrio, phone=None, lat=None, lng=None) → int`
+- `get_admin_locations(admin_id) → list`
+- `get_admin_location_by_id(location_id, admin_id) → dict`
+- `get_default_admin_location(admin_id) → dict`
+- `set_default_admin_location(location_id, admin_id)`
+- `increment_admin_location_usage(location_id, admin_id)`
+
+Todas re-exportadas en `services.py`.
+
+### Flujo de creación (`admin_pedido_conv` en `main.py`)
+
+```
+Entry: callback admin_nuevo_pedido
+  → admin_nuevo_pedido_start()
+  → Estado ADMIN_PEDIDO_PICKUP (908)
+
+ADMIN_PEDIDO_PICKUP:
+  admin_pedido_pickup_callback  → selecciona ubicación guardada → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_nueva_dir_start  → pide texto → ADMIN_PEDIDO_PICKUP
+  admin_pedido_pickup_text_handler → geocodifica → muestra confirmación
+  admin_pedido_geo_pickup_callback (si/no) → confirma pickup → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_pickup_gps_handler → guarda GPS → ADMIN_PEDIDO_CUST_NAME
+
+ADMIN_PEDIDO_CUST_NAME (909): admin_pedido_cust_name_handler → ADMIN_PEDIDO_CUST_PHONE
+ADMIN_PEDIDO_CUST_PHONE (910): admin_pedido_cust_phone_handler → ADMIN_PEDIDO_CUST_ADDR
+
+ADMIN_PEDIDO_CUST_ADDR (911):
+  admin_pedido_cust_addr_handler → geocodifica → muestra confirmación
+  admin_pedido_geo_callback (si/no) → confirma → ADMIN_PEDIDO_TARIFA
+  admin_pedido_cust_gps_handler → guarda GPS → ADMIN_PEDIDO_TARIFA
+
+ADMIN_PEDIDO_TARIFA (912): admin_pedido_tarifa_handler → ADMIN_PEDIDO_INSTRUC
+
+ADMIN_PEDIDO_INSTRUC (913):
+  admin_pedido_instruc_handler / admin_pedido_sin_instruc_callback → preview
+  admin_pedido_inc_fijo_callback (1500/2000/3000) → actualiza preview
+  admin_pedido_inc_otro_callback → ADMIN_PEDIDO_INC_MONTO
+  admin_pedido_confirmar_callback → crea pedido → publica → END
+
+ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADMIN_PEDIDO_INSTRUC
+```
+
+### Estados
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `ADMIN_PEDIDO_PICKUP` | 908 | Selección de punto de recogida |
+| `ADMIN_PEDIDO_CUST_NAME` | 909 | Nombre del cliente |
+| `ADMIN_PEDIDO_CUST_PHONE` | 910 | Teléfono del cliente |
+| `ADMIN_PEDIDO_CUST_ADDR` | 911 | Dirección de entrega (con geocoding) |
+| `ADMIN_PEDIDO_TARIFA` | 912 | Tarifa manual al courier |
+| `ADMIN_PEDIDO_INSTRUC` | 913 | Instrucciones + preview final |
+| `OFFER_SUGGEST_INC_MONTO` | 915 | Monto libre en sugerencia T+5 |
+| `ADMIN_PEDIDO_INC_MONTO` | 916 | Monto libre de incentivo en creación admin |
+
+### User data keys del flujo (prefijo `admin_ped_`)
+
+| Clave | Contenido |
+|-------|-----------|
+| `admin_ped_admin_id` | ID interno del admin en DB |
+| `admin_ped_pickup_id` | ID de admin_location (None si GPS/nueva) |
+| `admin_ped_pickup_addr` | Dirección de recogida (texto) |
+| `admin_ped_pickup_lat/lng` | Coordenadas de recogida |
+| `admin_ped_pickup_city/barrio` | Ciudad/barrio de recogida |
+| `admin_ped_geo_pickup_pending` | Dict con geo pendiente de confirmar (pickup) |
+| `admin_ped_cust_name/phone/addr` | Datos del cliente |
+| `admin_ped_dropoff_lat/lng` | Coordenadas de entrega |
+| `admin_ped_dropoff_city/barrio` | Ciudad/barrio de entrega |
+| `admin_ped_geo_cust_pending` | Dict con geo pendiente de confirmar (entrega) |
+| `admin_ped_tarifa` | Tarifa manual (int, COP) |
+| `admin_ped_incentivo` | Incentivo adicional (int, COP, default 0) |
+| `admin_ped_instruc` | Instrucciones para el courier |
+
+### Publicación del pedido admin
+
+En `admin_pedido_confirmar_callback`:
+1. `create_order(ally_id=None, creator_admin_id=admin_id, ...)` — crea el pedido
+2. `publish_order_to_couriers(order_id, None, context, admin_id_override=admin_id, skip_fee_check=True)` — publica a todos los couriers activos
+3. `increment_admin_location_usage(pickup_location_id, admin_id)` — si ubicación guardada
+
+**Nota:** `skip_fee_check=True` es necesario porque los pedidos de admin no tienen deducción de saldo. El fee check del aliado se omite automáticamente cuando `ally_id=None`.
 
 ---
 
@@ -688,6 +1024,27 @@ El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota dia
 - **PROHIBIDO** llamar a la API sin verificar `api_usage_daily` primero.
 - Si `api_usage_daily >= límite`: retornar error informativo, **no llamar** a la API.
 - Toda llamada debe incrementar `api_usage_daily` de forma atómica.
+
+### Costeo por Operación (Google Maps) — IMPLEMENTADO
+
+Además del fusible diario (`api_usage_daily`), existe tracking por evento para estimar costo promedio por tipo de operación:
+
+- Tabla: `api_usage_events` (SQLite y PostgreSQL).
+- Inserción oficial: `Backend/db.py:record_api_usage_event()` (INSERT en `api_usage_events` + incrementa `api_usage_daily` en la misma transacción).
+- Instrumentación centralizada: `Backend/services.py` registra eventos en:
+  - `google_place_details()` → `place_details`
+  - `google_geocode_forward()` → `geocode_forward`
+  - `google_places_text_search()` → `places_text_search`
+  - `get_distance_from_api_coords()` → `distance_matrix_coords`
+  - `get_distance_from_api()` → `distance_matrix_text`
+- Estimación de costo por variables de entorno (valores en USD por llamada):
+  - `GOOGLE_COST_USD_PLACE_DETAILS`
+  - `GOOGLE_COST_USD_GEOCODE_FORWARD`
+  - `GOOGLE_COST_USD_PLACES_TEXT_SEARCH`
+  - `GOOGLE_COST_USD_DISTANCE_MATRIX_COORDS`
+  - `GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT`
+- Privacidad: **PROHIBIDO** guardar direcciones/coords o cualquier PII en `api_usage_events.meta_json`. Solo metadata no sensible (status, provider, mode).
+- Helper de consulta rápida: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
 
 ### Regla de Caché
 - Distancias entre pares de coordenadas **deben cachearse** en base de datos.
@@ -705,6 +1062,90 @@ El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota dia
 
 ## Flujo de Trabajo con IA
 
+### Donde documentar
+
+Regla de routing — tabla completa en **AGENTS.md Sección 16**.
+
+Regla de cambios estructurales — tabla completa en **AGENTS.md Sección 17**:
+todo cambio estructural (nueva tabla, módulo, variable de entorno, callback, flow)
+debe documentarse en la sección correspondiente de este archivo **en el mismo commit**.
+El `git log` es el historial cronológico. CLAUDE.md es la referencia de estado actual.
+
+Regla de routing — tabla completa en **AGENTS.md Sección 16**:
+
+| Contenido | Destino |
+|-----------|--------|
+| Regla, restricción, protocolo obligatorio | `AGENTS.md` |
+| Arquitectura, flujo, convención operativa | `CLAUDE.md` |
+| Sesión activa o cierre de agente | `WORKLOG.md` |
+| Regla + detalle operativo | `AGENTS.md` (regla) + `CLAUDE.md` (detalle) |
+
+Si el contenido ya está cubierto en AGENTS.md: CLAUDE.md solo agrega referencia o comandos, nunca repite.
+
+### Colaboración entre Agentes IA (Claude Code y Codex)
+
+Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: **Claude Code** y **Codex**.
+En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (`staging`).
+Las reglas completas están en AGENTS.md Sección 15. Aquí el resumen operativo:
+
+#### WORKLOG.md — Registro de sesiones
+
+Archivo en la raíz del repo que cada agente actualiza al iniciar y cerrar sesión.
+
+**Al iniciar:**
+```bash
+git pull origin staging
+git log --oneline -15 origin/staging   # ver qué hizo el otro agente
+cat WORKLOG.md                          # ver sesiones activas
+# Agregar entrada en "Sesiones activas" y hacer commit+push:
+git commit -m "[claude] worklog: inicio — <tarea breve>"
+git push origin staging
+```
+
+**Al cerrar:**
+```bash
+# Mover entrada a "Historial" con estado COMPLETADO/PENDIENTE y hacer commit del WORKLOG
+git commit -m "[claude] worklog: cierre — <tarea breve>"
+
+# PROTOCOLO PRE-PUSH OBLIGATORIO:
+git fetch origin staging
+git log --oneline HEAD..origin/staging    # hay commits nuevos del otro agente?
+git diff --name-only HEAD origin/staging  # solapan con tus archivos?
+
+# Sin solapamiento -> push normal
+git push origin staging
+
+# Con solapamiento en mismos archivos -> PAUSAR
+# Reportar a Luis Felipe antes de pushear
+```
+
+> Si `git log HEAD..origin/staging` muestra commits del otro agente en los mismos archivos
+> que tocaste: **PROHIBIDO pushear**. Reportar a Luis Felipe y esperar instruccion.
+> **PROHIBIDO `git push --force`** en cualquier circunstancia.
+
+#### Prefijo obligatorio en commits
+
+| Agente | Formato |
+|--------|---------|
+| Claude Code | `[claude] feat: descripción` |
+| Codex | `[codex] feat: descripción` |
+
+Para filtrar por agente: `git log --oneline --grep="[claude]"`
+
+#### Reglas de no-interferencia
+
+- **PROHIBIDO** modificar o revertir trabajo del otro agente sin autorización de Luis Felipe.
+- Si se detecta un error del otro agente: reportar a Luis Felipe (archivo, función, commit) y **esperar instrucción**.
+- Si se detecta solapamiento en WORKLOG.md o `git log`: **pausar** y notificar a Luis Felipe.
+- Si `git push` es rechazado por fast-forward: **PROHIBIDO** `--force`. Hacer pull, revisar, reportar.
+
+#### Archivos de alto riesgo
+
+Verificar WORKLOG.md y `git log --follow -5 <archivo>` antes de editar cualquiera de estos:
+`Backend/main.py` · `Backend/services.py` · `Backend/db.py` · `Backend/order_delivery.py` · `AGENTS.md` · `CLAUDE.md`
+
+La coordinación entre agentes pasa **siempre** por Luis Felipe.
+
 Estas reglas aplican a cualquier agente que trabaje en este repositorio.
 
 ### Antes de Cambiar Código
@@ -718,6 +1159,51 @@ Estas reglas aplican a cualquier agente que trabaje en este repositorio.
 - No reescribir archivos completos sin autorización.
 - Trabajar **solo** en el objetivo indicado. **PROHIBIDO** ampliar alcance sin aprobación.
 - Cambios mínimos: un solo objetivo por instrucción.
+
+### Cuando el tool Edit no persiste los cambios
+
+**Sintoma:** Edit reporta exito pero `git diff` no muestra el cambio, o el archivo vuelve a su estado previo.  
+**Causa:** linter del IDE o servidor de lenguaje revierte el archivo inmediatamente al guardarlo.
+
+**Procedimiento:**
+1. Detectar con `git diff --name-only` que el cambio no persiste.
+2. Cambiar de estrategia al tercer intento fallido — no seguir reintentando Edit.
+3. Usar un script Python via Bash:
+
+```bash
+python3 << 'EOF'
+path = 'ruta/al/archivo.py'
+with open(path, 'r', encoding='utf-8') as f:
+    content = f.read()
+content = content.replace(viejo_bloque, nuevo_bloque, 1)
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(content)
+EOF
+```
+
+### Escritura de secuencias de escape en archivos Python via bash
+
+**Problema:** al escribir un archivo `.py` desde un heredoc bash (`<< 'PYEOF'`) o `python3 -c`, la secuencia `
+` dentro de strings Python se convierte en un salto de linea real en lugar de quedar como los dos caracteres `\` + `n`.
+
+**Solucion obligatoria:** usar `chr(92)` para construir el caracter backslash:
+
+```python
+bs = chr(92)       # chr(92) = backslash
+n_esc = bs + 'n'   # produce el escape 
+ correcto en el archivo escrito
+
+# Ejemplo: escribir la linea  text = "hola
+world"
+line = '    text = "hola' + n_esc + 'world"'
+```
+
+Esta regla aplica a cualquier caracter de escape que deba quedar literal en el archivo generado: `
+`, `	`, `
+`, `\`, etc.
+
+**PROHIBIDO** usar secuencias de escape directas (`
+`, `	`) dentro de strings Python al construir contenido de otro archivo Python.
 
 ### Después de los Cambios
 
@@ -765,11 +1251,84 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 - El cotizador usa la API de Google Maps para calcular distancias. Hay un límite diario de llamadas (`api_usage_daily`) para controlar costos.
 - El sistema de recargas transfiere saldo del Admin a Repartidores/Aliados. Es crítico que sea idempotente ante concurrencia.
 - Los pedidos siguen el ciclo: `PENDING` → publicado a repartidores → aceptado → recogida confirmada → entregado (o cancelado en cualquier paso).
-- Un Admin Local debe tener repartidores vinculados (status `APPROVED` en `admin_couriers`) para que su equipo funcione correctamente.
+- La plataforma opera como **red cooperativa**: cualquier repartidor activo puede tomar pedidos de cualquier aliado, sin importar a qué admin pertenece cada uno. No existen equipos aislados para el despacho de pedidos.
+- Un Admin Local gestiona su equipo (aprueba/inactiva repartidores y aliados) y gana comisiones de sus propios miembros. Puede aprobar/rechazar miembros pendientes, inactivar activos y reactivar inactivos; el rechazo definitivo (`REJECTED`) es exclusivo del Admin de Plataforma.
 - La referencia de versión financiera estable es el tag `v0.1-admin-saldos` (ledger confiable desde ese punto).
 - El sistema usa **contabilidad de doble entrada**: el Admin de Plataforma debe registrar ingresos externos (`register_platform_income`) para tener saldo y poder aprobar recargas. PROHIBIDO crear saldo sin origen contable.
 - Las tablas `admin_allies` y `admin_couriers` tienen su propio campo `status` que debe mantenerse sincronizado con `allies.status` / `couriers.status`. Los helpers `_sync_ally_link_status` y `_sync_courier_link_status` en `db.py` garantizan esta sincronía automáticamente en cada actualización de estado.
 
 ---
 
-*Última actualización: 2026-02-23*
+## Agendas del Admin (IMPLEMENTADO 2026-03-07)
+
+El Admin Local y el Admin de Plataforma tienen dos agendas propias:
+
+1. **Agenda de clientes de entrega** (`admin_customers` + `admin_customer_addresses`): registrar clientes recurrentes que solicitan domicilios, con sus datos de entrega. Espejo exacto de la agenda `ally_customers`.
+2. **Mis Direcciones** (`admin_locations`): gestión CRUD completa de los puntos de recogida del admin. Antes solo se podían agregar durante el pedido; ahora tiene UI de gestión independiente.
+
+### Flujo `admin_clientes_conv`
+
+Entry: callback `admin_mis_clientes` (botón en menú admin)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_CUST_MENU` | 925 | Menú principal |
+| `ADMIN_CUST_NUEVO_NOMBRE` | 926 | Nombre del nuevo cliente |
+| `ADMIN_CUST_NUEVO_TELEFONO` | 927 | Teléfono del nuevo cliente |
+| `ADMIN_CUST_NUEVO_NOTAS` | 928 | Notas internas del cliente |
+| `ADMIN_CUST_NUEVO_DIR_LABEL` | 929 | Etiqueta de la primera dirección |
+| `ADMIN_CUST_NUEVO_DIR_TEXT` | 930 | Dirección (con geocoding) |
+| `ADMIN_CUST_BUSCAR` | 931 | Búsqueda por nombre/teléfono |
+| `ADMIN_CUST_VER` | 932 | Detalle del cliente |
+| `ADMIN_CUST_EDITAR_NOMBRE` | 933 | Editar nombre |
+| `ADMIN_CUST_EDITAR_TELEFONO` | 934 | Editar teléfono |
+| `ADMIN_CUST_EDITAR_NOTAS` | 935 | Editar notas |
+| `ADMIN_CUST_DIR_NUEVA_LABEL` | 936 | Etiqueta de nueva dirección |
+| `ADMIN_CUST_DIR_NUEVA_TEXT` | 937 | Nueva dirección (geocoding) |
+| `ADMIN_CUST_DIR_EDITAR_LABEL` | 938 | Editar etiqueta de dirección |
+| `ADMIN_CUST_DIR_EDITAR_TEXT` | 939 | Editar dirección |
+| `ADMIN_CUST_DIR_EDITAR_NOTA` | 940 | Editar nota de entrega |
+| `ADMIN_CUST_DIR_CIUDAD` | 941 | Ciudad de la dirección |
+| `ADMIN_CUST_DIR_BARRIO` | 942 | Barrio (punto de persistencia) |
+| `ADMIN_CUST_DIR_CORREGIR` | 943 | Corregir/agregar coordenadas |
+
+**Prefijo callbacks**: `acust_`
+**Prefijo user_data**: `acust_`
+**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`
+
+### Flujo `admin_dirs_conv`
+
+Entry: callback `admin_mis_dirs` (botón en menú admin)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_DIRS_MENU` | 945 | Lista de ubicaciones de recogida |
+| `ADMIN_DIRS_NUEVA_LABEL` | 946 | Nombre del lugar (etiqueta) |
+| `ADMIN_DIRS_NUEVA_TEXT` | 947 | Dirección (con geocoding) |
+| `ADMIN_DIRS_NUEVA_TEL` | 948 | Teléfono del punto (opcional) |
+| `ADMIN_DIRS_VER` | 949 | Detalle de una ubicación |
+
+**Prefijo callbacks**: `adirs_`
+**Prefijo user_data**: `adirs_`
+**Funciones DB**: `get_admin_locations`, `get_admin_location_by_id`, `create_admin_location`, `update_admin_location`, `archive_admin_location`
+
+### Integración en `admin_pedido_conv`
+
+Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar de mis clientes". El admin puede:
+- Escribir el nombre directamente (flujo manual existente)
+- Seleccionar de su agenda → ver sus direcciones guardadas → seleccionar una (salta a `ADMIN_PEDIDO_TARIFA`) o ingresar nueva (va a `ADMIN_PEDIDO_CUST_ADDR`)
+
+| Estado | Constante | Descripción |
+|--------|-----------|-------------|
+| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar |
+| `ADMIN_PEDIDO_SEL_CUST_ADDR` | 918 | Seleccionar dirección del cliente |
+
+**Callbacks nuevos en `admin_pedido_conv`**:
+- `admin_pedido_sel_cust` → `admin_pedido_sel_cust_handler`
+- `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
+- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected`
+- `acust_pedido_addr_nueva` → `admin_pedido_addr_nueva`
+
+---
+
+*Última actualización: 2026-03-07*

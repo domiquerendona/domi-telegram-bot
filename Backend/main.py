@@ -1,6 +1,7 @@
 ﻿import os
 import hashlib
 import os
+import time
 import traceback
 from dotenv import load_dotenv
 
@@ -157,6 +158,7 @@ from services import (
     get_all_admins,
     get_pending_admins,
     get_admin_by_id,
+    get_admin_status_by_id,
     update_admin_status_by_id,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
@@ -173,17 +175,27 @@ from services import (
     delete_ally_location,
     increment_pickup_usage,
     set_frequent_pickup,
+    create_admin_location,
+    get_admin_locations,
+    get_admin_location_by_id,
+    get_default_admin_location,
+    increment_admin_location_usage,
     create_courier,
     get_courier_by_user_id,
     get_courier_by_id,
     get_courier_by_telegram_id,
     set_courier_available_cash,
+    can_courier_activate,
     deactivate_courier,
     update_courier_live_location,
     set_courier_availability,
     expire_stale_live_locations,
     get_pending_couriers,
     get_pending_couriers_by_admin,
+    get_pending_allies_by_admin,
+    get_all_local_admins,
+    get_allies_by_admin_and_status,
+    get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
     get_all_couriers,
@@ -198,6 +210,15 @@ from services import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_active_order_for_courier,
+    get_active_route_for_courier,
+    get_pending_route_stops,
+    ally_get_order_for_incentive,
+    ally_increment_order_incentive,
+    admin_get_order_for_incentive,
+    admin_increment_order_incentive,
+    courier_get_earnings_history,
+    courier_get_earnings_by_date_key,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -230,6 +251,9 @@ from services import (
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
     list_pending_recharges_for_admin,
+    list_all_pending_recharges,
+    get_admins_with_pending_count,
+    list_recharge_ledger,
     get_recharge_request,
     get_admin_payment_info,
     update_admin_payment_info,
@@ -250,12 +274,32 @@ from services import (
     get_all_online_couriers,
     get_active_orders_without_courier,
     get_online_couriers_sorted_by_distance,
+    block_courier_for_ally,
+    unblock_courier_for_ally,
+    get_blocked_courier_ids_for_ally,
+    archive_admin_location,
+    update_admin_location,
+    create_admin_customer,
+    update_admin_customer,
+    archive_admin_customer,
+    restore_admin_customer,
+    get_admin_customer_by_id,
+    get_admin_customer_by_phone,
+    list_admin_customers,
+    search_admin_customers,
+    create_admin_customer_address,
+    update_admin_customer_address,
+    archive_admin_customer_address,
+    restore_admin_customer_address,
+    get_admin_customer_address_by_id,
+    list_admin_customer_addresses,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
     init_db,
     force_platform_admin,
     ensure_pricing_defaults,
+    sync_all_courier_link_statuses,
 )
 from profile_changes import (
     profile_change_conv,
@@ -686,6 +730,11 @@ _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
 
+# Regex y filtro compartido para "Cancelar" / "Volver al menu".
+# Nota: se usa para evitar que ese texto sea consumido como input normal en estados con texto.
+CANCELAR_VOLVER_MENU_REGEX = r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'
+CANCELAR_VOLVER_MENU_FILTER = Filters.regex(CANCELAR_VOLVER_MENU_REGEX)
+
 
 def _handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt):
     """Helper para validar y almacenar teléfono en flujos de registro."""
@@ -702,15 +751,28 @@ def _handle_phone_input(update, context, storage_key, current_state, next_state,
     return next_state
 
 
-def _handle_text_field_input(update, context, error_msg, storage_key, current_state, next_state, flow, next_prompt):
-    """Helper para validar y almacenar campos de texto simple en flujos de registro."""
+def _handle_text_field_input(
+    update,
+    context,
+    error_msg,
+    storage_key,
+    current_state,
+    next_state,
+    flow,
+    next_prompt,
+    options_hint=_OPTIONS_HINT,
+    set_back_step=True,
+):
+    """Helper para validar y almacenar campos de texto simple."""
     texto = (update.message.text or "").strip()
     if not texto:
-        update.message.reply_text(error_msg + _OPTIONS_HINT)
+        update.message.reply_text(error_msg + (options_hint or ""))
         return current_state
     context.user_data[storage_key] = texto
-    update.message.reply_text(next_prompt + _OPTIONS_HINT)
-    _set_flow_step(context, flow, next_state)
+    if next_prompt is not None:
+        update.message.reply_text(next_prompt + (options_hint or ""))
+    if set_back_step:
+        _set_flow_step(context, flow, next_state)
     return next_state
 
 
@@ -834,6 +896,10 @@ def volver_paso_anterior(update, context):
     PEDIDO_COMPRAS_CANTIDAD,      # Capturar lista de productos con cantidades
 ) = range(14, 33)
 
+PEDIDO_INCENTIVO_MONTO = 900  # Capturar incentivo adicional (otro monto)
+PEDIDO_PICKUP_NUEVA_CIUDAD = 880
+PEDIDO_PICKUP_NUEVA_BARRIO = 881
+
 
 # =========================
 # Estados para crear una ruta multi-parada
@@ -855,6 +921,11 @@ def volver_paso_anterior(update, context):
     RUTA_CONFIRMACION,           # 46 - Confirmacion y creacion de la ruta
     RUTA_GUARDAR_CLIENTES,       # 47 - Guardar clientes nuevos de las paradas
 ) = range(33, 48)
+
+RUTA_PICKUP_NUEVA_CIUDAD = 48
+RUTA_PICKUP_NUEVA_BARRIO = 49
+RUTA_PARADA_CIUDAD = 50
+RUTA_PARADA_BARRIO = 51
 
 
 # =========================
@@ -879,6 +950,11 @@ def volver_paso_anterior(update, context):
     CLIENTES_DIR_EDITAR_NOTA,
 ) = range(400, 416)
 
+CLIENTES_DIR_CIUDAD = 416
+CLIENTES_DIR_BARRIO = 417
+CLIENTES_DIR_CORREGIR_COORDS = 418
+CLIENTES_DIR_CORREGIR_GEO = 419
+
 
 # =========================
 # Estados para /direcciones (panel Mis direcciones del aliado)
@@ -891,6 +967,8 @@ def volver_paso_anterior(update, context):
     DIRECCIONES_PICKUP_GUARDAR,
 ) = range(500, 505)
 
+DIRECCIONES_PICKUP_NUEVA_CIUDAD = 505
+DIRECCIONES_PICKUP_NUEVA_BARRIO = 506
 
 # =========================
 # Estados para cotizador interno
@@ -931,10 +1009,61 @@ INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
 
+OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5
+
+# Estados para pedido especial del Admin Local
+ADMIN_PEDIDO_PICKUP    = 908   # Seleccionar/crear dirección de recogida
+ADMIN_PEDIDO_CUST_NAME = 909   # Nombre del cliente
+ADMIN_PEDIDO_CUST_PHONE= 910   # Teléfono del cliente
+ADMIN_PEDIDO_CUST_ADDR = 911   # Dirección de entrega (texto/GPS/geocoding)
+ADMIN_PEDIDO_TARIFA    = 912   # Tarifa manualmente ingresada
+ADMIN_PEDIDO_INSTRUC   = 913   # Instrucciones adicionales
+ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicación)
+
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
 ALLY_LOCS_ADD_COORDS = 921   # Agregar: esperando GPS / link / coords
 ALLY_LOCS_ADD_LABEL  = 922   # Agregar: esperando etiqueta / nombre
+ALLY_LOCS_ADD_CITY   = 923   # Agregar: esperando ciudad
+ALLY_LOCS_ADD_BARRIO = 924   # Agregar: esperando barrio/sector
+
+# =========================
+# Estados para agenda de clientes del Admin Local/Plataforma
+# =========================
+ADMIN_CUST_MENU              = 925
+ADMIN_CUST_NUEVO_NOMBRE      = 926
+ADMIN_CUST_NUEVO_TELEFONO    = 927
+ADMIN_CUST_NUEVO_NOTAS       = 928
+ADMIN_CUST_NUEVO_DIR_LABEL   = 929
+ADMIN_CUST_NUEVO_DIR_TEXT    = 930
+ADMIN_CUST_BUSCAR            = 931
+ADMIN_CUST_VER               = 932
+ADMIN_CUST_EDITAR_NOMBRE     = 933
+ADMIN_CUST_EDITAR_TELEFONO   = 934
+ADMIN_CUST_EDITAR_NOTAS      = 935
+ADMIN_CUST_DIR_NUEVA_LABEL   = 936
+ADMIN_CUST_DIR_NUEVA_TEXT    = 937
+ADMIN_CUST_DIR_EDITAR_LABEL  = 938
+ADMIN_CUST_DIR_EDITAR_TEXT   = 939
+ADMIN_CUST_DIR_EDITAR_NOTA   = 940
+ADMIN_CUST_DIR_CIUDAD        = 941
+ADMIN_CUST_DIR_BARRIO        = 942
+ADMIN_CUST_DIR_CORREGIR      = 943
+
+# =========================
+# Estados para gestion de ubicaciones de recogida del Admin (Mis Direcciones)
+# =========================
+ADMIN_DIRS_MENU         = 945
+ADMIN_DIRS_NUEVA_LABEL  = 946
+ADMIN_DIRS_NUEVA_TEXT   = 947
+ADMIN_DIRS_NUEVA_TEL    = 948
+ADMIN_DIRS_VER          = 949
+
+# =========================
+# Estados para seleccion de cliente/direccion en pedido admin
+# =========================
+ADMIN_PEDIDO_SEL_CUST      = 917
+ADMIN_PEDIDO_SEL_CUST_ADDR = 918
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -1104,7 +1233,7 @@ def start(update, context):
         update.message.reply_text(mensaje, reply_markup=reply_markup)
     else:
         # Mostrar menú principal con botones de secciones
-        reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally)
+        reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local)
         update.message.reply_text(mensaje, reply_markup=reply_markup)
 
 
@@ -1131,19 +1260,34 @@ def _get_courier_toggle_button_label(courier):
         return None
     courier_is_active = _row_value(courier, "is_active", 0)
     if courier_is_active:
-        return "Pausar repartidor"
+        return "Desactivarme"
     return "Activar repartidor"
 
 
-def get_main_menu_keyboard(missing_cmds, courier=None, ally=None):
+def _courier_main_button_label(courier):
+    """Retorna el label del boton Mi repartidor con estado inline."""
+    if not courier or _row_value(courier, "status") != "APPROVED":
+        return None
+    is_active = int(_row_value(courier, "is_active", 0) or 0)
+    avail_status = _row_value(courier, "availability_status", "INACTIVE")
+    live_active = int(_row_value(courier, "live_location_active", 0) or 0)
+    if is_active and avail_status == "APPROVED" and live_active:
+        return "Mi repartidor · ONLINE"
+    return "Mi repartidor · OFFLINE"
+
+
+def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=None):
     """Retorna el teclado principal para usuarios fuera de flujos."""
     keyboard = []
     # Fila de roles: mostrar botones de seccion segun roles del usuario
     role_row = []
     if ally:
         role_row.append('Mi aliado')
-    if courier and _row_value(courier, "status") == "APPROVED":
-        role_row.append('Mi repartidor')
+    courier_btn = _courier_main_button_label(courier)
+    if courier_btn:
+        role_row.append(courier_btn)
+    if admin_local:
+        role_row.append('Mi admin')
     if role_row:
         keyboard.append(role_row)
     keyboard.append(['Mi perfil', 'Ayuda'])
@@ -1173,7 +1317,8 @@ def get_ally_menu_keyboard():
         ['Nuevo pedido', 'Nueva ruta'],
         ['Mis pedidos', 'Agenda'],
         ['Cotizar envio', 'Recargar'],
-        ['Mi saldo aliado', 'Volver al menu'],
+        ['Mis repartidores', 'Mi saldo aliado'],
+        ['Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1184,7 +1329,8 @@ def get_repartidor_menu_keyboard(courier):
     keyboard = []
     if courier_toggle:
         keyboard.append([courier_toggle])
-    keyboard.append(['Mis pedidos repartidor'])
+    keyboard.append(['Pedidos en curso', 'Actualizar'])
+    keyboard.append(['Mis pedidos repartidor', 'Mis ganancias'])
     keyboard.append(['Recargar repartidor', 'Mi saldo repartidor'])
     keyboard.append(['Volver al menu'])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1209,6 +1355,107 @@ def mi_aliado(update, context):
     update.message.reply_text(msg, reply_markup=reply_markup)
 
 
+def _ally_couriers_build_panel(ally_id):
+    """Construye texto e InlineKeyboardMarkup del panel de repartidores para un aliado.
+    Muestra secciones ACTIVOS y BLOQUEADOS separadas.
+    Retorna (text, markup) donde markup puede ser None si no hay botones."""
+    admin_link = get_approved_admin_link_for_ally(ally_id)
+    if not admin_link:
+        return "No tienes un administrador aprobado asignado.", None
+
+    admin_id = admin_link["admin_id"]
+    couriers = list_courier_links_by_admin(admin_id)
+    if not couriers:
+        return "Tu equipo no tiene repartidores activos.", None
+
+    blocked_ids = get_blocked_courier_ids_for_ally(ally_id)
+    activos = []
+    bloqueados = []
+    for c in couriers:
+        cid = c["courier_id"] if isinstance(c, dict) else c[1]
+        name = (c["full_name"] if isinstance(c, dict) else c[2]) or "Sin nombre"
+        if cid in blocked_ids:
+            bloqueados.append((cid, name))
+        else:
+            activos.append((cid, name))
+
+    lines = ["Repartidores de tu equipo:\n"]
+    keyboard = []
+
+    if activos:
+        lines.append("ACTIVOS ({})".format(len(activos)))
+        for cid, name in activos:
+            lines.append("  {}".format(name))
+            keyboard.append([InlineKeyboardButton(
+                "Bloquear: {}".format(name),
+                callback_data="ally_block_block_{}".format(cid),
+            )])
+
+    if bloqueados:
+        if activos:
+            lines.append("")
+        lines.append("BLOQUEADOS ({})".format(len(bloqueados)))
+        for cid, name in bloqueados:
+            lines.append("  {} (bloqueado)".format(name))
+            keyboard.append([InlineKeyboardButton(
+                "Desbloquear: {}".format(name),
+                callback_data="ally_block_unblock_{}".format(cid),
+            )])
+
+    if not activos and not bloqueados:
+        return "Tu equipo no tiene repartidores.", None
+
+    markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    return chr(10).join(lines), markup
+
+
+def ally_couriers_panel(update, context):
+    """Muestra repartidores del equipo con secciones ACTIVOS y BLOQUEADOS."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally or ally["status"] != "APPROVED":
+        update.message.reply_text("Solo aliados aprobados pueden gestionar repartidores.")
+        return
+
+    text, markup = _ally_couriers_build_panel(ally["id"])
+    update.message.reply_text(text, reply_markup=markup)
+
+
+def ally_block_callback(update, context):
+    """Maneja bloqueo/desbloqueo de repartidor por aliado y actualiza el panel."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("Usuario no encontrado.")
+        return
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Solo aliados aprobados pueden gestionar repartidores.")
+        return
+
+    ally_id = ally["id"]
+    if data.startswith("ally_block_block_"):
+        courier_id = int(data.split("_")[-1])
+        block_courier_for_ally(ally_id, courier_id)
+    elif data.startswith("ally_block_unblock_"):
+        courier_id = int(data.split("_")[-1])
+        unblock_courier_for_ally(ally_id, courier_id)
+    else:
+        return
+
+    # Regenerar panel actualizado en el mismo mensaje
+    text, markup = _ally_couriers_build_panel(ally_id)
+    try:
+        query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        pass
+
+
 def mi_repartidor(update, context):
     """Muestra el submenu de gestion de repartidor."""
     user_db_id = get_user_db_id_from_update(update)
@@ -1219,6 +1466,7 @@ def mi_repartidor(update, context):
     status = _row_value(courier, "status", "PENDING")
     full_name = _row_value(courier, "full_name", "-")
     is_active = _row_value(courier, "is_active", 0)
+    available_cash = int(_row_value(courier, "available_cash", 0) or 0)
     if is_active and status == "APPROVED":
         avail_status = _row_value(courier, "availability_status", "INACTIVE")
         live_active = int(_row_value(courier, "live_location_active", 0) or 0) == 1
@@ -1230,11 +1478,14 @@ def mi_repartidor(update, context):
             disp = "OFFLINE"
     else:
         disp = "OFFLINE"
+    disp_line = f"Disponibilidad: {disp}"
+    if disp == "ONLINE":
+        disp_line += f" (base ${available_cash:,})"
     msg = (
         "🚴 GESTION DE REPARTIDOR\n\n"
         f"Nombre: {full_name}\n"
         f"Estado: {status}\n"
-        f"Disponibilidad: {disp}\n\n"
+        f"{disp_line}\n\n"
         "Selecciona una opcion:"
     )
     reply_markup = get_repartidor_menu_keyboard(courier)
@@ -1311,6 +1562,124 @@ def courier_orders_history(update, context):
             update.message.reply_text(msg)
 
 
+def courier_pedidos_en_curso(update, context):
+    """Muestra el estado de los trabajos activos asignados al repartidor."""
+    user_db_id = get_user_db_id_from_update(update)
+    courier = get_courier_by_user_id(user_db_id)
+    if not courier:
+        update.message.reply_text("No tienes perfil de repartidor.")
+        return
+
+    active_order = get_active_order_for_courier(courier["id"])
+    active_route = get_active_route_for_courier(courier["id"])
+
+    if not active_order and not active_route:
+        update.message.reply_text("No tienes pedidos en curso.")
+        return
+
+    order_status_labels = {
+        "ACCEPTED": "Asignado",
+        "PICKED_UP": "En camino",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+    route_status_labels = {
+        "ACCEPTED": "En curso",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+    }
+
+    update.message.reply_text("Pedidos en curso:")
+
+    if active_order:
+        order_id = _row_value(active_order, "id", "-")
+        st = order_status_labels.get(
+            _row_value(active_order, "status"),
+            _row_value(active_order, "status", "-"),
+        )
+        order_status = _row_value(active_order, "status")
+        pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
+        customer_city = _row_value(active_order, "customer_city") or ""
+        customer_barrio = _row_value(active_order, "customer_barrio") or ""
+        destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
+        total_fee = int((_row_value(active_order, "total_fee") or 0) or 0)
+
+        msg = (
+            "Pedido #{}\n"
+            "Estado: {}\n"
+            "Recoge en: {}\n"
+            "Destino: {}\n"
+            "Tarifa: ${:,}"
+        ).format(order_id, st, pickup_address, destino_area, total_fee)
+
+        kb = []
+        if order_status == "ACCEPTED":
+            kb.append([
+                InlineKeyboardButton(
+                    "Solicitar confirmacion de recogida",
+                    callback_data="order_pickup_{}".format(order_id),
+                ),
+            ])
+            kb.append([
+                InlineKeyboardButton(
+                    "Liberar pedido",
+                    callback_data="order_release_{}".format(order_id),
+                ),
+            ])
+        elif order_status == "PICKED_UP":
+            kb.append([
+                InlineKeyboardButton(
+                    "Finalizar pedido",
+                    callback_data="order_delivered_confirm_{}".format(order_id),
+                ),
+            ])
+        update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+
+    if active_route:
+        route_id = _row_value(active_route, "id", "-")
+        st = route_status_labels.get(
+            _row_value(active_route, "status"),
+            _row_value(active_route, "status", "-"),
+        )
+        route_status = _row_value(active_route, "status")
+        pickup_address = _row_value(active_route, "pickup_address") or "No disponible"
+        total_fee = int((_row_value(active_route, "total_fee") or 0) or 0)
+
+        pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
+        next_seq = None
+        if pending_stops:
+            try:
+                next_seq = min(int(s["sequence"]) for s in pending_stops if s.get("sequence") is not None)
+            except Exception:
+                next_seq = None
+
+        msg = (
+            "Ruta #{}\n"
+            "Estado: {}\n"
+            "Recoge en: {}\n"
+            "Pago: ${:,}"
+        ).format(route_id, st, pickup_address, total_fee)
+
+        kb = []
+        if next_seq is not None:
+            kb.append([
+                InlineKeyboardButton(
+                    "Entregar siguiente parada",
+                    callback_data="ruta_entregar_{}_{}".format(route_id, next_seq),
+                )
+            ])
+        if route_status == "ACCEPTED":
+            kb.append([
+                InlineKeyboardButton(
+                    "Liberar ruta",
+                    callback_data="ruta_liberar_{}".format(route_id),
+                )
+            ])
+        update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
+
+    update.message.reply_text("No puedes aceptar nuevos pedidos o rutas hasta finalizar el actual.")
+
+
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
     if getattr(update, "callback_query", None) and update.callback_query.message:
@@ -1338,7 +1707,7 @@ def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:
     ally, courier, admin_local = _get_user_roles(update)
     es_admin_plataforma_flag = es_admin_plataforma(update.effective_user.id)
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
-    reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally)
+    reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -1365,8 +1734,10 @@ def menu_button_handler(update, context):
     # --- Botones del menú principal ---
     if text == "Mi aliado":
         return mi_aliado(update, context)
-    elif text == "Mi repartidor":
+    elif text.startswith("Mi repartidor"):
         return mi_repartidor(update, context)
+    elif text == "Mi admin":
+        return mi_admin(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
@@ -1377,6 +1748,7 @@ def menu_button_handler(update, context):
             "Secciones del menu:\n"
             "• Mi aliado - Gestion de tu negocio (pedidos, clientes, agenda, cotizar, recargar, saldo)\n"
             "• Mi repartidor - Gestion de repartidor (activar/pausar, pedidos, recargar, saldo)\n\n"
+            "• Mi admin - Panel de administrador local (equipo, pendientes, recargas, configuraciones)\n\n"
             "Comandos disponibles:\n"
             "/nuevo_pedido - Crear un nuevo pedido\n"
             "/clientes - Gestionar clientes\n"
@@ -1384,6 +1756,7 @@ def menu_button_handler(update, context):
             "/recargar - Solicitar recarga\n"
             "/saldo - Ver tu saldo\n"
             "/mi_perfil - Ver tu perfil\n"
+            "/mi_admin - Panel de administrador\n"
             "/cancel - Cancelar proceso actual\n"
             "/menu - Ver menu principal"
         )
@@ -1395,7 +1768,10 @@ def menu_button_handler(update, context):
                 msg += "/soy_repartidor - Registrarme como repartidor\n"
             if "/soy_admin" in missing_cmds:
                 msg += "/soy_admin - Registrarme como administrador"
-        update.message.reply_text(msg)
+        ayuda_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Solicitar unirme a un equipo", callback_data="solequipo_start")
+        ]])
+        update.message.reply_text(msg, reply_markup=ayuda_markup)
         return
     elif text == "Menu":
         return start(update, context)
@@ -1403,16 +1779,24 @@ def menu_button_handler(update, context):
     # --- Botones del submenú Aliado ---
     elif text == "Mis pedidos":
         return ally_active_orders(update, context)
+    elif text == "Mis repartidores":
+        return ally_couriers_panel(update, context)
     elif text == "Mi saldo aliado":
         return cmd_saldo(update, context)
 
     # --- Botones del submenú Repartidor ---
     elif text == "Activar repartidor":
         return courier_activate_from_message(update, context)
-    elif text == "Pausar repartidor":
+    elif text == "Desactivarme":
         return courier_deactivate_from_message(update, context)
+    elif text == "Actualizar":
+        return mi_repartidor(update, context)
+    elif text == "Pedidos en curso":
+        return courier_pedidos_en_curso(update, context)
     elif text == "Mis pedidos repartidor":
         return courier_orders_history(update, context)
+    elif text == "Mis ganancias":
+        return courier_earnings_start(update, context)
     elif text == "Mi saldo repartidor":
         return cmd_saldo(update, context)
 
@@ -1900,6 +2284,32 @@ def ally_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
+    admin_telegram_id = admin_row.get("telegram_id")
+    business_name = context.user_data.get("business_name", "Aliado")
+    try:
+        if admin_telegram_id:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de aliado para tu equipo.\n\n"
+                    "Negocio: {}\n"
+                    "Equipo: {} ({})\n\n"
+                    "Entra a /mi_admin para aprobar o rechazar."
+                ).format(business_name, team_name, team_code)
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_ally_pending_{}_{}".format(admin_id, ally_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un aliado pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
+
     query.edit_message_text(
         "Listo. Elegiste el equipo:\n"
         f"{team_name} ({team_code})\n\n"
@@ -2294,23 +2704,31 @@ def courier_confirm(update, context):
 
     code = f"R-{db_user['id']:04d}"
 
-    create_courier(
-        user_id=db_user["id"],
-        full_name=full_name,
-        id_number=id_number,
-        phone=phone,
-        city=city,
-        barrio=barrio,
-        plate=plate,
-        bike_type=bike_type,
-        code=code,
-        residence_address=residence_address,
-        residence_lat=residence_lat,
-        residence_lng=residence_lng,
-        cedula_front_file_id=cedula_front_file_id,
-        cedula_back_file_id=cedula_back_file_id,
-        selfie_file_id=selfie_file_id,
-    )
+    try:
+        create_courier(
+            user_id=db_user["id"],
+            full_name=full_name,
+            id_number=id_number,
+            phone=phone,
+            city=city,
+            barrio=barrio,
+            plate=plate,
+            bike_type=bike_type,
+            code=code,
+            residence_address=residence_address,
+            residence_lat=residence_lat,
+            residence_lng=residence_lng,
+            cedula_front_file_id=cedula_front_file_id,
+            cedula_back_file_id=cedula_back_file_id,
+            selfie_file_id=selfie_file_id,
+        )
+    except ValueError as e:
+        update.message.reply_text(
+            "No se pudo completar el registro: {}\n\n"
+            "Revisa tus datos y vuelve a intentarlo con /soy_repartidor.".format(e)
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     courier = get_courier_by_user_id(db_user["id"])
     if not courier:
@@ -2640,6 +3058,30 @@ def nuevo_pedido(update, context):
                 )
             return ConversationHandler.END
 
+
+        # Verificar saldo ANTES de iniciar el flujo para no perder tiempo
+        _admin_link_early = get_approved_admin_link_for_ally(ally["id"])
+        _admin_id_early = _admin_link_early["admin_id"] if _admin_link_early else None
+        if not _admin_id_early:
+            _platform_admin_early = get_platform_admin()
+            _admin_id_early = _platform_admin_early["id"] if _platform_admin_early else None
+        if _admin_id_early:
+            _fee_ok, _fee_code = check_service_fee_available(
+                target_type="ALLY",
+                target_id=ally["id"],
+                admin_id=_admin_id_early,
+            )
+            if not _fee_ok:
+                if message:
+                    if _fee_code == "ADMIN_SIN_SALDO":
+                        message.reply_text(
+                            "Tu administrador no tiene saldo suficiente para operar. Contacta a tu admin o recarga con plataforma."
+                        )
+                    else:
+                        message.reply_text(
+                            "No tienes saldo suficiente para crear un pedido. Recarga para continuar."
+                        )
+                return ConversationHandler.END
         if not ensure_terms(update, context, user.id, role="ALLY"):
             print("[DEBUG][nuevo_pedido] blocked_by_terms=True", flush=True)
             return ConversationHandler.END
@@ -2717,6 +3159,11 @@ def pedido_selector_cliente_callback(update, context):
         return PEDIDO_SELECTOR_CLIENTE
 
     elif data == "pedido_cliente_nuevo":
+        # Limpiar datos residuales de flujos anteriores para evitar reusar ubicacion/cliente
+        for _k in ("customer_id", "customer_address", "customer_address_id",
+                   "dropoff_lat", "dropoff_lng", "customer_city", "customer_barrio",
+                   "customer_name", "customer_phone"):
+            context.user_data.pop(_k, None)
         query.edit_message_text("Escribe el nombre del cliente:")
         context.user_data["is_new_customer"] = True
         return PEDIDO_NOMBRE
@@ -2826,8 +3273,11 @@ def pedido_seleccionar_direccion_callback(update, context):
     data = query.data
 
     if data == "pedido_nueva_dir":
-        query.edit_message_text("Escribe la nueva direccion de entrega:")
-        return PEDIDO_DIRECCION
+        query.edit_message_text(
+            "Escribe la nueva direccion de entrega (nombre del lugar o calle),\n"
+            "o envia un pin de ubicacion de Telegram."
+        )
+        return PEDIDO_UBICACION
 
     elif data == "guardar_dir_cliente_si":
         # Guardar la direccion del cliente
@@ -2840,6 +3290,8 @@ def pedido_seleccionar_direccion_callback(update, context):
                 customer_id=customer_id,
                 label=address_text[:30],
                 address_text=address_text,
+                city=context.user_data.get("customer_city", ""),
+                barrio=context.user_data.get("customer_barrio", ""),
                 lat=lat,
                 lng=lng
             )
@@ -2858,8 +3310,11 @@ def pedido_seleccionar_direccion_callback(update, context):
         address = get_customer_address_by_id(address_id, customer_id)
 
         if not address:
-            query.edit_message_text("Direccion no encontrada. Escribe la direccion de entrega:")
-            return PEDIDO_DIRECCION
+            query.edit_message_text(
+                "Direccion no encontrada. Escribe la direccion de entrega (nombre del lugar o calle),\n"
+                "o envia un pin de ubicacion de Telegram."
+            )
+            return PEDIDO_UBICACION
 
         context.user_data["customer_address_id"] = address_id
         context.user_data["customer_address"] = address["address_text"]
@@ -3355,7 +3810,7 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     context.user_data["distance_source"] = cotizacion.get("distance_source", "")
 
     # Mostrar resumen con botones de confirmacion
-    keyboard = [
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -3415,24 +3870,25 @@ def pedido_telefono_cliente(update, context):
         )
         return PEDIDO_DIRECCION
 
-    # Si el cliente ya es recurrente y la direccion ya existe con coords, no pedir ubicacion otra vez
-    customer_id = context.user_data.get("customer_id")
-    customer_address = context.user_data.get("customer_address")
-    dropoff_lat = context.user_data.get("dropoff_lat")
-    dropoff_lng = context.user_data.get("dropoff_lng")
-    if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
-        address_id = context.user_data.get("customer_address_id")
-        if address_id:
-            addr = get_customer_address_by_id(address_id, customer_id)
-            if addr:
-                context.user_data["dropoff_lat"] = addr.get("lat")
-                context.user_data["dropoff_lng"] = addr.get("lng")
-                dropoff_lat = context.user_data.get("dropoff_lat")
-                dropoff_lng = context.user_data.get("dropoff_lng")
+    # Solo reutilizar datos de ubicacion si es cliente recurrente (no cliente nuevo)
+    if not context.user_data.get("is_new_customer"):
+        customer_id = context.user_data.get("customer_id")
+        customer_address = context.user_data.get("customer_address")
+        dropoff_lat = context.user_data.get("dropoff_lat")
+        dropoff_lng = context.user_data.get("dropoff_lng")
+        if customer_id and customer_address and (dropoff_lat is None or dropoff_lng is None):
+            address_id = context.user_data.get("customer_address_id")
+            if address_id:
+                addr = get_customer_address_by_id(address_id, customer_id)
+                if addr:
+                    context.user_data["dropoff_lat"] = addr.get("lat")
+                    context.user_data["dropoff_lng"] = addr.get("lng")
+                    dropoff_lat = context.user_data.get("dropoff_lat")
+                    dropoff_lng = context.user_data.get("dropoff_lng")
 
-    if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
-        update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
-        return mostrar_selector_pickup(update, context, edit=False)
+        if customer_id and customer_address and dropoff_lat is not None and dropoff_lng is not None:
+            update.message.reply_text("Datos del cliente guardados. Continuamos con el pedido.")
+            return mostrar_selector_pickup(update, context, edit=False)
 
     # Preguntar por ubicación (obligatoria)
     update.message.reply_text(
@@ -3783,6 +4239,7 @@ def pedido_pickup_callback(update, context):
         context.user_data["pickup_label"] = default_loc.get("label") or "Base"
         context.user_data["pickup_address"] = default_loc.get("address", "")
         context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
         context.user_data["pickup_lat"] = default_loc.get("lat")
         context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4032,18 +4489,71 @@ def ally_locs_add_label(update, context):
         return ConversationHandler.END
 
     label = texto[:40]
+    context.user_data["ally_locs_new_label"] = label
+    update.message.reply_text("Escribe la ciudad del punto de recogida:")
+    return ALLY_LOCS_ADD_CITY
+
+
+def ally_locs_add_city(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad del punto de recogida:",
+        "ally_locs_new_city",
+        ALLY_LOCS_ADD_CITY,
+        ALLY_LOCS_ADD_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector del punto de recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ally_locs_add_barrio(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector del punto de recogida:",
+        "ally_locs_new_barrio",
+        ALLY_LOCS_ADD_BARRIO,
+        ALLY_LOCS_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == ALLY_LOCS_ADD_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("ally_locs_new_barrio", "")
+
+    ally_id = context.user_data.get("ally_locs_ally_id")
+    lat = context.user_data.get("ally_locs_new_lat")
+    lng = context.user_data.get("ally_locs_new_lng")
+    label = context.user_data.get("ally_locs_new_label", "")
+    city = context.user_data.get("ally_locs_new_city", "")
+
+    if not ally_id or lat is None:
+        update.message.reply_text("Error: datos perdidos. Regresa al menu de ubicaciones.")
+        return ConversationHandler.END
+
     new_loc_id = create_ally_location(
         ally_id=ally_id,
         label=label,
         address=label,
-        city="",
-        barrio="",
+        city=city,
+        barrio=barrio,
         lat=lat,
         lng=lng,
     )
 
-    context.user_data.pop("ally_locs_new_lat", None)
-    context.user_data.pop("ally_locs_new_lng", None)
+    for key in [
+        "ally_locs_new_lat",
+        "ally_locs_new_lng",
+        "ally_locs_new_label",
+        "ally_locs_new_city",
+        "ally_locs_new_barrio",
+    ]:
+        context.user_data.pop(key, None)
 
     keyboard = [
         [InlineKeyboardButton("Si, usar como base", callback_data="ally_locs_base_{}".format(new_loc_id))],
@@ -4164,12 +4674,14 @@ def pedido_pickup_lista_callback(update, context):
             return mostrar_selector_pickup(query, context, edit=False)
 
         if location.get("lat") is None or location.get("lng") is None:
+            query.answer("Esta direccion no tiene GPS. Selecciona otra o agrega una nueva.", show_alert=True)
             return mostrar_lista_pickups(query, context)
 
         context.user_data["pickup_location"] = location
         context.user_data["pickup_label"] = location.get("label") or "Recogida"
         context.user_data["pickup_address"] = location.get("address", "")
         context.user_data["pickup_city"] = location.get("city", "")
+        context.user_data["pickup_barrio"] = location.get("barrio", "")
         context.user_data["pickup_lat"] = location.get("lat")
         context.user_data["pickup_lng"] = location.get("lng")
 
@@ -4222,6 +4734,7 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
             context.user_data["pickup_label"] = default_loc.get("label") or "Base"
             context.user_data["pickup_address"] = default_loc.get("address", "")
             context.user_data["pickup_city"] = default_loc.get("city", "")
+            context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
             context.user_data["pickup_lat"] = default_loc.get("lat")
             context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4307,8 +4820,7 @@ def pedido_pickup_geo_callback(update, context):
         context.user_data["new_pickup_lng"] = lng
         query.edit_message_text(
             f"Ubicacion capturada: {lat}, {lng}\n\n"
-            "Ahora escribe los detalles de la direccion de recogida:\n"
-            "direccion, barrio, referencias..."
+            "Ahora escribe la direccion de recogida (sin ciudad ni barrio):"
         )
         return PEDIDO_PICKUP_NUEVA_DETALLES
 
@@ -4339,6 +4851,7 @@ def pedido_pickup_nueva_ubicacion_location_handler(update, context):
         context.user_data["pickup_label"] = default_loc.get("label") or "Base"
         context.user_data["pickup_address"] = default_loc.get("address", "")
         context.user_data["pickup_city"] = default_loc.get("city", "")
+        context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
         context.user_data["pickup_lat"] = default_loc.get("lat")
         context.user_data["pickup_lng"] = default_loc.get("lng")
 
@@ -4349,8 +4862,7 @@ def pedido_pickup_nueva_ubicacion_location_handler(update, context):
     context.user_data["new_pickup_lng"] = loc.longitude
     update.message.reply_text(
         f"Ubicacion capturada: {loc.latitude}, {loc.longitude}\n\n"
-        "Ahora escribe los detalles de la direccion de recogida:\n"
-        "direccion, barrio, referencias..."
+        "Ahora escribe la direccion de recogida (sin ciudad ni barrio):"
     )
     return PEDIDO_PICKUP_NUEVA_DETALLES
 
@@ -4380,7 +4892,7 @@ def pedido_pickup_nueva_detalles_handler(update, context):
 
     context.user_data["new_pickup_address"] = text
 
-    # Usar pickup temporal en user_data
+    # Sugerir ciudad basada en la base del aliado (pero se pregunta siempre)
     ally = context.user_data.get("ally")
     default_city = "Pereira"
     if ally:
@@ -4388,12 +4900,49 @@ def pedido_pickup_nueva_detalles_handler(update, context):
         if default_loc and default_loc.get("city"):
             default_city = default_loc["city"]
 
-    context.user_data["new_pickup_city"] = default_city
+    update.message.reply_text(
+        "Ciudad de la recogida (ej: {}).".format(default_city)
+    )
+    return PEDIDO_PICKUP_NUEVA_CIUDAD
+
+
+def pedido_pickup_nueva_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la recogida:",
+        "new_pickup_city",
+        PEDIDO_PICKUP_NUEVA_CIUDAD,
+        PEDIDO_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Barrio o sector de la recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def pedido_pickup_nueva_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la recogida:",
+        "new_pickup_barrio",
+        PEDIDO_PICKUP_NUEVA_BARRIO,
+        PEDIDO_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == PEDIDO_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("new_pickup_barrio", "")
 
     # Guardar pickup temporal
     context.user_data["pickup_label"] = "Nueva"
-    context.user_data["pickup_address"] = text
-    context.user_data["pickup_city"] = default_city
+    context.user_data["pickup_address"] = context.user_data.get("new_pickup_address", "")
+    context.user_data["pickup_city"] = context.user_data.get("new_pickup_city", "")
+    context.user_data["pickup_barrio"] = barrio
     context.user_data["pickup_lat"] = context.user_data.get("new_pickup_lat")
     context.user_data["pickup_lng"] = context.user_data.get("new_pickup_lng")
 
@@ -4428,7 +4977,7 @@ def pedido_pickup_guardar_callback(update, context):
             label=context.user_data.get("new_pickup_address", "")[:30],
             address=context.user_data.get("new_pickup_address", ""),
             city=context.user_data.get("new_pickup_city", "Pereira"),
-            barrio="",
+            barrio=context.user_data.get("new_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=context.user_data.get("new_pickup_lat"),
@@ -4456,6 +5005,197 @@ def continuar_despues_pickup(query, context, edit=True):
     return mostrar_pregunta_base(query, context, edit=edit)
 
 
+def _fmt_pesos(amount: int) -> str:
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        amount = 0
+    return f"${amount:,}".replace(",", ".")
+
+
+def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None):
+    """
+    Botones de incentivo (pre y post oferta).
+    - Pre: callback_data=pedido_inc_1000 / pedido_inc_otro
+    - Post: callback_data=pedido_inc_{order_id}x{monto} / pedido_inc_otro_{order_id}
+    """
+    if order_id is None:
+        return [
+            [
+                InlineKeyboardButton("+1000", callback_data=f"{prefix}1000"),
+                InlineKeyboardButton("+1500", callback_data=f"{prefix}1500"),
+            ],
+            [
+                InlineKeyboardButton("+2000", callback_data=f"{prefix}2000"),
+                InlineKeyboardButton("+3000", callback_data=f"{prefix}3000"),
+            ],
+            [InlineKeyboardButton("Otro monto", callback_data=f"{prefix}otro")],
+        ]
+
+    return [
+        [
+            InlineKeyboardButton("+1000", callback_data=f"{prefix}{order_id}x1000"),
+            InlineKeyboardButton("+1500", callback_data=f"{prefix}{order_id}x1500"),
+        ],
+        [
+            InlineKeyboardButton("+2000", callback_data=f"{prefix}{order_id}x2000"),
+            InlineKeyboardButton("+3000", callback_data=f"{prefix}{order_id}x3000"),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data=f"{prefix}otro_{order_id}")],
+    ]
+
+
+def _courier_earnings_group_by_date(rows: list) -> list:
+    totals = {}
+    for r in rows or []:
+        date_key = (r.get("date_key") or "").strip()
+        if not date_key:
+            continue
+        d = totals.setdefault(date_key, {"orders": 0, "gross": 0, "fee": 0, "net": 0})
+        d["orders"] += 1
+        d["gross"] += int(r.get("gross_amount") or 0)
+        d["fee"] += int(r.get("platform_fee") or 0)
+        d["net"] += int(r.get("net_amount") or 0)
+    # Orden desc por fecha (YYYY-MM-DD)
+    result = []
+    for k in sorted(totals.keys(), reverse=True):
+        row = totals[k]
+        result.append({
+            "date_key": k,
+            "orders": row["orders"],
+            "gross": row["gross"],
+            "fee": row["fee"],
+            "net": row["net"],
+        })
+    return result
+
+
+def _courier_earnings_buttons(daily: list):
+    keyboard = []
+    for d in daily:
+        date_key = d["date_key"]
+        compact = date_key.replace("-", "")
+        label = "{} ({} pedidos)".format(date_key, d["orders"])
+        keyboard.append([InlineKeyboardButton(label, callback_data="courier_earn_{}".format(compact))])
+    keyboard.append([InlineKeyboardButton("Actualizar", callback_data="courier_earn_refresh")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def courier_earnings_start(update, context):
+    """Muestra resumen de ganancias del repartidor por día (según liquidaciones contables)."""
+    telegram_id = update.effective_user.id
+    ok, courier, rows, msg = courier_get_earnings_history(telegram_id, days=7)
+    if not ok:
+        update.message.reply_text(msg)
+        return
+
+    daily = _courier_earnings_group_by_date(rows)
+    if not daily:
+        update.message.reply_text("No hay ganancias registradas en los últimos 7 días.")
+        return
+
+    total_orders = sum(d["orders"] for d in daily)
+    total_gross = sum(d["gross"] for d in daily)
+    total_fee = sum(d["fee"] for d in daily)
+    total_net = sum(d["net"] for d in daily)
+
+    text = (
+        "MIS GANANCIAS (ULTIMOS 7 DIAS)\n\n"
+        "Pedidos entregados: {}\n"
+        "Bruto: {}\n"
+        "Fee plataforma cobrado: {}\n"
+        "Neto estimado: {}\n\n"
+        "Selecciona un día para ver el detalle:"
+    ).format(total_orders, _fmt_pesos(total_gross), _fmt_pesos(total_fee), _fmt_pesos(total_net))
+
+    update.message.reply_text(text, reply_markup=_courier_earnings_buttons(daily))
+
+
+def courier_earnings_callback(update, context):
+    """Callback para ver resumen/detalle de ganancias del repartidor."""
+    query = update.callback_query
+    query.answer()
+    data = query.data or ""
+    telegram_id = update.effective_user.id
+
+    if data == "courier_earn_refresh" or data == "courier_earn_back":
+        ok, courier, rows, msg = courier_get_earnings_history(telegram_id, days=7)
+        if not ok:
+            query.edit_message_text(msg)
+            return
+        daily = _courier_earnings_group_by_date(rows)
+        if not daily:
+            query.edit_message_text("No hay ganancias registradas en los últimos 7 días.")
+            return
+        total_orders = sum(d["orders"] for d in daily)
+        total_gross = sum(d["gross"] for d in daily)
+        total_fee = sum(d["fee"] for d in daily)
+        total_net = sum(d["net"] for d in daily)
+        text = (
+            "MIS GANANCIAS (ULTIMOS 7 DIAS)\n\n"
+            "Pedidos entregados: {}\n"
+            "Bruto: {}\n"
+            "Fee plataforma cobrado: {}\n"
+            "Neto estimado: {}\n\n"
+            "Selecciona un día para ver el detalle:"
+        ).format(total_orders, _fmt_pesos(total_gross), _fmt_pesos(total_fee), _fmt_pesos(total_net))
+        query.edit_message_text(text, reply_markup=_courier_earnings_buttons(daily))
+        return
+
+    if not data.startswith("courier_earn_"):
+        query.edit_message_text("Accion invalida.")
+        return
+
+    compact = data[len("courier_earn_"):]
+    if not compact.isdigit() or len(compact) != 8:
+        query.edit_message_text("Fecha invalida.")
+        return
+
+    date_key = "{}-{}-{}".format(compact[0:4], compact[4:6], compact[6:8])
+    ok, courier, rows, msg = courier_get_earnings_by_date_key(telegram_id, date_key)
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    if not rows:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="courier_earn_back")]])
+        query.edit_message_text("No hay registros para {}.".format(date_key), reply_markup=keyboard)
+        return
+
+    gross = sum(int(r.get("gross_amount") or 0) for r in rows)
+    fee = sum(int(r.get("platform_fee") or 0) for r in rows)
+    net = sum(int(r.get("net_amount") or 0) for r in rows)
+
+    lines = [
+        "DETALLE DE GANANCIAS",
+        "",
+        "Fecha: {}".format(date_key),
+        "Pedidos: {}".format(len(rows)),
+        "Bruto: {}".format(_fmt_pesos(gross)),
+        "Fee plataforma cobrado: {}".format(_fmt_pesos(fee)),
+        "Neto estimado: {}".format(_fmt_pesos(net)),
+        "",
+        "Pedidos:",
+    ]
+    for r in rows[:25]:
+        order_id = r.get("order_id")
+        hour_key = r.get("hour_key") or "--:--"
+        lines.append(
+            "#{} {} | Bruto {} | Fee {} | Neto {}".format(
+                order_id,
+                hour_key,
+                _fmt_pesos(int(r.get("gross_amount") or 0)),
+                _fmt_pesos(int(r.get("platform_fee") or 0)),
+                _fmt_pesos(int(r.get("net_amount") or 0)),
+            )
+        )
+    if len(rows) > 25:
+        lines.append("... y {} mas.".format(len(rows) - 25))
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="courier_earn_back")]])
+    query.edit_message_text("\n".join(lines), reply_markup=keyboard)
+
+
 def construir_resumen_pedido(context):
     """Construye el texto del resumen del pedido."""
     tipo_servicio = context.user_data.get("service_type", "-")
@@ -4465,7 +5205,9 @@ def construir_resumen_pedido(context):
     pickup_label = context.user_data.get("pickup_label", "")
     pickup_address = context.user_data.get("pickup_address", "")
     distancia = context.user_data.get("quote_distance_km", 0)
-    precio = context.user_data.get("quote_price", 0)
+    precio_base = int(context.user_data.get("quote_price", 0) or 0)
+    incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    total = precio_base + incentivo
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
     buy_products = context.user_data.get("buy_products_count", 0)
@@ -4495,24 +5237,45 @@ def construir_resumen_pedido(context):
         if buy_list:
             resumen += f"Lista de productos:\n{buy_list}\n"
         if buy_products > 0:
-            tarifa_distancia = precio - buy_surcharge
-            resumen += f"Tarifa distancia: ${tarifa_distancia:,}".replace(",", ".") + "\n"
+            tarifa_distancia = precio_base - buy_surcharge
+            resumen += "Tarifa distancia: " + _fmt_pesos(tarifa_distancia) + "\n"
             resumen += f"Total unidades: {buy_products}\n"
             if buy_surcharge > 0:
-                resumen += f"Recargo productos: ${buy_surcharge:,}".replace(",", ".") + "\n"
+                resumen += "Recargo productos: " + _fmt_pesos(buy_surcharge) + "\n"
 
-    resumen += f"Valor del servicio: ${precio:,}".replace(",", ".") + "\n"
+    resumen += "Valor base del servicio: " + _fmt_pesos(precio_base) + "\n"
+    if incentivo > 0:
+        resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
+    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
 
     if requires_cash and cash_amount > 0:
-        resumen += f"Base requerida: ${cash_amount:,}".replace(",", ".") + "\n"
+        resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
 
-    resumen += "\nConfirmas este pedido?"
+    resumen += (
+        "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Deseas agregar un incentivo antes de confirmar? (Tambien puedes hacerlo despues de publicar)\n\n"
+        "Confirmas este pedido?"
+    )
     return resumen
 
 
 def mostrar_resumen_confirmacion(query, context, edit=True):
     """Muestra resumen del pedido con botones de confirmacion (para CallbackQuery)."""
-    keyboard = [
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    if pickup_lat is None or pickup_lng is None:
+        return mostrar_selector_pickup(query, context, edit=True)
+    try:
+        context.bot.send_location(
+            chat_id=query.message.chat_id,
+            latitude=float(pickup_lat),
+            longitude=float(pickup_lng),
+        )
+    except Exception:
+        pass
+
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -4529,7 +5292,20 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
 
 def mostrar_resumen_confirmacion_msg(update, context):
     """Muestra resumen del pedido con botones de confirmacion (para Message)."""
-    keyboard = [
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    if pickup_lat is None or pickup_lng is None:
+        return mostrar_selector_pickup(update, context, edit=False)
+    try:
+        context.bot.send_location(
+            chat_id=update.effective_chat.id,
+            latitude=float(pickup_lat),
+            longitude=float(pickup_lng),
+        )
+    except Exception:
+        pass
+
+    keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
     ]
@@ -4544,6 +5320,958 @@ def pedido_confirmacion(update, context):
     """Fallback: redirige a botones si el usuario escribe texto."""
     # Mostrar resumen con botones
     return mostrar_resumen_confirmacion_msg(update, context)
+
+
+def pedido_incentivo_fixed_callback(update, context):
+    """Agrega incentivo (botones +1000/+1500/+2000/+3000) antes de confirmar pedido."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    parts = data.split("_")
+    if len(parts) != 3:
+        return PEDIDO_CONFIRMACION
+    if parts[0] != "pedido" or parts[1] != "inc":
+        return PEDIDO_CONFIRMACION
+    try:
+        delta = int(parts[2])
+    except Exception:
+        return PEDIDO_CONFIRMACION
+    if delta <= 0:
+        return PEDIDO_CONFIRMACION
+
+    current = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    context.user_data["pedido_incentivo"] = current + delta
+    return mostrar_resumen_confirmacion(query, context, edit=True)
+
+
+def pedido_incentivo_otro_start(update, context):
+    """Pide al aliado ingresar un incentivo adicional por texto (antes de confirmar)."""
+    query = update.callback_query
+    query.answer()
+    context.user_data.pop("pedido_incentivo_edit_order_id", None)
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para volver al menu."
+    )
+    return PEDIDO_INCENTIVO_MONTO
+
+
+def pedido_incentivo_monto_handler(update, context):
+    """Recibe incentivo adicional por texto antes de confirmar."""
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return PEDIDO_INCENTIVO_MONTO
+
+    current = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    context.user_data["pedido_incentivo"] = current + delta
+    return mostrar_resumen_confirmacion_msg(update, context)
+
+
+def _pedido_incentivo_menu_text(order):
+    order_id = int(order["id"])
+    incentive = int(order["additional_incentive"] or 0)
+    total_fee = int(order["total_fee"] or 0)
+    return (
+        "INCENTIVO DEL PEDIDO\n\n"
+        "Pedido: #{}\n"
+        "Incentivo actual: {}\n"
+        "Pago total: {}\n\n"
+        "Sugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido."
+    ).format(order_id, _fmt_pesos(incentive), _fmt_pesos(total_fee))
+
+
+def pedido_incentivo_menu_callback(update, context):
+    """Muestra menú para aumentar incentivo de un pedido ya creado."""
+    query = update.callback_query
+    query.answer()
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        query.edit_message_text("Accion invalida.")
+        return
+    try:
+        order_id = int(parts[3])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return
+
+    telegram_id = update.effective_user.id
+    ok, order, msg = ally_get_order_for_incentive(telegram_id, order_id)
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    keyboard = _pedido_incentivo_keyboard(order_id=order_id)
+    query.edit_message_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def pedido_incentivo_existing_fixed_callback(update, context):
+    """Agrega incentivo (botones +1000/+1500/+2000/+3000) a pedido existente."""
+    query = update.callback_query
+    query.answer()
+    if not query.data.startswith("pedido_inc_"):
+        query.edit_message_text("Accion invalida.")
+        return
+    payload = query.data[len("pedido_inc_"):]
+    if "x" not in payload:
+        query.edit_message_text("Accion invalida.")
+        return
+    chunks = payload.split("x", 1)
+    try:
+        order_id = int(chunks[0])
+        delta = int(chunks[1])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return
+
+    telegram_id = update.effective_user.id
+    ok, order, courier_telegram_id, msg = ally_increment_order_incentive(telegram_id, order_id, delta)
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
+    try:
+        repost_order_to_couriers(order_id, context)
+    except Exception:
+        pass
+
+    if courier_telegram_id:
+        try:
+            incentive = int(order["additional_incentive"] or 0)
+            total_fee = int(order["total_fee"] or 0)
+            context.bot.send_message(
+                chat_id=courier_telegram_id,
+                text=(
+                    "Actualizacion de pedido #{}:\n"
+                    "El aliado aumento el incentivo.\n"
+                    "Incentivo adicional: {}\n"
+                    "Pago total: {}"
+                ).format(order_id, _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+            )
+        except Exception:
+            pass
+
+    keyboard = _pedido_incentivo_keyboard(order_id=order_id)
+    query.edit_message_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def pedido_incentivo_existing_otro_start(update, context):
+    """Inicia captura de 'Otro monto' para un pedido existente."""
+    query = update.callback_query
+    query.answer()
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        query.edit_message_text("Accion invalida.")
+        return ConversationHandler.END
+    try:
+        order_id = int(parts[3])
+    except Exception:
+        query.edit_message_text("Accion invalida.")
+        return ConversationHandler.END
+
+    context.user_data["pedido_incentivo_edit_order_id"] = order_id
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para salir."
+    )
+    return PEDIDO_INCENTIVO_MONTO
+
+
+def pedido_incentivo_existing_monto_handler(update, context):
+    """Recibe incentivo adicional por texto para un pedido existente."""
+    order_id = context.user_data.get("pedido_incentivo_edit_order_id")
+    if not order_id:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return PEDIDO_INCENTIVO_MONTO
+
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return PEDIDO_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return PEDIDO_INCENTIVO_MONTO
+
+    telegram_id = update.effective_user.id
+    ok, order, courier_telegram_id, msg = ally_increment_order_incentive(telegram_id, int(order_id), int(delta))
+    if not ok:
+        update.message.reply_text(msg)
+        context.user_data.pop("pedido_incentivo_edit_order_id", None)
+        return ConversationHandler.END
+
+    context.user_data.pop("pedido_incentivo_edit_order_id", None)
+
+    # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
+    try:
+        repost_order_to_couriers(int(order_id), context)
+    except Exception:
+        pass
+
+    if courier_telegram_id:
+        try:
+            incentive = int(order["additional_incentive"] or 0)
+            total_fee = int(order["total_fee"] or 0)
+            context.bot.send_message(
+                chat_id=courier_telegram_id,
+                text=(
+                    "Actualizacion de pedido #{}:\n"
+                    "El aliado aumento el incentivo.\n"
+                    "Incentivo adicional: {}\n"
+                    "Pago total: {}"
+                ).format(int(order_id), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+            )
+        except Exception:
+            pass
+
+    keyboard = _pedido_incentivo_keyboard(order_id=int(order_id))
+    update.message.reply_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+    return ConversationHandler.END
+
+
+# ── Sugerencia de incentivo T+5 (aplica a todos los pedidos: aliados y admin) ──
+
+def offer_suggest_inc_fixed_callback(update, context):
+    """Botones +1500/+2000/+3000 de la sugerencia T+5."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # offer_inc_{order_id}x{delta}
+    try:
+        parts = data.replace("offer_inc_", "").split("x")
+        order_id = int(parts[0])
+        delta = int(parts[1])
+    except Exception:
+        query.edit_message_text("Error al procesar el incentivo.")
+        return
+
+    telegram_id = update.effective_user.id
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    # Determinar si el creador es aliado o admin
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    if creator_admin_id:
+        ok, updated, courier_tid, msg = admin_increment_order_incentive(telegram_id, order_id, delta)
+    else:
+        ok, updated, courier_tid, msg = ally_increment_order_incentive(telegram_id, order_id, delta)
+
+    if not ok:
+        query.edit_message_text(msg)
+        return
+
+    # Re-ofertar a todos los couriers y re-programar T+5
+    repost_count = repost_order_to_couriers(order_id, context)
+
+    total_fee = int(updated["total_fee"] or 0)
+    incentive = int(updated["additional_incentive"] or 0)
+    query.edit_message_text(
+        "Incentivo agregado: +${:,}\n"
+        "Tarifa total del pedido: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, total_fee, repost_count
+        )
+    )
+
+
+def offer_suggest_inc_otro_start(update, context):
+    """Boton 'Otro monto' de la sugerencia T+5."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # offer_inc_otro_{order_id}
+    try:
+        order_id = int(data.replace("offer_inc_otro_", ""))
+    except Exception:
+        query.edit_message_text("Error al procesar la solicitud.")
+        return ConversationHandler.END
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] not in ("PENDING", "PUBLISHED"):
+        query.edit_message_text("Este pedido ya no permite agregar incentivo.")
+        return ConversationHandler.END
+
+    context.user_data["offer_suggest_edit_order_id"] = order_id
+    query.edit_message_text("Ingresa el monto del incentivo que deseas agregar (en pesos COP, solo numeros):")
+    return OFFER_SUGGEST_INC_MONTO
+
+
+def offer_suggest_inc_monto_handler(update, context):
+    """Recibe monto libre de incentivo de la sugerencia T+5."""
+    order_id = context.user_data.get("offer_suggest_edit_order_id")
+    if not order_id:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return OFFER_SUGGEST_INC_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto (maximo $200,000).")
+        return OFFER_SUGGEST_INC_MONTO
+
+    telegram_id = update.effective_user.id
+    order = get_order_by_id(order_id)
+    creator_admin_id = order.get("creator_admin_id") if (order and hasattr(order, "get")) else (order["creator_admin_id"] if order else None)
+
+    if creator_admin_id:
+        ok, updated, courier_tid, msg = admin_increment_order_incentive(telegram_id, int(order_id), delta)
+    else:
+        ok, updated, courier_tid, msg = ally_increment_order_incentive(telegram_id, int(order_id), delta)
+
+    context.user_data.pop("offer_suggest_edit_order_id", None)
+
+    if not ok:
+        update.message.reply_text(msg)
+        return ConversationHandler.END
+
+    repost_count = repost_order_to_couriers(int(order_id), context)
+    total_fee = int(updated["total_fee"] or 0)
+    incentive = int(updated["additional_incentive"] or 0)
+    update.message.reply_text(
+        "Incentivo agregado: +${:,}\n"
+        "Tarifa total del pedido: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, total_fee, repost_count
+        )
+    )
+    return ConversationHandler.END
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PEDIDO ESPECIAL ADMIN
+# ─────────────────────────────────────────────────────────────────────────
+
+def _admin_ped_preview_text(ctx):
+    """Construye texto y teclado del preview del pedido especial del admin."""
+    tarifa = int(ctx.get("admin_ped_tarifa") or 0)
+    incentivo = int(ctx.get("admin_ped_incentivo") or 0)
+    total = tarifa + incentivo
+    instruc = ctx.get("admin_ped_instruc") or "Ninguna"
+    text = (
+        "Resumen del pedido especial:\n\n"
+        "Recogida: {}\n"
+        "Cliente: {} / {}\n"
+        "Entrega: {}\n"
+        "Tarifa al courier: ${:,}\n"
+        "{}"
+        "Instrucciones: {}\n\n"
+        "Total oferta: ${:,}"
+    ).format(
+        ctx.get("admin_ped_pickup_addr", ""),
+        ctx.get("admin_ped_cust_name", ""),
+        ctx.get("admin_ped_cust_phone", ""),
+        ctx.get("admin_ped_cust_addr", ""),
+        tarifa,
+        "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
+        instruc,
+        total,
+    )
+    keyboard = [
+        [InlineKeyboardButton("Confirmar y publicar", callback_data="admin_pedido_confirmar")],
+        [
+            InlineKeyboardButton("+$1,500", callback_data="admin_pedido_inc_1500"),
+            InlineKeyboardButton("+$2,000", callback_data="admin_pedido_inc_2000"),
+            InlineKeyboardButton("+$3,000", callback_data="admin_pedido_inc_3000"),
+        ],
+        [InlineKeyboardButton("Otro incentivo", callback_data="admin_pedido_inc_otro")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+def admin_nuevo_pedido_start(update, context):
+    """Entrada al flujo de pedido especial del admin. Verifica y muestra puntos de recogida."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin or (admin.get("status") or "").upper() != "APPROVED":
+        query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
+        return ConversationHandler.END
+    admin_id = admin["id"]
+    # Limpiar datos anteriores del flujo
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    context.user_data["admin_ped_admin_id"] = admin_id
+    show_flow_menu(update, context, "Iniciando pedido especial...")
+    locations = get_admin_locations(admin_id)
+    keyboard = []
+    for loc in locations:
+        label = loc["label"] if loc["label"] else loc["address"]
+        keyboard.append([InlineKeyboardButton(label, callback_data="admin_pedido_pickup_{}".format(loc["id"]))])
+    keyboard.append([InlineKeyboardButton("Nueva direccion de recogida", callback_data="admin_pedido_nueva_dir")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "Pedido especial — Punto de recogida\n\nSelecciona el punto de recogida:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_callback(update, context):
+    """Selecciona ubicacion de recogida existente y avanza a nombre del cliente."""
+    query = update.callback_query
+    query.answer()
+    loc_id = int(query.data.split("_")[-1])
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    loc = get_admin_location_by_id(loc_id, admin_id)
+    if not loc:
+        query.edit_message_text("Ubicacion no encontrada. Intenta de nuevo.")
+        return ADMIN_PEDIDO_PICKUP
+    context.user_data["admin_ped_pickup_id"] = loc_id
+    context.user_data["admin_ped_pickup_addr"] = loc["address"]
+    context.user_data["admin_ped_pickup_lat"] = loc.get("lat")
+    context.user_data["admin_ped_pickup_lng"] = loc.get("lng")
+    context.user_data["admin_ped_pickup_city"] = loc.get("city", "")
+    context.user_data["admin_ped_pickup_barrio"] = loc.get("barrio", "")
+    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+    query.edit_message_text(
+        "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(loc["address"]),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_CUST_NAME
+
+
+def admin_pedido_nueva_dir_start(update, context):
+    """Pide al admin que escriba la nueva direccion de recogida."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Escribe la direccion del punto de recogida (o envia tu ubicacion GPS):"
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_text_handler(update, context):
+    """Geocodifica el texto ingresado como nueva direccion de recogida."""
+    texto = update.message.text.strip()
+    geo = resolve_location(texto)
+    if not geo:
+        update.message.reply_text(
+            "No pude encontrar esa direccion. Intentalo de nuevo o envia tu ubicacion GPS."
+        )
+        return ADMIN_PEDIDO_PICKUP
+    context.user_data["admin_ped_geo_pickup_pending"] = {
+        "address": geo.get("address", texto),
+        "lat": geo.get("lat"),
+        "lng": geo.get("lng"),
+        "city": geo.get("city", ""),
+        "barrio": geo.get("barrio", ""),
+        "original_text": texto,
+    }
+    keyboard = [[
+        InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_pickup_si"),
+        InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_pickup_no"),
+    ]]
+    update.message.reply_text(
+        "Encontre: {}\n\nEs esta la direccion correcta?".format(geo.get("address", texto)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_pickup_gps_handler(update, context):
+    """Guarda la ubicacion GPS enviada como nueva direccion de recogida."""
+    location = update.message.location
+    lat, lng = location.latitude, location.longitude
+    context.user_data["admin_ped_pickup_id"] = None
+    context.user_data["admin_ped_pickup_addr"] = "GPS ({:.5f}, {:.5f})".format(lat, lng)
+    context.user_data["admin_ped_pickup_lat"] = lat
+    context.user_data["admin_ped_pickup_lng"] = lng
+    context.user_data["admin_ped_pickup_city"] = ""
+    context.user_data["admin_ped_pickup_barrio"] = ""
+    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+    update.message.reply_text(
+        "Punto de recogida guardado.\n\nNombre del cliente (o selecciona de tu agenda):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_CUST_NAME
+
+
+def admin_pedido_geo_pickup_callback(update, context):
+    """Confirma o rechaza geocodificacion del punto de recogida."""
+    query = update.callback_query
+    query.answer()
+    pending = context.user_data.get("admin_ped_geo_pickup_pending", {})
+    if query.data == "admin_pedido_geo_pickup_si":
+        context.user_data["admin_ped_pickup_id"] = None
+        context.user_data["admin_ped_pickup_addr"] = pending.get("address", "")
+        context.user_data["admin_ped_pickup_lat"] = pending.get("lat")
+        context.user_data["admin_ped_pickup_lng"] = pending.get("lng")
+        context.user_data["admin_ped_pickup_city"] = pending.get("city", "")
+        context.user_data["admin_ped_pickup_barrio"] = pending.get("barrio", "")
+        context.user_data.pop("admin_ped_geo_pickup_pending", None)
+        keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+        query.edit_message_text(
+            "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
+                context.user_data["admin_ped_pickup_addr"]
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_PEDIDO_CUST_NAME
+    else:
+        original = pending.get("original_text", "")
+        seen = [pending["address"]] if pending.get("address") else []
+        next_geo = resolve_location_next(original, seen) if original else None
+        if next_geo:
+            context.user_data["admin_ped_geo_pickup_pending"] = {
+                "address": next_geo.get("address", ""),
+                "lat": next_geo.get("lat"),
+                "lng": next_geo.get("lng"),
+                "city": next_geo.get("city", ""),
+                "barrio": next_geo.get("barrio", ""),
+                "original_text": original,
+            }
+            keyboard = [[
+                InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_pickup_si"),
+                InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_pickup_no"),
+            ]]
+            query.edit_message_text(
+                "Otro resultado: {}\n\nEs esta la direccion correcta?".format(next_geo.get("address", "")),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return ADMIN_PEDIDO_PICKUP
+        else:
+            query.edit_message_text(
+                "No encontre mas resultados. Escribe la direccion nuevamente o envia GPS:"
+            )
+            context.user_data.pop("admin_ped_geo_pickup_pending", None)
+            return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_cust_name_handler(update, context):
+    """Captura nombre del cliente."""
+    nombre = update.message.text.strip()
+    if not nombre:
+        update.message.reply_text("El nombre no puede estar vacio.")
+        return ADMIN_PEDIDO_CUST_NAME
+    context.user_data["admin_ped_cust_name"] = nombre
+    update.message.reply_text("Telefono del cliente (minimo 7 digitos):")
+    return ADMIN_PEDIDO_CUST_PHONE
+
+
+def admin_pedido_sel_cust_handler(update, context):
+    """Muestra lista de clientes del admin para seleccionar en el pedido."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Cancela y vuelve a crear el pedido.")
+        return ConversationHandler.END
+
+    customers = list_admin_customers(admin_id, limit=15, include_inactive=False)
+    if not customers:
+        keyboard = [[InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")]]
+        query.edit_message_text(
+            "No tienes clientes guardados en tu agenda.\n\n"
+            "Escribe el nombre del cliente directamente:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_PEDIDO_CUST_NAME
+
+    keyboard = []
+    for c in customers:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    query.edit_message_text(
+        "Selecciona el cliente de tu agenda:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_SEL_CUST
+
+
+def admin_pedido_cust_selected(update, context):
+    """Cliente seleccionado de la agenda. Muestra sus direcciones guardadas."""
+    query = update.callback_query
+    query.answer()
+    customer_id = int(query.data.replace("acust_pedido_sel_", ""))
+    admin_id = context.user_data.get("admin_ped_admin_id")
+
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return ADMIN_PEDIDO_SEL_CUST
+
+    context.user_data["admin_ped_cust_name"] = customer["name"]
+    context.user_data["admin_ped_cust_phone"] = customer["phone"]
+
+    addresses = list_admin_customer_addresses(customer_id)
+    keyboard = []
+    for addr in addresses:
+        label = addr["label"] or "Sin etiqueta"
+        btn_text = "{}: {}".format(label, addr["address_text"][:30])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_addr_{}".format(addr["id"]))])
+    keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="acust_pedido_addr_nueva")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    query.edit_message_text(
+        "Cliente: {} ({})\n\nSelecciona la direccion de entrega:".format(
+            customer["name"], customer["phone"]
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_SEL_CUST_ADDR
+
+
+def admin_pedido_addr_selected(update, context):
+    """Direccion seleccionada de la agenda. Avanza directamente a TARIFA."""
+    query = update.callback_query
+    query.answer()
+    address_id = int(query.data.replace("acust_pedido_addr_", ""))
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+
+    # Buscar la direccion por customer_id no es requerido aqui, solo necesitamos el id
+    # Necesitamos buscar por address_id sin restriccion de customer (es del admin)
+    # Usamos get_admin_customer_address_by_id con customer_id=None
+    address = get_admin_customer_address_by_id(address_id, customer_id=None)
+    if not address:
+        query.edit_message_text("Direccion no encontrada. Intenta nuevamente.")
+        return ADMIN_PEDIDO_SEL_CUST_ADDR
+
+    context.user_data["admin_ped_cust_addr"] = address["address_text"]
+    context.user_data["admin_ped_dropoff_lat"] = address["lat"]
+    context.user_data["admin_ped_dropoff_lng"] = address["lng"]
+    context.user_data["admin_ped_dropoff_city"] = address["city"] or ""
+    context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
+
+    query.edit_message_text(
+        "Cliente: {}\nEntrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+            cust_name, address["address_text"]
+        )
+    )
+    return ADMIN_PEDIDO_TARIFA
+
+
+def admin_pedido_addr_nueva(update, context):
+    """Admin eligio ingresar nueva direccion manualmente."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Direccion de entrega del cliente (escribe o envia GPS):")
+    return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_cust_phone_handler(update, context):
+    """Captura telefono del cliente."""
+    phone = update.message.text.strip()
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) < 7:
+        update.message.reply_text("Telefono invalido. Ingresa minimo 7 digitos.")
+        return ADMIN_PEDIDO_CUST_PHONE
+    context.user_data["admin_ped_cust_phone"] = phone
+    update.message.reply_text("Direccion de entrega del cliente (escribe o envia GPS):")
+    return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_cust_addr_handler(update, context):
+    """Geocodifica la direccion de entrega del cliente."""
+    texto = update.message.text.strip()
+    geo = resolve_location(texto)
+    if not geo:
+        update.message.reply_text(
+            "No pude encontrar esa direccion. Intentalo de nuevo o envia GPS."
+        )
+        return ADMIN_PEDIDO_CUST_ADDR
+    context.user_data["admin_ped_geo_cust_pending"] = {
+        "address": geo.get("address", texto),
+        "lat": geo.get("lat"),
+        "lng": geo.get("lng"),
+        "city": geo.get("city", ""),
+        "barrio": geo.get("barrio", ""),
+        "original_text": texto,
+    }
+    keyboard = [[
+        InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_si"),
+        InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_no"),
+    ]]
+    update.message.reply_text(
+        "Encontre: {}\n\nEs esta la direccion de entrega correcta?".format(geo.get("address", texto)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_cust_gps_handler(update, context):
+    """Guarda la ubicacion GPS enviada como direccion de entrega."""
+    location = update.message.location
+    lat, lng = location.latitude, location.longitude
+    context.user_data["admin_ped_cust_addr"] = "GPS ({:.5f}, {:.5f})".format(lat, lng)
+    context.user_data["admin_ped_dropoff_lat"] = lat
+    context.user_data["admin_ped_dropoff_lng"] = lng
+    context.user_data["admin_ped_dropoff_city"] = ""
+    context.user_data["admin_ped_dropoff_barrio"] = ""
+    update.message.reply_text(
+        "Direccion de entrega registrada.\n\nTarifa al courier (ingresa el monto en pesos):"
+    )
+    return ADMIN_PEDIDO_TARIFA
+
+
+def admin_pedido_geo_callback(update, context):
+    """Confirma o rechaza geocodificacion de la direccion de entrega del cliente."""
+    query = update.callback_query
+    query.answer()
+    pending = context.user_data.get("admin_ped_geo_cust_pending", {})
+    if query.data == "admin_pedido_geo_si":
+        context.user_data["admin_ped_cust_addr"] = pending.get("address", "")
+        context.user_data["admin_ped_dropoff_lat"] = pending.get("lat")
+        context.user_data["admin_ped_dropoff_lng"] = pending.get("lng")
+        context.user_data["admin_ped_dropoff_city"] = pending.get("city", "")
+        context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
+        context.user_data.pop("admin_ped_geo_cust_pending", None)
+        query.edit_message_text(
+            "Entrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+                context.user_data["admin_ped_cust_addr"]
+            )
+        )
+        return ADMIN_PEDIDO_TARIFA
+    else:
+        original = pending.get("original_text", "")
+        seen = [pending["address"]] if pending.get("address") else []
+        next_geo = resolve_location_next(original, seen) if original else None
+        if next_geo:
+            context.user_data["admin_ped_geo_cust_pending"] = {
+                "address": next_geo.get("address", ""),
+                "lat": next_geo.get("lat"),
+                "lng": next_geo.get("lng"),
+                "city": next_geo.get("city", ""),
+                "barrio": next_geo.get("barrio", ""),
+                "original_text": original,
+            }
+            keyboard = [[
+                InlineKeyboardButton("Si, es correcto", callback_data="admin_pedido_geo_si"),
+                InlineKeyboardButton("No, buscar otro", callback_data="admin_pedido_geo_no"),
+            ]]
+            query.edit_message_text(
+                "Otro resultado: {}\n\nEs esta la direccion de entrega correcta?".format(
+                    next_geo.get("address", "")
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return ADMIN_PEDIDO_CUST_ADDR
+        else:
+            query.edit_message_text(
+                "No encontre mas resultados. Escribe la direccion nuevamente o envia GPS:"
+            )
+            context.user_data.pop("admin_ped_geo_cust_pending", None)
+            return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_tarifa_handler(update, context):
+    """Captura la tarifa manual al courier."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "")
+    if not texto.isdigit() or int(texto) <= 0:
+        update.message.reply_text("Ingresa un monto valido en pesos (numero entero mayor que 0).")
+        return ADMIN_PEDIDO_TARIFA
+    tarifa = int(texto)
+    if tarifa > 500000:
+        update.message.reply_text("La tarifa parece muy alta (maximo $500,000). Verifica el monto.")
+        return ADMIN_PEDIDO_TARIFA
+    context.user_data["admin_ped_tarifa"] = tarifa
+    context.user_data.setdefault("admin_ped_incentivo", 0)
+    keyboard = [[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]]
+    update.message.reply_text(
+        "Tarifa: ${:,}\n\nInstrucciones adicionales para el courier (o toca 'Sin instrucciones'):".format(tarifa),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_instruc_handler(update, context):
+    """Guarda instrucciones y muestra preview del pedido."""
+    context.user_data["admin_ped_instruc"] = update.message.text.strip()
+    text, markup = _admin_ped_preview_text(context.user_data)
+    update.message.reply_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_sin_instruc_callback(update, context):
+    """Sin instrucciones: guarda vacio y muestra preview."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["admin_ped_instruc"] = ""
+    text, markup = _admin_ped_preview_text(context.user_data)
+    query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_inc_fijo_callback(update, context):
+    """Agrega incentivo fijo al preview del pedido especial admin."""
+    query = update.callback_query
+    query.answer()
+    delta = int(query.data.split("_")[-1])
+    actual = int(context.user_data.get("admin_ped_incentivo") or 0)
+    context.user_data["admin_ped_incentivo"] = actual + delta
+    text, markup = _admin_ped_preview_text(context.user_data)
+    query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_inc_otro_callback(update, context):
+    """Solicita monto libre de incentivo."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Escribe el monto del incentivo adicional (en pesos):")
+    return ADMIN_PEDIDO_INC_MONTO
+
+
+def admin_pedido_inc_monto_handler(update, context):
+    """Captura monto libre de incentivo y regresa al preview."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "")
+    if not texto.isdigit() or int(texto) <= 0:
+        update.message.reply_text("Ingresa un monto valido mayor que 0.")
+        return ADMIN_PEDIDO_INC_MONTO
+    delta = int(texto)
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto (maximo $200,000).")
+        return ADMIN_PEDIDO_INC_MONTO
+    actual = int(context.user_data.get("admin_ped_incentivo") or 0)
+    context.user_data["admin_ped_incentivo"] = actual + delta
+    text, markup = _admin_ped_preview_text(context.user_data)
+    update.message.reply_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_confirmar_callback(update, context):
+    """Crea y publica el pedido especial del admin."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Usa 'Nuevo pedido especial' de nuevo.")
+        return ConversationHandler.END
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    incentivo = int(context.user_data.get("admin_ped_incentivo") or 0)
+    total_fee = tarifa + incentivo
+    pickup_location_id = context.user_data.get("admin_ped_pickup_id")
+    pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
+    pickup_lat = context.user_data.get("admin_ped_pickup_lat")
+    pickup_lng = context.user_data.get("admin_ped_pickup_lng")
+    pickup_city = context.user_data.get("admin_ped_pickup_city", "")
+    pickup_barrio = context.user_data.get("admin_ped_pickup_barrio", "")
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+    cust_phone = context.user_data.get("admin_ped_cust_phone", "")
+    cust_addr = context.user_data.get("admin_ped_cust_addr", "")
+    dropoff_lat = context.user_data.get("admin_ped_dropoff_lat")
+    dropoff_lng = context.user_data.get("admin_ped_dropoff_lng")
+    dropoff_city = context.user_data.get("admin_ped_dropoff_city", "")
+    dropoff_barrio = context.user_data.get("admin_ped_dropoff_barrio", "")
+    instruc = context.user_data.get("admin_ped_instruc", "")
+    try:
+        order_id = create_order(
+            ally_id=None,
+            creator_admin_id=admin_id,
+            customer_name=cust_name,
+            customer_phone=cust_phone,
+            customer_address=cust_addr,
+            customer_city=dropoff_city,
+            customer_barrio=dropoff_barrio,
+            pickup_location_id=pickup_location_id,
+            pay_at_store_required=False,
+            pay_at_store_amount=0,
+            base_fee=tarifa,
+            distance_km=0.0,
+            rain_extra=0,
+            high_demand_extra=0,
+            night_extra=0,
+            additional_incentive=incentivo,
+            total_fee=total_fee,
+            instructions=instruc,
+            requires_cash=False,
+            cash_required_amount=0,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            dropoff_lat=dropoff_lat,
+            dropoff_lng=dropoff_lng,
+            quote_source="admin",
+            ally_admin_id_snapshot=admin_id,
+        )
+    except Exception as e:
+        print("[ERROR] admin_pedido_confirmar_callback create_order:", e)
+        query.edit_message_text("Error al crear el pedido. Intenta de nuevo.")
+        return ConversationHandler.END
+    if pickup_location_id:
+        increment_admin_location_usage(pickup_location_id, admin_id)
+    published_count = 0
+    try:
+        published_count = publish_order_to_couriers(
+            order_id,
+            None,
+            context,
+            admin_id_override=admin_id,
+            pickup_city=pickup_city,
+            pickup_barrio=pickup_barrio,
+            dropoff_city=dropoff_city,
+            dropoff_barrio=dropoff_barrio,
+            skip_fee_check=True,
+        )
+    except Exception as e:
+        print("[WARN] admin_pedido_confirmar_callback publish:", e)
+    query.edit_message_text(
+        "Pedido especial publicado.\n"
+        "ID: #{}\n"
+        "Tarifa: ${:,}{}\n"
+        "Ofertando a {} repartidores activos.".format(
+            order_id,
+            total_fee,
+            " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
+            published_count,
+        )
+    )
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    return ConversationHandler.END
+
+
+def admin_pedido_cancelar_callback(update, context):
+    """Cancela el flujo de pedido especial del admin."""
+    query = update.callback_query
+    query.answer()
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    query.edit_message_text("Pedido cancelado.")
+    return ConversationHandler.END
 
 
 def pedido_confirmacion_callback(update, context):
@@ -4709,6 +6437,10 @@ def pedido_confirmacion_callback(update, context):
 
         # Crear pedido en BD
         try:
+            pedido_incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+            if pedido_incentivo < 0:
+                pedido_incentivo = 0
+            total_fee = int(quote_price or 0) + pedido_incentivo
             order_id = create_order(
                 ally_id=ally_id,
                 customer_name=customer_name,
@@ -4724,8 +6456,8 @@ def pedido_confirmacion_callback(update, context):
                 rain_extra=0,
                 high_demand_extra=0,
                 night_extra=0,
-                additional_incentive=0,
-                total_fee=quote_price,
+                additional_incentive=pedido_incentivo,
+                total_fee=total_fee,
                 instructions=instructions_final,
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
@@ -4746,6 +6478,10 @@ def pedido_confirmacion_callback(update, context):
                     ally_id,
                     context,
                     admin_id_override=admin_id_for_publish,
+                    pickup_city=context.user_data.get("pickup_city"),
+                    pickup_barrio=context.user_data.get("pickup_barrio"),
+                    dropoff_city=context.user_data.get("customer_city"),
+                    dropoff_barrio=context.user_data.get("customer_barrio"),
                 )
             except Exception as e:
                 print("[WARN] Error al publicar pedido a couriers:", e)
@@ -4757,7 +6493,7 @@ def pedido_confirmacion_callback(update, context):
             # Construir preview de oferta para repartidor
             preview = construir_preview_oferta(
                 order_id, service_type, pickup_text, customer_address,
-                distance_km, quote_price, requires_cash, cash_required_amount,
+                distance_km, total_fee, requires_cash, cash_required_amount,
                 products_list=context.user_data.get("buy_products_list", "")
             )
 
@@ -4788,9 +6524,35 @@ def pedido_confirmacion_callback(update, context):
                     text=preview,
                     reply_markup=get_preview_buttons()
                 )
+                try:
+                    context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=(
+                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
+                            "Pedido: #{}".format(order_id)
+                        ),
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
+                        ),
+                    )
+                except Exception:
+                    pass
                 return PEDIDO_GUARDAR_CLIENTE
             else:
                 # Cliente existente: éxito directo + menú
+                try:
+                    context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=(
+                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
+                            "Pedido: #{}".format(order_id)
+                        ),
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
+                        ),
+                    )
+                except Exception:
+                    pass
                 context.user_data.clear()
                 if published_count == 0:
                     show_main_menu(
@@ -4897,6 +6659,8 @@ def pedido_guardar_cliente_callback(update, context):
                 customer_id,
                 "Principal",
                 customer_address,
+                city=context.user_data.get("customer_city", ""),
+                barrio=context.user_data.get("customer_barrio", ""),
                 lat=context.user_data.get("dropoff_lat"),
                 lng=context.user_data.get("dropoff_lng"),
             )
@@ -4995,7 +6759,16 @@ def repartidores_pendientes(update, context):
     # Obtener pendientes según rol
     try:
         if es_admin_plataforma_flag:
-            pendientes = get_pending_couriers()  # global (tabla couriers)
+            # Combinar: nuevos registros (couriers.status=PENDING) + solicitudes de union (admin_couriers.status=PENDING)
+            nuevos = list(get_pending_couriers())
+            join_requests = list(get_pending_couriers_by_admin(admin_id))
+            seen_ids = set()
+            pendientes = []
+            for c in nuevos + join_requests:
+                cid = c.get("courier_id") or c.get("id")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    pendientes.append(c)
         else:
             pendientes = get_pending_couriers_by_admin(admin_id)  # por equipo (tabla admin_couriers)
     except Exception as e:
@@ -5423,6 +7196,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
     ]
 
@@ -5844,6 +7618,7 @@ def admin_menu_callback(update, context):
             [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
             [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
             [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+            [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         ]
 
         query.edit_message_text(
@@ -6474,7 +8249,7 @@ def cotizar_pickup_callback(update, context):
         except (ValueError, IndexError):
             query.edit_message_text("Error: intenta /cotizar de nuevo.")
             return ConversationHandler.END
-        loc = get_ally_location_by_id(loc_id)
+        loc = get_ally_location_by_id(loc_id, ally_id)
         if not loc or loc.get("lat") is None:
             return _cotizar_mostrar_lista(query, ally_id, "SIN GPS - ELIGE OTRA")
         context.user_data["cotizar_pickup"] = {
@@ -6733,7 +8508,11 @@ def cotizar_resultado_callback(update, context):
         context.user_data.pop("cotizar_result_dropoff_lng", None)
         context.user_data.pop("cotizar_pickup", None)
         context.user_data.pop("cotizar_ally_id", None)
-        query.edit_message_text("Cotizacion completada.")
+        try:
+            query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        query.message.reply_text("Cotizacion completada.")
         return ConversationHandler.END
 
     if query.data == "cotizar_crear_ruta":
@@ -7365,10 +9144,28 @@ def clientes_ver_cliente_callback(update, context):
         context.user_data["current_address_id"] = address_id
         label = address["label"] or "Sin etiqueta"
         nota_entrega = address["notes"] or "Sin nota"
+        lat = address["lat"]
+        lng = address["lng"]
+
+        if lat is not None and lng is not None:
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
+            coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng))
+            btn_coords = "Corregir coordenadas"
+        else:
+            coords_text = "Sin coordenadas"
+            btn_coords = "Agregar coordenadas"
 
         keyboard = [
             [InlineKeyboardButton("Editar", callback_data="cust_dir_editar")],
             [InlineKeyboardButton("Editar nota entrega", callback_data="cust_dir_edit_nota")],
+            [InlineKeyboardButton(btn_coords, callback_data="cust_dir_corregir_coords")],
             [InlineKeyboardButton("Archivar", callback_data="cust_dir_archivar")],
             [InlineKeyboardButton("Volver", callback_data="cust_dirs")],
         ]
@@ -7376,10 +9173,21 @@ def clientes_ver_cliente_callback(update, context):
         query.edit_message_text(
             f"{label}\n"
             f"{address['address_text']}\n\n"
-            f"Nota para entrega:\n{nota_entrega}",
+            f"Nota para entrega:\n{nota_entrega}\n\n"
+            f"{coords_text}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CLIENTES_VER_CLIENTE
+
+    elif data == "cust_dir_corregir_coords":
+        query.edit_message_text(
+            "Corregir / agregar coordenadas\n\n"
+            "Envia un pin de ubicacion de Telegram, un link de Google Maps, "
+            "o escribe las coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para volver."
+        )
+        context.user_data["clientes_geo_mode"] = "corregir_coords"
+        return CLIENTES_DIR_CORREGIR_COORDS
 
     elif data == "cust_dir_editar":
         query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
@@ -7488,37 +9296,12 @@ def clientes_nuevo_direccion_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    try:
-        customer_id = create_ally_customer(ally_id, name, phone, notes)
-        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
-
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
-        update.message.reply_text(
-            f"Cliente '{name}' creado exitosamente.\n\n"
-            f"Telefono: {phone}\n"
-            f"Direccion ({label}): {address_to_save}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except Exception as e:
-        update.message.reply_text(f"Error al crear cliente: {str(e)}")
-
-    # Limpiar datos temporales
-    for key in [
-        "new_customer_name",
-        "new_customer_phone",
-        "new_customer_notes",
-        "new_address_label",
-        "clientes_geo_mode",
-        "clientes_geo_address_input",
-        "clientes_geo_formatted",
-        "pending_geo_lat",
-        "pending_geo_lng",
-        "pending_geo_text",
-        "pending_geo_seen",
-    ]:
-        context.user_data.pop(key, None)
-
-    return CLIENTES_MENU
+    context.user_data["clientes_pending_mode"] = "nuevo_cliente"
+    context.user_data["clientes_pending_address_text"] = address_to_save
+    context.user_data["clientes_pending_lat"] = lat
+    context.user_data["clientes_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_buscar(update, context):
@@ -7627,24 +9410,12 @@ def clientes_dir_nueva_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    try:
-        create_customer_address(customer_id, label, address_to_save, lat=lat, lng=lng)
-        update.message.reply_text(f"Direccion agregada: {label} - {address_to_save}")
-    except Exception as e:
-        update.message.reply_text(f"Error: {str(e)}")
-
-    for key in [
-        "new_address_label",
-        "clientes_geo_mode",
-        "clientes_geo_address_input",
-        "clientes_geo_formatted",
-        "pending_geo_lat",
-        "pending_geo_lng",
-        "pending_geo_text",
-        "pending_geo_seen",
-    ]:
-        context.user_data.pop(key, None)
-    return clientes_mostrar_menu(update, context, edit_message=False)
+    context.user_data["clientes_pending_mode"] = "dir_nueva"
+    context.user_data["clientes_pending_address_text"] = address_to_save
+    context.user_data["clientes_pending_lat"] = lat
+    context.user_data["clientes_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_geo_callback(update, context):
@@ -7660,48 +9431,199 @@ def clientes_geo_callback(update, context):
     if query.data == "cust_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
-        original_text = context.user_data.pop("pending_geo_text", "") or context.user_data.get("clientes_geo_address_input", "")
+        context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
-        formatted = context.user_data.pop("clientes_geo_formatted", "") or original_text
+        context.user_data.pop("clientes_geo_formatted", None)
         if lat is None or lng is None:
-            query.edit_message_text("Error: datos perdidos. Escribe la direccion nuevamente.")
+            query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
             return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
 
-        if mode == "nuevo_cliente":
-            ally_id = context.user_data.get("active_ally_id")
-            name = context.user_data.get("new_customer_name")
-            phone = context.user_data.get("new_customer_phone")
-            notes = context.user_data.get("new_customer_notes")
-            label = context.user_data.get("new_address_label")
+        if mode == "corregir_coords":
+            context.user_data.pop("clientes_geo_mode", None)
+            customer_id = context.user_data.get("current_customer_id")
+            address_id = context.user_data.get("current_address_id")
+            address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+            if not address:
+                query.edit_message_text("Error: direccion no encontrada.")
+                return clientes_mostrar_menu(update, context, edit_message=True)
             try:
-                customer_id = create_ally_customer(ally_id, name, phone, notes)
-                create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
-                keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+                update_customer_address(
+                    address_id=address_id,
+                    customer_id=customer_id,
+                    label=address["label"],
+                    address_text=address["address_text"],
+                    city=address["city"] or "",
+                    barrio=address["barrio"] or "",
+                    notes=address["notes"],
+                    lat=lat,
+                    lng=lng,
+                )
                 query.edit_message_text(
-                    f"Cliente '{name}' creado exitosamente.\n\n"
-                    f"Telefono: {phone}\n"
-                    f"Direccion ({label}): {formatted}",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
+                    "Coordenadas actualizadas.\n"
+                    "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
                 )
             except Exception as e:
-                query.edit_message_text(f"Error al crear cliente: {str(e)}")
-            for key in ["new_customer_name", "new_customer_phone", "new_customer_notes", "new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
-                context.user_data.pop(key, None)
-            return CLIENTES_MENU
+                query.edit_message_text("Error al actualizar: {}".format(str(e)))
+            return clientes_mostrar_menu(update, context, edit_message=False)
 
-        customer_id = context.user_data.get("current_customer_id")
-        label = context.user_data.get("new_address_label")
-        try:
-            create_customer_address(customer_id, label, formatted, lat=lat, lng=lng)
-            query.edit_message_text(f"Direccion agregada: {label} - {formatted}")
-        except Exception as e:
-            query.edit_message_text(f"Error: {str(e)}")
-        for key in ["new_address_label", "clientes_geo_mode", "clientes_geo_address_input"]:
-            context.user_data.pop(key, None)
-        return clientes_mostrar_menu(update, context, edit_message=False)
+        original_text = context.user_data.get("clientes_geo_address_input", "")
+        context.user_data["clientes_pending_mode"] = mode
+        context.user_data["clientes_pending_address_text"] = original_text
+        context.user_data["clientes_pending_lat"] = lat
+        context.user_data["clientes_pending_lng"] = lng
+        query.edit_message_text("Escribe la ciudad de la direccion:")
+        return CLIENTES_DIR_CIUDAD
 
     estado = CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
     return _geo_siguiente_o_gps(query, context, "cust_geo_si", "cust_geo_no", estado)
+
+
+def clientes_dir_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la direccion:",
+        "clientes_pending_city",
+        CLIENTES_DIR_CIUDAD,
+        CLIENTES_DIR_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la direccion:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def clientes_dir_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la direccion:",
+        "clientes_pending_barrio",
+        CLIENTES_DIR_BARRIO,
+        CLIENTES_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == CLIENTES_DIR_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("clientes_pending_barrio", "")
+
+    mode = context.user_data.get("clientes_pending_mode")
+    address_text = context.user_data.get("clientes_pending_address_text", "")
+    lat = context.user_data.get("clientes_pending_lat")
+    lng = context.user_data.get("clientes_pending_lng")
+    city = context.user_data.get("clientes_pending_city", "")
+    notes = context.user_data.get("clientes_pending_notes")
+
+    if mode == "nuevo_cliente":
+        ally_id = context.user_data.get("active_ally_id")
+        name = context.user_data.get("new_customer_name")
+        phone = context.user_data.get("new_customer_phone")
+        customer_notes = context.user_data.get("new_customer_notes")
+        label = context.user_data.get("new_address_label")
+        try:
+            customer_id = create_ally_customer(ally_id, name, phone, customer_notes)
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+            update.message.reply_text(
+                "Cliente '{}' creado exitosamente.\n\n"
+                "Telefono: {}\n"
+                "Direccion ({}): {}".format(name, phone, label, address_text),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as e:
+            update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+
+        for key in [
+            "new_customer_name",
+            "new_customer_phone",
+            "new_customer_notes",
+            "new_address_label",
+            "clientes_geo_mode",
+            "clientes_geo_address_input",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return CLIENTES_MENU
+
+    if mode == "dir_nueva":
+        customer_id = context.user_data.get("current_customer_id")
+        label = context.user_data.get("new_address_label")
+        try:
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "new_address_label",
+            "clientes_geo_mode",
+            "clientes_geo_address_input",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    if mode == "dir_editar":
+        customer_id = context.user_data.get("current_customer_id")
+        address_id = context.user_data.get("current_address_id")
+        label = context.user_data.get("edit_address_label")
+        try:
+            update_customer_address(
+                address_id=address_id,
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                notes=notes,
+                lat=lat,
+                lng=lng,
+            )
+            update.message.reply_text("Direccion actualizada.")
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "edit_address_label",
+            "current_address_id",
+            "clientes_pending_mode",
+            "clientes_pending_address_text",
+            "clientes_pending_lat",
+            "clientes_pending_lng",
+            "clientes_pending_city",
+            "clientes_pending_barrio",
+            "clientes_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    update.message.reply_text("Error: sesion expirada. Intenta de nuevo desde el menu.")
+    for key in [
+        "clientes_pending_mode",
+        "clientes_pending_address_text",
+        "clientes_pending_lat",
+        "clientes_pending_lng",
+        "clientes_pending_city",
+        "clientes_pending_barrio",
+        "clientes_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
 
 
 def clientes_dir_editar_label(update, context):
@@ -7718,15 +9640,20 @@ def clientes_dir_editar_text(update, context):
     address_id = context.user_data.get("current_address_id")
     label = context.user_data.get("edit_address_label")
 
-    try:
-        update_customer_address(address_id, customer_id, label, address_text)
-        update.message.reply_text("Direccion actualizada.")
-    except Exception as e:
-        update.message.reply_text(f"Error: {str(e)}")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("edit_address_label", None)
+        context.user_data.pop("current_address_id", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
 
-    context.user_data.pop("edit_address_label", None)
-    context.user_data.pop("current_address_id", None)
-    return clientes_mostrar_menu(update, context, edit_message=False)
+    context.user_data["clientes_pending_mode"] = "dir_editar"
+    context.user_data["clientes_pending_address_text"] = address_text
+    context.user_data["clientes_pending_lat"] = address.get("lat")
+    context.user_data["clientes_pending_lng"] = address.get("lng")
+    context.user_data["clientes_pending_notes"] = address.get("notes")
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return CLIENTES_DIR_CIUDAD
 
 
 def clientes_dir_editar_nota(update, context):
@@ -7765,6 +9692,1179 @@ def clientes_dir_editar_nota(update, context):
 
     context.user_data.pop("current_address_id", None)
     return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_corregir_coords_handler(update, context):
+    """Recibe texto/link para corregir o agregar coordenadas de una direccion de cliente."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["clientes_geo_mode"] = "corregir_coords"
+    context.user_data["clientes_geo_address_input"] = text
+
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, text, "cust_geo_si", "cust_geo_no", CLIENTES_DIR_CORREGIR_COORDS
+    )
+    if resolved is None:
+        return CLIENTES_DIR_CORREGIR_COORDS
+    if isinstance(resolved, int):
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    if lat is None or lng is None:
+        update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
+        return CLIENTES_DIR_CORREGIR_COORDS
+
+    try:
+        update_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("clientes_geo_mode", None)
+    context.user_data.pop("clientes_geo_address_input", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def clientes_dir_corregir_coords_location_handler(update, context):
+    """Recibe pin GPS de Telegram para corregir o agregar coordenadas de una direccion."""
+    loc = update.message.location
+    lat = loc.latitude
+    lng = loc.longitude
+    customer_id = context.user_data.get("current_customer_id")
+    address_id = context.user_data.get("current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("clientes_geo_mode", None)
+        return clientes_mostrar_menu(update, context, edit_message=False)
+
+    try:
+        update_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("clientes_geo_mode", None)
+    return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+# =========================
+# Agenda de clientes del Admin (admin_clientes_conv)
+# Prefijo callbacks: acust_
+# Prefijo user_data: acust_
+# =========================
+
+def admin_clientes_cmd(update, context):
+    """Entry point de la agenda de clientes del admin. Verifica que sea admin APPROVED."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+
+    if not db_user:
+        query.edit_message_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    admin = get_admin_by_telegram_id(user.id)
+    if not admin:
+        query.edit_message_text("Este menu es solo para administradores.")
+        return ConversationHandler.END
+
+    if admin["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como administrador aun no ha sido aprobado.")
+        return ConversationHandler.END
+
+    for key in list(context.user_data.keys()):
+        if key.startswith("acust_"):
+            del context.user_data[key]
+    context.user_data["acust_admin_id"] = admin["id"]
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+
+def _admin_clientes_mostrar_menu(update, context, edit_message=False):
+    """Muestra el menu principal de la agenda de clientes del admin."""
+    keyboard = [
+        [InlineKeyboardButton("Nuevo cliente", callback_data="acust_nuevo")],
+        [InlineKeyboardButton("Buscar cliente", callback_data="acust_buscar")],
+        [InlineKeyboardButton("Mis clientes", callback_data="acust_lista")],
+        [InlineKeyboardButton("Clientes archivados", callback_data="acust_archivados")],
+        [InlineKeyboardButton("Cerrar", callback_data="acust_cerrar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "AGENDA DE CLIENTES\n\nSelecciona una opcion:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+    return ADMIN_CUST_MENU
+
+
+def admin_clientes_menu_callback(update, context):
+    """Maneja los callbacks del menu de clientes del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("acust_admin_id")
+
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Vuelve al menu e inicia de nuevo.")
+        return ConversationHandler.END
+
+    if data == "acust_nuevo":
+        query.edit_message_text("NUEVO CLIENTE\n\nEscribe el nombre del cliente:")
+        return ADMIN_CUST_NUEVO_NOMBRE
+
+    elif data == "acust_buscar":
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        return ADMIN_CUST_BUSCAR
+
+    elif data == "acust_lista":
+        customers = list_admin_customers(admin_id, limit=10, include_inactive=False)
+        if not customers:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="acust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes guardados.\n\n"
+                "Usa 'Nuevo cliente' para agregar uno.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ADMIN_CUST_MENU
+
+        keyboard = []
+        for c in customers:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
+
+        query.edit_message_text(
+            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    elif data == "acust_archivados":
+        customers = list_admin_customers(admin_id, limit=20, include_inactive=True)
+        archived = [c for c in customers if c["status"] == "INACTIVE"]
+
+        if not archived:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="acust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes archivados.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ADMIN_CUST_MENU
+
+        keyboard = []
+        for c in archived:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_restaurar_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
+
+        query.edit_message_text(
+            "CLIENTES ARCHIVADOS\n\nSelecciona uno para restaurar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    elif data == "acust_volver_menu":
+        return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "acust_cerrar":
+        query.edit_message_text("Agenda de clientes cerrada.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("acust_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    elif data.startswith("acust_ver_"):
+        customer_id = int(data.replace("acust_ver_", ""))
+        return _admin_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("acust_restaurar_"):
+        customer_id = int(data.replace("acust_restaurar_", ""))
+        if restore_admin_customer(customer_id, admin_id):
+            query.edit_message_text("Cliente restaurado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo restaurar el cliente.")
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    return ADMIN_CUST_MENU
+
+
+def _admin_clientes_ver_cliente(query, context, customer_id):
+    """Muestra detalles de un cliente del admin y sus opciones."""
+    admin_id = context.user_data.get("acust_admin_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return ADMIN_CUST_MENU
+
+    context.user_data["acust_current_customer_id"] = customer_id
+
+    addresses = list_admin_customer_addresses(customer_id)
+    addr_text = ""
+    if addresses:
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            addr_text += "- {}: {}...\n".format(label, addr["address_text"][:35])
+    else:
+        addr_text = "Sin direcciones guardadas\n"
+
+    nota_interna = customer["notes"] or "Sin notas"
+
+    keyboard = [
+        [InlineKeyboardButton("Direcciones", callback_data="acust_dirs")],
+        [InlineKeyboardButton("Editar", callback_data="acust_editar")],
+        [InlineKeyboardButton("Archivar", callback_data="acust_archivar")],
+        [InlineKeyboardButton("Volver", callback_data="acust_volver_menu")],
+    ]
+
+    query.edit_message_text(
+        "Cliente: {}\n"
+        "Telefono: {}\n\n"
+        "Nota interna:\n{}\n\n"
+        "Direcciones guardadas:\n{}".format(
+            customer["name"], customer["phone"], nota_interna, addr_text
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_CUST_VER
+
+
+def admin_clientes_ver_callback(update, context):
+    """Maneja callbacks de la vista de cliente del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+
+    if data == "acust_dirs":
+        addresses = list_admin_customer_addresses(customer_id)
+        keyboard = []
+
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            btn_text = "{}: {}...".format(label, addr["address_text"][:25])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_dir_ver_{}".format(addr["id"]))])
+
+        keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="acust_dir_nueva")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_ver_{}".format(customer_id))])
+
+        query.edit_message_text(
+            "DIRECCIONES DEL CLIENTE\n\nSelecciona una para editar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_editar":
+        keyboard = [
+            [InlineKeyboardButton("Editar nombre", callback_data="acust_edit_nombre")],
+            [InlineKeyboardButton("Editar telefono", callback_data="acust_edit_telefono")],
+            [InlineKeyboardButton("Editar notas", callback_data="acust_edit_notas")],
+            [InlineKeyboardButton("Volver", callback_data="acust_ver_{}".format(customer_id))],
+        ]
+        query.edit_message_text(
+            "Que deseas editar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_edit_nombre":
+        query.edit_message_text("Escribe el nuevo nombre del cliente:")
+        return ADMIN_CUST_EDITAR_NOMBRE
+
+    elif data == "acust_edit_telefono":
+        query.edit_message_text("Escribe el nuevo telefono del cliente:")
+        return ADMIN_CUST_EDITAR_TELEFONO
+
+    elif data == "acust_edit_notas":
+        query.edit_message_text("Escribe las nuevas notas del cliente (o 'ninguna' para borrar):")
+        return ADMIN_CUST_EDITAR_NOTAS
+
+    elif data == "acust_archivar":
+        if archive_admin_customer(customer_id, admin_id):
+            query.edit_message_text("Cliente archivado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo archivar el cliente.")
+        context.user_data.pop("acust_current_customer_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    elif data == "acust_dir_nueva":
+        query.edit_message_text("NUEVA DIRECCION\n\nEscribe la etiqueta (Casa, Trabajo, Otro):")
+        return ADMIN_CUST_DIR_NUEVA_LABEL
+
+    elif data.startswith("acust_dir_ver_"):
+        address_id = int(data.replace("acust_dir_ver_", ""))
+        address = get_admin_customer_address_by_id(address_id, customer_id)
+        if not address:
+            query.edit_message_text("Direccion no encontrada.")
+            return ADMIN_CUST_VER
+
+        context.user_data["acust_current_address_id"] = address_id
+        label = address["label"] or "Sin etiqueta"
+        nota_entrega = address["notes"] or "Sin nota"
+        lat = address["lat"]
+        lng = address["lng"]
+
+        if lat is not None and lng is not None:
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
+            coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng))
+            btn_coords = "Corregir coordenadas"
+        else:
+            coords_text = "Sin coordenadas"
+            btn_coords = "Agregar coordenadas"
+
+        keyboard = [
+            [InlineKeyboardButton("Editar", callback_data="acust_dir_editar")],
+            [InlineKeyboardButton("Editar nota entrega", callback_data="acust_dir_edit_nota")],
+            [InlineKeyboardButton(btn_coords, callback_data="acust_dir_corregir_coords")],
+            [InlineKeyboardButton("Archivar", callback_data="acust_dir_archivar")],
+            [InlineKeyboardButton("Volver", callback_data="acust_dirs")],
+        ]
+
+        query.edit_message_text(
+            "{}\n"
+            "{}\n\n"
+            "Nota para entrega:\n{}\n\n"
+            "{}".format(label, address["address_text"], nota_entrega, coords_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_VER
+
+    elif data == "acust_dir_corregir_coords":
+        query.edit_message_text(
+            "Corregir / agregar coordenadas\n\n"
+            "Envia un pin de ubicacion de Telegram, un link de Google Maps, "
+            "o escribe las coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para volver."
+        )
+        context.user_data["acust_geo_mode"] = "corregir_coords"
+        return ADMIN_CUST_DIR_CORREGIR
+
+    elif data == "acust_dir_editar":
+        query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
+        return ADMIN_CUST_DIR_EDITAR_LABEL
+
+    elif data == "acust_dir_edit_nota":
+        query.edit_message_text(
+            "Escribe la nota para entrega.\n"
+            "Esta nota sera visible para el repartidor.\n\n"
+            "Escribe 'ninguna' para borrar la nota:"
+        )
+        return ADMIN_CUST_DIR_EDITAR_NOTA
+
+    elif data == "acust_dir_archivar":
+        address_id = context.user_data.get("acust_current_address_id")
+        if archive_admin_customer_address(address_id, customer_id):
+            query.edit_message_text("Direccion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la direccion.")
+        context.user_data.pop("acust_current_address_id", None)
+        return _admin_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("acust_ver_"):
+        cid = int(data.replace("acust_ver_", ""))
+        return _admin_clientes_ver_cliente(query, context, cid)
+
+    elif data == "acust_volver_menu":
+        context.user_data.pop("acust_current_customer_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+
+    return ADMIN_CUST_VER
+
+
+def admin_clientes_nuevo_nombre(update, context):
+    """Recibe nombre del nuevo cliente del admin."""
+    context.user_data["acust_new_customer_name"] = update.message.text.strip()
+    update.message.reply_text("Escribe el telefono del cliente:")
+    return ADMIN_CUST_NUEVO_TELEFONO
+
+
+def admin_clientes_nuevo_telefono(update, context):
+    """Recibe telefono del nuevo cliente del admin."""
+    context.user_data["acust_new_customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
+    return ADMIN_CUST_NUEVO_NOTAS
+
+
+def admin_clientes_nuevo_notas(update, context):
+    """Recibe notas del nuevo cliente del admin."""
+    notas = update.message.text.strip()
+    if notas.lower() == "ninguna":
+        notas = None
+    context.user_data["acust_new_customer_notes"] = notas
+    update.message.reply_text("Escribe la etiqueta de la direccion (Casa, Trabajo, Otro):")
+    return ADMIN_CUST_NUEVO_DIR_LABEL
+
+
+def admin_clientes_nuevo_dir_label(update, context):
+    """Recibe etiqueta de direccion del nuevo cliente del admin."""
+    context.user_data["acust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_CUST_NUEVO_DIR_TEXT
+
+
+def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
+    """Aplica el pipeline de geocoding para resolver una direccion en la agenda del admin."""
+    loc = resolve_location(texto)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return None
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["acust_geo_formatted"] = loc.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        return estado
+
+    return loc
+
+
+def admin_clientes_nuevo_dir_text(update, context):
+    """Recibe direccion y prepara creacion del nuevo cliente del admin."""
+    address_text = update.message.text.strip()
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, address_text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_NUEVO_DIR_TEXT
+    )
+    if resolved is None:
+        return ADMIN_CUST_NUEVO_DIR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["acust_geo_mode"] = "nuevo_cliente"
+        context.user_data["acust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_mode"] = "nuevo_cliente"
+    context.user_data["acust_pending_address_text"] = address_to_save
+    context.user_data["acust_pending_lat"] = lat
+    context.user_data["acust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_buscar(update, context):
+    """Busca clientes del admin por nombre o telefono."""
+    query_text = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+
+    results = search_admin_customers(admin_id, query_text, limit=10)
+    if not results:
+        keyboard = [
+            [InlineKeyboardButton("Agregar nuevo cliente", callback_data="acust_nuevo")],
+            [InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")],
+        ]
+        update.message.reply_text(
+            "No se encontraron clientes con '{}'.".format(query_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    keyboard = []
+    for c in results:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")])
+
+    update.message.reply_text(
+        "Resultados para '{}':".format(query_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_CUST_MENU
+
+
+def admin_clientes_editar_nombre(update, context):
+    """Actualiza el nombre del cliente del admin."""
+    nuevo_nombre = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, nuevo_nombre, customer["phone"], customer["notes"])
+        update.message.reply_text("Nombre actualizado a: {}".format(nuevo_nombre))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_editar_telefono(update, context):
+    """Actualiza el telefono del cliente del admin."""
+    nuevo_telefono = update.message.text.strip()
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, customer["name"], nuevo_telefono, customer["notes"])
+        update.message.reply_text("Telefono actualizado a: {}".format(nuevo_telefono))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_editar_notas(update, context):
+    """Actualiza las notas del cliente del admin."""
+    nuevas_notas = update.message.text.strip()
+    if nuevas_notas.lower() == "ninguna":
+        nuevas_notas = None
+    admin_id = context.user_data.get("acust_admin_id")
+    customer_id = context.user_data.get("acust_current_customer_id")
+    customer = get_admin_customer_by_id(customer_id, admin_id)
+
+    if customer:
+        update_admin_customer(customer_id, admin_id, customer["name"], customer["phone"], nuevas_notas)
+        update.message.reply_text("Notas actualizadas.")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_nueva_label(update, context):
+    """Recibe etiqueta de nueva direccion para cliente del admin."""
+    context.user_data["acust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_CUST_DIR_NUEVA_TEXT
+
+
+def admin_clientes_dir_nueva_text(update, context):
+    """Crea nueva direccion para cliente del admin."""
+    address_text = update.message.text.strip()
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, address_text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_DIR_NUEVA_TEXT
+    )
+    if resolved is None:
+        return ADMIN_CUST_DIR_NUEVA_TEXT
+    if isinstance(resolved, int):
+        context.user_data["acust_geo_mode"] = "dir_nueva"
+        context.user_data["acust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_mode"] = "dir_nueva"
+    context.user_data["acust_pending_address_text"] = address_to_save
+    context.user_data["acust_pending_lat"] = lat
+    context.user_data["acust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_geo_callback(update, context):
+    """Confirma/rechaza geocoding de direccion en agenda de clientes del admin."""
+    query = update.callback_query
+    query.answer()
+
+    mode = context.user_data.get("acust_geo_mode")
+    if not mode:
+        query.edit_message_text("Sesion de geocodificacion expirada. Escribe la direccion nuevamente.")
+        return ADMIN_CUST_MENU
+
+    if query.data == "acust_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data.pop("acust_geo_formatted", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
+            return ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
+
+        if mode == "corregir_coords":
+            context.user_data.pop("acust_geo_mode", None)
+            customer_id = context.user_data.get("acust_current_customer_id")
+            address_id = context.user_data.get("acust_current_address_id")
+            address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+            if not address:
+                query.edit_message_text("Error: direccion no encontrada.")
+                return _admin_clientes_mostrar_menu(update, context, edit_message=True)
+            try:
+                update_admin_customer_address(
+                    address_id=address_id,
+                    customer_id=customer_id,
+                    label=address["label"],
+                    address_text=address["address_text"],
+                    city=address["city"] or "",
+                    barrio=address["barrio"] or "",
+                    notes=address["notes"],
+                    lat=lat,
+                    lng=lng,
+                )
+                query.edit_message_text(
+                    "Coordenadas actualizadas.\n"
+                    "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+                )
+            except Exception as e:
+                query.edit_message_text("Error al actualizar: {}".format(str(e)))
+            return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+        original_text = context.user_data.get("acust_geo_address_input", "")
+        context.user_data["acust_pending_mode"] = mode
+        context.user_data["acust_pending_address_text"] = original_text
+        context.user_data["acust_pending_lat"] = lat
+        context.user_data["acust_pending_lng"] = lng
+        query.edit_message_text("Escribe la ciudad de la direccion:")
+        return ADMIN_CUST_DIR_CIUDAD
+
+    estado = ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
+    return _geo_siguiente_o_gps(query, context, "acust_geo_si", "acust_geo_no", estado)
+
+
+def admin_clientes_dir_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la direccion:",
+        "acust_pending_city",
+        ADMIN_CUST_DIR_CIUDAD,
+        ADMIN_CUST_DIR_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la direccion:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def admin_clientes_dir_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la direccion:",
+        "acust_pending_barrio",
+        ADMIN_CUST_DIR_BARRIO,
+        ADMIN_CUST_MENU,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == ADMIN_CUST_DIR_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("acust_pending_barrio", "")
+
+    mode = context.user_data.get("acust_pending_mode")
+    address_text = context.user_data.get("acust_pending_address_text", "")
+    lat = context.user_data.get("acust_pending_lat")
+    lng = context.user_data.get("acust_pending_lng")
+    city = context.user_data.get("acust_pending_city", "")
+    notes = context.user_data.get("acust_pending_notes")
+
+    if mode == "nuevo_cliente":
+        admin_id = context.user_data.get("acust_admin_id")
+        name = context.user_data.get("acust_new_customer_name")
+        phone = context.user_data.get("acust_new_customer_phone")
+        customer_notes = context.user_data.get("acust_new_customer_notes")
+        label = context.user_data.get("acust_new_address_label")
+        try:
+            customer_id = create_admin_customer(admin_id, name, phone, customer_notes)
+            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")]]
+            update.message.reply_text(
+                "Cliente '{}' creado exitosamente.\n\n"
+                "Telefono: {}\n"
+                "Direccion ({}): {}".format(name, phone, label, address_text),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as e:
+            update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+
+        for key in [
+            "acust_new_customer_name", "acust_new_customer_phone", "acust_new_customer_notes",
+            "acust_new_address_label", "acust_geo_mode", "acust_geo_address_input",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return ADMIN_CUST_MENU
+
+    if mode == "dir_nueva":
+        customer_id = context.user_data.get("acust_current_customer_id")
+        label = context.user_data.get("acust_new_address_label")
+        try:
+            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "acust_new_address_label", "acust_geo_mode", "acust_geo_address_input",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    if mode == "dir_editar":
+        customer_id = context.user_data.get("acust_current_customer_id")
+        address_id = context.user_data.get("acust_current_address_id")
+        label = context.user_data.get("acust_edit_address_label")
+        try:
+            update_admin_customer_address(
+                address_id=address_id,
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                notes=notes,
+                lat=lat,
+                lng=lng,
+            )
+            update.message.reply_text("Direccion actualizada.")
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+
+        for key in [
+            "acust_edit_address_label", "acust_current_address_id",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    update.message.reply_text("Error: sesion expirada. Intenta de nuevo desde el menu.")
+    for key in [
+        "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+        "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_editar_label(update, context):
+    """Recibe nueva etiqueta para editar direccion del admin."""
+    context.user_data["acust_edit_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la nueva direccion completa:")
+    return ADMIN_CUST_DIR_EDITAR_TEXT
+
+
+def admin_clientes_dir_editar_text(update, context):
+    """Actualiza direccion existente del admin."""
+    address_text = update.message.text.strip()
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_edit_address_label", None)
+        context.user_data.pop("acust_current_address_id", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["acust_pending_mode"] = "dir_editar"
+    context.user_data["acust_pending_address_text"] = address_text
+    context.user_data["acust_pending_lat"] = address.get("lat") if hasattr(address, "get") else address["lat"]
+    context.user_data["acust_pending_lng"] = address.get("lng") if hasattr(address, "get") else address["lng"]
+    context.user_data["acust_pending_notes"] = address.get("notes") if hasattr(address, "get") else address["notes"]
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ADMIN_CUST_DIR_CIUDAD
+
+
+def admin_clientes_dir_editar_nota(update, context):
+    """Actualiza la nota para entrega de una direccion del admin."""
+    nota_text = update.message.text.strip()
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+
+    address = get_admin_customer_address_by_id(address_id, customer_id)
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    nueva_nota = None if nota_text.lower() == "ninguna" else nota_text
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"],
+            barrio=address["barrio"],
+            notes=nueva_nota,
+            lat=address["lat"],
+            lng=address["lng"]
+        )
+        if nueva_nota:
+            update.message.reply_text("Nota para entrega actualizada.")
+        else:
+            update.message.reply_text("Nota para entrega eliminada.")
+    except Exception as e:
+        update.message.reply_text("Error: {}".format(str(e)))
+
+    context.user_data.pop("acust_current_address_id", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_corregir_handler(update, context):
+    """Recibe texto/link para corregir coordenadas de una direccion del cliente del admin."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["acust_geo_mode"] = "corregir_coords"
+    context.user_data["acust_geo_address_input"] = text
+
+    resolved = _admin_clientes_resolver_dir(
+        update, context, text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_DIR_CORREGIR
+    )
+    if resolved is None:
+        return ADMIN_CUST_DIR_CORREGIR
+    if isinstance(resolved, int):
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    if lat is None or lng is None:
+        update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
+        return ADMIN_CUST_DIR_CORREGIR
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("acust_geo_mode", None)
+    context.user_data.pop("acust_geo_address_input", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def admin_clientes_dir_corregir_location_handler(update, context):
+    """Recibe pin GPS para corregir coordenadas de una direccion del cliente del admin."""
+    loc = update.message.location
+    lat = loc.latitude
+    lng = loc.longitude
+    customer_id = context.user_data.get("acust_current_customer_id")
+    address_id = context.user_data.get("acust_current_address_id")
+    address = get_admin_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("acust_geo_mode", None)
+        return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+    try:
+        update_admin_customer_address(
+            address_id=address_id,
+            customer_id=customer_id,
+            label=address["label"],
+            address_text=address["address_text"],
+            city=address["city"] or "",
+            barrio=address["barrio"] or "",
+            notes=address["notes"],
+            lat=lat,
+            lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("acust_geo_mode", None)
+    return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+# =========================
+# Gestion de ubicaciones de recogida del Admin (admin_dirs_conv)
+# Prefijo callbacks: adirs_
+# Prefijo user_data: adirs_
+# =========================
+
+def admin_dirs_cmd(update, context):
+    """Entry point de gestion de ubicaciones de recogida del admin."""
+    query = update.callback_query
+    query.answer()
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+
+    if not db_user:
+        query.edit_message_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    admin = get_admin_by_telegram_id(user.id)
+    if not admin:
+        query.edit_message_text("Este menu es solo para administradores.")
+        return ConversationHandler.END
+
+    if admin["status"] != "APPROVED":
+        query.edit_message_text("Tu registro como administrador aun no ha sido aprobado.")
+        return ConversationHandler.END
+
+    for key in list(context.user_data.keys()):
+        if key.startswith("adirs_"):
+            del context.user_data[key]
+    context.user_data["adirs_admin_id"] = admin["id"]
+
+    return _admin_dirs_mostrar_menu(update, context, edit_message=True)
+
+
+def _admin_dirs_mostrar_menu(update, context, edit_message=False):
+    """Muestra la lista de ubicaciones de recogida del admin."""
+    admin_id = context.user_data.get("adirs_admin_id")
+    locations = get_admin_locations(admin_id)
+
+    keyboard = []
+    if locations:
+        for loc in locations:
+            label = loc["label"] or loc["address"]
+            btn_text = "{}: {}".format(label, loc["address"][:25])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="adirs_ver_{}".format(loc["id"]))])
+
+    keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="adirs_nueva")])
+    keyboard.append([InlineKeyboardButton("Cerrar", callback_data="adirs_cerrar")])
+
+    text = "MIS DIRECCIONES DE RECOGIDA\n\nSelecciona una para editar o agrega una nueva:"
+    if not locations:
+        text = "MIS DIRECCIONES DE RECOGIDA\n\nNo tienes direcciones guardadas.\nAgrega tu primera ubicacion de recogida:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        update.effective_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return ADMIN_DIRS_MENU
+
+
+def admin_dirs_menu_callback(update, context):
+    """Maneja los callbacks del menu de ubicaciones del admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    admin_id = context.user_data.get("adirs_admin_id")
+
+    if not admin_id:
+        query.edit_message_text("Sesion expirada. Vuelve al menu e inicia de nuevo.")
+        return ConversationHandler.END
+
+    if data == "adirs_nueva":
+        query.edit_message_text("NUEVA UBICACION\n\nEscribe el nombre del lugar (ej: Tienda Principal, Casa):")
+        return ADMIN_DIRS_NUEVA_LABEL
+
+    elif data == "adirs_volver_menu":
+        return _admin_dirs_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "adirs_cerrar":
+        query.edit_message_text("Mis direcciones cerrado.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("adirs_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    elif data.startswith("adirs_ver_"):
+        loc_id = int(data.replace("adirs_ver_", ""))
+        return _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id)
+
+    elif data.startswith("adirs_archivar_"):
+        loc_id = int(data.replace("adirs_archivar_", ""))
+        if archive_admin_location(loc_id, admin_id):
+            query.edit_message_text("Ubicacion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la ubicacion.")
+        return _admin_dirs_mostrar_menu(update, context, edit_message=False)
+
+    elif data.startswith("adirs_editar_"):
+        loc_id = int(data.replace("adirs_editar_", ""))
+        context.user_data["adirs_editing_id"] = loc_id
+        query.edit_message_text("EDITAR UBICACION\n\nEscribe el nuevo nombre del lugar:")
+        return ADMIN_DIRS_NUEVA_LABEL
+
+    return ADMIN_DIRS_MENU
+
+
+def _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id):
+    """Muestra detalles de una ubicacion de recogida del admin."""
+    from services import get_admin_location_by_id
+    loc = get_admin_location_by_id(loc_id, admin_id)
+    if not loc:
+        query.edit_message_text("Ubicacion no encontrada.")
+        return ADMIN_DIRS_MENU
+
+    context.user_data["adirs_current_id"] = loc_id
+    label = loc["label"] or "Sin etiqueta"
+    phone_text = loc["phone"] or "Sin telefono"
+    lat = loc["lat"]
+    lng = loc["lng"]
+    coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng)) if lat and lng else "Sin coordenadas"
+
+    if lat and lng:
+        try:
+            context.bot.send_location(
+                chat_id=query.message.chat_id,
+                latitude=float(lat),
+                longitude=float(lng),
+            )
+        except Exception:
+            pass
+
+    keyboard = [
+        [InlineKeyboardButton("Editar", callback_data="adirs_editar_{}".format(loc_id))],
+        [InlineKeyboardButton("Archivar", callback_data="adirs_archivar_{}".format(loc_id))],
+        [InlineKeyboardButton("Volver", callback_data="adirs_volver_menu")],
+    ]
+
+    query.edit_message_text(
+        "{}\n{}\n\nTelefono: {}\n{}".format(label, loc["address"], phone_text, coords_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_DIRS_VER
+
+
+def admin_dirs_nueva_label_handler(update, context):
+    """Recibe label de nueva ubicacion (o editando existente)."""
+    context.user_data["adirs_new_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ADMIN_DIRS_NUEVA_TEXT
+
+
+def admin_dirs_nueva_text_handler(update, context):
+    """Recibe direccion de nueva ubicacion (o editando). Geocodifica."""
+    address_text = update.message.text.strip()
+    admin_id = context.user_data.get("adirs_admin_id")
+    label = context.user_data.get("adirs_new_label", "")
+    editing_id = context.user_data.get("adirs_editing_id")
+
+    loc = resolve_location(address_text)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con coordenadas (ej: 4.81,-75.69) o un link de Google Maps."
+        )
+        return ADMIN_DIRS_NUEVA_TEXT
+
+    lat = loc.get("lat")
+    lng = loc.get("lng")
+    address_to_save = loc.get("formatted_address") or address_text
+    city = loc.get("city") or ""
+    barrio = loc.get("barrio") or ""
+
+    context.user_data["adirs_pending_address"] = address_to_save
+    context.user_data["adirs_pending_lat"] = lat
+    context.user_data["adirs_pending_lng"] = lng
+    context.user_data["adirs_pending_city"] = city
+    context.user_data["adirs_pending_barrio"] = barrio
+
+    update.message.reply_text(
+        "Escribe el telefono del punto de recogida (o 'ninguno' si no hay):"
+    )
+    return ADMIN_DIRS_NUEVA_TEL
+
+
+def admin_dirs_nueva_tel_handler(update, context):
+    """Recibe telefono y guarda la ubicacion de recogida."""
+    tel_text = update.message.text.strip()
+    phone = None if tel_text.lower() == "ninguno" else tel_text
+    admin_id = context.user_data.get("adirs_admin_id")
+    label = context.user_data.get("adirs_new_label", "")
+    address = context.user_data.get("adirs_pending_address", "")
+    city = context.user_data.get("adirs_pending_city", "")
+    barrio = context.user_data.get("adirs_pending_barrio", "")
+    lat = context.user_data.get("adirs_pending_lat")
+    lng = context.user_data.get("adirs_pending_lng")
+    editing_id = context.user_data.pop("adirs_editing_id", None)
+
+    try:
+        if editing_id:
+            update_admin_location(editing_id, admin_id, label, address, city, barrio, phone=phone, lat=lat, lng=lng)
+            update.message.reply_text("Ubicacion actualizada: {}".format(label))
+        else:
+            create_admin_location(admin_id, label, address, city, barrio, phone=phone, lat=lat, lng=lng)
+            update.message.reply_text("Ubicacion guardada: {}".format(label))
+    except Exception as e:
+        update.message.reply_text("Error al guardar: {}".format(str(e)))
+
+    for key in ["adirs_new_label", "adirs_pending_address", "adirs_pending_lat",
+                "adirs_pending_lng", "adirs_pending_city", "adirs_pending_barrio"]:
+        context.user_data.pop(key, None)
+
+    return _admin_dirs_mostrar_menu(update, context, edit_message=False)
 
 
 # =========================
@@ -8045,14 +11145,50 @@ def direcciones_pickup_nueva_detalles(update, context):
 
     context.user_data["new_pickup_address"] = text
 
-    # Ciudad por defecto
+    # Sugerir ciudad basada en la base del aliado (pero se pregunta siempre)
     ally_id = context.user_data.get("active_ally_id")
     default_city = "Pereira"
     if ally_id:
         default_loc = get_default_ally_location(ally_id)
         if default_loc and default_loc.get("city"):
             default_city = default_loc["city"]
-    context.user_data["new_pickup_city"] = default_city
+    update.message.reply_text("Ciudad de la recogida (ej: {}).".format(default_city))
+    return DIRECCIONES_PICKUP_NUEVA_CIUDAD
+
+
+def direcciones_pickup_nueva_ciudad(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la recogida:",
+        "new_pickup_city",
+        DIRECCIONES_PICKUP_NUEVA_CIUDAD,
+        DIRECCIONES_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Barrio o sector de la recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def direcciones_pickup_nueva_barrio(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la recogida:",
+        "new_pickup_barrio",
+        DIRECCIONES_PICKUP_NUEVA_BARRIO,
+        DIRECCIONES_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == DIRECCIONES_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("new_pickup_barrio", "")
+    address = context.user_data.get("new_pickup_address", "")
+    city = context.user_data.get("new_pickup_city", "")
 
     keyboard = [
         [InlineKeyboardButton("Si, guardar", callback_data="dir_pickup_guardar_si")],
@@ -8060,9 +11196,7 @@ def direcciones_pickup_nueva_detalles(update, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(
-        f"Direccion: {text}\n"
-        f"Ciudad: {default_city}\n\n"
-        "Deseas guardar esta direccion?",
+        "Direccion: {}\nCiudad: {}\nBarrio o sector: {}\n\nDeseas guardar esta direccion?".format(address, city, barrio),
         reply_markup=reply_markup
     )
     return DIRECCIONES_PICKUP_GUARDAR
@@ -8090,7 +11224,7 @@ def direcciones_pickup_guardar_callback(update, context):
             label=address[:30],
             address=address,
             city=city,
-            barrio="",
+            barrio=context.user_data.get("new_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=lat,
@@ -8105,6 +11239,7 @@ def direcciones_pickup_guardar_callback(update, context):
         # Limpiar datos temporales
         context.user_data.pop("new_pickup_address", None)
         context.user_data.pop("new_pickup_city", None)
+        context.user_data.pop("new_pickup_barrio", None)
         context.user_data.pop("new_pickup_lat", None)
         context.user_data.pop("new_pickup_lng", None)
 
@@ -8134,10 +11269,16 @@ agenda_conv = ConversationHandler(
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
             MessageHandler(Filters.location, direcciones_pickup_nueva_ubicacion_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_ubicacion)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_ubicacion)
         ],
         DIRECCIONES_PICKUP_NUEVA_DETALLES: [
-            MessageHandler(Filters.text & ~Filters.command, direcciones_pickup_nueva_detalles)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_detalles)
+        ],
+        DIRECCIONES_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_ciudad)
+        ],
+        DIRECCIONES_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, direcciones_pickup_nueva_barrio)
         ],
         DIRECCIONES_PICKUP_GUARDAR: [
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
@@ -8146,56 +11287,67 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
         ],
         CLIENTES_NUEVO_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
         ],
         CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
         ],
         CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
-            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_nombre)
         ],
         CLIENTES_EDITAR_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_telefono)
         ],
         CLIENTES_EDITAR_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_notas)
         ],
         CLIENTES_DIR_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_label)
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_text)
+        ],
+        CLIENTES_DIR_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_ciudad_handler)
+        ],
+        CLIENTES_DIR_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_barrio_handler)
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_nota)
+        ],
+        CLIENTES_DIR_CORREGIR_COORDS: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -8212,56 +11364,61 @@ clientes_conv = ConversationHandler(
             CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
         ],
         CLIENTES_NUEVO_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
         ],
         CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
         ],
         CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_nuevo_direccion_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_text)
         ],
         CLIENTES_BUSCAR: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_buscar)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_buscar)
         ],
         CLIENTES_VER_CLIENTE: [
-            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|ver_\d+|volver_menu)$")
+            CallbackQueryHandler(clientes_ver_cliente_callback, pattern=r"^cust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
         ],
         CLIENTES_EDITAR_NOMBRE: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_nombre)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_nombre)
         ],
         CLIENTES_EDITAR_TELEFONO: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_telefono)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_telefono)
         ],
         CLIENTES_EDITAR_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_editar_notas)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_editar_notas)
         ],
         CLIENTES_DIR_NUEVA_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_label)
         ],
         CLIENTES_DIR_NUEVA_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_nueva_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_nueva_text)
         ],
         CLIENTES_DIR_EDITAR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_label)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_label)
         ],
         CLIENTES_DIR_EDITAR_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_text)
         ],
         CLIENTES_DIR_EDITAR_NOTA: [
-            MessageHandler(Filters.text & ~Filters.command, clientes_dir_editar_nota)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_editar_nota)
+        ],
+        CLIENTES_DIR_CORREGIR_COORDS: [
+            CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
+            MessageHandler(Filters.location, clientes_dir_corregir_coords_location_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_dir_corregir_coords_handler),
         ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -8270,26 +11427,26 @@ clientes_conv = ConversationHandler(
 ally_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_aliado", soy_aliado)],
     states={
-        ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command, ally_name)],
-        ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command, ally_owner)],
-        ALLY_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, ally_document)],
-        ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command, ally_phone)],
-        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command, ally_city)],
-        ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command, ally_barrio)],
-        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, ally_address)],
+        ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_name)],
+        ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_owner)],
+        ALLY_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_document)],
+        ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_phone)],
+        ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_city)],
+        ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_barrio)],
+        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_address)],
         ALLY_UBICACION: [
             CallbackQueryHandler(ally_geo_ubicacion_callback, pattern=r"^ally_geo_"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
-            MessageHandler(Filters.text & ~Filters.command, ally_ubicacion_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_ubicacion_handler),
         ],
-        ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, ally_confirm)],
+        ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_confirm)],
         ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -8298,48 +11455,48 @@ courier_conv = ConversationHandler(
     entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
     states={
         COURIER_FULLNAME: [
-            MessageHandler(Filters.text & ~Filters.command, courier_fullname)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_fullname)
         ],
         COURIER_IDNUMBER: [
-            MessageHandler(Filters.text & ~Filters.command, courier_idnumber)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_idnumber)
         ],
         COURIER_PHONE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_phone)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_phone)
         ],
         COURIER_CITY: [
-            MessageHandler(Filters.text & ~Filters.command, courier_city)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_city)
         ],
         COURIER_BARRIO: [
-            MessageHandler(Filters.text & ~Filters.command, courier_barrio)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_barrio)
         ],
         COURIER_RESIDENCE_ADDRESS: [
-            MessageHandler(Filters.text & ~Filters.command, courier_residence_address)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_address)
         ],
         COURIER_RESIDENCE_LOCATION: [
             CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
             MessageHandler(Filters.location, courier_residence_location),
-            MessageHandler(Filters.text & ~Filters.command, courier_residence_location),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_location),
         ],
         COURIER_PLATE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_plate)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_plate)
         ],
         COURIER_BIKETYPE: [
-            MessageHandler(Filters.text & ~Filters.command, courier_biketype)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_biketype)
         ],
         COURIER_CEDULA_FRONT: [
             MessageHandler(Filters.photo, courier_cedula_front),
-            MessageHandler(Filters.text & ~Filters.command, courier_cedula_front),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_cedula_front),
         ],
         COURIER_CEDULA_BACK: [
             MessageHandler(Filters.photo, courier_cedula_back),
-            MessageHandler(Filters.text & ~Filters.command, courier_cedula_back),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_cedula_back),
         ],
         COURIER_SELFIE: [
             MessageHandler(Filters.photo, courier_selfie),
-            MessageHandler(Filters.text & ~Filters.command, courier_selfie),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_selfie),
         ],
         COURIER_CONFIRM: [
-            MessageHandler(Filters.text & ~Filters.command, courier_confirm)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_confirm)
         ],
         COURIER_TEAM: [
             CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team:")
@@ -8349,7 +11506,7 @@ courier_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         CommandHandler("menu", menu),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -8694,6 +11851,42 @@ def ruta_pickup_nueva_detalles_handler(update, context):
         update.message.reply_text("Escribe la descripcion de la direccion.")
         return RUTA_PICKUP_NUEVA_DETALLES
     context.user_data["ruta_pickup_address"] = address
+    update.message.reply_text("Escribe la ciudad del punto de recogida:")
+    return RUTA_PICKUP_NUEVA_CIUDAD
+
+
+def ruta_pickup_nueva_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad del punto de recogida:",
+        "ruta_pickup_city",
+        RUTA_PICKUP_NUEVA_CIUDAD,
+        RUTA_PICKUP_NUEVA_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector del punto de recogida:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ruta_pickup_nueva_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector del punto de recogida:",
+        "ruta_pickup_barrio",
+        RUTA_PICKUP_NUEVA_BARRIO,
+        RUTA_PICKUP_GUARDAR,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == RUTA_PICKUP_NUEVA_BARRIO:
+        return ok_state
+    barrio = context.user_data.get("ruta_pickup_barrio", "")
+    address = context.user_data.get("ruta_pickup_address", "")
     keyboard = [
         [InlineKeyboardButton("Si, guardar", callback_data="ruta_pickup_guardar_si")],
         [InlineKeyboardButton("No, solo para esta ruta", callback_data="ruta_pickup_guardar_no")],
@@ -8718,8 +11911,8 @@ def ruta_pickup_guardar_callback(update, context):
             ally_id=ally_id,
             label=address[:30],
             address=address,
-            city="",
-            barrio="",
+            city=context.user_data.get("ruta_pickup_city", ""),
+            barrio=context.user_data.get("ruta_pickup_barrio", ""),
             phone="",
             is_default=False,
             lat=lat,
@@ -8899,10 +12092,8 @@ def ruta_parada_geo_callback(update, context):
         context.user_data["ruta_temp_lng"] = lng
         if formatted:
             context.user_data["ruta_temp_address"] = formatted
-            context.user_data["ruta_temp_city"] = ""
-            context.user_data["ruta_temp_barrio"] = ""
-            _ruta_guardar_parada_actual(context)
-            return _ruta_mostrar_mas_paradas(query, context)
+            query.edit_message_text("Escribe la ciudad de la entrega:")
+            return RUTA_PARADA_CIUDAD
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
@@ -8928,10 +12119,40 @@ def ruta_parada_direccion_handler(update, context):
         update.message.reply_text("Escribe la direccion de entrega.")
         return RUTA_PARADA_DIRECCION
     context.user_data["ruta_temp_address"] = address
-    if not context.user_data.get("ruta_temp_city"):
-        context.user_data["ruta_temp_city"] = ""
-    if not context.user_data.get("ruta_temp_barrio"):
-        context.user_data["ruta_temp_barrio"] = ""
+    update.message.reply_text("Escribe la ciudad de la entrega:")
+    return RUTA_PARADA_CIUDAD
+
+
+def ruta_parada_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe la ciudad de la entrega:",
+        "ruta_temp_city",
+        RUTA_PARADA_CIUDAD,
+        RUTA_PARADA_BARRIO,
+        flow=None,
+        next_prompt="Escribe el barrio o sector de la entrega:",
+        options_hint="",
+        set_back_step=False,
+    )
+
+
+def ruta_parada_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update,
+        context,
+        "Por favor escribe el barrio o sector de la entrega:",
+        "ruta_temp_barrio",
+        RUTA_PARADA_BARRIO,
+        RUTA_MAS_PARADAS,
+        flow=None,
+        next_prompt=None,
+        options_hint="",
+        set_back_step=False,
+    )
+    if ok_state == RUTA_PARADA_BARRIO:
+        return ok_state
     _ruta_guardar_parada_actual(context)
     return _ruta_mostrar_mas_paradas(update, context)
 
@@ -9090,6 +12311,8 @@ def ruta_guardar_clientes_callback(update, context):
                 if address:
                     create_customer_address(
                         customer_id, "Principal", address,
+                        city=p.get("city") or "",
+                        barrio=p.get("barrio") or "",
                         lat=p.get("lat"), lng=p.get("lng"),
                     )
                 saved += 1
@@ -9121,12 +12344,20 @@ nueva_ruta_conv = ConversationHandler(
         RUTA_PICKUP_NUEVA_UBICACION: [
             CallbackQueryHandler(ruta_pickup_geo_callback, pattern=r"^ruta_pickup_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_pickup_nueva_ubicacion_location_handler),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_ubicacion_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_ubicacion_handler),
         ],
         RUTA_PICKUP_NUEVA_DETALLES: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_pickup_nueva_detalles_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_detalles_handler),
+        ],
+        RUTA_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_ciudad_handler),
+        ],
+        RUTA_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_pickup_nueva_barrio_handler),
         ],
         RUTA_PICKUP_GUARDAR: [
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
@@ -9138,29 +12369,37 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_parada_sel_direccion_callback, pattern=r"^ruta_(sel_addr_\d+|addr_nueva)$"),
         ],
         RUTA_PARADA_NOMBRE: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_nombre_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_nombre_handler),
         ],
         RUTA_PARADA_TELEFONO: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_telefono_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_telefono_handler),
         ],
         RUTA_PARADA_UBICACION: [
             CallbackQueryHandler(ruta_parada_geo_callback, pattern=r"^ruta_parada_geo_(si|no)$"),
             MessageHandler(Filters.location, ruta_parada_ubicacion_location_handler),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_ubicacion_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ubicacion_handler),
         ],
         RUTA_PARADA_DIRECCION: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_parada_direccion_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_direccion_handler),
+        ],
+        RUTA_PARADA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ciudad_handler),
+        ],
+        RUTA_PARADA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_barrio_handler),
         ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
         ],
         RUTA_DISTANCIA_KM: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, ruta_distancia_km_handler),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
@@ -9171,10 +12410,56 @@ nueva_ruta_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
+
+
+def nuevo_pedido_tras_terms(update, context):
+    """Continua el flujo de nuevo_pedido tras aceptar terminos y condiciones."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = query.from_user.id
+
+    tv = get_active_terms_version("ALLY")
+    if not tv:
+        query.edit_message_text("Terminos no configurados. Contacta soporte.")
+        return ConversationHandler.END
+
+    version, url, sha256 = tv
+    save_terms_acceptance(telegram_id, "ALLY", version, sha256, query.message.message_id)
+
+    db_user = get_user_by_telegram_id(telegram_id)
+    if not db_user:
+        query.edit_message_text("Error: usuario no encontrado. Usa /nuevo_pedido.")
+        return ConversationHandler.END
+
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("No se pudo continuar. Usa Nuevo pedido.")
+        return ConversationHandler.END
+
+    query.edit_message_text("Aceptacion registrada. Iniciando nuevo pedido...")
+    context.user_data.clear()
+    context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+
+    keyboard = [
+        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+    ]
+    last_order = get_last_order_by_ally(ally["id"])
+    if last_order:
+        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+    keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
+
+    update.effective_message.reply_text(
+        "CREAR NUEVO PEDIDO\n\nSelecciona una opcion:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PEDIDO_SELECTOR_CLIENTE
 
 
 # Conversacion para /nuevo_pedido (con selector de cliente recurrente)
@@ -9183,48 +12468,49 @@ nuevo_pedido_conv = ConversationHandler(
         CommandHandler("nuevo_pedido", nuevo_pedido),
         MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
+        CallbackQueryHandler(nuevo_pedido_tras_terms, pattern=r"^terms_accept_ALLY$"),
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
             CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_(cliente_recurrente|cliente_nuevo|repetir_ultimo|buscar_cliente|sel_cust_\d+)$")
         ],
         PEDIDO_BUSCAR_CLIENTE: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_buscar_cliente)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_buscar_cliente)
         ],
         PEDIDO_SELECCIONAR_DIRECCION: [
             CallbackQueryHandler(pedido_seleccionar_direccion_callback, pattern=r"^(pedido_(nueva_dir|sel_addr_\d+)|guardar_dir_cliente_(si|no))$")
         ],
         PEDIDO_INSTRUCCIONES_EXTRA: [
             CallbackQueryHandler(pedido_instrucciones_callback, pattern=r"^pedido_instr_"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_instrucciones_text)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_instrucciones_text)
         ],
         PEDIDO_TIPO_SERVICIO: [
             CallbackQueryHandler(pedido_tipo_servicio_callback, pattern=r"^pedido_tipo_"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_tipo_servicio)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_tipo_servicio)
         ],
         PEDIDO_COMPRAS_CANTIDAD: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_compras_cantidad_handler)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_compras_cantidad_handler)
         ],
         PEDIDO_NOMBRE: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_nombre_cliente)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_nombre_cliente)
         ],
         PEDIDO_TELEFONO: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_telefono_cliente)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_telefono_cliente)
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
             CallbackQueryHandler(pedido_geo_ubicacion_callback, pattern=r"^pedido_geo_"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_ubicacion_handler)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_ubicacion_handler)
         ],
         PEDIDO_DIRECCION: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_direccion_cliente)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
             CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
@@ -9236,12 +12522,20 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pickup_nueva_copiar_msg_callback, pattern=r"^pickup_copiar_msg_cliente$"),
             CallbackQueryHandler(pedido_pickup_geo_callback, pattern=r"^pickup_geo_"),
             MessageHandler(Filters.location, pedido_pickup_nueva_ubicacion_location_handler),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_ubicacion_handler)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_ubicacion_handler)
         ],
         PEDIDO_PICKUP_NUEVA_DETALLES: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_pickup_nueva_detalles_handler)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_detalles_handler)
+        ],
+        PEDIDO_PICKUP_NUEVA_CIUDAD: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_ciudad_handler),
+        ],
+        PEDIDO_PICKUP_NUEVA_BARRIO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_pickup_nueva_barrio_handler),
         ],
         PEDIDO_PICKUP_GUARDAR: [
             CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
@@ -9251,13 +12545,19 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_VALOR_BASE: [
             CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command, pedido_valor_base_texto)
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto)
         ],
         PEDIDO_CONFIRMACION: [
             CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
+            CallbackQueryHandler(pedido_incentivo_fixed_callback, pattern=r"^pedido_inc_(1000|1500|2000|3000)$"),
+            CallbackQueryHandler(pedido_incentivo_otro_start, pattern=r"^pedido_inc_otro$"),
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
-            MessageHandler(Filters.text & ~Filters.command, pedido_confirmacion)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_confirmacion)
+        ],
+        PEDIDO_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_incentivo_monto_handler),
         ],
         PEDIDO_GUARDAR_CLIENTE: [
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
@@ -9265,7 +12565,202 @@ nuevo_pedido_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+
+pedido_incentivo_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(pedido_incentivo_existing_otro_start, pattern=r"^pedido_inc_otro_\d+$"),
+    ],
+    states={
+        PEDIDO_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_incentivo_existing_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+admin_clientes_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_clientes_cmd, pattern=r"^admin_mis_clientes$"),
+    ],
+    states={
+        ADMIN_CUST_MENU: [
+            CallbackQueryHandler(admin_clientes_menu_callback, pattern=r"^acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+        ],
+        ADMIN_CUST_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_nombre)
+        ],
+        ADMIN_CUST_NUEVO_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_telefono)
+        ],
+        ADMIN_CUST_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_notas)
+        ],
+        ADMIN_CUST_NUEVO_DIR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_label)
+        ],
+        ADMIN_CUST_NUEVO_DIR_TEXT: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_text)
+        ],
+        ADMIN_CUST_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_buscar)
+        ],
+        ADMIN_CUST_VER: [
+            CallbackQueryHandler(admin_clientes_ver_callback, pattern=r"^acust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
+        ],
+        ADMIN_CUST_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_nombre)
+        ],
+        ADMIN_CUST_EDITAR_TELEFONO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_telefono)
+        ],
+        ADMIN_CUST_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_editar_notas)
+        ],
+        ADMIN_CUST_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_nueva_label)
+        ],
+        ADMIN_CUST_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_nueva_text)
+        ],
+        ADMIN_CUST_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_label)
+        ],
+        ADMIN_CUST_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_text)
+        ],
+        ADMIN_CUST_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_editar_nota)
+        ],
+        ADMIN_CUST_DIR_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_ciudad_handler)
+        ],
+        ADMIN_CUST_DIR_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_barrio_handler)
+        ],
+        ADMIN_CUST_DIR_CORREGIR: [
+            CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
+            MessageHandler(Filters.location, admin_clientes_dir_corregir_location_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_corregir_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+admin_dirs_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_dirs_cmd, pattern=r"^admin_mis_dirs$"),
+    ],
+    states={
+        ADMIN_DIRS_MENU: [
+            CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(nueva|volver_menu|cerrar|ver_\d+|archivar_\d+|editar_\d+)$")
+        ],
+        ADMIN_DIRS_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_label_handler)
+        ],
+        ADMIN_DIRS_NUEVA_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_text_handler)
+        ],
+        ADMIN_DIRS_NUEVA_TEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_dirs_nueva_tel_handler)
+        ],
+        ADMIN_DIRS_VER: [
+            CallbackQueryHandler(admin_dirs_menu_callback, pattern=r"^adirs_(editar_\d+|archivar_\d+|volver_menu)$")
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+# Conversación para "Otro monto" de la sugerencia T+5 (aplica a aliados y admins)
+offer_suggest_inc_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(offer_suggest_inc_otro_start, pattern=r"^offer_inc_otro_\d+$"),
+    ],
+    states={
+        OFFER_SUGGEST_INC_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, offer_suggest_inc_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+# Conversación para crear pedido especial del Admin Local/Plataforma
+admin_pedido_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(admin_nuevo_pedido_start, pattern=r"^admin_nuevo_pedido$"),
+    ],
+    states={
+        ADMIN_PEDIDO_PICKUP: [
+            CallbackQueryHandler(admin_pedido_pickup_callback, pattern=r"^admin_pedido_pickup_\d+$"),
+            CallbackQueryHandler(admin_pedido_nueva_dir_start, pattern=r"^admin_pedido_nueva_dir$"),
+            CallbackQueryHandler(admin_pedido_geo_pickup_callback, pattern=r"^admin_pedido_geo_pickup_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.location, admin_pedido_pickup_gps_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_pickup_text_handler),
+        ],
+        ADMIN_PEDIDO_CUST_NAME: [
+            CallbackQueryHandler(admin_pedido_sel_cust_handler, pattern=r"^admin_pedido_sel_cust$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_name_handler),
+        ],
+        ADMIN_PEDIDO_SEL_CUST: [
+            CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+        ],
+        ADMIN_PEDIDO_SEL_CUST_ADDR: [
+            CallbackQueryHandler(admin_pedido_addr_selected, pattern=r"^acust_pedido_addr_\d+$"),
+            CallbackQueryHandler(admin_pedido_addr_nueva, pattern=r"^acust_pedido_addr_nueva$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+        ],
+        ADMIN_PEDIDO_CUST_PHONE: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_phone_handler),
+        ],
+        ADMIN_PEDIDO_CUST_ADDR: [
+            CallbackQueryHandler(admin_pedido_geo_callback, pattern=r"^admin_pedido_geo_(si|no)$"),
+            MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
+        ],
+        ADMIN_PEDIDO_TARIFA: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
+        ],
+        ADMIN_PEDIDO_INSTRUC: [
+            CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
+            CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
+            CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_instruc_handler),
+        ],
+        ADMIN_PEDIDO_INC_MONTO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_inc_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -9281,16 +12776,22 @@ ally_locs_conv = ConversationHandler(
         ],
         ALLY_LOCS_ADD_COORDS: [
             MessageHandler(Filters.location, ally_locs_add_coords_location),
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_coords),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_coords),
         ],
         ALLY_LOCS_ADD_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command, ally_locs_add_label),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_label),
+        ],
+        ALLY_LOCS_ADD_CITY: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_city),
+        ],
+        ALLY_LOCS_ADD_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_locs_add_barrio),
         ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(
-            Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'),
+            Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'),
             cancel_por_texto
         ),
     ],
@@ -9312,17 +12813,17 @@ cotizar_conv = ConversationHandler(
             CallbackQueryHandler(cotizar_pickup_callback, pattern=r"^cotizar_pickup_"),
         ],
         COTIZAR_DISTANCIA: [
-            MessageHandler(Filters.text & ~Filters.command, cotizar_distancia),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_distancia),
         ],
         COTIZAR_RECOGIDA: [
             CallbackQueryHandler(cotizar_recogida_geo_callback, pattern=r"^cotizar_recogida_geo_"),
             MessageHandler(Filters.location, cotizar_recogida_location),
-            MessageHandler(Filters.text & ~Filters.command, cotizar_recogida),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_recogida),
         ],
         COTIZAR_ENTREGA: [
             CallbackQueryHandler(cotizar_entrega_geo_callback, pattern=r"^cotizar_entrega_geo_"),
             MessageHandler(Filters.location, cotizar_entrega_location),
-            MessageHandler(Filters.text & ~Filters.command, cotizar_entrega),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, cotizar_entrega),
         ],
         COTIZAR_RESULTADO: [
             CallbackQueryHandler(cotizar_resultado_callback, pattern=r"^cotizar_(crear_pedido|crear_ruta|cerrar)$"),
@@ -9330,7 +12831,7 @@ cotizar_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
 
@@ -9672,11 +13173,11 @@ def config_alertas_oferta_input(update, context):
 tarifas_conv = ConversationHandler(
     entry_points=[CommandHandler("tarifas", tarifas_start)],
     states={
-        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command, tarifas_set_valor)]
+        TARIFAS_VALOR: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, tarifas_set_valor)]
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
 
@@ -9690,7 +13191,7 @@ config_alertas_oferta_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uÃº])\s*$'), cancel_por_texto),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -9730,10 +13231,16 @@ def mi_admin(update, context):
     # Administrador de Plataforma: siempre operativo
     if team_code == "PLATFORM":
         keyboard = [
-            [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
+            [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
+            [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
+            [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+            [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
+            [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+            [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-            [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+            [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
         update.message.reply_text(
             header +
@@ -9772,11 +13279,17 @@ def mi_admin(update, context):
     )
     # En FASE 1: panel siempre habilitado
     keyboard = [
-        [InlineKeyboardButton("⏳ Repartidores pendientes (mi equipo)", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
+        [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
+        [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
+        [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+        [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
+        [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+        [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
-        [InlineKeyboardButton("🔄 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
-        [InlineKeyboardButton("Solicitudes de cambio", callback_data="admin_change_requests")],
+        [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
     ]
 
@@ -9981,7 +13494,9 @@ def mi_perfil(update, context):
                 avail = "OFFLINE"
             mensaje += f"   Disponibilidad: {avail}\n"
             if avail == "ONLINE":
-                mensaje += "   (Compartiendo ubicacion en vivo)\n"
+                avail_cash = int(_row_value(courier, "available_cash", 0) or 0)
+                mensaje += f"   (Compartiendo ubicacion en vivo)\n"
+                mensaje += f"   Base declarada: ${avail_cash:,}\n"
             elif avail == "PAUSADO":
                 mensaje += "   (Ubicacion en vivo detenida - comparte para volver a ONLINE)\n"
             else:
@@ -10340,7 +13855,8 @@ def recargar_monto(update, context):
     if platform:
         platform_id = platform["id"]
         platform_name = platform["team_name"] or platform["full_name"] or "Plataforma"
-        if platform_id in approved_admin_ids and (not link or link["admin_id"] != platform_id):
+        # Plataforma siempre disponible como fallback, excepto si ya aparece como "Mi admin"
+        if not link or link["admin_id"] != platform_id:
             buttons.append([InlineKeyboardButton(
                 f"Plataforma: {platform_name}",
                 callback_data=f"recargar_admin_{platform_id}"
@@ -10397,9 +13913,27 @@ def recargar_admin_callback(update, context):
     else:
         allowed_admin_ids = set()
 
+    # Plataforma siempre habilitada como fallback para COURIER/ALLY
+    if target_type in ("COURIER", "ALLY"):
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            allowed_admin_ids.add(platform_admin["id"])
+
     if admin_id not in allowed_admin_ids:
         query.edit_message_text("Seleccion invalida. Usa /recargar nuevamente.")
         return ConversationHandler.END
+
+    # Si el admin seleccionado no es plataforma, verificar que este APPROVED
+    platform_admin = get_platform_admin()
+    platform_admin_id = platform_admin["id"] if platform_admin else None
+    if admin_id != platform_admin_id:
+        admin_status = get_admin_status_by_id(admin_id)
+        if admin_status == "PENDING":
+            query.edit_message_text(
+                "Este administrador aun no ha cumplido con los requisitos para aprobar recargas. "
+                "Por favor recarga con Plataforma para que puedas trabajar."
+            )
+            return ConversationHandler.END
 
     context.user_data["recargar_admin_id"] = admin_id
 
@@ -10712,6 +14246,37 @@ def recharge_callback(update, context):
         success, msg = approve_recharge_request(request_id, admin_id)
 
         if success:
+            # Notificar al solicitante (ally/courier/admin) su nuevo saldo
+            try:
+                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user = get_user_by_id(req_user_id) if req_user_id else None
+                req_chat_id = req_user.get("telegram_id") if req_user else None
+
+                new_balance = None
+                if _req and _req.get("target_type") == "COURIER":
+                    link = get_approved_admin_link_for_courier(_req.get("target_id"))
+                    if link:
+                        new_balance = link.get("balance")
+                elif _req and _req.get("target_type") == "ALLY":
+                    link = get_approved_admin_link_for_ally(_req.get("target_id"))
+                    if link:
+                        new_balance = link.get("balance")
+                elif _req and _req.get("target_type") == "ADMIN":
+                    new_balance = get_admin_balance(_req.get("target_id"))
+
+                if req_chat_id and (new_balance is not None):
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text="Tu recarga #{} fue exitosa. Tu nuevo saldo es: ${:,}.".format(request_id, int(new_balance)),
+                    )
+                elif req_chat_id:
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text="Tu recarga #{} fue exitosa.".format(request_id),
+                    )
+            except Exception as e:
+                print("[WARN] No se pudo notificar al solicitante de la recarga #{}: {}".format(request_id, e))
+
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Recarga aprobada.")
             suffix = f"\n\nAPROBADA por admin #{admin_id}"
@@ -10734,6 +14299,22 @@ def recharge_callback(update, context):
         success, msg = reject_recharge_request(request_id, admin_id)
 
         if success:
+            # Notificar al solicitante (ally/courier/admin) sobre el rechazo
+            try:
+                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user = get_user_by_id(req_user_id) if req_user_id else None
+                req_chat_id = req_user.get("telegram_id") if req_user else None
+                if req_chat_id:
+                    context.bot.send_message(
+                        chat_id=req_chat_id,
+                        text=(
+                            "Tu recarga #{} fue rechazada. "
+                            "Comunicate con el administrador al que solicitaste tu recarga."
+                        ).format(request_id),
+                    )
+            except Exception as e:
+                print("[WARN] No se pudo notificar rechazo al solicitante de la recarga #{}: {}".format(request_id, e))
+
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Solicitud rechazada.")
             suffix = f"\n\nRECHAZADA por admin #{admin_id}"
@@ -10745,6 +14326,245 @@ def recharge_callback(update, context):
                 query.edit_message_text("Solicitud procesada." + suffix)
         else:
             query.answer(msg, show_alert=True)
+
+
+# ============================================================
+# PANEL DE RECARGAS — ADMIN DE PLATAFORMA (plat_rec_*)
+# ============================================================
+
+def plat_recargas_callback(update, context):
+    """Panel de recargas para el Admin de Plataforma. Prefijo: plat_rec_"""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    user_id = update.effective_user.id
+
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Admin de Plataforma puede usar este panel.", show_alert=True)
+        return
+
+    back_btn = InlineKeyboardButton("⬅ Volver", callback_data="plat_rec_menu")
+
+    # ---- Menú principal ----
+    if data == "plat_rec_menu":
+        keyboard = [
+            [InlineKeyboardButton("📋 Pendientes de todos los admins", callback_data="plat_rec_pending")],
+            [InlineKeyboardButton("📊 Historial contable", callback_data="plat_rec_history")],
+            [InlineKeyboardButton("⚠️ Alertas de admins locales", callback_data="plat_rec_alerts")],
+            [InlineKeyboardButton("⬅ Volver al panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Panel de Recargas\n\nSelecciona una vista:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---- Todas las solicitudes PENDING agrupadas por admin ----
+    if data == "plat_rec_pending":
+        pendientes = list_all_pending_recharges(limit=50)
+        if not pendientes:
+            query.edit_message_text(
+                "No hay solicitudes de recarga pendientes en el sistema.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        by_admin = {}
+        for req in pendientes:
+            aid = req["admin_id"]
+            if aid not in by_admin:
+                by_admin[aid] = {"admin_name": req["admin_name"], "count": 0, "total": 0}
+            by_admin[aid]["count"] += 1
+            by_admin[aid]["total"] += req["amount"]
+
+        tipo_label = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin"}
+        lines = ["Solicitudes PENDIENTES ({} en total):\n".format(len(pendientes))]
+        for req in pendientes:
+            lines.append("#{} | {} | {} | ${:,}".format(
+                req["id"],
+                req["admin_name"],
+                req["target_name"] or "-",
+                req["amount"],
+            ))
+
+        lines.append("\nPor admin:")
+        keyboard = []
+        for aid, info in by_admin.items():
+            lines.append("  {}: {} solicitud(es) — ${:,}".format(
+                info["admin_name"], info["count"], info["total"]
+            ))
+            keyboard.append([InlineKeyboardButton(
+                "🔔 Notificar a {}".format(info["admin_name"]),
+                callback_data="plat_rec_notify_{}".format(aid)
+            )])
+        keyboard.append([back_btn])
+
+        texto = "\n".join(lines)
+        if len(texto) > 4000:
+            texto = texto[:3950] + "\n...(truncado)"
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # ---- Historial contable (ledger RECHARGE) ----
+    if data == "plat_rec_history":
+        entries = list_recharge_ledger(limit=20)
+        if not entries:
+            query.edit_message_text(
+                "No hay movimientos de recarga registrados aun.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        dest_label = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin", "PLATFORM": "Plataforma"}
+        lines = ["Historial de recargas (ultimas 20):\n"]
+        for e in entries:
+            fecha = (e["created_at"] or "")[:10]
+            origen = e["from_name"] or e["from_type"] or "-"
+            destino = e["to_name"] or e["to_type"] or "-"
+            tipo = dest_label.get(e["to_type"], e["to_type"])
+            lines.append("{} | {} -> {} ({}) | ${:,}".format(
+                fecha, origen, destino, tipo, e["amount"]
+            ))
+
+        texto = "\n".join(lines)
+        if len(texto) > 4000:
+            texto = texto[:3950] + "\n...(truncado)"
+        query.edit_message_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup([[back_btn]])
+        )
+        return
+
+    # ---- Alertas: admins con pendientes o saldo bajo ----
+    if data == "plat_rec_alerts":
+        admins_data = get_admins_with_pending_count()
+        alertas = [a for a in admins_data if a["pending_count"] > 0 or (a["balance"] or 0) < 60000]
+
+        if not alertas:
+            query.edit_message_text(
+                "No hay alertas: todos los admins tienen saldo suficiente y sin pendientes.",
+                reply_markup=InlineKeyboardMarkup([[back_btn]])
+            )
+            return
+
+        lines = ["Alertas de admins locales:\n"]
+        keyboard = []
+        for a in alertas:
+            balance = a["balance"] or 0
+            pending = a["pending_count"]
+            flags = []
+            if pending > 0:
+                flags.append("{} pendiente(s)".format(pending))
+            if balance < 60000:
+                flags.append("saldo bajo ${:,}".format(balance))
+            lines.append("{}: {}".format(a["admin_name"], " | ".join(flags)))
+            keyboard.append([InlineKeyboardButton(
+                "🔔 Notificar a {}".format(a["admin_name"]),
+                callback_data="plat_rec_notify_{}".format(a["admin_id"])
+            )])
+        keyboard.append([back_btn])
+
+        query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---- Notificar admin local ----
+    if data.startswith("plat_rec_notify_"):
+        admin_id = int(data.replace("plat_rec_notify_", ""))
+        admins_data = get_admins_with_pending_count()
+        target = next((a for a in admins_data if a["admin_id"] == admin_id), None)
+        if not target:
+            query.answer("Admin no encontrado.", show_alert=True)
+            return
+
+        telegram_id = target["telegram_id"]
+        pending = target["pending_count"]
+        balance = target["balance"] or 0
+        admin_name = target["admin_name"]
+
+        partes = ["Recordatorio de Plataforma:"]
+        if pending > 0:
+            partes.append(
+                "Tienes {} solicitud(es) de recarga PENDIENTE(S) sin procesar.\n"
+                "Revisalas con /recargas_pendientes".format(pending)
+            )
+        if balance < 60000:
+            partes.append(
+                "Tu saldo actual es ${:,}. Recarga tu cuenta para poder atender "
+                "a tu equipo sin interrupciones.".format(balance)
+            )
+
+        try:
+            context.bot.send_message(chat_id=telegram_id, text="\n\n".join(partes))
+            query.answer("Notificacion enviada a {}.".format(admin_name))
+        except Exception as e:
+            print("[WARN] plat_rec_notify admin_id={}: {}".format(admin_id, e))
+            query.answer("No se pudo enviar la notificacion.", show_alert=True)
+        return
+
+
+# ---- Recargas pendientes inline para admin local (local_recargas_pending_) ----
+
+def local_recargas_pending_callback(update, context):
+    """Muestra las recargas pendientes del admin local desde su panel /mi_admin."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if not data.startswith("local_recargas_pending_"):
+        return
+
+    admin_id = int(data.split("_")[-1])
+
+    # Verificar que el solicitante es el propio admin
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    admin = get_admin_by_user_id(user_row["id"])
+    if not admin or admin["id"] != admin_id:
+        query.answer("No autorizado.", show_alert=True)
+        return
+
+    pendientes = list_pending_recharges_for_admin(admin_id)
+    if not pendientes:
+        query.edit_message_text(
+            "No tienes solicitudes de recarga pendientes.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")
+            ]])
+        )
+        return
+
+    for req in pendientes:
+        req_id = req["id"]
+        tipo = "Repartidor" if req["target_type"] == "COURIER" else "Aliado"
+        texto = (
+            "Solicitud #{}\n"
+            "De: {} ({})\n"
+            "Monto: ${:,}\n"
+            "Metodo: {}\n"
+            "Fecha: {}"
+        ).format(
+            req_id,
+            req["target_name"] or "-",
+            tipo,
+            req["amount"],
+            req["method"] or "-",
+            (req["created_at"] or "-")[:16],
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data=f"recharge_approve_{req_id}"),
+                InlineKeyboardButton("Rechazar", callback_data=f"recharge_reject_{req_id}"),
+            ],
+            [InlineKeyboardButton("Ver comprobante", callback_data=f"recharge_proof_{req_id}")],
+        ]
+        query.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(buttons))
+
+    query.edit_message_text(
+        "Tienes {} solicitud(es) pendiente(s). Revisalas arriba.".format(len(pendientes))
+    )
 
 
 # ============================================================
@@ -11263,6 +15083,21 @@ def admin_local_callback(update, context):
         ]
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        cedula_front = courier.get("cedula_front_file_id")
+        cedula_back = courier.get("cedula_back_file_id")
+        selfie = courier.get("selfie_file_id")
+        if cedula_front or cedula_back or selfie:
+            try:
+                if cedula_front:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+                if cedula_back:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                if selfie:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+            except Exception as e:
+                print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
+
         return
 
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
@@ -11278,6 +15113,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
             deactivate_other_approved_admin_courier_links(courier_id, admin_id)
+            update_courier_status(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_courier_status APPROVED:", e)
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
@@ -11328,8 +15164,334 @@ def admin_local_callback(update, context):
         )
         return
 
+    # ---- ALIADOS PENDIENTES ----
+
+    if data.startswith("local_allies_pending_"):
+        try:
+            pendientes = get_pending_allies_by_admin(admin_id)
+        except Exception as e:
+            print("[ERROR] get_pending_allies_by_admin:", e)
+            query.edit_message_text("Error consultando aliados pendientes de tu equipo.")
+            return
+
+        if not pendientes:
+            query.edit_message_text(
+                "No tienes aliados pendientes por aprobar en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for a in pendientes:
+            ally_id_row = a["ally_id"]
+            bname = a["business_name"] or ""
+            keyboard.append([InlineKeyboardButton(
+                f"ID {ally_id_row} - {bname}",
+                callback_data=f"local_ally_view_{ally_id_row}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")])
+        query.edit_message_text(
+            "Aliados pendientes (tu equipo). Toca uno para ver detalle:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_ally_view_"):
+        ally_id_val = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id_val)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        texto = (
+            "ALIADO (pendiente de tu equipo)\n\n"
+            "ID: {}\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Ciudad: {}\n"
+            "Barrio: {}\n"
+            "Direccion: {}\n"
+        ).format(
+            ally.get("id"),
+            ally.get("business_name") or "-",
+            ally.get("owner_name") or "-",
+            ally.get("phone") or "-",
+            ally.get("city") or "-",
+            ally.get("barrio") or "-",
+            ally.get("address") or "-",
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"local_ally_approve_{ally_id_val}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"local_ally_reject_{ally_id_val}"),
+            ],
+            [InlineKeyboardButton("⬅ Volver", callback_data=f"local_allies_pending_{admin_id}")]
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        cedula_front = ally.get("cedula_front_file_id")
+        cedula_back = ally.get("cedula_back_file_id")
+        selfie = ally.get("selfie_file_id")
+        if cedula_front or cedula_back or selfie:
+            try:
+                if cedula_front:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+                if cedula_back:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                if selfie:
+                    context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+            except Exception as e:
+                print(f"[WARN] No se pudieron enviar fotos del aliado {ally_id_val}: {e}")
+        return
+
+    if data.startswith("local_ally_approve_") or data.startswith("local_ally_reject_"):
+        ally_id_val = int(data.split("_")[-1])
+        admin_full = get_admin_by_id(admin_id)
+        admin_status = admin_full.get("status") if admin_full else None
+        if admin_status != "APPROVED":
+            query.edit_message_text("Tu cuenta de administrador no está APPROVED. No puedes aprobar/rechazar aliados.")
+            return
+
+        if data.startswith("local_ally_approve_"):
+            try:
+                upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
+                deactivate_other_approved_admin_ally_links(ally_id_val, admin_id)
+            except Exception as e:
+                print("[ERROR] local_ally_approve:", e)
+                query.edit_message_text("Error aprobando aliado. Revisa logs.")
+                return
+            _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
+            query.edit_message_text(
+                "✅ Aliado aprobado en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_allies_pending_{admin_id}")]
+                ])
+            )
+        else:
+            try:
+                upsert_admin_ally_link(admin_id, ally_id_val, "REJECTED")
+            except Exception as e:
+                print("[ERROR] local_ally_reject:", e)
+                query.edit_message_text("Error rechazando aliado. Revisa logs.")
+                return
+            _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
+            query.edit_message_text(
+                "❌ Aliado rechazado para tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_allies_pending_{admin_id}")]
+                ])
+            )
+        return
+
+    # ---- MI EQUIPO ----
+
+    if data.startswith("local_my_team_"):
+        keyboard = [
+            [InlineKeyboardButton("🚚 Mis repartidores", callback_data=f"local_team_couriers_{admin_id}")],
+            [InlineKeyboardButton("🏪 Mis aliados", callback_data=f"local_team_allies_{admin_id}")],
+            [InlineKeyboardButton("⬅ Volver", callback_data=f"local_check_{admin_id}")],
+        ]
+        query.edit_message_text("Mi equipo. Selecciona:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_team_couriers_"):
+        approved = get_couriers_by_admin_and_status(admin_id, "APPROVED")
+        inactive = get_couriers_by_admin_and_status(admin_id, "INACTIVE")
+        members = list(approved) + list(inactive)
+        if not members:
+            query.edit_message_text(
+                "No tienes repartidores en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")]
+                ])
+            )
+            return
+        keyboard = []
+        for c in members:
+            cid = c["courier_id"]
+            cname = c["full_name"] or ""
+            cstatus = c["status"]
+            keyboard.append([InlineKeyboardButton(
+                f"{cname} [{cstatus}]",
+                callback_data=f"local_team_courier_view_{cid}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")])
+        query.edit_message_text(
+            "Mis repartidores. Toca uno para gestionar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_team_allies_"):
+        approved = get_allies_by_admin_and_status(admin_id, "APPROVED")
+        inactive = get_allies_by_admin_and_status(admin_id, "INACTIVE")
+        members = list(approved) + list(inactive)
+        if not members:
+            query.edit_message_text(
+                "No tienes aliados en tu equipo.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")]
+                ])
+            )
+            return
+        keyboard = []
+        for a in members:
+            aid = a["ally_id"]
+            aname = a["business_name"] or ""
+            astatus = a["status"]
+            keyboard.append([InlineKeyboardButton(
+                f"{aname} [{astatus}]",
+                callback_data=f"local_team_ally_view_{aid}"
+            )])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_my_team_{admin_id}")])
+        query.edit_message_text(
+            "Mis aliados. Toca uno para gestionar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("local_team_courier_view_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+        link = get_admin_link_for_courier(courier_id)
+        link_status = link["link_status"] if link else "?"
+        link_balance = link["balance"] if link else 0
+        texto = (
+            "Repartidor de tu equipo\n\n"
+            "Nombre: {}\n"
+            "Telefono: {}\n"
+            "Estado en equipo: {}\n"
+            "Saldo: ${:,}\n"
+            "Placa: {}\n"
+            "Moto: {}\n"
+        ).format(
+            courier["full_name"] or "-",
+            courier["phone"] or "-",
+            link_status,
+            link_balance,
+            courier["plate"] or "-",
+            courier["bike_type"] or "-",
+        )
+        if link_status == "APPROVED":
+            action_btn = InlineKeyboardButton("⏸ Inactivar", callback_data=f"local_courier_inactivate_{courier_id}")
+        elif link_status == "INACTIVE":
+            action_btn = InlineKeyboardButton("▶ Activar", callback_data=f"local_courier_activate_{courier_id}")
+        else:
+            action_btn = None
+        keyboard = []
+        if action_btn:
+            keyboard.append([action_btn])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_team_couriers_{admin_id}")])
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_team_ally_view_"):
+        ally_id_val = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id_val)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+        link = get_admin_link_for_ally(ally_id_val)
+        link_status = link["link_status"] if link else "?"
+        link_balance = link["balance"] if link else 0
+        texto = (
+            "Aliado de tu equipo\n\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Estado en equipo: {}\n"
+            "Saldo: ${:,}\n"
+        ).format(
+            ally["business_name"] or "-",
+            ally["owner_name"] or "-",
+            ally["phone"] or "-",
+            link_status,
+            link_balance,
+        )
+        if link_status == "APPROVED":
+            action_btn = InlineKeyboardButton("⏸ Inactivar", callback_data=f"local_ally_inactivate_{ally_id_val}")
+        elif link_status == "INACTIVE":
+            action_btn = InlineKeyboardButton("▶ Activar", callback_data=f"local_ally_activate_{ally_id_val}")
+        else:
+            action_btn = None
+        keyboard = []
+        if action_btn:
+            keyboard.append([action_btn])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data=f"local_team_allies_{admin_id}")])
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("local_courier_activate_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] local_courier_activate:", e)
+            query.edit_message_text("Error activando repartidor.")
+            return
+        query.edit_message_text(
+            "✅ Repartidor activado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_couriers_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_courier_inactivate_"):
+        courier_id = int(data.split("_")[-1])
+        try:
+            update_admin_courier_status(admin_id, courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] local_courier_inactivate:", e)
+            query.edit_message_text("Error inactivando repartidor.")
+            return
+        query.edit_message_text(
+            "⏸ Repartidor inactivado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_couriers_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_ally_activate_"):
+        ally_id_val = int(data.split("_")[-1])
+        try:
+            upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
+        except Exception as e:
+            print("[ERROR] local_ally_activate:", e)
+            query.edit_message_text("Error activando aliado.")
+            return
+        query.edit_message_text(
+            "✅ Aliado activado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_allies_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_ally_inactivate_"):
+        ally_id_val = int(data.split("_")[-1])
+        try:
+            upsert_admin_ally_link(admin_id, ally_id_val, "INACTIVE")
+        except Exception as e:
+            print("[ERROR] local_ally_inactivate:", e)
+            query.edit_message_text("Error inactivando aliado.")
+            return
+        query.edit_message_text(
+            "⏸ Aliado inactivado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver a mi equipo", callback_data=f"local_team_allies_{admin_id}")]
+            ])
+        )
+        return
+
     query.edit_message_text("Opción no reconocida.")
-    
+
 def ally_approval_callback(update, context):
     """Maneja los botones de aprobar / rechazar aliados (solo Admin Plataforma)."""
     query = update.callback_query
@@ -12186,6 +16348,21 @@ def courier_live_location_handler(update, context):
         return
     if courier["status"] != "APPROVED":
         return
+    if not int(_row_value(courier, "is_active", 0) or 0):
+        now_ts = time.time()
+        last_sent = context.user_data.get("deact_reminder_ts", 0)
+        if now_ts - last_sent >= 300:
+            try:
+                context.bot.send_message(
+                    chat_id=telegram_id,
+                    text="Estas desactivado y sigues compartiendo tu ubicacion.\n"
+                         "Deten el envio de ubicacion en vivo desde tu chat.\n"
+                         "Si quieres activarte, presiona Activarme en tu menu."
+                )
+                context.user_data["deact_reminder_ts"] = now_ts
+            except Exception:
+                pass
+        return
 
     location = message.location
     lat = location.latitude
@@ -12196,7 +16373,16 @@ def courier_live_location_handler(update, context):
 
     if live_period or update.edited_message:
         # Es live location (nueva o update) -> actualizar y marcar ONLINE
-        update_courier_live_location(courier["id"], lat, lng)
+        if update.message and live_period:
+            update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
+        else:
+            update_courier_live_location(courier["id"], lat, lng)
+
+        # Verificar llegada al punto de recogida si tiene pedido activo
+        try:
+            check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
+        except Exception as e:
+            print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
 
         # Solo notificar la primera vez (cuando pasa a ONLINE visible)
         was_online = (
@@ -12216,21 +16402,27 @@ def courier_live_location_handler(update, context):
 
 def courier_live_location_expired_check(context):
     """
-    Job periodico: revisa couriers ONLINE cuya ubicacion
-    no se actualiza hace mas de 2 minutos y los pasa a PAUSADO.
+    Job periodico: revisa couriers ONLINE cuya sesion de ubicacion en vivo
+    ya expiro y los desactiva completamente (requieren re-activacion con base).
     """
-    expired_ids = expire_stale_live_locations(timeout_seconds=120)
+    expired_ids = expire_stale_live_locations(stale_timeout_seconds=900)
     for cid in expired_ids:
         try:
             courier = get_courier_by_id(cid)
             if courier:
+                # Evitar notificacion "antigua" si el courier ya volvio a ONLINE
+                if (
+                    _row_value(courier, "availability_status") == "APPROVED"
+                    and int(_row_value(courier, "live_location_active", 0) or 0) == 1
+                ):
+                    continue
                 user = get_user_by_id(courier["user_id"])
                 if user:
                     tg_id = user["telegram_id"]
                     context.bot.send_message(
                         chat_id=tg_id,
-                        text="Tu ubicacion en vivo expiro. Estas PAUSADO.\n"
-                             "Comparte tu ubicacion en vivo para volver a ONLINE."
+                        text="Tu ubicacion en vivo expiro. Quedaste OFFLINE.\n"
+                             "Para volver a recibir pedidos, ve a tu menu y presiona Activarme."
                     )
         except Exception as e:
             print(f"[WARN] No se pudo notificar expiracion a courier {cid}: {e}")
@@ -12250,15 +16442,30 @@ def _courier_activate_common(update, context, reply_func):
         return
 
     # Verificar que tiene equipo activo y saldo suficiente para activarse
-    admin_link = get_admin_link_for_courier(courier["id"])
-    if not admin_link or admin_link.get("link_status") != "APPROVED":
-        reply_func(
-            "No puedes activarte porque no tienes un equipo activo asignado. "
-            "Contacta a tu administrador."
+    admin_link = get_approved_admin_link_for_courier(courier["id"])
+    admin_id = _row_value(admin_link, "admin_id")
+    if not admin_id:
+        admins = get_all_local_admins()
+        if not admins:
+            reply_func(
+                "No tienes equipo activo asignado. Contacta al soporte."
+            )
+            return
+        keyboard = [
+            [InlineKeyboardButton(
+                f"{_row_value(a, 'full_name')} - {_row_value(a, 'city')}",
+                callback_data=f"solequipo_courier_sel_{_row_value(a, 'id')}"
+            )]
+            for a in admins
+        ]
+        update.effective_message.reply_text(
+            "No tienes equipo activo asignado.\n\n"
+            "Selecciona un administrador para solicitar unirte a su equipo:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    saldo = get_courier_link_balance(courier["id"], admin_link["admin_id"])
+    saldo = int(_row_value(admin_link, "balance", 0) or 0)
     if saldo < 300:
         reply_func(
             "No puedes activarte porque tu saldo es insuficiente.\n\n"
@@ -12290,7 +16497,15 @@ def _courier_deactivate_common(update, context, reply_func):
         return
 
     deactivate_courier(courier["id"])
-    reply_func("Te has desactivado. No recibiras ofertas de pedidos.")
+    context.user_data.pop("deact_reminder_ts", None)
+    courier_updated = get_courier_by_user_id(user["id"])
+    updated_keyboard = get_repartidor_menu_keyboard(courier_updated)
+    update.effective_message.reply_text(
+        "Te has desactivado. No recibiras ofertas de pedidos.\n\n"
+        "Deten el envio de ubicacion en vivo desde tu chat para "
+        "dejar de compartir tu posicion y ahorrar bateria.",
+        reply_markup=updated_keyboard
+    )
 
 
 def courier_activate_from_message(update, context):
@@ -12340,17 +16555,23 @@ def courier_base_amount_handler(update, context):
         context.user_data.pop("courier_id_activating", None)
         return
 
+    ok, msg = can_courier_activate(courier_id)
+    if not ok:
+        update.message.reply_text(msg)
+        context.user_data.pop("courier_activating", None)
+        context.user_data.pop("courier_id_activating", None)
+        return
+
     set_courier_available_cash(courier_id, amount)
 
     context.user_data.pop("courier_activating", None)
     context.user_data.pop("courier_id_activating", None)
 
     update.message.reply_text(
-        "Te has activado exitosamente.\n"
-        "Base declarada: ${:,}\n\n"
-        "Ahora recibiras ofertas de pedidos.\n\n"
-        "Comparte tu ubicacion en vivo para estar ONLINE "
-        "y recibir ofertas mas cercanas.".format(amount)
+        "Base registrada: ${:,}\n\n"
+        "Aun no estas ONLINE.\n"
+        "Comparte tu ubicacion en vivo para activarte "
+        "y comenzar a recibir pedidos.".format(amount)
     )
 
 
@@ -12374,10 +16595,134 @@ def global_error_handler(update, context):
     print(traceback.format_exc(), flush=True)
 
 
+def solequipo_start_callback(update, context):
+    """Muestra lista de admins para solicitar union a un equipo (desde Ayuda)."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    ally = get_ally_by_user_id(user["id"])
+
+    if courier and courier["status"] == "APPROVED":
+        prefix = "solequipo_courier_sel_"
+        role_text = "repartidor"
+    elif ally and ally["status"] == "APPROVED":
+        prefix = "solequipo_ally_sel_"
+        role_text = "aliado"
+    else:
+        query.edit_message_text(
+            "Esta opcion solo esta disponible para repartidores y aliados aprobados."
+        )
+        return
+
+    admins = get_all_local_admins()
+    if not admins:
+        query.edit_message_text("No hay administradores disponibles en este momento.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(
+            f"{_row_value(a, 'full_name')} - {_row_value(a, 'city')}",
+            callback_data=f"{prefix}{_row_value(a, 'id')}"
+        )]
+        for a in admins
+    ]
+    query.edit_message_text(
+        f"Como {role_text}, selecciona el administrador al que deseas unirte:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+def solequipo_courier_sel_callback(update, context):
+    """Courier confirma solicitud de union a un admin."""
+    query = update.callback_query
+    query.answer()
+    target_admin_id = int(query.data.replace("solequipo_courier_sel_", ""))
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    courier = get_courier_by_user_id(user["id"])
+    if not courier or courier["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de repartidor activo.")
+        return
+
+    upsert_admin_courier_link(target_admin_id, courier["id"], "PENDING")
+
+    admin = get_admin_by_id(target_admin_id)
+    if admin:
+        admin_user = get_user_by_id(_row_value(admin, "user_id"))
+        if admin_user:
+            try:
+                context.bot.send_message(
+                    chat_id=_row_value(admin_user, "telegram_id"),
+                    text=(
+                        f"El repartidor {courier['full_name']} ha solicitado unirse a tu equipo.\n"
+                        "Revisa tus repartidores pendientes para aprobarlo."
+                    )
+                )
+            except Exception:
+                pass
+
+    query.edit_message_text(
+        "Solicitud enviada. El administrador recibira tu peticion y podra aprobarte "
+        "desde su panel de repartidores pendientes."
+    )
+
+
+def solequipo_ally_sel_callback(update, context):
+    """Ally confirma solicitud de union a un admin."""
+    query = update.callback_query
+    query.answer()
+    target_admin_id = int(query.data.replace("solequipo_ally_sel_", ""))
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+
+    ally = get_ally_by_user_id(user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("No tienes perfil de aliado activo.")
+        return
+
+    upsert_admin_ally_link(target_admin_id, ally["id"], "PENDING")
+
+    admin = get_admin_by_id(target_admin_id)
+    if admin:
+        admin_user = get_user_by_id(_row_value(admin, "user_id"))
+        if admin_user:
+            try:
+                context.bot.send_message(
+                    chat_id=_row_value(admin_user, "telegram_id"),
+                    text=(
+                        f"El aliado {ally['business_name']} ha solicitado unirse a tu equipo.\n"
+                        "Revisa tus aliados pendientes para aprobarlo."
+                    )
+                )
+            except Exception:
+                pass
+
+    query.edit_message_text(
+        "Solicitud enviada. El administrador recibira tu peticion y podra aprobarte "
+        "desde su panel de aliados pendientes."
+    )
+
+
 def main():
     init_db()
     force_platform_admin(ADMIN_USER_ID)
     ensure_pricing_defaults()
+    sync_all_courier_link_statuses()
 
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
@@ -12420,9 +16765,11 @@ def main():
     dp.add_handler(CommandHandler("recargas_pendientes", cmd_recargas_pendientes))
     dp.add_handler(CallbackQueryHandler(recharge_proof_callback, pattern=r"^recharge_proof_\d+$"))
     dp.add_handler(CallbackQueryHandler(recharge_callback, pattern=r"^recharge_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(plat_recargas_callback, pattern=r"^plat_rec_"))
+    dp.add_handler(CallbackQueryHandler(local_recargas_pending_callback, pattern=r"^local_recargas_pending_\d+$"))
     dp.add_handler(CallbackQueryHandler(
         admin_local_callback,
-        pattern=r"^local_(check|status|couriers_pending|courier_view|courier_approve|courier_reject|courier_block)_\d+$"
+        pattern=r"^local_"
     ))
 
     # -------------------------
@@ -12451,12 +16798,34 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|release|cancel)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
+    dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(courier_earnings_callback, pattern=r"^courier_earn_"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
+    dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
+    dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))
+    dp.add_handler(CallbackQueryHandler(solequipo_ally_sel_callback, pattern=r"^solequipo_ally_sel_\d+$"))
+
+    # -------------------------
+    # Conversaciones completas
+    # -------------------------
+    dp.add_handler(ally_conv)          # /soy_aliado
+    dp.add_handler(courier_conv)       # /soy_repartidor
+    dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
+    dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
+    dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
+    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    # Estos tres deben ir ANTES del handler global ^admin_ para que sus entry points no sean interceptados
+    dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
+    dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
+    dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
+
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_"))
 
     # Configuracion de tarifas (botones pricing_*)
@@ -12482,16 +16851,10 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-
-    # -------------------------
-    # Conversaciones completas
-    # -------------------------
-    dp.add_handler(ally_conv)          # /soy_aliado
-    dp.add_handler(courier_conv)       # /soy_repartidor
-    dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
-    dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
+    dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
+    dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega
     dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(ally_locs_conv)     # Mis ubicaciones (aliado)
@@ -12508,17 +16871,17 @@ def main():
         ],
         states={
             RECARGAR_ROL: [CallbackQueryHandler(recargar_rol_callback)],
-            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command, recargar_monto)],
+            RECARGAR_MONTO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recargar_monto)],
             RECARGAR_ADMIN: [CallbackQueryHandler(recargar_admin_callback, pattern=r"^recargar_")],
             RECARGAR_COMPROBANTE: [
                 MessageHandler(Filters.photo, recargar_comprobante),
-                MessageHandler(Filters.text & ~Filters.command, recargar_comprobante_texto),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recargar_comprobante_texto),
             ],
         },
         fallbacks=[
             CommandHandler("recargar", cmd_recargar),
             CommandHandler("cancel", cancel_conversacion),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
         allow_reentry=True,
     )
@@ -12533,14 +16896,14 @@ def main():
         ],
         states={
             PAGO_MENU: [CallbackQueryHandler(pagos_callback, pattern=r"^pagos_")],
-            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command, pago_telefono)],
-            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command, pago_banco)],
-            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command, pago_titular)],
-            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command, pago_instrucciones)],
+            PAGO_TELEFONO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_telefono)],
+            PAGO_BANCO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_banco)],
+            PAGO_TITULAR: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_titular)],
+            PAGO_INSTRUCCIONES: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pago_instrucciones)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
     )
     dp.add_handler(configurar_pagos_conv)
@@ -12553,13 +16916,13 @@ def main():
             CallbackQueryHandler(ingreso_iniciar_callback, pattern=r"^ingreso_iniciar$"),
         ],
         states={
-            INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command, ingreso_monto_handler)],
+            INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_monto_handler)],
             INGRESO_METODO: [CallbackQueryHandler(ingreso_metodo_callback, pattern=r"^ingreso_")],
-            INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command, ingreso_nota_handler)],
+            INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_nota_handler)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
         allow_reentry=True,
     )
@@ -12575,41 +16938,41 @@ def main():
         ],
 
         states={
-            LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command, admin_name)],
-            LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command, admin_document)],
-            LOCAL_ADMIN_TEAMNAME: [MessageHandler(Filters.text & ~Filters.command, admin_teamname)],
-            LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command, admin_phone)],
-            LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command, admin_city)],
-            LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command, admin_barrio)],
-            LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command, admin_residence_address)],
+            LOCAL_ADMIN_NAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_name)],
+            LOCAL_ADMIN_DOCUMENT: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_document)],
+            LOCAL_ADMIN_TEAMNAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_teamname)],
+            LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_phone)],
+            LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_city)],
+            LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_barrio)],
+            LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_residence_address)],
             LOCAL_ADMIN_RESIDENCE_LOCATION: [
                 CallbackQueryHandler(admin_geo_ubicacion_callback, pattern=r"^admin_geo_"),
                 MessageHandler(Filters.location, admin_residence_location),
-                MessageHandler(Filters.text & ~Filters.command, admin_residence_location),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_residence_location),
             ],
             LOCAL_ADMIN_CEDULA_FRONT: [
                 MessageHandler(Filters.photo, admin_cedula_front),
-                MessageHandler(Filters.text & ~Filters.command, admin_cedula_front),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_cedula_front),
             ],
             LOCAL_ADMIN_CEDULA_BACK: [
                 MessageHandler(Filters.photo, admin_cedula_back),
-                MessageHandler(Filters.text & ~Filters.command, admin_cedula_back),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_cedula_back),
             ],
             LOCAL_ADMIN_SELFIE: [
                 MessageHandler(Filters.photo, admin_selfie),
-                MessageHandler(Filters.text & ~Filters.command, admin_selfie),
+                MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_selfie),
             ],
-            LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, admin_confirm)],
+            LOCAL_ADMIN_CONFIRM: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_confirm)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
             CommandHandler("menu", menu),
             MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
     )
     dp.add_handler(admin_conv)
-    dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command, chgreq_reject_reason_handler))
+    dp.add_handler(MessageHandler(Filters.reply & Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, chgreq_reject_reason_handler))
 
     dp.add_handler(MessageHandler(
         Filters.text & Filters.regex(r'^\d[\d.,\$]*$') & ~Filters.command,
@@ -12621,7 +16984,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor|Mi perfil|Ayuda|Menu|Mis pedidos|Mi saldo aliado|Activar repartidor|Pausar repartidor|Mis pedidos repartidor|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
@@ -12633,7 +16996,7 @@ def main():
 
     # Handler global para "Cancelar" y "Volver al menu" (fuera de conversaciones)
     dp.add_handler(MessageHandler(
-        Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'),
+        Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'),
         volver_menu_global
     ))
 

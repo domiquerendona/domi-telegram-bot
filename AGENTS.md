@@ -94,14 +94,20 @@ Prefijos establecidos:
 - Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
 - Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
-- Flujo pedido:    pickup_*, customer_*, instructions, requires_cash, cash_required_amount, etc.
+- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
+- Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
+- Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id
+- Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
 
 Reglas:
 - PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.
 - Si se agrega una clave nueva, documentarla en esta sección en el mismo commit.
 - PROHIBIDO usar claves genéricas ("data", "value", "temp") sin prefijo de flujo.
+
+Regla obligatoria de direcciones (ciudad + barrio/sector):
+- Toda creación/registro de una dirección (pickups del aliado, direcciones de clientes, paradas de ruta, etc.) DEBE pedir y guardar siempre ciudad y barrio/sector.
 
 2D. Estándar obligatorio de callback_data
 
@@ -411,7 +417,7 @@ Después de los cambios
 
 Ejecutar obligatoriamente:
 
-python -m py_compile Backend/main.py Backend/services.py Backend/db.py order_delivery.py profile_changes.py
+python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
 
 Verificar imports huérfanos tras mover o eliminar funciones:
 Para cada nombre movido o eliminado, ejecutar:
@@ -428,9 +434,18 @@ por qué
 
 7. Git y ramas
 
-Nunca trabajar directamente sobre main.
+Nunca trabajar directamente sobre main, excepto cuando el usuario lo ordene explÃ­citamente para promover trabajo ya integrado en staging hacia main (merge staging â†’ main y push a origin/main), siempre que no viole la regla 7B.
 
 Confirmar siempre la rama activa antes de modificar código.
+
+REGLA OPERATIVA (NUEVA, OBLIGATORIA):
+
+Siempre se trabaja sobre la rama staging.
+
+Todo commit y push del trabajo se hace directamente a origin/staging.
+
+Excepción única:
+- Cambios estructurales de base de datos (ver 7B) se implementan en verify/* y luego se mergean a staging.
 
 Si un bloque se reemplaza, el código anterior debe desaparecer.
 
@@ -537,21 +552,21 @@ Debe existir evidencia documentada antes de merge.
 Las siguientes ramas son PERMANENTES y NUNCA deben borrarse:
 
 - main       → producción (Railway PROD). NUNCA trabajar directamente aquí.
-- staging    → integración/pruebas previas a producción. Toda rama claude/* y verify/* se mergea aquí primero.
+- staging    → rama de trabajo e integración. Aquí se desarrolla, se hace commit y se hace push.
 - luisa-web  → rama de trabajo de la colaboradora Luisa (activa).
 
 Flujo oficial de ramas:
 
-  claude/*  ──merge──►  staging  ──(validado)──►  main
-  verify/*  ──merge──►  staging                  (PROD)
+  staging   ──(validado)──►  main
+  verify/*  ──merge──►  staging  ──(validado)──►  main
                          (entorno DEV:
                           BOT_TOKEN DEV
                           DATABASE_URL separada)
 
 Reglas de flujo:
-- PROHIBIDO mergear claude/* o verify/* directamente a main sin pasar por staging.
+- PROHIBIDO mergear verify/* directamente a main sin pasar por staging.
 - Un cambio puede ir de staging a main solo cuando fue validado funcionalmente en staging.
-- staging siempre se crea desde origin/main y debe mantenerse al día con main.
+- staging debe mantenerse al día con origin/staging.
 
 Regla general para ramas de colaboradores:
 - PROHIBIDO borrar ramas cuyo nombre no sea del prefijo claude/ o verify/
@@ -689,6 +704,79 @@ Flujo de UI del ingreso externo (ConversationHandler ingreso_conv en main.py):
 - Claves de user_data: ingreso_monto, ingreso_metodo
 - Accesible desde: menu Finanzas del Admin de Plataforma
 
+9D. Recarga directa con plataforma como fallback (CRÍTICO)
+
+Un aliado o repartidor puede siempre solicitar recarga directamente al Admin de Plataforma,
+aunque pertenezca a un equipo de Admin Local.
+
+Casos habilitados:
+1. El Admin Local no tiene saldo suficiente para recargar.
+2. El Admin Local no responde o no procesa la recarga.
+
+Regla del interruptor de ganancias:
+
+  El saldo recargado pertenece a quien lo aportó.
+  Las ganancias generadas por ese saldo fluyen hacia el mismo aportante.
+
+  Si el aliado/repartidor recargó con Admin Local → ganancias al Admin Local.
+  Si el aliado/repartidor recargó con Plataforma   → ganancias a Plataforma.
+
+  Al agotarse el saldo de plataforma y recargar nuevamente con el Admin Local,
+  el flujo de ganancias vuelve automáticamente al Admin Local.
+
+Consecuencia para el Admin Local:
+  El Admin Local que no recarga a tiempo pierde las ganancias generadas por ese
+  usuario mientras su saldo recargado provenga de la plataforma. Recupera las
+  ganancias cuando el usuario vuelva a recargar con él.
+
+PROHIBIDO:
+  - Bloquear la opción de recarga con plataforma si el courier/ally pertenece a un Admin Local.
+  - Asumir que platform solo aparece como opción cuando tiene vínculo APPROVED en admin_couriers/admin_allies.
+  - Aprobar la recarga de plataforma si admins.balance (plataforma) < amount.
+
+Implementación técnica (IMPLEMENTADO 2026-03-03):
+  - UI (main.py → recargar_monto): mostrar "Plataforma" siempre, sin verificar vínculo APPROVED.
+  - Validación (main.py → recargar_admin_callback): permitir platform_id aunque no esté en approved_links.
+  - Aprobación (services.py → approve_recharge_request): cuando el aprobador es plataforma,
+    crea o actualiza un vínculo directo admin_couriers/admin_allies con admin_id=platform_id y
+    lo pone APPROVED. Todos los demás vínculos del courier/ally quedan INACTIVE (interruptor).
+    Cuando un Admin Local aprueba después: su vínculo pasa a APPROVED, el de plataforma a INACTIVE.
+  - Determinación de vínculo activo: _sync_courier_link_status y _sync_ally_link_status usan
+    updated_at DESC (no created_at) para identificar el vínculo más reciente como APPROVED.
+  - Ledger: registrar siempre PLATFORM → COURIER/ALLY para trazabilidad del origen del saldo.
+
+9E. Red cooperativa — elegibilidad de couriers (CRÍTICO)
+
+La plataforma opera como red cooperativa: cualquier courier activo puede tomar pedidos de
+cualquier aliado, sin importar a qué admin pertenece cada uno. NO existen equipos aislados
+para el despacho de pedidos.
+
+PROHIBIDO:
+  - Filtrar couriers elegibles por admin_id del aliado en get_eligible_couriers_for_order.
+  - Cancelar un dispatch completo porque el admin de un courier no tiene saldo (ADMIN_SIN_SALDO
+    de un courier solo excluye ESE courier, no cancela la oferta a otros).
+  - Usar el admin del aliado para cobrar el fee del courier (y viceversa).
+
+Regla de elegibilidad:
+  get_eligible_couriers_for_order NO recibe ni aplica admin_id como filtro.
+  Retorna todos los couriers con admin_couriers.status = 'APPROVED' y couriers.status = 'APPROVED'.
+
+Regla de comisiones (simétrica):
+  - Fee del aliado → admin del aliado (get_approved_admin_link_for_ally).
+  - Fee del courier → admin del courier al momento de aceptar (order.courier_admin_id_snapshot).
+    Fallback: get_approved_admin_link_for_courier si el snapshot es NULL.
+  - Cada admin gana únicamente de sus propios miembros.
+
+Regla de pre-verificación de saldo (publish_order_to_couriers):
+  Para cada courier elegible, llamar get_approved_admin_id_for_courier(courier_id) y verificar
+  check_service_fee_available(COURIER, courier_id, courier_admin_id) de forma individual.
+  Si un courier falla: se excluye solo él. El dispatch continúa con los demás.
+
+Implementado en (2026-03-03):
+  - db.py → get_eligible_couriers_for_order: sin filtro AND ac.admin_id, params = []
+  - order_delivery.py → publish_order_to_couriers: fee check con admin propio de cada courier
+  - order_delivery.py → _handle_delivered: ally_admin_id y courier_admin_id separados
+
 9C. Sincronización obligatoria de estado en tablas de vínculo
 
 Las tablas admin_allies y admin_couriers tienen su propio campo status, independiente del campo status en allies y couriers. Ambos DEBEN mantenerse sincronizados.
@@ -723,6 +811,18 @@ PROHIBIDO llamar a la API de Google Maps sin verificar api_usage_daily primero.
 Si api_usage_daily >= límite configurado: retornar error informativo, NO llamar a la API.
 
 Toda llamada a la API DEBE incrementar api_usage_daily en la misma operación (atómico).
+
+Regla de costeo (IMPLEMENTADO):
+
+- Toda llamada real a Google Maps (Distance Matrix / Geocode / Places) DEBE registrarse también como evento en api_usage_events (para conteo y costo promedio por operación).
+- La función oficial para registrar es record_api_usage_event() en Backend/db.py (hace INSERT en api_usage_events + incrementa api_usage_daily en la misma transacción).
+- PROHIBIDO guardar PII (direcciones completas, teléfonos, nombres, coordenadas) en meta_json de api_usage_events. Solo metadata no sensible (status, provider, mode).
+- La estimación de costo por operación se configura por variables de entorno:
+  - GOOGLE_COST_USD_PLACE_DETAILS
+  - GOOGLE_COST_USD_GEOCODE_FORWARD
+  - GOOGLE_COST_USD_PLACES_TEXT_SEARCH
+  - GOOGLE_COST_USD_DISTANCE_MATRIX_COORDS
+  - GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT
 
 Regla de caché:
 
@@ -789,6 +889,296 @@ es técnico
 es detallista
 
 quiere control total del sistema
+
+13. Sistema de Tracking de Llegada (Pedidos)
+
+Implementado en: order_delivery.py + main.py + db.py
+
+13A. Protección de datos del cliente
+
+PROHIBIDO revelar customer_name, customer_phone ni customer_address al repartidor en _handle_accept o en cualquier momento antes de que el aliado confirme la recogida.
+
+Durante la oferta (pedido publicado / aún sin confirmación de recogida) SÍ está permitido mostrar únicamente:
+
+- Mapas (PINs de Telegram) de recogida y entrega usando coordenadas ya guardadas.
+- Ciudad + barrio/sector de recogida y entrega (sin dirección exacta).
+
+El único lugar donde se revelan al repartidor la dirección exacta y los detalles del cliente (nombre/teléfono/dirección) es _notify_courier_pickup_approved (order_delivery.py), llamada tras la confirmación del aliado.
+
+13B. Timers post-aceptación (obligatorios)
+
+Al aceptar un pedido se programan SIEMPRE 3 jobs con job_queue.run_once:
+
+arr_inactive_{order_id} — T+5 min: si el repartidor no se movió ≥50m hacia el pickup → liberar y re-ofrecer.
+arr_warn_{order_id}    — T+15 min: notificar al aliado con opciones (buscar otro / llamar / esperar) y advertir al repartidor.
+arr_deadline_{order_id} — T+20 min: liberar automáticamente y re-ofrecer.
+
+PROHIBIDO programar solo algunos timers; se programan los 3 juntos o ninguno.
+
+Los 3 jobs deben cancelarse explícitamente (via _cancel_arrival_jobs) en:
+- _handle_release (repartidor libera manualmente)
+- _handle_delivered (entrega exitosa)
+- _handle_cancel_ally (aliado cancela)
+- check_courier_arrival_at_pickup (GPS detecta llegada)
+- _handle_find_another_courier (aliado solicita otro repartidor)
+
+PROHIBIDO agregar nuevas rutas de exit al flujo de pedido sin llamar _cancel_arrival_jobs.
+
+13C. Detección de llegada por GPS
+
+check_courier_arrival_at_pickup(courier_id, lat, lng, context) en order_delivery.py se llama desde courier_live_location_handler en main.py en CADA actualización de live location.
+
+Radio de llegada: ARRIVAL_RADIUS_KM = 0.1 (100 metros). PROHIBIDO cambiar este valor sin autorización.
+
+PROHIBIDO marcar courier_arrived_at sin validación GPS (haversine_km ≤ ARRIVAL_RADIUS_KM). La función es idempotente: solo actúa si courier_arrived_at IS NULL.
+
+Al detectar llegada: llama set_courier_arrived → _cancel_arrival_jobs → upsert_order_pickup_confirmation(PENDING) → _notify_ally_courier_arrived.
+
+13D. Liberación por timeout
+
+_release_order_by_timeout(order_id, courier_id, context, reason) centraliza la lógica de liberación automática. PROHIBIDO duplicar esta lógica.
+
+Al liberar: cancela jobs, llama release_order_from_courier, agrega al courier a excluded_couriers en offer_cycles, notifica courier y aliado, reinicia ciclo de ofertas excluyendo al courier liberado.
+
+13E. Posición al momento de aceptar
+
+En _handle_accept se guarda la posición actual del repartidor en courier_accepted_lat / courier_accepted_lng (tabla orders). Esta posición es la base para el chequeo de inactividad en T+5.
+
+PROHIBIDO usar residence_lat/lng como sustituto permanente; solo se usa como fallback si live_lat/lng no está disponible.
+
+13F. Compatibilidad SQLite/PostgreSQL en funciones nuevas
+
+PROHIBIDO usar .get() en objetos Row de la base de datos. Usar siempre _row_value(row, key) definido en order_delivery.py. sqlite3.Row no implementa .get(); RealDictRow de psycopg2 sí, pero el código debe ser compatible con ambos motores.
+
+13G. Pendientes (NO implementado aún)
+
+- Cuenta regresiva visible (countdown) post-aceptación.
+- Botón explícito "Llegué" del courier (hoy es auto-detección por live location).
+- Persistencia ante reinicios: jobs T+5/T+15/T+20 y exclusión de couriers del ciclo viven en memoria.
+
+14. Reglas de escritura de archivos con herramientas de IA
+
+14A. Cuando el tool Edit no persiste los cambios
+
+Sintoma: Edit reporta exito pero git diff no muestra el cambio, o el archivo vuelve a su estado original.
+Causa comun: linter del IDE o servidor de lenguaje revierte el archivo inmediatamente despues de guardarlo.
+
+Procedimiento obligatorio al detectar este problema:
+1. Verificar con git diff que el cambio no esta presente.
+2. Usar un script Python via Bash para escribir el archivo directamente:
+   python3 << 'EOF'
+   path = 'ruta/al/archivo.py'
+   with open(path, 'r', encoding='utf-8') as f:
+       content = f.read()
+   content = content.replace(viejo_bloque, nuevo_bloque, 1)
+   with open(path, 'w', encoding='utf-8') as f:
+       f.write(content)
+   EOF
+3. Verificar con grep que el cambio persiste.
+4. Ejecutar python -m py_compile para confirmar compilacion.
+
+PROHIBIDO reintentar Edit indefinidamente si el patron de reversion es claro.
+Cambiar de estrategia al tercer intento fallido.
+
+14B. Escritura de secuencias de escape en archivos Python via bash
+
+Problema: al escribir un archivo Python usando heredoc (<< 'PYEOF') o python3 -c "...",
+la secuencia backslash-n dentro de strings Python se convierte en un salto de linea real
+en lugar de quedar como los dos caracteres backslash + n que Python necesita interpretar
+como escape de nueva linea.
+
+Ejemplo del problema (INCORRECTO):
+    line = '    text = "hola
+world"'  # en heredoc 
+ se convierte en newline real
+
+Solucion obligatoria: usar chr(92) para construir el caracter backslash:
+    bs = chr(92)       # chr(92) = backslash
+    n_esc = bs + 'n'   # produce el escape 
+ correcto en el archivo
+
+Ejemplo correcto:
+    bs = chr(92)
+    n_esc = bs + 'n'
+    line = '    text = "hola' + n_esc + 'world"'  # escribe hola
+world correctamente
+
+Esta regla aplica a CUALQUIER caracter de escape Python que deba aparecer en el archivo
+generado: 	, 
+, 
+, \, etc.
+
+PROHIBIDO usar secuencias de escape directas (
+, 	) dentro de strings Python cuando
+el objetivo es escribir esas secuencias literalmente en otro archivo Python.
+
+15. Colaboración entre agentes IA (Claude Code y Codex)
+
+Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
+En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (staging).
+Estas reglas garantizan la armonia del codigo y que ningun agente deshaga el trabajo del otro.
+
+15A. Registro obligatorio — WORKLOG.md
+
+Existe el archivo WORKLOG.md en la raiz del repositorio. Es el mecanismo principal de coordinacion.
+
+Al INICIAR una sesion de trabajo:
+  1. git pull origin staging  (traer cambios antes de empezar).
+  2. Leer git log --oneline -15 origin/staging para ver que hizo el otro agente recientemente.
+  3. Leer WORKLOG.md para detectar sesiones activas del otro agente.
+  4. Agregar una entrada en la seccion "Sesiones activas" de WORKLOG.md con:
+     - Agente (claude / codex)
+     - Fecha y hora de inicio
+     - Archivos que se van a modificar
+     - Descripcion breve de la tarea
+  5. Commit + push del WORKLOG: "[claude] worklog: inicio — <tarea breve>"
+
+Al FINALIZAR una sesion de trabajo:
+  1. Mover la entrada de "Sesiones activas" a "Historial reciente" en WORKLOG.md con estado COMPLETADO o PENDIENTE.
+  2. Commit + push del WORKLOG: "[claude] worklog: cierre — <tarea breve>"
+
+PROHIBIDO iniciar trabajo sin actualizar WORKLOG.md primero.
+PROHIBIDO olvidar cerrar la entrada al terminar la sesion.
+
+15B. Prefijo obligatorio en commits
+
+Todo commit generado por un agente IA DEBE comenzar con el prefijo de su agente:
+  - Claude Code: [claude] feat: ...
+  - Codex:       [codex] feat: ...
+
+El prefijo va siempre al inicio del titulo del commit, antes de feat/fix/docs/etc.
+Adicionalmente, Claude Code incluye al pie: Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Para filtrar commits por agente:
+  git log --oneline --grep="[claude]"
+  git log --oneline --grep="[codex]"
+
+PROHIBIDO omitir el prefijo en cualquier commit generado por un agente IA.
+
+15C. Reglas de no-interferencia (critico)
+
+PROHIBIDO borrar, revertir o modificar cambios realizados por otro agente sin:
+  1. Informar primero a Luis Felipe: que cambio del otro agente es problematico y por que.
+  2. Esperar autorizacion explicita antes de actuar.
+
+Si se detecta codigo defectuoso, conflicto o regresion introducida por otro agente:
+  - PROHIBIDO corregirlo directamente.
+  - Obligatorio reportar a Luis Felipe: archivo exacto, funcion, hash del commit, descripcion del problema.
+  - Esperar instruccion explicita antes de tocar el codigo del otro agente.
+
+15D. Protocolo ante solapamiento detectado
+
+Si al leer WORKLOG.md o git log se detecta que el otro agente esta tocando los mismos archivos:
+  1. PAUSAR la tarea actual.
+  2. Notificar a Luis Felipe: "El agente X esta modificando <archivo> (ver WORKLOG.md o commit <hash>). Necesito instruccion antes de continuar."
+  3. No continuar hasta recibir instruccion.
+
+Si al hacer git push se recibe rechazo por fast-forward (el otro agente pusheo primero):
+  - PROHIBIDO git push --force.
+  - Hacer git pull, revisar los cambios del otro agente, y reportar a Luis Felipe si hay conflicto.
+
+15E. Archivos de alto riesgo (zonas de conflicto)
+
+Los siguientes archivos son modificados frecuentemente por ambos agentes.
+Requieren especial atencion al verificar WORKLOG.md antes de editar:
+
+  Backend/main.py          — orquestador central, handlers, flujos
+  Backend/services.py      — logica de negocio y re-exports
+  Backend/db.py            — acceso a base de datos
+  Backend/order_delivery.py — flujo completo de pedidos
+  AGENTS.md                — reglas del proyecto
+  CLAUDE.md                — documentacion del proyecto
+
+Para estos archivos: OBLIGATORIO leer git log --follow -5 <archivo> antes de editar.
+
+15F. Objetivo
+
+La coordinacion entre agentes pasa SIEMPRE por Luis Felipe.
+Ningun agente tiene autoridad para resolver conflictos con otro agente por su cuenta.
+El objetivo es que el trabajo de ambos agentes sume, nunca que uno deshaga al otro.
+
+15G. Protocolo pre-push (obligatorio antes de cada git push)
+
+Antes de ejecutar git push origin staging, el agente DEBE:
+
+  1. Verificar si el otro agente pusheo mientras se trabajaba:
+       git fetch origin staging
+       git log --oneline HEAD..origin/staging
+
+  2. Segun el resultado:
+
+     a) Sin commits nuevos en origin/staging:
+          → Push normal. No hay riesgo de solapamiento.
+
+     b) Hay commits nuevos pero en archivos DISTINTOS a los que se modificaron:
+          → git pull --ff-only origin staging
+          → Verificar compilacion: python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
+          → Push si todo compila.
+
+     c) Hay commits nuevos en los MISMOS archivos que se modificaron:
+          → PAUSAR. PROHIBIDO hacer push.
+          → Reportar a Luis Felipe: "El agente X pusheo cambios en <archivo> mientras trabajaba.
+             Mis cambios: <descripcion>. Sus cambios: <hash> <descripcion>.
+             Necesito instruccion antes de pushear."
+          → Esperar instruccion explicita.
+
+  3. PROHIBIDO git push --force en cualquier circunstancia.
+
+Comando rapido para detectar solapamiento de archivos:
+  git diff --name-only HEAD origin/staging
+  (compara contra los archivos que tu modificaste en esta sesion)
+
+16. Donde documentar (routing de documentacion)
+
+Cuando Luis Felipe da la orden "documenta esto", el agente debe determinar el destino
+correcto sin preguntar, usando esta tabla:
+
+| Tipo de contenido                                              | Documento destino         |
+|----------------------------------------------------------------|---------------------------|
+| Regla obligatoria, restriccion, prohibicion, protocolo         | AGENTS.md                 |
+| Leccion aprendida, solucion a problema tecnico recurrente      | AGENTS.md (seccion 14)    |
+| Protocolo de coordinacion entre agentes IA                     | AGENTS.md (seccion 15)    |
+| Arquitectura, estructura del proyecto, flujo, convencion       | CLAUDE.md                 |
+| Sesion activa o cierre de sesion de un agente                  | WORKLOG.md                |
+| Algo que es regla Y necesita detalle operativo / comandos      | AGENTS.md (regla) + CLAUDE.md (detalle) |
+
+Reglas de aplicacion:
+
+1. Si el contenido es una REGLA (algo que un agente debe o no debe hacer): va en AGENTS.md.
+2. Si el contenido explica COMO funciona el sistema o como trabajar con el: va en CLAUDE.md.
+3. Si un tema ya esta cubierto en AGENTS.md con detalle completo: CLAUDE.md solo agrega
+   un parrafo de referencia o comandos practicos, nunca repite el contenido completo.
+4. WORKLOG.md es exclusivo para registro de sesiones de agentes. No es un destino de documentacion general.
+5. Si el contenido no encaja claramente en ningun documento: preguntar a Luis Felipe antes de documentar.
+
+17. Documentar cambios estructurales (obligatorio en el mismo commit)
+
+Todo cambio que agregue o modifique la estructura del proyecto DEBE documentarse
+en el mismo commit que lo implementa. No en un commit posterior.
+
+Tabla de routing estructural:
+
+| Se agrega o modifica...                        | Actualizar en CLAUDE.md                        |
+|------------------------------------------------|------------------------------------------------|
+| Nueva tabla en la BD                           | Seccion "Tablas Principales"                   |
+| Nueva columna relevante en tabla existente     | Seccion "Tablas Principales" (fila de la tabla)|
+| Nuevo modulo .py en Backend/                   | Seccion "Estructura del Repositorio"           |
+| Nueva variable de entorno                      | Tabla "Variables de Entorno"                   |
+| Nuevo prefijo de callback                      | Tabla de prefijos de callback                  |
+| Nuevo flow de conversacion (ConversationHandler)| Seccion "Convenciones de Estado"              |
+| Nueva funcion publica en db.py                 | Seccion de la capa de datos o tabla relevante  |
+| Nueva capa, modulo web o ruta de API           | Seccion "Arquitectura de Capas" o "web/"       |
+| Nueva constante de tiempo o radio (order_delivery) | Seccion "Sistema de Tracking de Llegada"   |
+
+Reglas de aplicacion:
+
+1. El agente no debe esperar una orden separada de "documenta esto" para cambios estructurales.
+   La documentacion va incluida en el mismo commit del cambio.
+2. Si el cambio no encaja en ninguna fila de la tabla: agregar una nota breve en la seccion
+   mas cercana de CLAUDE.md y mencionar el archivo y funcion exactos.
+3. La descripcion en CLAUDE.md debe ser de una linea por elemento nuevo. No un parrafo.
+4. El git log es el historial cronologico. CLAUDE.md es la referencia de estado actual.
+   No hay CHANGELOG separado.
 
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
