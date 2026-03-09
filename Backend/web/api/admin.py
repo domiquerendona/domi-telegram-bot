@@ -370,6 +370,113 @@ def get_saldos(admin=Depends(get_current_user)):
     }
 
 
+@router.get("/users")
+def list_all_users(admin=Depends(get_current_user)):
+    """Lista todos los usuarios del sistema con su perfil de rol."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Query 1: usuarios Telegram con perfil de rol
+    cur.execute("""
+        SELECT
+            u.id, u.telegram_id, u.username, u.created_at,
+            COALESCE(a.full_name, c.full_name, al.business_name, u.username, '') AS nombre,
+            COALESCE(a.phone, c.phone, al.phone, '')   AS phone,
+            COALESCE(a.city,  c.city,  al.city,  '')   AS ciudad,
+            COALESCE(a.status, c.status, al.status, '') AS status,
+            CASE
+                WHEN a.id IS NOT NULL AND (a.team_name = 'PLATAFORMA' OR u.role IN ('PLATFORM_ADMIN','ADMIN_PLATFORM'))
+                    THEN 'PLATFORM_ADMIN'
+                WHEN a.id IS NOT NULL THEN 'ADMIN_LOCAL'
+                WHEN c.id IS NOT NULL THEN 'COURIER'
+                WHEN al.id IS NOT NULL THEN 'ALLY'
+                WHEN u.role IN ('PLATFORM_ADMIN','ADMIN_PLATFORM') THEN 'PLATFORM_ADMIN'
+                ELSE COALESCE(u.role, '')
+            END AS rol_inferido
+        FROM users u
+        LEFT JOIN admins  a  ON a.user_id = u.id AND a.is_deleted = 0
+        LEFT JOIN couriers c ON c.user_id = u.id
+        LEFT JOIN allies  al ON al.user_id = u.id AND (al.is_deleted IS NULL OR al.is_deleted = 0)
+        ORDER BY u.id DESC
+    """)
+    telegram_users = cur.fetchall()
+
+    # Query 2: todos los couriers
+    cur.execute("SELECT id, full_name, phone, city, status, created_at FROM couriers ORDER BY id")
+    all_couriers = cur.fetchall()
+
+    # Query 3: todos los aliados
+    cur.execute("SELECT id, business_name, phone, city, status, created_at FROM allies WHERE is_deleted IS NULL OR is_deleted = 0 ORDER BY id")
+    all_allies = cur.fetchall()
+    conn.close()
+
+    def rv(row, key, idx, default=""):
+        try:
+            v = row[key]
+            return v if v is not None else default
+        except (KeyError, TypeError, IndexError):
+            try:
+                v = row[idx]
+                return v if v is not None else default
+            except Exception:
+                return default
+
+    result = []
+
+    # Usuarios Telegram (admins, couriers/aliados con cuenta)
+    for r in telegram_users:
+        result.append({
+            "id": rv(r, "id", 0, 0),
+            "telegram_id": rv(r, "telegram_id", 1, 0),
+            "username": rv(r, "username", 2) or "",
+            "role": rv(r, "rol_inferido", 8) or "",
+            "created_at": str(rv(r, "created_at", 3)) or "",
+            "nombre": rv(r, "nombre", 4) or "",
+            "phone": rv(r, "phone", 5) or "",
+            "ciudad": rv(r, "ciudad", 6) or "",
+            "status": rv(r, "status", 7) or "",
+        })
+
+    # IDs de couriers/aliados ya incluidos vía users
+    courier_ids_seen = {rv(r, "id", 0, 0) for r in telegram_users if rv(r, "rol_inferido", 8) == "COURIER"}
+    ally_ids_seen = {rv(r, "id", 0, 0) for r in telegram_users if rv(r, "rol_inferido", 8) == "ALLY"}
+
+    for c in all_couriers:
+        cid = rv(c, "id", 0, 0)
+        if cid not in courier_ids_seen:
+            result.append({
+                "id": cid,
+                "telegram_id": 0,
+                "username": "",
+                "role": "COURIER",
+                "created_at": str(rv(c, "created_at", 5)) or "",
+                "nombre": rv(c, "full_name", 1) or "",
+                "phone": rv(c, "phone", 2) or "",
+                "ciudad": rv(c, "city", 3) or "",
+                "status": rv(c, "status", 4) or "",
+            })
+
+    for a in all_allies:
+        aid = rv(a, "id", 0, 0)
+        if aid not in ally_ids_seen:
+            result.append({
+                "id": aid,
+                "telegram_id": 0,
+                "username": "",
+                "role": "ALLY",
+                "created_at": str(rv(a, "created_at", 5)) or "",
+                "nombre": rv(a, "business_name", 1) or "",
+                "phone": rv(a, "phone", 2) or "",
+                "ciudad": rv(a, "city", 3) or "",
+                "status": rv(a, "status", 4) or "",
+            })
+
+    return result
+
+
 @router.get("/ganancias")
 def get_ganancias(admin=Depends(get_current_user)):
     """Retorna resumen de ganancias del sistema a partir del ledger."""
