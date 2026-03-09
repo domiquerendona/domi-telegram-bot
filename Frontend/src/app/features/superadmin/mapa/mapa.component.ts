@@ -67,9 +67,9 @@ import { ApiService } from '../../../core/services/api';
     </div>
   `,
   styles: [`
-    .mapa-container { padding: 20px; height: calc(100vh - 80px); display: flex; flex-direction: column; gap: 14px; box-sizing: border-box; }
+    .mapa-container { padding: 20px; }
 
-    .mapa-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .mapa-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
     .mapa-header h2 { margin: 0; font-size: 20px; font-weight: 700; }
     .mapa-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
@@ -81,8 +81,8 @@ import { ApiService } from '../../../core/services/api';
     .btn-refresh { padding: 5px 14px; border: 1px solid #d1d5db; border-radius: 8px; background: white; cursor: pointer; font-size: 13px; color: #374151; }
     .btn-refresh:hover { border-color: #4338ca; color: #4338ca; }
 
-    .mapa-layout { display: flex; gap: 14px; flex: 1; min-height: 0; }
-    .mapa-canvas { flex: 1; border-radius: 12px; border: 1px solid #e5e7eb; background: #f1f5f9; min-height: 400px; }
+    .mapa-layout { display: flex; gap: 14px; }
+    .mapa-canvas { flex: 1; min-width: 0; height: 520px; border-radius: 12px; border: 1px solid #e5e7eb; background: #f1f5f9; }
 
     .mapa-sidebar { width: 260px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
     .sidebar-section { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; }
@@ -118,6 +118,7 @@ export class MapaComponent implements OnInit, AfterViewInit, OnDestroy {
   private courierMarkers: any[] = [];
   private orderMarkers: any[] = [];
   private intervalo: any = null;
+  private resizeObserver: ResizeObserver | null = null;
   private readonly centroDefault: [number, number] = [4.711, -74.0721];
   private readonly isBrowser: boolean;
 
@@ -135,13 +136,18 @@ export class MapaComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngAfterViewInit(): void {
-    if (this.isBrowser) {
-      this.initMapa();
-    }
+    if (!this.isBrowser) return;
+    // Doble rAF: garantiza que el browser completó layout y paint antes de inicializar Leaflet
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.initMapa();
+      });
+    });
   }
 
   ngOnDestroy(): void {
     if (this.intervalo) clearInterval(this.intervalo);
+    if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.map) this.map.remove();
   }
 
@@ -159,12 +165,18 @@ export class MapaComponent implements OnInit, AfterViewInit, OnDestroy {
     });
     L.Marker.prototype.options.icon = iconDefault;
 
-    this.map = L.map(this.mapaCanvas.nativeElement).setView(this.centroDefault, 13);
+    this.map = L.map(this.mapaCanvas.nativeElement, { zoomControl: true }).setView(this.centroDefault, 13);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors',
       maxZoom: 19,
     }).addTo(this.map);
+
+    // ResizeObserver: llama invalidateSize cada vez que el contenedor cambia de tamaño
+    this.resizeObserver = new ResizeObserver(() => {
+      this.zone.run(() => this.map?.invalidateSize());
+    });
+    this.resizeObserver.observe(this.mapaCanvas.nativeElement);
 
     this.actualizarMarcadores();
   }
