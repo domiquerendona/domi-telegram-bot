@@ -15,7 +15,7 @@ from web.users.repository import get_user_by_id
 from web.auth.dependencies import get_current_user
 
 # Schemas de respuesta
-from web.schemas.user import UserResponse, AdminResponse, CourierResponse, AllyResponse
+from web.schemas.user import UserResponse, AdminResponse, CourierResponse, AllyResponse, OrderResponse
 
 # Funciones de acceso a datos
 from db import (
@@ -23,6 +23,7 @@ from db import (
     get_all_admins, update_admin_status_by_id,
     get_all_couriers, update_courier_status_by_id,
     get_all_allies, update_ally_status_by_id,
+    get_all_orders,
 )
 
 
@@ -249,5 +250,37 @@ def get_unassigned_orders(admin=Depends(get_current_user)):
             "customer_name": o["customer_name"],
             "ally_name": o["ally_name"],
             "created_at": str(o["created_at"]) if o["created_at"] else None,
+        })
+    return result
+
+
+@router.get("/orders", response_model=list[OrderResponse])
+def list_orders(status: str = None, admin=Depends(get_current_user)):
+    """Lista todos los pedidos del sistema con nombre de courier y aliado."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    # Construir lookups de nombres usando funciones que ya funcionan
+    courier_names = {r["id"]: r["full_name"] for r in get_all_couriers()}
+    ally_names = {r["id"]: r["business_name"] for r in get_all_allies()}
+
+    rows = get_all_orders(status_filter=status, limit=200)
+    result = []
+    for o in rows:
+        result.append({
+            "id": o["id"],
+            "status": o["status"],
+            "customer_name": o["customer_name"],
+            "customer_phone": o["customer_phone"],
+            "customer_address": o["customer_address"],
+            "customer_city": o["customer_city"],
+            "customer_barrio": o["customer_barrio"],
+            "total_fee": o["total_fee"] or 0,
+            "additional_incentive": o["additional_incentive"] or 0,
+            "courier_name": courier_names.get(o["courier_id"], "") if o["courier_id"] else "",
+            "ally_name": ally_names.get(o["ally_id"], "") if o["ally_id"] else "",
+            "created_at": str(o["created_at"]) if o["created_at"] else "",
+            "delivered_at": str(o["delivered_at"]) if o["delivered_at"] else "",
+            "canceled_at": str(o["canceled_at"]) if o["canceled_at"] else "",
         })
     return result

@@ -69,3 +69,23 @@ class AllyResponse(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+class OrderResponse(BaseModel):
+    id: int
+    status: str
+    customer_name: str
+    customer_phone: str
+    customer_address: str
+    customer_city: str
+    customer_barrio: str
+    total_fee: int
+    additional_incentive: int
+    courier_name: str
+    ally_name: str
+    created_at: str
+    delivered_at: str
+    canceled_at: str
+
+    class Config:
+        use_enum_values = True

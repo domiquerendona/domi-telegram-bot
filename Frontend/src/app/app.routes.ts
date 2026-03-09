@@ -12,6 +12,7 @@ import { SettingsComponent } from './features/superadmin/settings/settings';
 import { AdministradoresComponent } from './features/superadmin/administradores/administradores';
 import { RepartidoresComponent } from './features/superadmin/repartidores/repartidores';
 import { AliadosComponent } from './features/superadmin/aliados/aliados';
+import { OrdersComponent } from './features/superadmin/orders/orders';
 import { TerminosComponent } from './features/superadmin/legal/terminos';
 import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
 import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
@@ -57,6 +58,11 @@ export const routes: Routes = [
         path: 'aliados',
         component: AliadosComponent,
         data: { title: 'Aliados' }
+      },
+      {
+        path: 'orders',
+        component: OrdersComponent,
+        data: { title: 'Pedidos' }
       },
       { 
         path: 'settings',           // Ruta para configuración: "/superadmin/settings"
