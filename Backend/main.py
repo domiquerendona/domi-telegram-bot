@@ -99,6 +99,7 @@ from services import (
     extract_lat_lng_from_text,
     expand_short_url,
     can_call_google_today,
+    can_use_cotizador,
     extract_place_id_from_url,
     google_place_details,
     approve_recharge_request,
@@ -8076,6 +8077,12 @@ def volver_menu_global(update, context):
 # ----- COTIZADOR INTERNO -----
 
 def cotizar_start(update, context):
+    telegram_id = update.effective_user.id
+    ok, msg = can_use_cotizador(telegram_id)
+    if not ok:
+        update.effective_message.reply_text(msg)
+        return ConversationHandler.END
+
     context.user_data.pop("cotizar_pickup", None)
     context.user_data.pop("cotizar_dropoff", None)
     context.user_data.pop("cotizar_ally_id", None)
@@ -8083,7 +8090,7 @@ def cotizar_start(update, context):
         [InlineKeyboardButton("Por distancia (km)", callback_data="cotizar_modo_km")],
         [InlineKeyboardButton("Por ubicaciones", callback_data="cotizar_modo_ubi")],
     ]
-    update.message.reply_text(
+    update.effective_message.reply_text(
         "COTIZADOR\n\n"
         "Como quieres cotizar?",
         reply_markup=InlineKeyboardMarkup(keyboard)

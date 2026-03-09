@@ -1800,16 +1800,22 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
                       ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
     """
-    Cobra tarifa de $300 por servicio al courier/aliado.
-    - Si admin es PLATFORM: 300 van a plataforma.
-    - Si admin es local: 300 del miembro + 100 del admin (comision plataforma).
+    Cobra tarifa de $300 por servicio al courier/aliado y distribuye el ingreso.
+    Distribucion:
+    - Si admin es PLATFORM: $300 van a plataforma.
+    - Si admin es local: $200 al admin del miembro, $100 a plataforma.
+    El admin no paga comision; recibe ingresos por cada servicio de su equipo.
     Retorna: (success, message)
     """
     fee = 300
-    platform_commission = 100
+    admin_share = 200
+    platform_share = 100
 
     platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin["id"] == admin_id
+    if not platform_admin:
+        return False, "Plataforma no configurada."
+    platform_id = platform_admin["id"]
+    is_platform = (admin_id == platform_id)
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -1821,38 +1827,45 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     if balance < fee:
         return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, fee)
 
-    if not is_platform:
-        admin_balance = get_admin_balance(admin_id)
-        if admin_balance < platform_commission:
-            return False, "ADMIN_SIN_SALDO"
-
     if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, -fee)
     elif target_type == "ALLY":
         update_ally_link_balance(target_id, admin_id, -fee)
 
-    insert_ledger_entry(
-        kind="FEE",
-        from_type=target_type,
-        from_id=target_id,
-        to_type="ADMIN",
-        to_id=admin_id,
-        amount=fee,
-        ref_type=ref_type,
-        ref_id=ref_id,
-        note="Tarifa de servicio"
-    )
-
-    if not is_platform:
+    if is_platform:
+        # Plataforma gana los $300 completos
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=fee,
+            kind="FEE_INCOME",
+            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+    else:
+        # Admin local gana $200
         update_admin_balance_with_ledger(
             admin_id=admin_id,
-            delta=-platform_commission,
+            delta=admin_share,
+            kind="FEE_INCOME",
+            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+        # Plataforma gana $100
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=platform_share,
             kind="PLATFORM_FEE",
             note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
             ref_type=ref_type,
             ref_id=ref_id,
-            from_type="ADMIN",
-            from_id=admin_id,
+            from_type=target_type,
+            from_id=target_id,
         )
 
     return True, "Tarifa de ${:,} aplicada.".format(fee)
@@ -1860,15 +1873,12 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
     """
-    Verifica si hay saldo suficiente para cobrar el fee, sin cobrar.
+    Verifica si el miembro tiene saldo suficiente para cobrar el fee ($300), sin cobrar.
+    El admin no paga comision (recibe ingresos), por lo que no se valida su saldo aqui.
     Retorna: (can_operate, error_code)
-    error_code: 'OK', 'MEMBER_SIN_SALDO', 'ADMIN_SIN_SALDO'
+    error_code: 'OK' o 'MEMBER_SIN_SALDO'
     """
     fee = 300
-    platform_commission = 100
-
-    platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin["id"] == admin_id
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -1879,11 +1889,6 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
 
     if balance < fee:
         return False, "MEMBER_SIN_SALDO"
-
-    if not is_platform:
-        admin_balance = get_admin_balance(admin_id)
-        if admin_balance < platform_commission:
-            return False, "ADMIN_SIN_SALDO"
 
     return True, "OK"
 
@@ -2242,6 +2247,36 @@ def get_user_db_id_from_update(update) -> int:
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     return user_row["id"]
+
+
+def can_use_cotizador(telegram_id: int):
+    """
+    Permite usar /cotizar solo a usuarios registrados (ally/courier/admin)
+    y con rol en estado APPROVED.
+    Retorna (ok, message).
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return False, "Para usar /cotizar primero debes iniciar el bot con /start."
+
+    user_id = user["id"]
+
+    admin = get_admin_by_user_id(user_id)
+    if admin and str(admin.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    ally = get_ally_by_user_id(user_id)
+    if ally and str(ally.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    courier = get_courier_by_user_id(user_id)
+    if courier and str(courier.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    if admin or ally or courier:
+        return False, "Tu registro aun no esta aprobado. Cuando estes en estado APPROVED podras usar /cotizar."
+
+    return False, "Para usar /cotizar debes estar registrado como aliado, repartidor o admin y estar en estado APPROVED."
 
 
 # ---------------------------------------------------------------------------
