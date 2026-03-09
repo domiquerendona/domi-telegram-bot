@@ -1,33 +1,81 @@
 // Importa el tipo Routes desde el sistema de enrutamiento de Angular
 import { Routes } from '@angular/router';
-import { SuperadminLayoutComponent } from './layout/superadmin-layout/superadmin-layout';
-import { MapaComponent } from './features/superadmin/mapa/mapa.component';
-// Importa los componentes que se mostrarán dentro del layout
- import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
- import { UsersComponent } from './features/superadmin/users/users';
- import { SettingsComponent } from './features/superadmin/settings/settings';
 
+// Importa el layout principal que contendrá las vistas del Superadmin
+import { SuperadminLayoutComponent } from './layout/superadmin-layout/superadmin-layout';
+
+// Importa los componentes que se mostrarán dentro del layout
+import { MapaComponent } from './features/superadmin/mapa/mapa.component';
+import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
+import { UsersComponent } from './features/superadmin/users/users';
+import { SettingsComponent } from './features/superadmin/settings/settings';
+import { TerminosComponent } from './features/superadmin/legal/terminos';
+import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
+import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
+import { CentroAyudaComponent } from './features/superadmin/soporte/centro-ayuda';
+import {ContactoComponent} from './features/superadmin/soporte/contacto'
+import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
 // Definición de las rutas principales de la aplicación
 export const routes: Routes = [
 
-  // Ruta raíz: cuando el usuario entra a "/"
+  // Ruta raíz: cuando el usuario entra a la URL base "/"
   {
-    path: '',
-    redirectTo: 'superadmin', // Redirige automáticamente a /superadmin
-    pathMatch: 'full' // La URL debe coincidir exactamente
+    path: '',                   // Ruta vacía
+    redirectTo: 'superadmin',   // Redirige automáticamente a "/superadmin"
+    pathMatch: 'full'           // Debe coincidir exactamente con la ruta vacía
   },
 
-  // Ruta principal del panel superadmin
+  // Ruta principal del módulo Superadmin
   {
-    path: 'superadmin',
-    component: SuperadminLayoutComponent, // Layout base (sidebar + navbar + router-outlet)
-
-    // Rutas hijas que se renderizan dentro del layout
-    children: [
-       { path: '', component: DashboardComponent }, // /superadmin
-       { path: 'users', component: UsersComponent }, // /superadmin/users
-       { path: 'settings', component: SettingsComponent }, // /superadmin/settings
-       { path: 'mapa', component: MapaComponent },
+    path: 'superadmin',             // Ruta que representa el layout de superadmin
+    component: SuperadminLayoutComponent, // Componente principal que contiene el layout
+    children: [                     // Rutas hijas que se muestran dentro del layout
+      { 
+        path: '',                   // Ruta por defecto dentro de "superadmin"
+        component: DashboardComponent, // Componente que se carga (Dashboard)
+        data: { title: 'Dashboard' }   // Metadata opcional (por ejemplo, para título de página)
+      },
+      { 
+        path: 'users',              // Ruta para usuarios: "/superadmin/users"
+        component: UsersComponent,  // Componente que se muestra
+        data: { title: 'Usuarios' } // Metadata
+      },
+      { 
+        path: 'settings',           // Ruta para configuración: "/superadmin/settings"
+        component: SettingsComponent,
+        data: { title: 'Configuración' }
+      },
+      { 
+        path: 'mapa',               // Ruta para mapa: "/superadmin/mapa"
+        component: MapaComponent,
+        data: { title: 'Mapa' }
+      },
+      
+      { path: 'terminos', 
+        component: TerminosComponent ,
+      data: { title: 'Terminos y Condiciones' }
+    },
+     { path: 'datos-personales', 
+        component: TratamientoDatosComponent ,
+      data: { title: 'Tratamiento de Datos Personales' }
+    },
+        { path: 'politica-uso', 
+        component: PoliticaUsoComponent ,
+      data: { title: 'Política de Uso de la Plataforma' }
+    },
+        
+    { path: 'centro-ayuda', 
+        component: CentroAyudaComponent ,
+      data: { title: 'Centro de Ayuda' }
+    },
+    { path: 'contacto', 
+        component: ContactoComponent ,
+      data: { title: 'Contacto' }
+    },
+    { path: 'preguntas-frecuentes', 
+        component:  PreguntasFrecuentesComponent,
+      data: { title: 'Preguntas Frecuentes' }
+    },
     ]
   }
 ];

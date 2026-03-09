@@ -7,53 +7,58 @@ import { RouterOutlet } from '@angular/router';
 // Importa los componentes reutilizables del layout
 import { SidebarComponent } from '../components/sidebar/sidebar';
 import { HeaderComponent } from '../components/header/header';
+import { FooterComponent } from '../components/footer/footer';
 
 @Component({
   // Nombre de la etiqueta HTML personalizada
   selector: 'app-superadmin-layout',
 
-  // Indica que es un componente standalone (Angular moderno)
+  // Componente standalone (Angular moderno)
   standalone: true,
 
-  // Componentes y módulos que este componente necesita
-  imports: [RouterOutlet, SidebarComponent, HeaderComponent],
+  // Componentes que usa el layout
+  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent],
 
-  // Template HTML embebido
-
- template: `
+  template: `
   <div class="app">
+
     <app-sidebar></app-sidebar>
 
     <div class="content-wrapper">
+
       <app-header></app-header>
 
       <div class="content-container">
         <router-outlet></router-outlet>
       </div>
+
+      <app-footer></app-footer>
+
     </div>
+
   </div>
-`,
-styles: [`
-  .app {
-    display: flex;
-    height: 100vh;
-    background: #eef1f6;
-  }
+  `,
 
-  .content-wrapper {
-    flex: 1;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-  }
+  styles: [`
+    .app {
+      display: flex;
+      min-height: 100vh;
+      background: #eef1f6;
+    }
 
-  .content-container {
-    background: #f6f7fb;
-    flex: 1;
-    border-radius: 20px;
-    padding: 30px;
-    overflow: auto;
-  }
-`]
+    .content-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    .content-container {
+      background: #f6f7fb;
+      flex: 1;
+      border-radius: 20px;
+      padding: 30px;
+    }
+  `]
 })
 export class SuperadminLayoutComponent {}

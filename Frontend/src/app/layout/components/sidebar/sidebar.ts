@@ -91,7 +91,7 @@ import { NgIf } from '@angular/common';
   /* ================= CONTENEDOR PRINCIPAL ================= */
   .sidebar {
     width: 260px;
-    height: 100vh;
+    height: 100%;
     background: #4338ca;
     color: white;
     padding: 20px;

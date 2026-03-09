@@ -140,9 +140,9 @@ declare const google: any;
       min-height: 0;
     }
 
-    .mapa-canvas {
+      .mapa-canvas {
       flex: 1;
-      min-height: 480px;
+      height: 100%;
       border-radius: 10px;
       border: 1px solid #e5e7eb;
       background: #f9fafb;
