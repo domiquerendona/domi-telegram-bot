@@ -9,7 +9,12 @@ import { MapaComponent } from './features/superadmin/mapa/mapa.component';
 import { DashboardComponent } from './features/superadmin/dashboard/dashboard';
 import { UsersComponent } from './features/superadmin/users/users';
 import { SettingsComponent } from './features/superadmin/settings/settings';
-
+import { TerminosComponent } from './features/superadmin/legal/terminos';
+import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
+import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
+import { CentroAyudaComponent } from './features/superadmin/soporte/centro-ayuda';
+import {ContactoComponent} from './features/superadmin/soporte/contacto'
+import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
 // Definición de las rutas principales de la aplicación
 export const routes: Routes = [
 
@@ -44,7 +49,33 @@ export const routes: Routes = [
         path: 'mapa',               // Ruta para mapa: "/superadmin/mapa"
         component: MapaComponent,
         data: { title: 'Mapa' }
-      }
+      },
+      
+      { path: 'terminos', 
+        component: TerminosComponent ,
+      data: { title: 'Terminos y Condiciones' }
+    },
+     { path: 'datos-personales', 
+        component: TratamientoDatosComponent ,
+      data: { title: 'Tratamiento de Datos Personales' }
+    },
+        { path: 'politica-uso', 
+        component: PoliticaUsoComponent ,
+      data: { title: 'Política de Uso de la Plataforma' }
+    },
+        
+    { path: 'centro-ayuda', 
+        component: CentroAyudaComponent ,
+      data: { title: 'Centro de Ayuda' }
+    },
+    { path: 'contacto', 
+        component: ContactoComponent ,
+      data: { title: 'Contacto' }
+    },
+    { path: 'preguntas-frecuentes', 
+        component:  PreguntasFrecuentesComponent,
+      data: { title: 'Preguntas Frecuentes' }
+    },
     ]
   }
 ];
