@@ -23,7 +23,7 @@ from db import (
     get_all_admins, update_admin_status_by_id,
     get_all_couriers, update_courier_status_by_id,
     get_all_allies, update_ally_status_by_id,
-    get_all_orders, get_connection,
+    get_all_orders, get_connection, cancel_order,
 )
 
 
@@ -560,3 +560,27 @@ def get_ganancias(admin=Depends(get_current_user)):
             for r in historial_rows
         ],
     }
+
+
+@router.post("/orders/{order_id}/cancel")
+def cancel_order_endpoint(order_id: int, admin=Depends(get_current_user)):
+    """Cancela un pedido que aún no ha sido entregado."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    from db import P
+    cur.execute(f"SELECT status FROM orders WHERE id = {P}", (order_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+    status = row[0] if not hasattr(row, '__getitem__') else row["status"]
+    if status in ("DELIVERED", "CANCELLED"):
+        raise HTTPException(status_code=400, detail=f"El pedido ya está en estado {status}")
+
+    cancel_order(order_id, "ADMIN")
+    return {"ok": True, "order_id": order_id}

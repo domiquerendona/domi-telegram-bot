@@ -55,6 +55,7 @@ interface Order {
               <th>Tarifa</th>
               <th>Estado</th>
               <th>Fecha</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -81,9 +82,12 @@ interface Order {
                 <span class="badge" [ngClass]="o.status.toLowerCase()">{{ etiqueta(o.status) }}</span>
               </td>
               <td class="fecha">{{ formatDate(o.created_at) }}</td>
+              <td>
+                <button *ngIf="cancelable(o.status)" class="btn-cancel" (click)="cancelar(o)">Cancelar</button>
+              </td>
             </tr>
             <tr *ngIf="orders().length === 0">
-              <td colspan="8" class="vacio">No hay pedidos en este estado.</td>
+              <td colspan="9" class="vacio">No hay pedidos en este estado.</td>
             </tr>
           </tbody>
         </table>
@@ -128,6 +132,8 @@ interface Order {
     .estado { padding: 20px; color: #6b7280; }
     .estado.error { color: #ef4444; }
     .vacio { text-align: center; color: #9ca3af; padding: 40px; }
+    .btn-cancel { padding: 4px 12px; border-radius: 6px; border: 1px solid #fca5a5; background: #fff; color: #dc2626; font-size: 12px; cursor: pointer; font-weight: 600; }
+    .btn-cancel:hover { background: #fee2e2; }
   `]
 })
 export class OrdersComponent implements OnInit, OnDestroy {
@@ -170,6 +176,18 @@ export class OrdersComponent implements OnInit, OnDestroy {
     this.http.get<Order[]>(`http://localhost:8000/admin/orders${params}`).subscribe({
       next: (data) => { this.orders.set(data); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
+    });
+  }
+
+  cancelable(status: string) {
+    return ['PENDING', 'PUBLISHED', 'ACCEPTED'].includes(status);
+  }
+
+  cancelar(o: Order) {
+    if (!confirm(`¿Cancelar pedido #${o.id} de ${o.customer_name}?`)) return;
+    this.http.post(`http://localhost:8000/admin/orders/${o.id}/cancel`, {}).subscribe({
+      next: () => this.cargar(this.filtroActivo()),
+      error: (e) => alert(e.error?.detail ?? 'Error al cancelar el pedido'),
     });
   }
 
