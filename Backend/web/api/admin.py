@@ -23,7 +23,7 @@ from db import (
     get_all_admins, update_admin_status_by_id,
     get_all_couriers, update_courier_status_by_id,
     get_all_allies, update_ally_status_by_id,
-    get_all_orders,
+    get_all_orders, get_connection,
 )
 
 
@@ -284,3 +284,87 @@ def list_orders(status: str = None, admin=Depends(get_current_user)):
             "canceled_at": str(o["canceled_at"]) if o["canceled_at"] else "",
         })
     return result
+
+
+@router.get("/saldos")
+def get_saldos(admin=Depends(get_current_user)):
+    """Retorna saldos de admins, repartidores y aliados."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Saldos de administradores
+    cur.execute("""
+        SELECT a.id, a.full_name, a.balance, a.status, a.city
+        FROM admins a
+        ORDER BY a.balance DESC
+    """)
+    admins_rows = cur.fetchall()
+
+    # Saldos de repartidores (del vínculo activo)
+    cur.execute("""
+        SELECT c.id, c.full_name, ac.balance, ac.status AS link_status,
+               c.status AS courier_status, c.city, a.full_name AS admin_name
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.status = 'APPROVED'
+        ORDER BY ac.balance DESC
+    """)
+    couriers_rows = cur.fetchall()
+
+    # Saldos de aliados (del vínculo activo)
+    cur.execute("""
+        SELECT al.id, al.business_name, aa.balance, aa.status AS link_status,
+               al.status AS ally_status, al.city, a.full_name AS admin_name
+        FROM admin_allies aa
+        JOIN allies al ON al.id = aa.ally_id
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.status = 'APPROVED'
+        ORDER BY aa.balance DESC
+    """)
+    allies_rows = cur.fetchall()
+    conn.close()
+
+    def row_val(row, key, idx):
+        try:
+            return row[key]
+        except (KeyError, TypeError, IndexError):
+            return row[idx]
+
+    return {
+        "admins": [
+            {
+                "id": row_val(r, "id", 0),
+                "nombre": row_val(r, "full_name", 1),
+                "balance": row_val(r, "balance", 2) or 0,
+                "status": row_val(r, "status", 3),
+                "ciudad": row_val(r, "city", 4) or "",
+            }
+            for r in admins_rows
+        ],
+        "couriers": [
+            {
+                "id": row_val(r, "id", 0),
+                "nombre": row_val(r, "full_name", 1),
+                "balance": row_val(r, "balance", 2) or 0,
+                "status": row_val(r, "courier_status", 4),
+                "ciudad": row_val(r, "city", 5) or "",
+                "admin_nombre": row_val(r, "admin_name", 6) or "",
+            }
+            for r in couriers_rows
+        ],
+        "aliados": [
+            {
+                "id": row_val(r, "id", 0),
+                "nombre": row_val(r, "business_name", 1),
+                "balance": row_val(r, "balance", 2) or 0,
+                "status": row_val(r, "ally_status", 4),
+                "ciudad": row_val(r, "city", 5) or "",
+                "admin_nombre": row_val(r, "admin_name", 6) or "",
+            }
+            for r in allies_rows
+        ],
+    }

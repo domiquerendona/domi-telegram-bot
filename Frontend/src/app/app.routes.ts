@@ -13,6 +13,7 @@ import { AdministradoresComponent } from './features/superadmin/administradores/
 import { RepartidoresComponent } from './features/superadmin/repartidores/repartidores';
 import { AliadosComponent } from './features/superadmin/aliados/aliados';
 import { OrdersComponent } from './features/superadmin/orders/orders';
+import { SaldosComponent } from './features/superadmin/saldos/saldos';
 import { TerminosComponent } from './features/superadmin/legal/terminos';
 import {TratamientoDatosComponent} from './features/superadmin/legal/datos-personales'
 import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
@@ -63,6 +64,11 @@ export const routes: Routes = [
         path: 'orders',
         component: OrdersComponent,
         data: { title: 'Pedidos' }
+      },
+      {
+        path: 'saldos',
+        component: SaldosComponent,
+        data: { title: 'Saldos' }
       },
       { 
         path: 'settings',           // Ruta para configuración: "/superadmin/settings"
