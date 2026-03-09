@@ -6355,6 +6355,76 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
     conn.close()
 
 
+def credit_welcome_balance(user_type: str, target_id: int, admin_id: int, amount: int = 5000) -> bool:
+    """
+    Acredita saldo de bienvenida a un COURIER o ALLY (en su vínculo con admin)
+    y registra el movimiento en ledger de forma atómica.
+
+    Retorna True si fue exitoso, False si falló.
+    """
+    user_type = (user_type or "").strip().upper()
+    if user_type not in ("COURIER", "ALLY"):
+        return False
+    if not target_id or not admin_id:
+        return False
+    if amount is None or int(amount) <= 0:
+        return False
+
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        if user_type == "COURIER":
+            cur.execute(
+                f"UPDATE admin_couriers SET balance = balance + {P}, updated_at = {now_sql} "
+                f"WHERE courier_id = {P} AND admin_id = {P}",
+                (int(amount), int(target_id), int(admin_id)),
+            )
+        else:
+            cur.execute(
+                f"UPDATE admin_allies SET balance = balance + {P}, updated_at = {now_sql} "
+                f"WHERE ally_id = {P} AND admin_id = {P}",
+                (int(amount), int(target_id), int(admin_id)),
+            )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False
+
+        cur.execute(
+            "INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note) "
+            "VALUES (" + ", ".join([P] * 9) + ")",
+            (
+                "RECHARGE",
+                "PLATFORM",
+                0,
+                user_type,
+                int(target_id),
+                int(amount),
+                None,
+                None,
+                "Bienvenida: recarga inicial de regalo",
+            ),
+        )
+
+        conn.commit()
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print("[ERROR] credit_welcome_balance:", e)
+        return False
+    finally:
+        conn.close()
+
+
 def exists_pending_recharge_by_proof(proof_file_id: str) -> bool:
     """Retorna True si existe una solicitud PENDING con el mismo comprobante."""
     if not proof_file_id:

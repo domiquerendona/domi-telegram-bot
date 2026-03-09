@@ -16,6 +16,7 @@ from db import (
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
     update_courier_link_balance, update_ally_link_balance,
+    credit_welcome_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,

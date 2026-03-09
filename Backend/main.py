@@ -199,6 +199,9 @@ from services import (
     get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
+    credit_welcome_balance,
+    get_connection,
+    P,
     get_all_couriers,
     update_courier,
     delete_courier,
@@ -15126,6 +15129,39 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
             return
 
+        try:
+            credit_welcome_balance("COURIER", courier_id, admin_id, 5000)
+        except Exception as e:
+            print("[WARN] credit_welcome_balance (local courier approve):", e)
+
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"SELECT users.telegram_id AS telegram_id "
+                    f"FROM users JOIN couriers ON couriers.user_id = users.id "
+                    f"WHERE couriers.id = {P}",
+                    (courier_id,),
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+            courier_telegram_id = row["telegram_id"] if row else None
+            if courier_telegram_id:
+                context.bot.send_message(
+                    chat_id=courier_telegram_id,
+                    text=(
+                        "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
+                        "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
+                        "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
+                        "o no. Sin presión.\n\n"
+                        "Usa /menu para ver tus opciones."
+                    ),
+                )
+        except Exception as e:
+            print("[WARN] Error notificando repartidor (local approve):", e)
+
         _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
             "✅ Repartidor aprobado en tu equipo.",
@@ -15783,6 +15819,11 @@ def courier_approval_callback(update, context):
 
             upsert_admin_courier_link(keep_admin_id, courier_id, "APPROVED", 1)
             deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
+
+            try:
+                credit_welcome_balance("COURIER", courier_id, keep_admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (platform courier approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vínculo APPROVED de courier {courier_id}: {e}")
 
@@ -15801,7 +15842,13 @@ def courier_approval_callback(update, context):
         courier_telegram_id = u["telegram_id"]
 
         if accion == "approve":
-            msg = "Tu registro como repartidor ha sido APROBADO. Bienvenido, {}.".format(full_name)
+            msg = (
+                "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
+                "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
+                "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
+                "o no. Sin presión.\n\n"
+                "Usa /menu para ver tus opciones."
+            )
         else:
             msg = (
                 "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
