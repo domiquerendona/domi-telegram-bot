@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, OnInit, OnDestroy, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 
@@ -27,7 +27,9 @@ interface Order {
     <div class="page">
       <div class="page-header">
         <h1>Pedidos</h1>
-        <span class="total">{{ filtrados().length }} registros</span>
+        <span class="total">{{ orders().length }} registros</span>
+        <span class="auto-badge" *ngIf="filtroActivo() === 'ACTIVE'">↻ auto</span>
+        <button class="btn-refresh" (click)="cargar(filtroActivo())">↻ Actualizar</button>
       </div>
 
       <div class="filtros">
@@ -48,7 +50,7 @@ interface Order {
               <th>#</th>
               <th>Cliente</th>
               <th>Destino</th>
-              <th>Aliado</th>
+              <th>Aliado / Admin</th>
               <th>Repartidor</th>
               <th>Tarifa</th>
               <th>Estado</th>
@@ -56,32 +58,31 @@ interface Order {
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let o of filtrados()">
-              <td class="id-cell">{{ o.id }}</td>
+            <tr *ngFor="let o of orders()">
+              <td class="id-cell">#{{ o.id }}</td>
               <td>
                 <div class="nombre">{{ o.customer_name }}</div>
                 <div class="sub">{{ o.customer_phone }}</div>
               </td>
               <td>
                 <div class="nombre">{{ o.customer_address }}</div>
-                <div class="sub">{{ o.customer_city }}, {{ o.customer_barrio }}</div>
+                <div class="sub">{{ o.customer_city }}<span *ngIf="o.customer_barrio">, {{ o.customer_barrio }}</span></div>
               </td>
-              <td>{{ o.ally_name || '—' }}</td>
-              <td>{{ o.courier_name || '—' }}</td>
+              <td>{{ o.ally_name || '(Admin)' }}</td>
               <td>
-                <span class="fee">\${{ formatFee(o.total_fee) }}</span>
-                <span *ngIf="o.additional_incentive > 0" class="incentivo">
-                  +\${{ formatFee(o.additional_incentive) }}
-                </span>
+                <span *ngIf="o.courier_name">{{ o.courier_name }}</span>
+                <span *ngIf="!o.courier_name" class="sin-courier">Sin asignar</span>
               </td>
               <td>
-                <span class="badge" [ngClass]="o.status.toLowerCase()">
-                  {{ etiqueta(o.status) }}
-                </span>
+                <span class="fee">\${{ fmt(o.total_fee) }}</span>
+                <span *ngIf="o.additional_incentive > 0" class="incentivo"> +\${{ fmt(o.additional_incentive) }}</span>
+              </td>
+              <td>
+                <span class="badge" [ngClass]="o.status.toLowerCase()">{{ etiqueta(o.status) }}</span>
               </td>
               <td class="fecha">{{ formatDate(o.created_at) }}</td>
             </tr>
-            <tr *ngIf="filtrados().length === 0">
+            <tr *ngIf="orders().length === 0">
               <td colspan="8" class="vacio">No hay pedidos en este estado.</td>
             </tr>
           </tbody>
@@ -91,13 +92,18 @@ interface Order {
   `,
   styles: [`
     .page { padding: 24px; }
-    .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+    .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
     h1 { font-size: 24px; font-weight: 700; margin: 0; }
     .total { font-size: 14px; color: #6b7280; }
+    .auto-badge { font-size: 11px; color: #10b981; font-weight: 600; background: #d1fae5; padding: 2px 8px; border-radius: 10px; }
+    .btn-refresh { margin-left: auto; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; }
+    .btn-refresh:hover { border-color: #4338ca; color: #4338ca; }
+
     .filtros { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
     .filtros button { padding: 6px 16px; border-radius: 20px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; transition: all 0.15s; }
     .filtros button:hover { border-color: #4338ca; color: #4338ca; }
     .filtros button.activo { background: #4338ca; color: white; border-color: #4338ca; }
+
     .tabla-wrapper { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 900px; }
     thead { background: #f9fafb; }
@@ -107,36 +113,50 @@ interface Order {
     .nombre { font-weight: 600; }
     .sub { font-size: 12px; color: #9ca3af; margin-top: 2px; }
     .fee { font-weight: 600; }
-    .incentivo { font-size: 12px; color: #10b981; margin-left: 4px; }
+    .incentivo { font-size: 12px; color: #10b981; }
+    .sin-courier { font-size: 12px; color: #f59e0b; font-weight: 600; }
     .fecha { font-size: 12px; color: #6b7280; white-space: nowrap; }
+
     .badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-    .badge.pending    { background: #fef3c7; color: #92400e; }
-    .badge.published  { background: #dbeafe; color: #1e40af; }
-    .badge.accepted   { background: #ede9fe; color: #5b21b6; }
-    .badge.picked_up  { background: #fce7f3; color: #9d174d; }
-    .badge.delivered  { background: #d1fae5; color: #065f46; }
-    .badge.cancelled  { background: #fee2e2; color: #991b1b; }
+    .badge.pending   { background: #fef3c7; color: #92400e; }
+    .badge.published { background: #dbeafe; color: #1e40af; }
+    .badge.accepted  { background: #ede9fe; color: #5b21b6; }
+    .badge.picked_up { background: #fce7f3; color: #9d174d; }
+    .badge.delivered { background: #d1fae5; color: #065f46; }
+    .badge.cancelled { background: #fee2e2; color: #991b1b; }
+
     .estado { padding: 20px; color: #6b7280; }
     .estado.error { color: #ef4444; }
     .vacio { text-align: center; color: #9ca3af; padding: 40px; }
   `]
 })
-export class OrdersComponent implements OnInit {
+export class OrdersComponent implements OnInit, OnDestroy {
   orders = signal<Order[]>([]);
   cargando = signal(true);
   error = signal('');
-  filtroActivo = signal('TODOS');
+  filtroActivo = signal('ACTIVE');
+
+  private intervalo: any = null;
 
   filtroOpciones = [
-    { label: 'Todos', valor: 'TODOS' },
     { label: 'Activos', valor: 'ACTIVE' },
+    { label: 'Todos', valor: 'TODOS' },
     { label: 'Entregados', valor: 'DELIVERED' },
     { label: 'Cancelados', valor: 'CANCELLED' },
   ];
 
   constructor(private http: HttpClient) {}
 
-  ngOnInit() { this.cargar('TODOS'); }
+  ngOnInit() {
+    this.cargar('ACTIVE');
+    this.intervalo = setInterval(() => {
+      if (this.filtroActivo() === 'ACTIVE') this.cargar('ACTIVE');
+    }, 30000);
+  }
+
+  ngOnDestroy() {
+    if (this.intervalo) clearInterval(this.intervalo);
+  }
 
   setFiltro(valor: string) {
     this.filtroActivo.set(valor);
@@ -153,10 +173,6 @@ export class OrdersComponent implements OnInit {
     });
   }
 
-  filtrados() {
-    return this.orders();
-  }
-
   etiqueta(s: string) {
     const map: Record<string, string> = {
       PENDING: 'Pendiente', PUBLISHED: 'Publicado', ACCEPTED: 'Aceptado',
@@ -165,7 +181,8 @@ export class OrdersComponent implements OnInit {
     return map[s] ?? s;
   }
 
-  formatFee(val: number) {
+  fmt(val: number) {
+    if (!val) return '0';
     return val.toLocaleString('es-CO');
   }
 
