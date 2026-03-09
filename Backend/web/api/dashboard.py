@@ -19,14 +19,28 @@ def dashboard_stats(current_user=Depends(get_current_user)):
     conn = get_connection()
     cur = conn.cursor()
 
-    # -- Admins (excluye plataforma) --
-    cur.execute("SELECT COUNT(*) FROM admins WHERE role != 'PLATFORM_ADMIN'")
+    # -- Admins locales (excluye plataforma, identificada por users.role) --
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL
+    """)
     total_admins = cur.fetchone()[0] or 0
 
-    cur.execute("SELECT COUNT(*) FROM admins WHERE role != 'PLATFORM_ADMIN' AND status = 'APPROVED'")
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE (u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL)
+          AND a.status = 'APPROVED'
+    """)
     admins_activos = cur.fetchone()[0] or 0
 
-    cur.execute("SELECT COUNT(*) FROM admins WHERE role != 'PLATFORM_ADMIN' AND status = 'PENDING'")
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE (u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL)
+          AND a.status = 'PENDING'
+    """)
     admins_pendientes = cur.fetchone()[0] or 0
 
     # -- Repartidores --
@@ -59,8 +73,13 @@ def dashboard_stats(current_user=Depends(get_current_user)):
     cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED'")
     pedidos_total_entregados = cur.fetchone()[0] or 0
 
-    # -- Saldo plataforma --
-    cur.execute("SELECT balance FROM admins WHERE role = 'PLATFORM_ADMIN' LIMIT 1")
+    # -- Saldo plataforma (admin cuyo users.role es PLATFORM_ADMIN) --
+    cur.execute("""
+        SELECT a.balance FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE u.role IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM')
+        LIMIT 1
+    """)
     row = cur.fetchone()
     saldo_plataforma = row[0] if row else 0
 
