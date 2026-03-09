@@ -762,9 +762,15 @@ Regla de elegibilidad:
   Retorna todos los couriers con admin_couriers.status = 'APPROVED' y couriers.status = 'APPROVED'.
 
 Regla de comisiones (simétrica):
-  - Fee del aliado → admin del aliado (get_approved_admin_link_for_ally).
-  - Fee del courier → admin del courier al momento de aceptar (order.courier_admin_id_snapshot).
+  - Fee del aliado ($300): admin del aliado recibe $200, Plataforma recibe $100.
+    Admin se determina con get_approved_admin_link_for_ally.
+  - Fee del courier ($300): admin del courier recibe $200, Plataforma recibe $100.
+    Admin se determina con order.courier_admin_id_snapshot (guardado al aceptar).
     Fallback: get_approved_admin_link_for_courier si el snapshot es NULL.
+  - Si el admin es Plataforma: recibe los $300 completos (sin split).
+  - Pedidos de admin (creator_admin_id != NULL, ally_id = NULL):
+    el admin creador NO paga fee. El courier que entrega sí paga su fee normal.
+    _expire_order con ally_id=None no cobra ni crashea (guard implementado).
   - Cada admin gana únicamente de sus propios miembros.
 
 Regla de pre-verificación de saldo (publish_order_to_couriers):

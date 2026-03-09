@@ -727,7 +727,7 @@ def _try_restart_cycle(order_id, context):
 
 
 def _expire_order(order_id, cycle_info, context):
-    """Nadie acepto en 7 minutos. Cobra $300 al aliado y cancela."""
+    """Nadie acepto en 7 minutos. Si hay aliado, cobra $300 y notifica. Cancela el pedido."""
     cancel_order(order_id, "SYSTEM")
     delete_offer_queue(order_id)
 
@@ -738,36 +738,38 @@ def _expire_order(order_id, cycle_info, context):
     ally_id = cycle_info["ally_id"]
     admin_id = cycle_info["admin_id"]
 
-    # Cobrar $300 al aliado como comisión por gestión
-    try:
-        fee_ok, fee_msg = apply_service_fee(
-            target_type="ALLY",
-            target_id=ally_id,
-            admin_id=admin_id,
-            ref_type="ORDER",
-            ref_id=order_id,
-        )
-        if not fee_ok:
-            print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
-    except Exception as e:
-        print("[WARN] Error al cobrar fee de expiración: {}".format(e))
+    # Pedidos de admin (ally_id=None) no tienen aliado que cobrar
+    if ally_id is not None:
+        # Cobrar $300 al aliado como comisión por gestión
+        try:
+            fee_ok, fee_msg = apply_service_fee(
+                target_type="ALLY",
+                target_id=ally_id,
+                admin_id=admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+            if not fee_ok:
+                print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
+        except Exception as e:
+            print("[WARN] Error al cobrar fee de expiración: {}".format(e))
 
-    # Notificar al aliado
-    try:
-        ally = get_ally_by_id(ally_id)
-        if ally:
-            ally_user = get_user_by_id(ally["user_id"])
-            if ally_user and ally_user.get("telegram_id"):
-                context.bot.send_message(
-                    chat_id=ally_user["telegram_id"],
-                    text=(
-                        "Tu pedido #{} fue cancelado porque ningun repartidor "
-                        "lo acepto en 7 minutos.\n\n"
-                        "Se descontaron $300 de tu saldo como comision por la gestion."
-                    ).format(order_id),
-                )
-    except Exception as e:
-        print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
+        # Notificar al aliado
+        try:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                ally_user = get_user_by_id(ally["user_id"])
+                if ally_user and ally_user.get("telegram_id"):
+                    context.bot.send_message(
+                        chat_id=ally_user["telegram_id"],
+                        text=(
+                            "Tu pedido #{} fue cancelado porque ningun repartidor "
+                            "lo acepto en 7 minutos.\n\n"
+                            "Se descontaron $300 de tu saldo como comision por la gestion."
+                        ).format(order_id),
+                    )
+        except Exception as e:
+            print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
 
 
 def ally_active_orders(update, context):
