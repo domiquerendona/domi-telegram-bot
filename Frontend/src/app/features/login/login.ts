@@ -179,8 +179,10 @@ export class LoginComponent {
       { username: this.username, password: this.password }
     ).subscribe({
       next: (res) => {
-        localStorage.setItem('admin_token', res.token);
-        localStorage.setItem('admin_username', res.username);
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('admin_token', res.token);
+          localStorage.setItem('admin_username', res.username);
+        }
         this.router.navigate(['/superadmin']);
       },
       error: (e) => {

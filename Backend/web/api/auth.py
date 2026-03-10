@@ -9,9 +9,6 @@ from web.auth.token import create_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-_WEB_USER = os.getenv("WEB_ADMIN_USER", "admin")
-_WEB_PASS = os.getenv("WEB_ADMIN_PASSWORD", "changeme")
-
 
 class LoginRequest(BaseModel):
     username: str
@@ -23,8 +20,11 @@ def login(body: LoginRequest):
     """
     Autentica al administrador del panel web.
     Credenciales configuradas en WEB_ADMIN_USER y WEB_ADMIN_PASSWORD.
+    Lee las vars en tiempo de request (después de load_dotenv en main.py).
     """
-    if body.username != _WEB_USER or body.password != _WEB_PASS:
+    web_user = os.getenv("WEB_ADMIN_USER", "admin")
+    web_pass = os.getenv("WEB_ADMIN_PASSWORD", "changeme")
+    if body.username != web_user or body.password != web_pass:
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     token = create_token(body.username)
     return {"token": token, "username": body.username}

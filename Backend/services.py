@@ -2153,7 +2153,10 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
         cmds.append("/soy_aliado")
     if not courier:
         cmds.append("/soy_repartidor")
-    if not admin_local and not es_admin_plataforma_flag:
+    admin_status = None
+    if admin_local:
+        admin_status = admin_local.get("status", "PENDING") if isinstance(admin_local, dict) else admin_local["status"]
+    if (not admin_local or admin_status == "INACTIVE") and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
 

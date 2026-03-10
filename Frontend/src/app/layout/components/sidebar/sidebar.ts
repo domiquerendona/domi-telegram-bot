@@ -226,8 +226,10 @@ export class SidebarComponent {
   }
 
   logout() {
-    localStorage.removeItem('admin_token');
-    localStorage.removeItem('admin_username');
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('admin_token');
+      localStorage.removeItem('admin_username');
+    }
     this.router.navigate(['/login']);
   }
 }

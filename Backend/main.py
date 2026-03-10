@@ -734,6 +734,26 @@ def _set_flow_step(context, flow, step):
     context.user_data["_back_step"] = step
 
 
+def _debug_admin_registration_state(context, step, **extra):
+    data = context.user_data or {}
+    snapshot = {
+        "admin_name": bool((data.get("admin_name") or "").strip()),
+        "admin_document": bool((data.get("admin_document") or "").strip()),
+        "admin_team_name": bool((data.get("admin_team_name") or "").strip()),
+        "phone": bool((data.get("phone") or "").strip()),
+        "admin_city": bool((data.get("admin_city") or "").strip()),
+        "admin_barrio": bool((data.get("admin_barrio") or "").strip()),
+        "admin_residence_address": bool((data.get("admin_residence_address") or "").strip()),
+        "admin_residence_lat": data.get("admin_residence_lat") is not None,
+        "admin_residence_lng": data.get("admin_residence_lng") is not None,
+        "admin_cedula_front_file_id": bool(data.get("admin_cedula_front_file_id")),
+        "admin_cedula_back_file_id": bool(data.get("admin_cedula_back_file_id")),
+        "admin_selfie_file_id": bool(data.get("admin_selfie_file_id")),
+        "_back_step": data.get("_back_step"),
+    }
+    print(f"[DEBUG][admin_reg] step={step} snapshot={snapshot} extra={extra}", flush=True)
+
+
 _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
@@ -1207,8 +1227,11 @@ def start(update, context):
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
     elif admin_local:
-        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
         admin_status = admin_local["status"]
+        if admin_status == "INACTIVE" and "/soy_admin" in missing_cmds:
+            comandos.append("• /soy_admin  - Volver a registrarte como administrador")
+        else:
+            comandos.append("• /mi_admin  - Ver tu panel de administrador local")
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
@@ -2620,6 +2643,7 @@ def admin_cedula_front(update, context):
         )
         return LOCAL_ADMIN_CEDULA_FRONT
     context.user_data["admin_cedula_front_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_cedula_front_saved")
     update.message.reply_text(
         "Foto del frente recibida.\n\n"
         "Ahora envía una foto del REVERSO de tu cédula:" + _OPTIONS_HINT
@@ -2635,6 +2659,7 @@ def admin_cedula_back(update, context):
         )
         return LOCAL_ADMIN_CEDULA_BACK
     context.user_data["admin_cedula_back_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_cedula_back_saved")
     update.message.reply_text(
         "Foto del reverso recibida.\n\n"
         "Por último, envía una SELFIE (foto de tu cara) tomada en este momento:" + _OPTIONS_HINT
@@ -2650,6 +2675,7 @@ def admin_selfie(update, context):
         )
         return LOCAL_ADMIN_SELFIE
     context.user_data["admin_selfie_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_selfie_saved")
 
     full_name = context.user_data.get("admin_name", "")
     document_number = context.user_data.get("admin_document", "")
@@ -6935,6 +6961,7 @@ def admin_name(update, context):
         return LOCAL_ADMIN_NAME
 
     context.user_data["admin_name"] = text
+    _debug_admin_registration_state(context, "admin_name_saved")
     update.message.reply_text(
         "Escribe tu número de documento (CC o equivalente):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -6953,6 +6980,7 @@ def admin_document(update, context):
         return LOCAL_ADMIN_DOCUMENT
 
     context.user_data["admin_document"] = doc
+    _debug_admin_registration_state(context, "admin_document_saved")
     update.message.reply_text(
         "Escribe el nombre de tu administración (nombre del equipo).\n"
         "Ejemplo: Mensajeros Pereira Centro"
@@ -6972,6 +7000,7 @@ def admin_teamname(update, context):
         return LOCAL_ADMIN_TEAMNAME
 
     context.user_data["admin_team_name"] = team_name
+    _debug_admin_registration_state(context, "admin_teamname_saved")
     update.message.reply_text(
         "Escribe tu número de teléfono:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -6981,32 +7010,41 @@ def admin_teamname(update, context):
 
 
 def admin_phone(update, context):
-    return _handle_phone_input(update, context,
+    next_state = _handle_phone_input(update, context,
         storage_key="phone",
         current_state=LOCAL_ADMIN_PHONE,
         next_state=LOCAL_ADMIN_CITY,
         flow="admin",
         next_prompt="¿En qué ciudad vas a operar como Administrador Local?")
+    if next_state == LOCAL_ADMIN_CITY:
+        _debug_admin_registration_state(context, "admin_phone_saved")
+    return next_state
 
 
 def admin_city(update, context):
-    return _handle_text_field_input(update, context,
+    next_state = _handle_text_field_input(update, context,
         error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
         storage_key="admin_city",
         current_state=LOCAL_ADMIN_CITY,
         next_state=LOCAL_ADMIN_BARRIO,
         flow="admin",
         next_prompt="Escribe tu barrio o zona base de operación:")
+    if next_state == LOCAL_ADMIN_BARRIO:
+        _debug_admin_registration_state(context, "admin_city_saved")
+    return next_state
 
 
 def admin_barrio(update, context):
-    return _handle_text_field_input(update, context,
+    next_state = _handle_text_field_input(update, context,
         error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
         storage_key="admin_barrio",
         current_state=LOCAL_ADMIN_BARRIO,
         next_state=LOCAL_ADMIN_RESIDENCE_ADDRESS,
         flow="admin",
         next_prompt="Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301")
+    if next_state == LOCAL_ADMIN_RESIDENCE_ADDRESS:
+        _debug_admin_registration_state(context, "admin_barrio_saved")
+    return next_state
 
 
 def admin_residence_address(update, context):
@@ -7018,6 +7056,7 @@ def admin_residence_address(update, context):
         )
         return LOCAL_ADMIN_RESIDENCE_ADDRESS
     context.user_data["admin_residence_address"] = address
+    _debug_admin_registration_state(context, "admin_residence_address_saved")
     update.message.reply_text(
         "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -7050,6 +7089,7 @@ def admin_residence_location(update, context):
                 return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
+        _debug_admin_registration_state(context, "admin_residence_location_missing_coords")
         update.message.reply_text(
             "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
@@ -7057,6 +7097,7 @@ def admin_residence_location(update, context):
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
+    _debug_admin_registration_state(context, "admin_residence_location_saved")
     update.message.reply_text(
         "Ubicacion guardada.\n\n"
         "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
@@ -7077,10 +7118,12 @@ def admin_geo_ubicacion_callback(update, context):
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
         if lat is None or lng is None:
+            _debug_admin_registration_state(context, "admin_geo_confirm_missing_pending")
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return LOCAL_ADMIN_RESIDENCE_LOCATION
         context.user_data["admin_residence_lat"] = lat
         context.user_data["admin_residence_lng"] = lng
+        _debug_admin_registration_state(context, "admin_geo_confirm_saved")
         query.edit_message_text(
             "Ubicacion confirmada.\n\n"
             "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
@@ -7113,6 +7156,7 @@ def admin_confirm(update, context):
     cedula_front_file_id = context.user_data.get("admin_cedula_front_file_id")
     cedula_back_file_id = context.user_data.get("admin_cedula_back_file_id")
     selfie_file_id = context.user_data.get("admin_selfie_file_id")
+    _debug_admin_registration_state(context, "admin_confirm_before_create", answer=answer)
 
     try:
         admin_id, team_code = create_admin(
@@ -7131,14 +7175,17 @@ def admin_confirm(update, context):
             selfie_file_id,
         )
     except ValueError as e:
+        _debug_admin_registration_state(context, "admin_confirm_value_error", error=str(e))
         update.message.reply_text(str(e))
         context.user_data.clear()
         return ConversationHandler.END
     except Exception as e:
         print("[ERROR] admin_confirm:", e)
+        _debug_admin_registration_state(context, "admin_confirm_exception", error=str(e))
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
+    _debug_admin_registration_state(context, "admin_confirm_success", admin_id=admin_id)
 
     try:
         context.bot.send_message(

@@ -11,8 +11,11 @@ import base64
 import time
 import os
 
-_SECRET = os.getenv("WEB_SECRET_KEY", "domi-dev-secret-change-in-prod")
 _TOKEN_TTL = 60 * 60 * 24  # 24 horas
+
+
+def _secret() -> str:
+    return os.getenv("WEB_SECRET_KEY", "domi-dev-secret-change-in-prod")
 
 
 def _b64(s: str) -> str:
@@ -20,7 +23,7 @@ def _b64(s: str) -> str:
 
 
 def _sign(payload_b64: str) -> str:
-    return hmac.new(_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_secret().encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
 
 
 def create_token(username: str) -> str:
