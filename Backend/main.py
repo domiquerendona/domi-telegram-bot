@@ -1129,7 +1129,7 @@ def start(update, context):
                 siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
             elif admin_status == "APPROVED":
                 siguientes_pasos.append(
-                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (10 repartidores con saldo mínimo)."
+                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 5 repartidores con saldo mínimo, más saldo master suficiente)."
                 )
                 siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
             elif admin_status == "INACTIVE":
@@ -2672,9 +2672,9 @@ def admin_selfie(update, context):
         "Dirección: {}\n"
         "Ubicación: {}, {}\n\n"
         "Condiciones para Administrador Local:\n"
-        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
-        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
-        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
+        "1) Para operar necesitas al menos 5 aliados con saldo >= 5000.\n"
+        "2) También necesitas al menos 5 repartidores con saldo >= 5000.\n"
+        "3) Tu saldo master debe mantenerse en >= 60000.\n\n"
         "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel."
     ).format(full_name, document_number, team_name, phone, city, barrio, residence_address, lat, lng)
@@ -7175,7 +7175,7 @@ def admin_confirm(update, context):
         f"Coordenadas: {residence_lat}, {residence_lng}\n\n"
         f"Tu CÓDIGO DE EQUIPO es: {team_code}\n"
         "Compártelo con los repartidores que quieras vincular a tu equipo.\n\n"
-        "Recuerda: para ser aprobado debes registrar 10 repartidores con recarga mínima de 5000 cada uno."
+        "Recuerda: para operar necesitas 5 aliados con saldo >= 5000, 5 repartidores con saldo >= 5000 y saldo master >= 60000."
     )
 
     context.user_data.clear()
@@ -8010,9 +8010,9 @@ def admin_menu_callback(update, context):
                     "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
                     "Para operar debes cumplir los requisitos.\n\n"
                     "Requisitos para operar:\n"
-                    "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
-                    "2) Cada uno debe estar APROBADO y con saldo por vínculo >= 5000.\n"
-                    "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
+                    "1) Tener mínimo 5 aliados vinculados con saldo por vínculo >= 5000.\n"
+                    "2) Tener mínimo 5 repartidores vinculados con saldo por vínculo >= 5000.\n"
+                    "3) Mantener saldo master >= 60000 y cumplir las reglas de la plataforma.\n\n"
                     "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
                 )
                 context.bot.send_message(chat_id=admin_telegram_id, text=msg)
