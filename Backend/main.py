@@ -1129,7 +1129,7 @@ def start(update, context):
                 siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
             elif admin_status == "APPROVED":
                 siguientes_pasos.append(
-                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 5 repartidores con saldo mínimo, más saldo master suficiente)."
+                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo mínimo, más saldo master suficiente)."
                 )
                 siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
             elif admin_status == "INACTIVE":
@@ -2673,7 +2673,7 @@ def admin_selfie(update, context):
         "Ubicación: {}, {}\n\n"
         "Condiciones para Administrador Local:\n"
         "1) Para operar necesitas al menos 5 aliados con saldo >= 5000.\n"
-        "2) También necesitas al menos 5 repartidores con saldo >= 5000.\n"
+        "2) También necesitas al menos 10 repartidores con saldo >= 5000.\n"
         "3) Tu saldo master debe mantenerse en >= 60000.\n\n"
         "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel."
@@ -7175,7 +7175,7 @@ def admin_confirm(update, context):
         f"Coordenadas: {residence_lat}, {residence_lng}\n\n"
         f"Tu CÓDIGO DE EQUIPO es: {team_code}\n"
         "Compártelo con los repartidores que quieras vincular a tu equipo.\n\n"
-        "Recuerda: para operar necesitas 5 aliados con saldo >= 5000, 5 repartidores con saldo >= 5000 y saldo master >= 60000."
+        "Recuerda: para operar necesitas 5 aliados con saldo >= 5000, 10 repartidores con saldo >= 5000 y saldo master >= 60000."
     )
 
     context.user_data.clear()
@@ -8011,7 +8011,7 @@ def admin_menu_callback(update, context):
                     "Para operar debes cumplir los requisitos.\n\n"
                     "Requisitos para operar:\n"
                     "1) Tener mínimo 5 aliados vinculados con saldo por vínculo >= 5000.\n"
-                    "2) Tener mínimo 5 repartidores vinculados con saldo por vínculo >= 5000.\n"
+                    "2) Tener mínimo 10 repartidores vinculados con saldo por vínculo >= 5000.\n"
                     "3) Mantener saldo master >= 60000 y cumplir las reglas de la plataforma.\n\n"
                     "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
                 )
@@ -13281,14 +13281,14 @@ def mi_admin(update, context):
         "• Tu saldo master: ${:,}\n\n"
         "Requisitos para operar:\n"
         "• 5 aliados con saldo >= $5,000: {}\n"
-        "• 5 repartidores con saldo >= $5,000: {}\n"
+        "• 10 repartidores con saldo >= $5,000: {}\n"
         "• Saldo master >= $60,000: {}\n\n"
     ).format(
         total_allies, allies_ok,
         total_couriers, couriers_ok,
         admin_bal,
         "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
-        "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+        "OK" if couriers_ok >= 10 else "Faltan {}".format(10 - couriers_ok),
         "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
     )
     # En FASE 1: panel siempre habilitado
@@ -14948,14 +14948,14 @@ def admin_local_callback(update, context):
             "• Tu saldo master: ${:,}\n\n"
             "Requisitos para operar:\n"
             "• 5 aliados con saldo >= $5,000: {}\n"
-            "• 5 repartidores con saldo >= $5,000: {}\n"
+            "• 10 repartidores con saldo >= $5,000: {}\n"
             "• Saldo master >= $60,000: {}\n\n"
         ).format(
             total_allies, allies_ok,
             total_couriers, couriers_ok,
             admin_bal,
             "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
-            "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+            "OK" if couriers_ok >= 10 else "Faltan {}".format(10 - couriers_ok),
             "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
         )
         keyboard = [

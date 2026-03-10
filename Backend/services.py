@@ -800,7 +800,7 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
     }
 
 
-def admin_puede_operar(admin_id: int, min_couriers: int = 5, min_allies: int = 5,
+def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_allies: int = 5,
                         min_balance: int = 5000, min_admin_balance: int = 60000):
     """
     Regla de negocio: un admin local puede operar si:
