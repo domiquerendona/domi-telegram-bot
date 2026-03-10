@@ -1,6 +1,6 @@
 
 import { Component, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { RouterLink, RouterLinkActive, Router } from '@angular/router';
 import { NgIf } from '@angular/common';
 
 @Component({
@@ -97,7 +97,7 @@ import { NgIf } from '@angular/common';
 
     <!-- ================= LOGOUT ================= -->
     <div class="logout">
-      <a>
+      <a (click)="logout()" style="cursor:pointer">
         <span class="material-icons">logout</span>
         <span *ngIf="!collapsed()">Cerrar sesión</span>
       </a>
@@ -218,8 +218,16 @@ export class SidebarComponent {
   // Signal que controla si el sidebar está colapsado
   collapsed = signal(false);
 
+  constructor(private router: Router) {}
+
   // Método que alterna el estado del sidebar
   toggle() {
     this.collapsed.update(v => !v);
+  }
+
+  logout() {
+    localStorage.removeItem('admin_token');
+    localStorage.removeItem('admin_username');
+    this.router.navigate(['/login']);
   }
 }

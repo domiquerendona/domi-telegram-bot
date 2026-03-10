@@ -21,8 +21,13 @@ import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
 import { CentroAyudaComponent } from './features/superadmin/soporte/centro-ayuda';
 import {ContactoComponent} from './features/superadmin/soporte/contacto'
 import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
+import { LoginComponent } from './features/login/login';
+import { AuthGuard } from './core/guards/auth.guard';
 // Definición de las rutas principales de la aplicación
 export const routes: Routes = [
+
+  // Ruta de login
+  { path: 'login', component: LoginComponent },
 
   // Ruta raíz: cuando el usuario entra a la URL base "/"
   {
@@ -35,6 +40,7 @@ export const routes: Routes = [
   {
     path: 'superadmin',             // Ruta que representa el layout de superadmin
     component: SuperadminLayoutComponent, // Componente principal que contiene el layout
+    canActivate: [AuthGuard],
     children: [                     // Rutas hijas que se muestran dentro del layout
       { 
         path: '',                   // Ruta por defecto dentro de "superadmin"

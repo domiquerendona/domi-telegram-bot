@@ -26,6 +26,8 @@ from web.api.admin import router as admin_router
 from web.api.users import router as users_router
 # Router de endpoints del dashboard
 from web.api.dashboard import router as dashboard_router
+# Router de autenticación del panel web
+from web.api.auth import router as auth_router
 
 
 
@@ -39,6 +41,8 @@ app = FastAPI()
 # Esto habilita endpoints como:
 # POST /admin/users/{user_id}/approve
 
+# Registra las rutas de administración
+app.include_router(auth_router)
 # Registra las rutas de administración
 app.include_router(admin_router)
 # Registra las rutas de usuarios
