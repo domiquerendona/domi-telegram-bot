@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, signal, afterNextRender } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NgIf } from '@angular/common';
 
@@ -159,7 +159,7 @@ interface DashboardStats {
     }
   `]
 })
-export class DashboardComponent implements OnInit {
+export class DashboardComponent {
   private _stats = signal<DashboardStats | null>(null);
   cargando = signal(true);
   error = signal('');
@@ -168,16 +168,16 @@ export class DashboardComponent implements OnInit {
     return this._stats()!;
   }
 
-  constructor(private http: HttpClient) {}
-
-  ngOnInit() { this.cargar(); }
+  constructor(private http: HttpClient) {
+    afterNextRender(() => { this.cargar(); });
+  }
 
   cargar() {
     this.cargando.set(true);
     this.error.set('');
     this.http.get<DashboardStats>('http://localhost:8000/dashboard/stats').subscribe({
       next: (d) => { this._stats.set(d); this.cargando.set(false); },
-      error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
+      error: (e) => { this.error.set(`Error ${e.status}: ${e.error?.detail ?? 'sin conexion'}`); this.cargando.set(false); }
     });
   }
 

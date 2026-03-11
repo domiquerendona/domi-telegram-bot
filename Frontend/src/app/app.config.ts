@@ -5,7 +5,7 @@ import { ApplicationConfig } from '@angular/core';
 import { provideRouter } from '@angular/router';
 
 // Habilita el cliente HTTP con soporte para interceptores funcionales
-import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
 
 // Importa las rutas definidas en el archivo app.routes.ts
 import { routes } from './app.routes';
@@ -21,7 +21,7 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes),
 
     // Permite usar HttpClient con el interceptor de autenticación
-    provideHttpClient(withInterceptors([authInterceptor]))
+    provideHttpClient(withFetch(), withInterceptors([authInterceptor]))
   ]
 };
 
