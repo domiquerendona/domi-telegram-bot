@@ -1,7 +1,9 @@
 /* ============================= */
 /* VARIABLES GLOBALES (MODO CLARO) */
 /* ============================= */
-
+* {
+  box-sizing: border-box;
+}
 /* :root define variables CSS globales accesibles en toda la app */
 :root {
   /* Tamaño base de fuente */
@@ -58,14 +60,16 @@
 /* Aplica el tamaño de fuente base definido en la variable */
 html {
   font-size: var(--font-size);
+  height: 100%;
+  margin: 0;
 }
 
 
 /* Estilos base del documento */
 body {
   /* Elimina el margen por defecto del navegador */
-  margin: 0;
-
+   margin: 0;
+  height: 100%;
   /* Fuente principal del sistema con fallback */
   font-family: Inter, system-ui, -apple-system, sans-serif;
 
