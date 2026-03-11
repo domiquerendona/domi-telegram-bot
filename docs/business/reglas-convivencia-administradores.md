@@ -122,3 +122,17 @@ El cambio no debe ejecutarse de forma abrupta si hay operaciones en curso. Debe 
 - Mantener la estabilidad operativa de la red durante las transiciones.
 
 **La red funciona mejor cuando cada persona puede trabajar en el equipo donde se siente mejor tratada y mejor apoyada.** Un administrador que cuida bien a su equipo no necesita retenerlo; el equipo se queda porque quiere quedarse. Esa es la base de una red que crece de forma sostenible.
+
+---
+
+## 9. Integridad de la red y conducta prohibida
+
+Los administradores son responsables de proteger la salud de la red. Eso implica filtrar bien a las personas que ingresan a sus equipos, no tolerar conductas dañinas y colaborar en la limpieza de la red cuando existan miembros conflictivos o claramente perjudiciales para la operación colectiva.
+
+No se permite que un administrador seduzca, invite o intente mover astutamente a un repartidor o a un aliado que ya está vinculado bajo el código de otro administrador. Si se demuestra con evidencias que incurrió en esa mala práctica, debe ser retirado de la red porque no respeta el trabajo de sus compañeros ni el principio de cooperación.
+
+Si un administrador sale de la red por esta causa, sus aliados y repartidores no quedan cautivos. Deben ser invitados a integrarse a otros equipos, pero siempre por elección libre y sin presión de otros administradores.
+
+La red tampoco reconoce la idea de administradores dueños de ciudades o territorios. Ese enfoque contradice directamente los ideales de Domiquerendona. La plataforma existe para construir una red cooperativa, no para repartir feudos ni legitimar bloqueos al progreso ajeno.
+
+El criterio cultural es simple: cada administrador debe cuidar su equipo, respetar el trabajo de los demás y entender que el crecimiento de otros administradores no es una amenaza, sino parte del crecimiento de toda la red.

@@ -136,3 +136,33 @@ Domiquerendona es una red construida sobre la confianza entre sus participantes.
 El objetivo es que cada participante encuentre que su vinculación a la red es más rentable que operar en aislamiento. Cuando eso se cumple para todos, la red crece de forma sostenible y genera más oportunidades para cada uno de sus miembros.
 
 Este acuerdo no está pensado para proteger a una parte contra la otra, sino para establecer con claridad las reglas de un juego que debe ser justo para todos.
+
+---
+
+## 12. Requisitos de permanencia y métricas del administrador
+
+Todo administrador debe cumplir requisitos mínimos para mantenerse activo en la plataforma.
+
+**Base mínima del equipo.** El administrador debe tener como mínimo 5 aliados y 10 repartidores bajo su código.
+
+**Definición de miembro activo.** Se considera activo al aliado o repartidor que cumpla al menos 10 pedidos semanales.
+
+**Reposo anual.** Cada aliado y cada repartidor tiene derecho a 28 días de reposo al año. Para efectos operativos de la red, esto equivale a 4 semanas anuales de inactividad permitida. Estas semanas son acumulables y pueden usarse juntas o por separado.
+
+**Efecto de las semanas de reposo sobre las métricas.** Si un aliado o repartidor no cumple la métrica semanal de actividad, esa semana puede consumirse automáticamente como una de sus semanas de reposo disponibles. Mientras aún tenga semanas disponibles, puede seguir contándose como activo para las métricas del administrador. Cuando ya agotó esas 4 semanas y sigue sin cumplir la métrica, puede continuar dentro del equipo y seguir generando ganancias si opera, pero deja de contar como miembro activo para el cumplimiento de requisitos del administrador.
+
+**Proporción operativa de crecimiento.** El crecimiento del administrador debe mantenerse equilibrado: por cada aliado activo debe tener 2 repartidores activos. Ejemplo: si tiene 20 aliados activos, debe tener 40 repartidores activos.
+
+**Límite para nuevos registros según métricas.** Si el administrador quiere registrar un repartidor adicional sin cumplir la proporción requerida, el sistema no debería permitirlo. En cambio, si registra un aliado nuevo, recupera capacidad para vincular hasta 2 repartidores adicionales, siempre sujeto a la validación de actividad real y al consumo de semanas de reposo.
+
+**Periodo inicial de activación del equipo.** El administrador puede registrar inicialmente a su equipo, recibir ganancias y recargar durante las primeras 4 semanas de operación de ese equipo. Si al finalizar ese periodo no logra activar su base mínima conforme a estas métricas, no debería poder mantenerse como administrador activo dentro del sistema.
+
+**Miembros no contables en métricas.** Un aliado o repartidor que ya no cuente para las métricas por inactividad prolongada puede seguir siendo parte del equipo y seguir produciendo para su administrador, pero no sirve para sostener ni ampliar la condición activa del administrador dentro del sistema.
+
+### Nota de implementación
+
+Estado: regla de negocio definida por Luis Felipe el 2026-03-11.
+
+Implementación: pendiente en la lógica del sistema.
+
+Esta sección documenta requisitos que aún no están implementados completamente en código y debe servir como referencia directa para desarrollar después la lógica de activación, vacaciones operativas, permanencia del administrador y validación de proporción entre aliados activos y repartidores activos.
