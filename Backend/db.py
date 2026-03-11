@@ -5970,6 +5970,28 @@ def get_last_order_by_ally(ally_id: int):
     return row
 
 
+def get_recent_delivery_addresses_for_ally(ally_id: int, limit: int = 5):
+    """
+    Retorna las últimas N direcciones de entrega únicas usadas por el aliado,
+    desde pedidos completados o activos. Útil para sugerir reutilización.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT customer_address, customer_city, customer_barrio, dropoff_lat, dropoff_lng
+        FROM orders
+        WHERE ally_id = {P}
+          AND customer_address IS NOT NULL
+          AND customer_address != ''
+        GROUP BY customer_address, customer_city, customer_barrio
+        ORDER BY MAX(id) DESC
+        LIMIT {P}
+    """, (ally_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 # ---------- CACHE DE LINKS DE UBICACIÓN ----------
 
 def get_link_cache(raw_link: str):

@@ -130,6 +130,7 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
+    get_recent_delivery_addresses_for_ally,
     get_link_cache,
     upsert_link_cache,
     get_all_approved_links_for_courier,

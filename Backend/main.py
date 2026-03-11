@@ -248,6 +248,7 @@ from services import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
+    get_recent_delivery_addresses_for_ally,
     get_link_cache,
     upsert_link_cache,
     get_approved_admin_link_for_courier,
@@ -1088,10 +1089,35 @@ ADMIN_DIRS_NUEVA_TEL    = 948
 ADMIN_DIRS_VER          = 949
 
 # =========================
+# Agenda de clientes del aliado (ally_clientes_conv)
+# Prefijo callbacks: allycust_  |  Prefijo user_data: allycust_
+# =========================
+ALLY_CUST_MENU           = 973
+ALLY_CUST_NUEVO_NOMBRE   = 974
+ALLY_CUST_NUEVO_TEL      = 975
+ALLY_CUST_NUEVO_NOTAS    = 976
+ALLY_CUST_NUEVO_DIR_LABEL = 977
+ALLY_CUST_NUEVO_DIR_TEXT  = 978
+ALLY_CUST_BUSCAR         = 979
+ALLY_CUST_VER            = 980
+ALLY_CUST_EDITAR_NOMBRE  = 981
+ALLY_CUST_EDITAR_TEL     = 982
+ALLY_CUST_EDITAR_NOTAS   = 983
+ALLY_CUST_DIR_NUEVA_LABEL = 984
+ALLY_CUST_DIR_NUEVA_TEXT  = 985
+ALLY_CUST_DIR_EDITAR_LABEL = 986
+ALLY_CUST_DIR_EDITAR_TEXT  = 987
+ALLY_CUST_DIR_EDITAR_NOTA  = 988
+ALLY_CUST_DIR_CIUDAD     = 989
+ALLY_CUST_DIR_BARRIO     = 990
+ALLY_CUST_DIR_CORREGIR   = 991
+
+# =========================
 # Estados para seleccion de cliente/direccion en pedido admin
 # =========================
 ADMIN_PEDIDO_SEL_CUST      = 917
 ADMIN_PEDIDO_SEL_CUST_ADDR = 918
+ADMIN_PEDIDO_SAVE_PICKUP   = 919   # Preguntar si guardar nueva direccion de recogida
 
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
@@ -1349,7 +1375,7 @@ def get_ally_menu_keyboard():
         ['Mis pedidos', 'Agenda'],
         ['Cotizar envio', 'Recargar'],
         ['Mis repartidores', 'Mi saldo aliado'],
-        ['Volver al menu'],
+        ['Mis clientes', 'Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -3925,6 +3951,43 @@ def pedido_telefono_cliente(update, context):
             return mostrar_selector_pickup(update, context, edit=False)
 
     # Preguntar por ubicación (obligatoria)
+    # Sugerir ultimas direcciones de entrega usadas por este aliado
+    ally_id = context.user_data.get("active_ally_id")
+    recientes = []
+    if ally_id:
+        try:
+            recientes = get_recent_delivery_addresses_for_ally(ally_id, limit=5)
+        except Exception:
+            recientes = []
+    if recientes:
+        keyboard = []
+        for row in recientes:
+            addr_text = row[0] if isinstance(row, (list, tuple)) else row.get("customer_address", "")
+            if addr_text:
+                label = addr_text[:40] + ("..." if len(addr_text) > 40 else "")
+                keyboard.append([InlineKeyboardButton(label, callback_data="pedido_nueva_dir")])
+        # El boton lleva a PEDIDO_UBICACION sin prefill; el texto de la row se muestra como sugerencia visual
+        # Mejor: guardamos las rows en user_data y usamos callbacks indexados
+        context.user_data["_recientes_dirs"] = [
+            {"address": row[0] if isinstance(row, (list, tuple)) else row.get("customer_address", ""),
+             "city": row[1] if isinstance(row, (list, tuple)) else row.get("customer_city", ""),
+             "barrio": row[2] if isinstance(row, (list, tuple)) else row.get("customer_barrio", ""),
+             "lat": row[3] if isinstance(row, (list, tuple)) else row.get("dropoff_lat"),
+             "lng": row[4] if isinstance(row, (list, tuple)) else row.get("dropoff_lng")}
+            for row in recientes
+        ]
+        keyboard = []
+        for i, row in enumerate(context.user_data["_recientes_dirs"]):
+            addr_text = row["address"] or ""
+            if addr_text:
+                label = addr_text[:40] + ("..." if len(addr_text) > 40 else "")
+                keyboard.append([InlineKeyboardButton(label, callback_data="pedido_reciente_dir_{}".format(i))])
+        keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
+        update.message.reply_text(
+            "Selecciona una direccion reciente o elige nueva:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return PEDIDO_UBICACION
     update.message.reply_text(
         "UBICACION (obligatoria)\n\n"
         "Envia la ubicacion (PIN de Telegram), "
@@ -4138,6 +4201,51 @@ def pedido_geo_ubicacion_callback(update, context):
         return PEDIDO_DIRECCION
     else:  # pedido_geo_no
         return _geo_siguiente_o_gps(query, context, "pedido_geo_si", "pedido_geo_no", PEDIDO_UBICACION)
+
+
+def pedido_reciente_dir_callback(update, context):
+    """Selecciona una de las direcciones recientes del aliado para el pedido."""
+    query = update.callback_query
+    query.answer()
+    idx_str = query.data.replace("pedido_reciente_dir_", "")
+    try:
+        idx = int(idx_str)
+    except ValueError:
+        query.edit_message_text("Error al seleccionar direccion. Escribe la direccion manualmente.")
+        return PEDIDO_UBICACION
+    recientes = context.user_data.get("_recientes_dirs", [])
+    if idx < 0 or idx >= len(recientes):
+        query.edit_message_text("Direccion no encontrada. Escribe la direccion manualmente.")
+        return PEDIDO_UBICACION
+    row = recientes[idx]
+    context.user_data["dropoff_lat"] = row.get("lat")
+    context.user_data["dropoff_lng"] = row.get("lng")
+    context.user_data["customer_city"] = row.get("city", "")
+    context.user_data["customer_barrio"] = row.get("barrio", "")
+    context.user_data.pop("_recientes_dirs", None)
+    query.edit_message_text(
+        "Direccion seleccionada: {}\n\n"
+        "Escribe los detalles adicionales (barrio, conjunto, torre, apto, referencias)\n"
+        "o escribe la misma direccion si no hay detalles que agregar:".format(row["address"])
+    )
+    # Prefill customer_address so pedido_direccion_cliente can pick it up
+    context.user_data["_prefill_address"] = row["address"]
+    return PEDIDO_DIRECCION
+
+
+def pedido_nueva_dir_en_ubicacion_callback(update, context):
+    """Descarta sugerencias recientes y muestra el prompt de nueva ubicacion."""
+    query = update.callback_query
+    query.answer()
+    context.user_data.pop("_recientes_dirs", None)
+    query.edit_message_text(
+        "UBICACION (obligatoria)\n\n"
+        "Envia la ubicacion (PIN de Telegram), "
+        "pega el enlace (Google Maps/WhatsApp) "
+        "o escribe coordenadas (lat,lng).\n\n"
+        "No se puede continuar sin una ubicacion valida."
+    )
+    return PEDIDO_UBICACION
 
 
 def pedido_ubicacion_copiar_msg_callback(update, context):
@@ -5852,12 +5960,17 @@ def admin_pedido_pickup_gps_handler(update, context):
     context.user_data["admin_ped_pickup_lng"] = lng
     context.user_data["admin_ped_pickup_city"] = ""
     context.user_data["admin_ped_pickup_barrio"] = ""
-    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+    keyboard = [[
+        InlineKeyboardButton("Si, guardar", callback_data="admin_pedido_save_pickup_si"),
+        InlineKeyboardButton("No, continuar", callback_data="admin_pedido_save_pickup_no"),
+    ]]
     update.message.reply_text(
-        "Punto de recogida guardado.\n\nNombre del cliente (o selecciona de tu agenda):",
+        "Punto de recogida: {}\n\nGuardar esta direccion en Mis Dirs para futuros pedidos?".format(
+            context.user_data["admin_ped_pickup_addr"]
+        ),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return ADMIN_PEDIDO_CUST_NAME
+    return ADMIN_PEDIDO_SAVE_PICKUP
 
 
 def admin_pedido_geo_pickup_callback(update, context):
@@ -5873,14 +5986,17 @@ def admin_pedido_geo_pickup_callback(update, context):
         context.user_data["admin_ped_pickup_city"] = pending.get("city", "")
         context.user_data["admin_ped_pickup_barrio"] = pending.get("barrio", "")
         context.user_data.pop("admin_ped_geo_pickup_pending", None)
-        keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+        keyboard = [[
+            InlineKeyboardButton("Si, guardar", callback_data="admin_pedido_save_pickup_si"),
+            InlineKeyboardButton("No, continuar", callback_data="admin_pedido_save_pickup_no"),
+        ]]
         query.edit_message_text(
-            "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
+            "Recogida: {}\n\nGuardar esta direccion en Mis Dirs para futuros pedidos?".format(
                 context.user_data["admin_ped_pickup_addr"]
             ),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return ADMIN_PEDIDO_CUST_NAME
+        return ADMIN_PEDIDO_SAVE_PICKUP
     else:
         original = pending.get("original_text", "")
         seen = [pending["address"]] if pending.get("address") else []
@@ -5909,6 +6025,34 @@ def admin_pedido_geo_pickup_callback(update, context):
             )
             context.user_data.pop("admin_ped_geo_pickup_pending", None)
             return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_save_pickup_callback(update, context):
+    """Guarda (o no) la nueva direccion de recogida en admin_locations y avanza al nombre del cliente."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if query.data == "admin_pedido_save_pickup_si" and admin_id:
+        addr = context.user_data.get("admin_ped_pickup_addr", "")
+        lat = context.user_data.get("admin_ped_pickup_lat")
+        lng = context.user_data.get("admin_ped_pickup_lng")
+        city = context.user_data.get("admin_ped_pickup_city", "")
+        barrio = context.user_data.get("admin_ped_pickup_barrio", "")
+        try:
+            loc_id = create_admin_location(
+                admin_id, addr[:80], addr, city, barrio, lat=lat, lng=lng
+            )
+            context.user_data["admin_ped_pickup_id"] = loc_id
+        except Exception as e:
+            print("[WARN] admin_pedido_save_pickup_callback:", e)
+    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
+    query.edit_message_text(
+        "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
+            context.user_data.get("admin_ped_pickup_addr", "")
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_CUST_NAME
 
 
 def admin_pedido_cust_name_handler(update, context):
@@ -10713,6 +10857,763 @@ def admin_clientes_dir_corregir_location_handler(update, context):
 
 
 # =========================
+# Agenda de clientes del Aliado (ally_clientes_conv)
+# Prefijo callbacks: allycust_
+# Prefijo user_data: allycust_
+# =========================
+
+def ally_clientes_cmd(update, context):
+    """Entry point de la agenda de clientes del aliado."""
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        update.message.reply_text("Aun no estas registrado. Usa /start primero.")
+        return ConversationHandler.END
+
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally:
+        update.message.reply_text("Este menu es solo para aliados.")
+        return ConversationHandler.END
+
+    if ally["status"] != "APPROVED":
+        update.message.reply_text("Tu registro como aliado aun no ha sido aprobado.")
+        return ConversationHandler.END
+
+    for key in list(context.user_data.keys()):
+        if key.startswith("allycust_"):
+            del context.user_data[key]
+    context.user_data["allycust_ally_id"] = ally["id"]
+
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def _ally_clientes_mostrar_menu(update, context, edit_message=False):
+    """Muestra el menu principal de la agenda de clientes del aliado."""
+    keyboard = [
+        [InlineKeyboardButton("Nuevo cliente", callback_data="allycust_nuevo")],
+        [InlineKeyboardButton("Buscar cliente", callback_data="allycust_buscar")],
+        [InlineKeyboardButton("Mis clientes", callback_data="allycust_lista")],
+        [InlineKeyboardButton("Clientes archivados", callback_data="allycust_archivados")],
+        [InlineKeyboardButton("Cerrar", callback_data="allycust_cerrar")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "AGENDA DE CLIENTES\n\nSelecciona una opcion:"
+
+    if edit_message and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+    return ALLY_CUST_MENU
+
+
+def ally_clientes_menu_callback(update, context):
+    """Maneja los callbacks del menu de clientes del aliado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("allycust_ally_id")
+
+    if not ally_id:
+        query.edit_message_text("Sesion expirada. Vuelve al menu e inicia de nuevo.")
+        return ConversationHandler.END
+
+    if data == "allycust_nuevo":
+        query.edit_message_text("NUEVO CLIENTE\n\nEscribe el nombre del cliente:")
+        return ALLY_CUST_NUEVO_NOMBRE
+
+    elif data == "allycust_buscar":
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        return ALLY_CUST_BUSCAR
+
+    elif data == "allycust_lista":
+        customers = list_ally_customers(ally_id, limit=10, include_inactive=False)
+        if not customers:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")]]
+            query.edit_message_text(
+                "No tienes clientes guardados.\n\n"
+                "Usa 'Nuevo cliente' para agregar uno.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ALLY_CUST_MENU
+
+        keyboard = []
+        for c in customers:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_ver_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")])
+        query.edit_message_text(
+            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_MENU
+
+    elif data == "allycust_archivados":
+        customers = list_ally_customers(ally_id, limit=20, include_inactive=True)
+        archived = [c for c in customers if c["status"] == "INACTIVE"]
+        if not archived:
+            keyboard = [[InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")]]
+            query.edit_message_text("No tienes clientes archivados.", reply_markup=InlineKeyboardMarkup(keyboard))
+            return ALLY_CUST_MENU
+
+        keyboard = []
+        for c in archived:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_restaurar_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")])
+        query.edit_message_text(
+            "CLIENTES ARCHIVADOS\n\nSelecciona uno para restaurar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_MENU
+
+    elif data == "allycust_volver_menu":
+        return _ally_clientes_mostrar_menu(update, context, edit_message=True)
+
+    elif data == "allycust_cerrar":
+        query.edit_message_text("Agenda de clientes cerrada.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("allycust_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    elif data.startswith("allycust_ver_"):
+        customer_id = int(data.replace("allycust_ver_", ""))
+        return _ally_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("allycust_restaurar_"):
+        customer_id = int(data.replace("allycust_restaurar_", ""))
+        if restore_ally_customer(customer_id, ally_id):
+            query.edit_message_text("Cliente restaurado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo restaurar el cliente.")
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    return ALLY_CUST_MENU
+
+
+def _ally_clientes_ver_cliente(query, context, customer_id):
+    """Muestra detalles de un cliente del aliado y sus opciones."""
+    ally_id = context.user_data.get("allycust_ally_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+
+    if not customer:
+        query.edit_message_text("Cliente no encontrado.")
+        return ALLY_CUST_MENU
+
+    context.user_data["allycust_current_customer_id"] = customer_id
+
+    addresses = list_customer_addresses(customer_id)
+    addr_text = ""
+    if addresses:
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            addr_text += "- {}: {}...\n".format(label, addr["address_text"][:35])
+    else:
+        addr_text = "Sin direcciones guardadas\n"
+
+    nota_interna = customer["notes"] or "Sin notas"
+
+    keyboard = [
+        [InlineKeyboardButton("Direcciones", callback_data="allycust_dirs")],
+        [InlineKeyboardButton("Editar", callback_data="allycust_editar")],
+        [InlineKeyboardButton("Archivar", callback_data="allycust_archivar")],
+        [InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")],
+    ]
+    query.edit_message_text(
+        "Cliente: {}\n"
+        "Telefono: {}\n\n"
+        "Nota interna:\n{}\n\n"
+        "Direcciones guardadas:\n{}".format(customer["name"], customer["phone"], nota_interna, addr_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ALLY_CUST_VER
+
+
+def ally_clientes_ver_callback(update, context):
+    """Maneja callbacks de la vista de cliente del aliado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    ally_id = context.user_data.get("allycust_ally_id")
+    customer_id = context.user_data.get("allycust_current_customer_id")
+
+    if data == "allycust_dirs":
+        addresses = list_customer_addresses(customer_id)
+        keyboard = []
+        for addr in addresses:
+            label = addr["label"] or "Sin etiqueta"
+            btn_text = "{}: {}...".format(label, addr["address_text"][:25])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_dir_ver_{}".format(addr["id"]))])
+        keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="allycust_dir_nueva")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_ver_{}".format(customer_id))])
+        query.edit_message_text(
+            "DIRECCIONES DEL CLIENTE\n\nSelecciona una para editar:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_VER
+
+    elif data == "allycust_editar":
+        keyboard = [
+            [InlineKeyboardButton("Editar nombre", callback_data="allycust_edit_nombre")],
+            [InlineKeyboardButton("Editar telefono", callback_data="allycust_edit_telefono")],
+            [InlineKeyboardButton("Editar notas", callback_data="allycust_edit_notas")],
+            [InlineKeyboardButton("Volver", callback_data="allycust_ver_{}".format(customer_id))],
+        ]
+        query.edit_message_text("Que deseas editar?", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ALLY_CUST_VER
+
+    elif data == "allycust_edit_nombre":
+        query.edit_message_text("Escribe el nuevo nombre del cliente:")
+        return ALLY_CUST_EDITAR_NOMBRE
+
+    elif data == "allycust_edit_telefono":
+        query.edit_message_text("Escribe el nuevo telefono del cliente:")
+        return ALLY_CUST_EDITAR_TEL
+
+    elif data == "allycust_edit_notas":
+        query.edit_message_text("Escribe las nuevas notas del cliente (o 'ninguna' para borrar):")
+        return ALLY_CUST_EDITAR_NOTAS
+
+    elif data == "allycust_archivar":
+        if archive_ally_customer(customer_id, ally_id):
+            query.edit_message_text("Cliente archivado exitosamente.")
+        else:
+            query.edit_message_text("No se pudo archivar el cliente.")
+        context.user_data.pop("allycust_current_customer_id", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    elif data == "allycust_dir_nueva":
+        query.edit_message_text("NUEVA DIRECCION\n\nEscribe la etiqueta (Casa, Trabajo, Otro):")
+        return ALLY_CUST_DIR_NUEVA_LABEL
+
+    elif data.startswith("allycust_dir_ver_"):
+        address_id = int(data.replace("allycust_dir_ver_", ""))
+        address = get_customer_address_by_id(address_id, customer_id)
+        if not address:
+            query.edit_message_text("Direccion no encontrada.")
+            return ALLY_CUST_VER
+
+        context.user_data["allycust_current_address_id"] = address_id
+        label = address["label"] or "Sin etiqueta"
+        nota_entrega = address["notes"] or "Sin nota"
+        lat = address["lat"]
+        lng = address["lng"]
+
+        if lat is not None and lng is not None:
+            try:
+                context.bot.send_location(chat_id=query.message.chat_id, latitude=float(lat), longitude=float(lng))
+            except Exception:
+                pass
+            coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng))
+            btn_coords = "Corregir coordenadas"
+        else:
+            coords_text = "Sin coordenadas"
+            btn_coords = "Agregar coordenadas"
+
+        keyboard = [
+            [InlineKeyboardButton("Editar", callback_data="allycust_dir_editar")],
+            [InlineKeyboardButton("Editar nota entrega", callback_data="allycust_dir_edit_nota")],
+            [InlineKeyboardButton(btn_coords, callback_data="allycust_dir_corregir_coords")],
+            [InlineKeyboardButton("Archivar", callback_data="allycust_dir_archivar")],
+            [InlineKeyboardButton("Volver", callback_data="allycust_dirs")],
+        ]
+        query.edit_message_text(
+            "{}\n{}\n\nNota para entrega:\n{}\n\n{}".format(label, address["address_text"], nota_entrega, coords_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_VER
+
+    elif data == "allycust_dir_corregir_coords":
+        query.edit_message_text(
+            "Corregir / agregar coordenadas\n\n"
+            "Envia un pin de ubicacion de Telegram, un link de Google Maps, "
+            "o escribe las coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para volver."
+        )
+        context.user_data["allycust_geo_mode"] = "corregir_coords"
+        return ALLY_CUST_DIR_CORREGIR
+
+    elif data == "allycust_dir_editar":
+        query.edit_message_text("Escribe la nueva etiqueta (Casa, Trabajo, Otro):")
+        return ALLY_CUST_DIR_EDITAR_LABEL
+
+    elif data == "allycust_dir_edit_nota":
+        query.edit_message_text(
+            "Escribe la nota para entrega.\n"
+            "Esta nota sera visible para el repartidor.\n\n"
+            "Escribe 'ninguna' para borrar la nota:"
+        )
+        return ALLY_CUST_DIR_EDITAR_NOTA
+
+    elif data == "allycust_dir_archivar":
+        address_id = context.user_data.get("allycust_current_address_id")
+        if archive_customer_address(address_id, customer_id):
+            query.edit_message_text("Direccion archivada.")
+        else:
+            query.edit_message_text("No se pudo archivar la direccion.")
+        context.user_data.pop("allycust_current_address_id", None)
+        return _ally_clientes_ver_cliente(query, context, customer_id)
+
+    elif data.startswith("allycust_ver_"):
+        cid = int(data.replace("allycust_ver_", ""))
+        return _ally_clientes_ver_cliente(query, context, cid)
+
+    elif data == "allycust_volver_menu":
+        context.user_data.pop("allycust_current_customer_id", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=True)
+
+    return ALLY_CUST_VER
+
+
+def ally_clientes_nuevo_nombre(update, context):
+    context.user_data["allycust_new_customer_name"] = update.message.text.strip()
+    update.message.reply_text("Escribe el telefono del cliente:")
+    return ALLY_CUST_NUEVO_TEL
+
+
+def ally_clientes_nuevo_telefono(update, context):
+    context.user_data["allycust_new_customer_phone"] = update.message.text.strip()
+    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
+    return ALLY_CUST_NUEVO_NOTAS
+
+
+def ally_clientes_nuevo_notas(update, context):
+    notas = update.message.text.strip()
+    if notas.lower() == "ninguna":
+        notas = None
+    context.user_data["allycust_new_customer_notes"] = notas
+    update.message.reply_text("Escribe la etiqueta de la direccion (Casa, Trabajo, Otro):")
+    return ALLY_CUST_NUEVO_DIR_LABEL
+
+
+def ally_clientes_nuevo_dir_label(update, context):
+    context.user_data["allycust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ALLY_CUST_NUEVO_DIR_TEXT
+
+
+def _ally_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
+    """Aplica el pipeline de geocoding para resolver una direccion en la agenda del aliado."""
+    loc = resolve_location(texto)
+    if not loc or loc.get("lat") is None or loc.get("lng") is None:
+        update.message.reply_text(
+            "No pude encontrar esa ubicacion.\n\n"
+            "Intenta con:\n"
+            "- Un PIN de Telegram\n"
+            "- Un link de Google Maps\n"
+            "- Coordenadas (ej: 4.81,-75.69)\n"
+            "- Direccion con ciudad (ej: Barrio Leningrado, Pereira)"
+        )
+        return None
+
+    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["allycust_geo_formatted"] = loc.get("formatted_address", "")
+        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        return estado
+
+    return loc
+
+
+def ally_clientes_nuevo_dir_text(update, context):
+    address_text = update.message.text.strip()
+    resolved = _ally_clientes_resolver_dir(
+        update, context, address_text, "allycust_geo_si", "allycust_geo_no", ALLY_CUST_NUEVO_DIR_TEXT
+    )
+    if resolved is None:
+        return ALLY_CUST_NUEVO_DIR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["allycust_geo_mode"] = "nuevo_cliente"
+        context.user_data["allycust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["allycust_pending_mode"] = "nuevo_cliente"
+    context.user_data["allycust_pending_address_text"] = address_to_save
+    context.user_data["allycust_pending_lat"] = lat
+    context.user_data["allycust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ALLY_CUST_DIR_CIUDAD
+
+
+def ally_clientes_buscar(update, context):
+    query_text = update.message.text.strip()
+    ally_id = context.user_data.get("allycust_ally_id")
+    results = search_ally_customers(ally_id, query_text, limit=10)
+    if not results:
+        keyboard = [
+            [InlineKeyboardButton("Agregar nuevo cliente", callback_data="allycust_nuevo")],
+            [InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")],
+        ]
+        update.message.reply_text(
+            "No se encontraron clientes con '{}'.".format(query_text),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_MENU
+
+    keyboard = []
+    for c in results:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_ver_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")])
+    update.message.reply_text(
+        "Resultados para '{}':".format(query_text),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ALLY_CUST_MENU
+
+
+def ally_clientes_editar_nombre(update, context):
+    nuevo_nombre = update.message.text.strip()
+    ally_id = context.user_data.get("allycust_ally_id")
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+    if customer:
+        update_ally_customer(customer_id, ally_id, nuevo_nombre, customer["phone"], customer["notes"])
+        update.message.reply_text("Nombre actualizado a: {}".format(nuevo_nombre))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_editar_telefono(update, context):
+    nuevo_telefono = update.message.text.strip()
+    ally_id = context.user_data.get("allycust_ally_id")
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+    if customer:
+        update_ally_customer(customer_id, ally_id, customer["name"], nuevo_telefono, customer["notes"])
+        update.message.reply_text("Telefono actualizado a: {}".format(nuevo_telefono))
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_editar_notas(update, context):
+    nuevas_notas = update.message.text.strip()
+    if nuevas_notas.lower() == "ninguna":
+        nuevas_notas = None
+    ally_id = context.user_data.get("allycust_ally_id")
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    customer = get_ally_customer_by_id(customer_id, ally_id)
+    if customer:
+        update_ally_customer(customer_id, ally_id, customer["name"], customer["phone"], nuevas_notas)
+        update.message.reply_text("Notas actualizadas.")
+    else:
+        update.message.reply_text("Error: cliente no encontrado.")
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_dir_nueva_label(update, context):
+    context.user_data["allycust_new_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la direccion completa:")
+    return ALLY_CUST_DIR_NUEVA_TEXT
+
+
+def ally_clientes_dir_nueva_text(update, context):
+    address_text = update.message.text.strip()
+    resolved = _ally_clientes_resolver_dir(
+        update, context, address_text, "allycust_geo_si", "allycust_geo_no", ALLY_CUST_DIR_NUEVA_TEXT
+    )
+    if resolved is None:
+        return ALLY_CUST_DIR_NUEVA_TEXT
+    if isinstance(resolved, int):
+        context.user_data["allycust_geo_mode"] = "dir_nueva"
+        context.user_data["allycust_geo_address_input"] = address_text
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    address_to_save = resolved.get("formatted_address") or address_text
+    context.user_data["allycust_pending_mode"] = "dir_nueva"
+    context.user_data["allycust_pending_address_text"] = address_to_save
+    context.user_data["allycust_pending_lat"] = lat
+    context.user_data["allycust_pending_lng"] = lng
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ALLY_CUST_DIR_CIUDAD
+
+
+def ally_clientes_geo_callback(update, context):
+    """Confirma/rechaza geocoding de direccion en agenda de clientes del aliado."""
+    query = update.callback_query
+    query.answer()
+
+    mode = context.user_data.get("allycust_geo_mode")
+    if not mode:
+        query.edit_message_text("Sesion de geocodificacion expirada. Escribe la direccion nuevamente.")
+        return ALLY_CUST_MENU
+
+    if query.data == "allycust_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        context.user_data.pop("allycust_geo_formatted", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
+            return ALLY_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ALLY_CUST_DIR_NUEVA_TEXT
+
+        if mode == "corregir_coords":
+            context.user_data.pop("allycust_geo_mode", None)
+            customer_id = context.user_data.get("allycust_current_customer_id")
+            address_id = context.user_data.get("allycust_current_address_id")
+            address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+            if not address:
+                query.edit_message_text("Error: direccion no encontrada.")
+                return _ally_clientes_mostrar_menu(update, context, edit_message=True)
+            try:
+                update_customer_address(
+                    address_id=address_id, customer_id=customer_id,
+                    label=address["label"], address_text=address["address_text"],
+                    city=address["city"] or "", barrio=address["barrio"] or "",
+                    notes=address["notes"], lat=lat, lng=lng,
+                )
+                query.edit_message_text(
+                    "Coordenadas actualizadas.\nLat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+                )
+            except Exception as e:
+                query.edit_message_text("Error al actualizar: {}".format(str(e)))
+            return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+        original_text = context.user_data.get("allycust_geo_address_input", "")
+        context.user_data["allycust_pending_mode"] = mode
+        context.user_data["allycust_pending_address_text"] = original_text
+        context.user_data["allycust_pending_lat"] = lat
+        context.user_data["allycust_pending_lng"] = lng
+        query.edit_message_text("Escribe la ciudad de la direccion:")
+        return ALLY_CUST_DIR_CIUDAD
+
+    estado = ALLY_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ALLY_CUST_DIR_NUEVA_TEXT
+    return _geo_siguiente_o_gps(query, context, "allycust_geo_si", "allycust_geo_no", estado)
+
+
+def ally_clientes_dir_ciudad_handler(update, context):
+    return _handle_text_field_input(
+        update, context,
+        "Por favor escribe la ciudad de la direccion:",
+        "allycust_pending_city",
+        ALLY_CUST_DIR_CIUDAD, ALLY_CUST_DIR_BARRIO,
+        flow=None, next_prompt="Escribe el barrio o sector de la direccion:",
+        options_hint="", set_back_step=False,
+    )
+
+
+def ally_clientes_dir_barrio_handler(update, context):
+    ok_state = _handle_text_field_input(
+        update, context,
+        "Por favor escribe el barrio o sector de la direccion:",
+        "allycust_pending_barrio",
+        ALLY_CUST_DIR_BARRIO, ALLY_CUST_MENU,
+        flow=None, next_prompt=None, options_hint="", set_back_step=False,
+    )
+    if ok_state == ALLY_CUST_DIR_BARRIO:
+        return ok_state
+
+    barrio = context.user_data.get("allycust_pending_barrio", "")
+    mode = context.user_data.get("allycust_pending_mode")
+    address_text = context.user_data.get("allycust_pending_address_text", "")
+    lat = context.user_data.get("allycust_pending_lat")
+    lng = context.user_data.get("allycust_pending_lng")
+    city = context.user_data.get("allycust_pending_city", "")
+    notes = context.user_data.get("allycust_pending_notes")
+
+    _ALLYCUST_PENDING_KEYS = [
+        "allycust_geo_mode", "allycust_geo_address_input", "allycust_geo_formatted",
+        "allycust_pending_mode", "allycust_pending_address_text", "allycust_pending_lat",
+        "allycust_pending_lng", "allycust_pending_city", "allycust_pending_barrio", "allycust_pending_notes",
+    ]
+
+    if mode == "nuevo_cliente":
+        ally_id = context.user_data.get("allycust_ally_id")
+        name = context.user_data.get("allycust_new_customer_name")
+        phone = context.user_data.get("allycust_new_customer_phone")
+        customer_notes = context.user_data.get("allycust_new_customer_notes")
+        label = context.user_data.get("allycust_new_address_label")
+        try:
+            customer_id = create_ally_customer(ally_id, name, phone, customer_notes)
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")]]
+            update.message.reply_text(
+                "Cliente '{}' creado exitosamente.\n\nTelefono: {}\nDireccion ({}): {}".format(
+                    name, phone, label, address_text
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        except Exception as e:
+            update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+        for key in _ALLYCUST_PENDING_KEYS + ["allycust_new_customer_name", "allycust_new_customer_phone",
+                                              "allycust_new_customer_notes", "allycust_new_address_label"]:
+            context.user_data.pop(key, None)
+        return ALLY_CUST_MENU
+
+    if mode == "dir_nueva":
+        customer_id = context.user_data.get("allycust_current_customer_id")
+        label = context.user_data.get("allycust_new_address_label")
+        try:
+            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+        for key in _ALLYCUST_PENDING_KEYS + ["allycust_new_address_label"]:
+            context.user_data.pop(key, None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    if mode == "dir_editar":
+        customer_id = context.user_data.get("allycust_current_customer_id")
+        address_id = context.user_data.get("allycust_current_address_id")
+        label = context.user_data.get("allycust_edit_address_label")
+        try:
+            update_customer_address(
+                address_id=address_id, customer_id=customer_id,
+                label=label, address_text=address_text,
+                city=city, barrio=barrio, notes=notes, lat=lat, lng=lng,
+            )
+            update.message.reply_text("Direccion actualizada.")
+        except Exception as e:
+            update.message.reply_text("Error: {}".format(str(e)))
+        for key in _ALLYCUST_PENDING_KEYS + ["allycust_edit_address_label", "allycust_current_address_id"]:
+            context.user_data.pop(key, None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    update.message.reply_text("Error: sesion expirada. Intenta de nuevo desde el menu.")
+    for key in _ALLYCUST_PENDING_KEYS:
+        context.user_data.pop(key, None)
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_dir_editar_label(update, context):
+    context.user_data["allycust_edit_address_label"] = update.message.text.strip()
+    update.message.reply_text("Escribe la nueva direccion completa:")
+    return ALLY_CUST_DIR_EDITAR_TEXT
+
+
+def ally_clientes_dir_editar_text(update, context):
+    address_text = update.message.text.strip()
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    address_id = context.user_data.get("allycust_current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("allycust_edit_address_label", None)
+        context.user_data.pop("allycust_current_address_id", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["allycust_pending_mode"] = "dir_editar"
+    context.user_data["allycust_pending_address_text"] = address_text
+    context.user_data["allycust_pending_lat"] = address["lat"]
+    context.user_data["allycust_pending_lng"] = address["lng"]
+    context.user_data["allycust_pending_notes"] = address["notes"]
+    update.message.reply_text("Escribe la ciudad de la direccion:")
+    return ALLY_CUST_DIR_CIUDAD
+
+
+def ally_clientes_dir_editar_nota(update, context):
+    nota_text = update.message.text.strip()
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    address_id = context.user_data.get("allycust_current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id)
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    nueva_nota = None if nota_text.lower() == "ninguna" else nota_text
+    try:
+        update_customer_address(
+            address_id=address_id, customer_id=customer_id,
+            label=address["label"], address_text=address["address_text"],
+            city=address["city"], barrio=address["barrio"],
+            notes=nueva_nota, lat=address["lat"], lng=address["lng"],
+        )
+        update.message.reply_text("Nota para entrega actualizada." if nueva_nota else "Nota para entrega eliminada.")
+    except Exception as e:
+        update.message.reply_text("Error: {}".format(str(e)))
+
+    context.user_data.pop("allycust_current_address_id", None)
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_dir_corregir_handler(update, context):
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        context.user_data.pop("allycust_geo_mode", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    address_id = context.user_data.get("allycust_current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("allycust_geo_mode", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    context.user_data["allycust_geo_mode"] = "corregir_coords"
+    context.user_data["allycust_geo_address_input"] = text
+
+    resolved = _ally_clientes_resolver_dir(
+        update, context, text, "allycust_geo_si", "allycust_geo_no", ALLY_CUST_DIR_CORREGIR
+    )
+    if resolved is None:
+        return ALLY_CUST_DIR_CORREGIR
+    if isinstance(resolved, int):
+        return resolved
+
+    lat = resolved.get("lat")
+    lng = resolved.get("lng")
+    if lat is None or lng is None:
+        update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
+        return ALLY_CUST_DIR_CORREGIR
+
+    try:
+        update_customer_address(
+            address_id=address_id, customer_id=customer_id,
+            label=address["label"], address_text=address["address_text"],
+            city=address["city"] or "", barrio=address["barrio"] or "",
+            notes=address["notes"], lat=lat, lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\nLat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("allycust_geo_mode", None)
+    context.user_data.pop("allycust_geo_address_input", None)
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def ally_clientes_dir_corregir_location_handler(update, context):
+    loc = update.message.location
+    lat = loc.latitude
+    lng = loc.longitude
+    customer_id = context.user_data.get("allycust_current_customer_id")
+    address_id = context.user_data.get("allycust_current_address_id")
+    address = get_customer_address_by_id(address_id, customer_id) if address_id and customer_id else None
+    if not address:
+        update.message.reply_text("Direccion no encontrada.")
+        context.user_data.pop("allycust_geo_mode", None)
+        return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+    try:
+        update_customer_address(
+            address_id=address_id, customer_id=customer_id,
+            label=address["label"], address_text=address["address_text"],
+            city=address["city"] or "", barrio=address["barrio"] or "",
+            notes=address["notes"], lat=lat, lng=lng,
+        )
+        update.message.reply_text(
+            "Coordenadas actualizadas.\nLat: {:.6f}, Lng: {:.6f}".format(float(lat), float(lng))
+        )
+    except Exception as e:
+        update.message.reply_text("Error al actualizar: {}".format(str(e)))
+
+    context.user_data.pop("allycust_geo_mode", None)
+    return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+
+# =========================
 # Gestion de ubicaciones de recogida del Admin (admin_dirs_conv)
 # Prefijo callbacks: adirs_
 # Prefijo user_data: adirs_
@@ -12564,6 +13465,8 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_UBICACION: [
             CallbackQueryHandler(pedido_ubicacion_copiar_msg_callback, pattern=r"^ubicacion_copiar_msg_cliente$"),
+            CallbackQueryHandler(pedido_reciente_dir_callback, pattern=r"^pedido_reciente_dir_\d+$"),
+            CallbackQueryHandler(pedido_nueva_dir_en_ubicacion_callback, pattern=r"^pedido_nueva_dir$"),
             CallbackQueryHandler(pedido_geo_ubicacion_callback, pattern=r"^pedido_geo_"),
             MessageHandler(Filters.location, pedido_ubicacion_location_handler),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
@@ -12723,6 +13626,80 @@ admin_clientes_conv = ConversationHandler(
     allow_reentry=True,
 )
 
+ally_clientes_conv = ConversationHandler(
+    entry_points=[
+        MessageHandler(Filters.regex(r'^Mis clientes$'), ally_clientes_cmd),
+    ],
+    states={
+        ALLY_CUST_MENU: [
+            CallbackQueryHandler(ally_clientes_menu_callback, pattern=r"^allycust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+        ],
+        ALLY_CUST_NUEVO_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_nombre)
+        ],
+        ALLY_CUST_NUEVO_TEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_telefono)
+        ],
+        ALLY_CUST_NUEVO_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_notas)
+        ],
+        ALLY_CUST_NUEVO_DIR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_dir_label)
+        ],
+        ALLY_CUST_NUEVO_DIR_TEXT: [
+            CallbackQueryHandler(ally_clientes_geo_callback, pattern=r"^allycust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_dir_text)
+        ],
+        ALLY_CUST_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_buscar)
+        ],
+        ALLY_CUST_VER: [
+            CallbackQueryHandler(ally_clientes_ver_callback, pattern=r"^allycust_(dirs|editar|edit_nombre|edit_telefono|edit_notas|archivar|dir_nueva|dir_ver_\d+|dir_editar|dir_edit_nota|dir_archivar|dir_corregir_coords|ver_\d+|volver_menu)$")
+        ],
+        ALLY_CUST_EDITAR_NOMBRE: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_editar_nombre)
+        ],
+        ALLY_CUST_EDITAR_TEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_editar_telefono)
+        ],
+        ALLY_CUST_EDITAR_NOTAS: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_editar_notas)
+        ],
+        ALLY_CUST_DIR_NUEVA_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_nueva_label)
+        ],
+        ALLY_CUST_DIR_NUEVA_TEXT: [
+            CallbackQueryHandler(ally_clientes_geo_callback, pattern=r"^allycust_geo_(si|no)$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_nueva_text)
+        ],
+        ALLY_CUST_DIR_EDITAR_LABEL: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_editar_label)
+        ],
+        ALLY_CUST_DIR_EDITAR_TEXT: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_editar_text)
+        ],
+        ALLY_CUST_DIR_EDITAR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_editar_nota)
+        ],
+        ALLY_CUST_DIR_CIUDAD: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_ciudad_handler)
+        ],
+        ALLY_CUST_DIR_BARRIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_barrio_handler)
+        ],
+        ALLY_CUST_DIR_CORREGIR: [
+            CallbackQueryHandler(ally_clientes_geo_callback, pattern=r"^allycust_geo_(si|no)$"),
+            MessageHandler(Filters.location, ally_clientes_dir_corregir_location_handler),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_corregir_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
 admin_dirs_conv = ConversationHandler(
     entry_points=[
         CallbackQueryHandler(admin_dirs_cmd, pattern=r"^admin_mis_dirs$"),
@@ -12782,6 +13759,9 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.location, admin_pedido_pickup_gps_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_pickup_text_handler),
+        ],
+        ADMIN_PEDIDO_SAVE_PICKUP: [
+            CallbackQueryHandler(admin_pedido_save_pickup_callback, pattern=r"^admin_pedido_save_pickup_(si|no)$"),
         ],
         ADMIN_PEDIDO_CUST_NAME: [
             CallbackQueryHandler(admin_pedido_sel_cust_handler, pattern=r"^admin_pedido_sel_cust$"),
@@ -16967,6 +17947,7 @@ def main():
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    dp.add_handler(ally_clientes_conv)     # Agenda de clientes del Aliado (entry: Mis clientes)
     # Estos tres deben ir ANTES del handler global ^admin_ para que sus entry points no sean interceptados
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
