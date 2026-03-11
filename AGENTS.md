@@ -762,9 +762,15 @@ Regla de elegibilidad:
   Retorna todos los couriers con admin_couriers.status = 'APPROVED' y couriers.status = 'APPROVED'.
 
 Regla de comisiones (simétrica):
-  - Fee del aliado → admin del aliado (get_approved_admin_link_for_ally).
-  - Fee del courier → admin del courier al momento de aceptar (order.courier_admin_id_snapshot).
+  - Fee del aliado ($300): admin del aliado recibe $200, Plataforma recibe $100.
+    Admin se determina con get_approved_admin_link_for_ally.
+  - Fee del courier ($300): admin del courier recibe $200, Plataforma recibe $100.
+    Admin se determina con order.courier_admin_id_snapshot (guardado al aceptar).
     Fallback: get_approved_admin_link_for_courier si el snapshot es NULL.
+  - Si el admin es Plataforma: recibe los $300 completos (sin split).
+  - Pedidos de admin (creator_admin_id != NULL, ally_id = NULL):
+    el admin creador NO paga fee. El courier que entrega sí paga su fee normal.
+    _expire_order con ally_id=None no cobra ni crashea (guard implementado).
   - Cada admin gana únicamente de sus propios miembros.
 
 Regla de pre-verificación de saldo (publish_order_to_couriers):
@@ -1122,11 +1128,31 @@ Antes de ejecutar git push origin staging, el agente DEBE:
              Necesito instruccion antes de pushear."
           → Esperar instruccion explicita.
 
-  3. PROHIBIDO git push --force en cualquier circunstancia.
+ 3. PROHIBIDO git push --force en cualquier circunstancia.
 
 Comando rapido para detectar solapamiento de archivos:
   git diff --name-only HEAD origin/staging
   (compara contra los archivos que tu modificaste en esta sesion)
+
+15H. Coherencia obligatoria entre DEV y PROD
+
+Los bots de DEV y PROD deben mantenerse coherentes entre si en toda regla funcional visible
+para usuarios, operadores o administradores.
+
+Reglas:
+
+1. Todo cambio en requisitos, validaciones, textos operativos, estados, botones o flujos del bot
+   DEBE dejar consistentes entre si a staging (DEV) y main (PROD).
+2. PROHIBIDO dar por terminada una tarea si el cambio deja a un bot con una regla y al otro con
+   una distinta, salvo instruccion explicita de Luis Felipe.
+3. Si un cambio modifica un requisito funcional, el agente DEBE actualizar en el mismo trabajo:
+   - la logica real que valida el requisito
+   - los textos del bot que lo describen
+   - la documentacion normativa aplicable
+4. Si por instruccion explicita el cambio queda solo en DEV, el agente DEBE reportarlo de forma
+   textual y exacta como: "IMPLEMENTADO SOLO EN DEV; PROD sigue distinto por instruccion explicita."
+5. Antes de promover staging a main, verificar especificamente que los archivos tocados para ese
+   cambio reflejan la misma regla en ambos entornos.
 
 16. Donde documentar (routing de documentacion)
 

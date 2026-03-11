@@ -54,7 +54,7 @@ from db import (
     delete_route_offer_queue,
     reset_route_offer_queue,
 )
-from datetime import datetime
+from datetime import datetime, timezone
 from db import (
     add_courier_rating,
     block_courier_for_ally,
@@ -119,7 +119,7 @@ def _get_order_durations(order, delivered_now=False):
 
 
 OFFER_TIMEOUT_SECONDS = 30
-MAX_CYCLE_SECONDS = 420  # 7 minutos
+MAX_CYCLE_SECONDS = 600  # 10 minutos
 
 ARRIVAL_INACTIVITY_SECONDS = 5 * 60    # 5 min: Rappi-style
 ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
@@ -196,6 +196,108 @@ def _cancel_no_response_job(context, order_id):
     """Cancela el job de sugerencia de incentivo T+5 para un pedido."""
     for job in context.job_queue.get_jobs_by_name("offer_no_response_{}".format(order_id)):
         job.schedule_removal()
+
+
+def _cancel_order_expire_job(context, order_id):
+    """Cancela el job de expiración automática T+10 para un pedido."""
+    for job in context.job_queue.get_jobs_by_name("order_expire_{}".format(order_id)):
+        job.schedule_removal()
+
+
+def _parse_dt(val):
+    if val is None:
+        return None
+    if hasattr(val, "timetuple"):  # ya es objeto datetime (Postgres)
+        return val
+    s = str(val).strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S.%f",
+    ):
+        try:
+            return datetime.strptime(s[:len(fmt)], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _to_naive_utc(dt):
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        try:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception:
+            return dt.replace(tzinfo=None)
+    return dt
+
+
+def _build_cycle_info_for_expire(order):
+    ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
+    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+
+    admin_id = None
+    if creator_admin_id:
+        admin_id = int(creator_admin_id)
+    elif ally_id is not None:
+        try:
+            admin_link = get_approved_admin_link_for_ally(int(ally_id))
+            admin_id = admin_link["admin_id"] if admin_link else None
+        except Exception:
+            admin_id = None
+
+    return {"ally_id": ally_id, "admin_id": admin_id}
+
+
+def _schedule_order_expire_job(context, order_id):
+    """
+    Programa expiración automática del pedido a T+10 desde created_at.
+    No debe extenderse por re-ofertas o reinicios del ciclo.
+    """
+    _cancel_order_expire_job(context, order_id)
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
+    now = datetime.utcnow()
+    elapsed = 0
+    if created_at:
+        try:
+            elapsed = int(max(0, (now - created_at).total_seconds()))
+        except Exception:
+            elapsed = 0
+
+    remaining = MAX_CYCLE_SECONDS - elapsed
+    if remaining <= 0:
+        cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id) or _build_cycle_info_for_expire(order)
+        _expire_order(order_id, cycle_info, context)
+        return
+
+    context.job_queue.run_once(
+        _order_expire_job,
+        remaining,
+        context={"order_id": order_id},
+        name="order_expire_{}".format(order_id),
+    )
+
+
+def _order_expire_job(context):
+    """Job T+10: si el pedido sigue PUBLISHED, expira automáticamente."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id) or _build_cycle_info_for_expire(order)
+    _expire_order(order_id, cycle_info, context)
 
 
 def _offer_no_response_job(context):
@@ -545,6 +647,9 @@ def publish_order_to_couriers(
         name="offer_no_response_{}".format(order_id),
     )
 
+    # Programar expiración automática T+10 (desde created_at)
+    _schedule_order_expire_job(context, order_id)
+
     return len(courier_ids)
 
 
@@ -727,7 +832,17 @@ def _try_restart_cycle(order_id, context):
 
 
 def _expire_order(order_id, cycle_info, context):
-    """Nadie acepto en 7 minutos. Cobra $300 al aliado y cancela."""
+    """Nadie acepto en 10 minutos. Si hay aliado, cobra $300 y notifica. Cancela el pedido."""
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    _cancel_no_response_job(context, order_id)
+    _cancel_order_expire_job(context, order_id)
+    current = get_current_offer_for_order(order_id)
+    if current:
+        _cancel_offer_jobs(context, order_id, current["queue_id"])
+
     cancel_order(order_id, "SYSTEM")
     delete_offer_queue(order_id)
 
@@ -738,36 +853,58 @@ def _expire_order(order_id, cycle_info, context):
     ally_id = cycle_info["ally_id"]
     admin_id = cycle_info["admin_id"]
 
-    # Cobrar $300 al aliado como comisión por gestión
-    try:
-        fee_ok, fee_msg = apply_service_fee(
-            target_type="ALLY",
-            target_id=ally_id,
-            admin_id=admin_id,
-            ref_type="ORDER",
-            ref_id=order_id,
-        )
-        if not fee_ok:
-            print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
-    except Exception as e:
-        print("[WARN] Error al cobrar fee de expiración: {}".format(e))
-
-    # Notificar al aliado
-    try:
-        ally = get_ally_by_id(ally_id)
-        if ally:
-            ally_user = get_user_by_id(ally["user_id"])
-            if ally_user and ally_user.get("telegram_id"):
-                context.bot.send_message(
-                    chat_id=ally_user["telegram_id"],
-                    text=(
-                        "Tu pedido #{} fue cancelado porque ningun repartidor "
-                        "lo acepto en 7 minutos.\n\n"
-                        "Se descontaron $300 de tu saldo como comision por la gestion."
-                    ).format(order_id),
+    # Pedidos de admin (ally_id=None) no tienen aliado que cobrar
+    if ally_id is not None:
+        # Cobrar $300 al aliado como comisión por gestión
+        if admin_id is not None:
+            try:
+                fee_ok, fee_msg = apply_service_fee(
+                    target_type="ALLY",
+                    target_id=ally_id,
+                    admin_id=admin_id,
+                    ref_type="ORDER",
+                    ref_id=order_id,
                 )
-    except Exception as e:
-        print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
+                if not fee_ok:
+                    print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
+            except Exception as e:
+                print("[WARN] Error al cobrar fee de expiración: {}".format(e))
+        else:
+            print("[WARN] Expiración pedido {}: aliado {} sin admin_id para cobrar fee".format(order_id, ally_id))
+
+        # Notificar al aliado
+        try:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                ally_user = get_user_by_id(ally["user_id"])
+                if ally_user and ally_user.get("telegram_id"):
+                    context.bot.send_message(
+                        chat_id=ally_user["telegram_id"],
+                        text=(
+                            "El pedido no fue aceptado por ningún repartidor y expiró automáticamente.\n"
+                            "Se aplicó el cargo de gestión de $300."
+                        ),
+                    )
+        except Exception as e:
+            print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
+    else:
+        # Notificar al admin creador (pedido especial)
+        try:
+            creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+            if creator_admin_id:
+                admin = get_admin_by_id(int(creator_admin_id))
+                if admin:
+                    user = get_user_by_id(admin["user_id"])
+                    if user and user.get("telegram_id"):
+                        context.bot.send_message(
+                            chat_id=user["telegram_id"],
+                            text=(
+                                "El pedido expiró sin repartidor asignado.\n"
+                                "No se aplicó ningún cargo."
+                            ),
+                        )
+        except Exception as e:
+            print("[WARN] No se pudo notificar expiración al admin creador: {}".format(e))
 
 
 def ally_active_orders(update, context):
@@ -1174,6 +1311,7 @@ def _admin_order_cancel(update, context, data):
     was_published = order["status"] == "PUBLISHED"
 
     _cancel_no_response_job(context, order_id)
+    _cancel_order_expire_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
@@ -1702,6 +1840,7 @@ def _handle_accept(update, context, order_id):
     # Cancelar jobs de timeout y sugerencia de incentivo
     _cancel_offer_jobs(context, order_id, current["queue_id"])
     _cancel_no_response_job(context, order_id)
+    _cancel_order_expire_job(context, order_id)
 
     # Marcar oferta como aceptada
     mark_offer_response(current["queue_id"], "ACCEPTED")
@@ -2000,6 +2139,7 @@ def _handle_release(update, context, order_id, reason_code=None):
             "excluded_couriers": excluded,
         }
         _send_next_offer(order_id, context)
+        _schedule_order_expire_job(context, order_id)
 
 
 def _handle_cancel_ally(update, context, order_id):
@@ -2026,11 +2166,22 @@ def _handle_cancel_ally(update, context, order_id):
     had_courier = order["status"] == "ACCEPTED" and order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
 
+    # Política de cancelación del aliado (desde created_at)
+    created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
+    now = datetime.utcnow()
+    elapsed_seconds = 0
+    if created_at:
+        try:
+            elapsed_seconds = int(max(0, (now - created_at).total_seconds()))
+        except Exception:
+            elapsed_seconds = 0
+
     # Cancelar jobs de arrival si estaba en estado ACCEPTED
     _cancel_arrival_jobs(context, order_id)
 
     # Cancelar jobs de timeout y sugerencia si estaba en ciclo de ofertas
     _cancel_no_response_job(context, order_id)
+    _cancel_order_expire_job(context, order_id)
     if was_published:
         current = get_current_offer_for_order(order_id)
         if current:
@@ -2040,6 +2191,30 @@ def _handle_cancel_ally(update, context, order_id):
             for job in jobs:
                 job.schedule_removal()
 
+    if order["ally_id"] is not None and elapsed_seconds > 60:
+        admin_id = None
+        try:
+            admin_link = get_approved_admin_link_for_ally(int(order["ally_id"]))
+            admin_id = admin_link["admin_id"] if admin_link else None
+        except Exception:
+            admin_id = None
+
+        if admin_id is not None:
+            try:
+                fee_ok, fee_msg = apply_service_fee(
+                    target_type="ALLY",
+                    target_id=int(order["ally_id"]),
+                    admin_id=int(admin_id),
+                    ref_type="ORDER",
+                    ref_id=order_id,
+                )
+                if not fee_ok:
+                    print("[WARN] No se pudo cobrar fee por cancelación al aliado: {}".format(fee_msg))
+            except Exception as e:
+                print("[WARN] Error al cobrar fee por cancelación: {}".format(e))
+        else:
+            print("[WARN] Cancelación pedido {}: aliado {} sin admin_id para cobrar fee".format(order_id, order["ally_id"]))
+
     cancel_order(order_id, "ALLY")
     delete_offer_queue(order_id)
 
@@ -2047,7 +2222,21 @@ def _handle_cancel_ally(update, context, order_id):
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
     context.bot_data.get("offer_messages", {}).pop(order_id, None)
 
-    query.edit_message_text("Pedido #{} cancelado exitosamente.".format(order_id))
+    if order["ally_id"] is None:
+        query.edit_message_text(
+            "Pedido cancelado.\n"
+            "No se aplicó ningún cargo porque fue cancelado inmediatamente."
+        )
+    elif elapsed_seconds <= 60:
+        query.edit_message_text(
+            "Pedido cancelado.\n"
+            "No se aplicó ningún cargo porque fue cancelado inmediatamente."
+        )
+    else:
+        query.edit_message_text(
+            "Pedido cancelado.\n"
+            "Se aplicó el cargo de gestión de $300 por haber activado la red de repartidores."
+        )
 
     if had_courier:
         _notify_courier_order_cancelled(context, order)

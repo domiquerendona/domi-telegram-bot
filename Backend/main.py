@@ -26,6 +26,8 @@ from web.api.admin import router as admin_router
 from web.api.users import router as users_router
 # Router de endpoints del dashboard
 from web.api.dashboard import router as dashboard_router
+# Router de autenticación del panel web
+from web.api.auth import router as auth_router
 
 
 
@@ -39,6 +41,8 @@ app = FastAPI()
 # Esto habilita endpoints como:
 # POST /admin/users/{user_id}/approve
 
+# Registra las rutas de administración
+app.include_router(auth_router)
 # Registra las rutas de administración
 app.include_router(admin_router)
 # Registra las rutas de usuarios
@@ -99,6 +103,7 @@ from services import (
     extract_lat_lng_from_text,
     expand_short_url,
     can_call_google_today,
+    can_use_cotizador,
     extract_place_id_from_url,
     google_place_details,
     approve_recharge_request,
@@ -198,6 +203,9 @@ from services import (
     get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
+    credit_welcome_balance,
+    get_connection,
+    P,
     get_all_couriers,
     update_courier,
     delete_courier,
@@ -726,6 +734,26 @@ def _set_flow_step(context, flow, step):
     context.user_data["_back_step"] = step
 
 
+def _debug_admin_registration_state(context, step, **extra):
+    data = context.user_data or {}
+    snapshot = {
+        "admin_name": bool((data.get("admin_name") or "").strip()),
+        "admin_document": bool((data.get("admin_document") or "").strip()),
+        "admin_team_name": bool((data.get("admin_team_name") or "").strip()),
+        "phone": bool((data.get("phone") or "").strip()),
+        "admin_city": bool((data.get("admin_city") or "").strip()),
+        "admin_barrio": bool((data.get("admin_barrio") or "").strip()),
+        "admin_residence_address": bool((data.get("admin_residence_address") or "").strip()),
+        "admin_residence_lat": data.get("admin_residence_lat") is not None,
+        "admin_residence_lng": data.get("admin_residence_lng") is not None,
+        "admin_cedula_front_file_id": bool(data.get("admin_cedula_front_file_id")),
+        "admin_cedula_back_file_id": bool(data.get("admin_cedula_back_file_id")),
+        "admin_selfie_file_id": bool(data.get("admin_selfie_file_id")),
+        "_back_step": data.get("_back_step"),
+    }
+    print(f"[DEBUG][admin_reg] step={step} snapshot={snapshot} extra={extra}", flush=True)
+
+
 _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
@@ -1121,7 +1149,7 @@ def start(update, context):
                 siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
             elif admin_status == "APPROVED":
                 siguientes_pasos.append(
-                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (10 repartidores con saldo mínimo)."
+                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo mínimo, más saldo master suficiente)."
                 )
                 siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
             elif admin_status == "INACTIVE":
@@ -1199,8 +1227,11 @@ def start(update, context):
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
     elif admin_local:
-        comandos.append("• /mi_admin  - Ver tu panel de administrador local")
         admin_status = admin_local["status"]
+        if admin_status == "INACTIVE" and "/soy_admin" in missing_cmds:
+            comandos.append("• /soy_admin  - Volver a registrarte como administrador")
+        else:
+            comandos.append("• /mi_admin  - Ver tu panel de administrador local")
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
@@ -2612,6 +2643,7 @@ def admin_cedula_front(update, context):
         )
         return LOCAL_ADMIN_CEDULA_FRONT
     context.user_data["admin_cedula_front_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_cedula_front_saved")
     update.message.reply_text(
         "Foto del frente recibida.\n\n"
         "Ahora envía una foto del REVERSO de tu cédula:" + _OPTIONS_HINT
@@ -2627,6 +2659,7 @@ def admin_cedula_back(update, context):
         )
         return LOCAL_ADMIN_CEDULA_BACK
     context.user_data["admin_cedula_back_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_cedula_back_saved")
     update.message.reply_text(
         "Foto del reverso recibida.\n\n"
         "Por último, envía una SELFIE (foto de tu cara) tomada en este momento:" + _OPTIONS_HINT
@@ -2642,6 +2675,7 @@ def admin_selfie(update, context):
         )
         return LOCAL_ADMIN_SELFIE
     context.user_data["admin_selfie_file_id"] = update.message.photo[-1].file_id
+    _debug_admin_registration_state(context, "admin_selfie_saved")
 
     full_name = context.user_data.get("admin_name", "")
     document_number = context.user_data.get("admin_document", "")
@@ -2664,9 +2698,9 @@ def admin_selfie(update, context):
         "Dirección: {}\n"
         "Ubicación: {}, {}\n\n"
         "Condiciones para Administrador Local:\n"
-        "1) Para ser aprobado debes registrar al menos 10 repartidores.\n"
-        "2) Cada repartidor debe tener recarga mínima de 5000.\n"
-        "3) Si tu administrador local no tiene saldo activo con la plataforma, su operación queda suspendida.\n\n"
+        "1) Para operar necesitas al menos 5 aliados con saldo >= 5000.\n"
+        "2) También necesitas al menos 10 repartidores con saldo >= 5000.\n"
+        "3) Tu saldo master debe mantenerse en >= 60000.\n\n"
         "Si todo está correcto, escribe ACEPTAR para finalizar.\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel."
     ).format(full_name, document_number, team_name, phone, city, barrio, residence_address, lat, lng)
@@ -6927,6 +6961,7 @@ def admin_name(update, context):
         return LOCAL_ADMIN_NAME
 
     context.user_data["admin_name"] = text
+    _debug_admin_registration_state(context, "admin_name_saved")
     update.message.reply_text(
         "Escribe tu número de documento (CC o equivalente):"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -6945,6 +6980,7 @@ def admin_document(update, context):
         return LOCAL_ADMIN_DOCUMENT
 
     context.user_data["admin_document"] = doc
+    _debug_admin_registration_state(context, "admin_document_saved")
     update.message.reply_text(
         "Escribe el nombre de tu administración (nombre del equipo).\n"
         "Ejemplo: Mensajeros Pereira Centro"
@@ -6964,6 +7000,7 @@ def admin_teamname(update, context):
         return LOCAL_ADMIN_TEAMNAME
 
     context.user_data["admin_team_name"] = team_name
+    _debug_admin_registration_state(context, "admin_teamname_saved")
     update.message.reply_text(
         "Escribe tu número de teléfono:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -6973,32 +7010,41 @@ def admin_teamname(update, context):
 
 
 def admin_phone(update, context):
-    return _handle_phone_input(update, context,
+    next_state = _handle_phone_input(update, context,
         storage_key="phone",
         current_state=LOCAL_ADMIN_PHONE,
         next_state=LOCAL_ADMIN_CITY,
         flow="admin",
         next_prompt="¿En qué ciudad vas a operar como Administrador Local?")
+    if next_state == LOCAL_ADMIN_CITY:
+        _debug_admin_registration_state(context, "admin_phone_saved")
+    return next_state
 
 
 def admin_city(update, context):
-    return _handle_text_field_input(update, context,
+    next_state = _handle_text_field_input(update, context,
         error_msg="La ciudad no puede estar vacía. Escríbela de nuevo:",
         storage_key="admin_city",
         current_state=LOCAL_ADMIN_CITY,
         next_state=LOCAL_ADMIN_BARRIO,
         flow="admin",
         next_prompt="Escribe tu barrio o zona base de operación:")
+    if next_state == LOCAL_ADMIN_BARRIO:
+        _debug_admin_registration_state(context, "admin_city_saved")
+    return next_state
 
 
 def admin_barrio(update, context):
-    return _handle_text_field_input(update, context,
+    next_state = _handle_text_field_input(update, context,
         error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
         storage_key="admin_barrio",
         current_state=LOCAL_ADMIN_BARRIO,
         next_state=LOCAL_ADMIN_RESIDENCE_ADDRESS,
         flow="admin",
         next_prompt="Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301")
+    if next_state == LOCAL_ADMIN_RESIDENCE_ADDRESS:
+        _debug_admin_registration_state(context, "admin_barrio_saved")
+    return next_state
 
 
 def admin_residence_address(update, context):
@@ -7010,6 +7056,7 @@ def admin_residence_address(update, context):
         )
         return LOCAL_ADMIN_RESIDENCE_ADDRESS
     context.user_data["admin_residence_address"] = address
+    _debug_admin_registration_state(context, "admin_residence_address_saved")
     update.message.reply_text(
         "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
@@ -7042,6 +7089,7 @@ def admin_residence_location(update, context):
                 return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
+        _debug_admin_registration_state(context, "admin_residence_location_missing_coords")
         update.message.reply_text(
             "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
         )
@@ -7049,6 +7097,7 @@ def admin_residence_location(update, context):
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
+    _debug_admin_registration_state(context, "admin_residence_location_saved")
     update.message.reply_text(
         "Ubicacion guardada.\n\n"
         "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
@@ -7069,10 +7118,12 @@ def admin_geo_ubicacion_callback(update, context):
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
         if lat is None or lng is None:
+            _debug_admin_registration_state(context, "admin_geo_confirm_missing_pending")
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return LOCAL_ADMIN_RESIDENCE_LOCATION
         context.user_data["admin_residence_lat"] = lat
         context.user_data["admin_residence_lng"] = lng
+        _debug_admin_registration_state(context, "admin_geo_confirm_saved")
         query.edit_message_text(
             "Ubicacion confirmada.\n\n"
             "Para verificar tu identidad, necesitamos fotos de tu documento.\n\n"
@@ -7105,6 +7156,7 @@ def admin_confirm(update, context):
     cedula_front_file_id = context.user_data.get("admin_cedula_front_file_id")
     cedula_back_file_id = context.user_data.get("admin_cedula_back_file_id")
     selfie_file_id = context.user_data.get("admin_selfie_file_id")
+    _debug_admin_registration_state(context, "admin_confirm_before_create", answer=answer)
 
     try:
         admin_id, team_code = create_admin(
@@ -7123,14 +7175,17 @@ def admin_confirm(update, context):
             selfie_file_id,
         )
     except ValueError as e:
+        _debug_admin_registration_state(context, "admin_confirm_value_error", error=str(e))
         update.message.reply_text(str(e))
         context.user_data.clear()
         return ConversationHandler.END
     except Exception as e:
         print("[ERROR] admin_confirm:", e)
+        _debug_admin_registration_state(context, "admin_confirm_exception", error=str(e))
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
+    _debug_admin_registration_state(context, "admin_confirm_success", admin_id=admin_id)
 
     try:
         context.bot.send_message(
@@ -7167,7 +7222,7 @@ def admin_confirm(update, context):
         f"Coordenadas: {residence_lat}, {residence_lng}\n\n"
         f"Tu CÓDIGO DE EQUIPO es: {team_code}\n"
         "Compártelo con los repartidores que quieras vincular a tu equipo.\n\n"
-        "Recuerda: para ser aprobado debes registrar 10 repartidores con recarga mínima de 5000 cada uno."
+        "Recuerda: para operar necesitas 5 aliados con saldo >= 5000, 10 repartidores con saldo >= 5000 y saldo master >= 60000."
     )
 
     context.user_data.clear()
@@ -8002,9 +8057,9 @@ def admin_menu_callback(update, context):
                     "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
                     "Para operar debes cumplir los requisitos.\n\n"
                     "Requisitos para operar:\n"
-                    "1) Tener mínimo 10 repartidores vinculados a tu equipo.\n"
-                    "2) Cada uno debe estar APROBADO y con saldo por vínculo >= 5000.\n"
-                    "3) Mantener tu cuenta activa y cumplir las reglas de la plataforma.\n\n"
+                    "1) Tener mínimo 5 aliados vinculados con saldo por vínculo >= 5000.\n"
+                    "2) Tener mínimo 10 repartidores vinculados con saldo por vínculo >= 5000.\n"
+                    "3) Mantener saldo master >= 60000 y cumplir las reglas de la plataforma.\n\n"
                     "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
                 )
                 context.bot.send_message(chat_id=admin_telegram_id, text=msg)
@@ -8076,6 +8131,12 @@ def volver_menu_global(update, context):
 # ----- COTIZADOR INTERNO -----
 
 def cotizar_start(update, context):
+    telegram_id = update.effective_user.id
+    ok, msg = can_use_cotizador(telegram_id)
+    if not ok:
+        update.effective_message.reply_text(msg)
+        return ConversationHandler.END
+
     context.user_data.pop("cotizar_pickup", None)
     context.user_data.pop("cotizar_dropoff", None)
     context.user_data.pop("cotizar_ally_id", None)
@@ -8083,7 +8144,7 @@ def cotizar_start(update, context):
         [InlineKeyboardButton("Por distancia (km)", callback_data="cotizar_modo_km")],
         [InlineKeyboardButton("Por ubicaciones", callback_data="cotizar_modo_ubi")],
     ]
-    update.message.reply_text(
+    update.effective_message.reply_text(
         "COTIZADOR\n\n"
         "Como quieres cotizar?",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -13267,14 +13328,14 @@ def mi_admin(update, context):
         "• Tu saldo master: ${:,}\n\n"
         "Requisitos para operar:\n"
         "• 5 aliados con saldo >= $5,000: {}\n"
-        "• 5 repartidores con saldo >= $5,000: {}\n"
+        "• 10 repartidores con saldo >= $5,000: {}\n"
         "• Saldo master >= $60,000: {}\n\n"
     ).format(
         total_allies, allies_ok,
         total_couriers, couriers_ok,
         admin_bal,
         "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
-        "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+        "OK" if couriers_ok >= 10 else "Faltan {}".format(10 - couriers_ok),
         "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
     )
     # En FASE 1: panel siempre habilitado
@@ -14934,14 +14995,14 @@ def admin_local_callback(update, context):
             "• Tu saldo master: ${:,}\n\n"
             "Requisitos para operar:\n"
             "• 5 aliados con saldo >= $5,000: {}\n"
-            "• 5 repartidores con saldo >= $5,000: {}\n"
+            "• 10 repartidores con saldo >= $5,000: {}\n"
             "• Saldo master >= $60,000: {}\n\n"
         ).format(
             total_allies, allies_ok,
             total_couriers, couriers_ok,
             admin_bal,
             "OK" if allies_ok >= 5 else "Faltan {}".format(5 - allies_ok),
-            "OK" if couriers_ok >= 5 else "Faltan {}".format(5 - couriers_ok),
+            "OK" if couriers_ok >= 10 else "Faltan {}".format(10 - couriers_ok),
             "OK" if admin_bal >= 60000 else "Faltan ${:,}".format(60000 - admin_bal),
         )
         keyboard = [
@@ -15119,6 +15180,39 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
             return
 
+        try:
+            credit_welcome_balance("COURIER", courier_id, admin_id, 5000)
+        except Exception as e:
+            print("[WARN] credit_welcome_balance (local courier approve):", e)
+
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"SELECT users.telegram_id AS telegram_id "
+                    f"FROM users JOIN couriers ON couriers.user_id = users.id "
+                    f"WHERE couriers.id = {P}",
+                    (courier_id,),
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+            courier_telegram_id = row["telegram_id"] if row else None
+            if courier_telegram_id:
+                context.bot.send_message(
+                    chat_id=courier_telegram_id,
+                    text=(
+                        "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
+                        "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
+                        "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
+                        "o no. Sin presión.\n\n"
+                        "Usa /menu para ver tus opciones."
+                    ),
+                )
+        except Exception as e:
+            print("[WARN] Error notificando repartidor (local approve):", e)
+
         _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
             "✅ Repartidor aprobado en tu equipo.",
@@ -15262,6 +15356,40 @@ def admin_local_callback(update, context):
                 print("[ERROR] local_ally_approve:", e)
                 query.edit_message_text("Error aprobando aliado. Revisa logs.")
                 return
+
+            try:
+                credit_welcome_balance("ALLY", ally_id_val, admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (local ally approve):", e)
+
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        f"SELECT users.telegram_id AS telegram_id "
+                        f"FROM users JOIN allies ON allies.user_id = users.id "
+                        f"WHERE allies.id = {P}",
+                        (ally_id_val,),
+                    )
+                    row = cur.fetchone()
+                finally:
+                    conn.close()
+                ally_telegram_id = row["telegram_id"] if row else None
+                if ally_telegram_id:
+                    context.bot.send_message(
+                        chat_id=ally_telegram_id,
+                        text=(
+                            "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+                            "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
+                            "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
+                            "o no. Sin presión.\n\n"
+                            "Usa /menu para ver tus opciones."
+                        ),
+                    )
+            except Exception as e:
+                print("[WARN] Error notificando aliado (local approve):", e)
+
             _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
             query.edit_message_text(
                 "✅ Aliado aprobado en tu equipo.",
@@ -15538,6 +15666,11 @@ def ally_approval_callback(update, context):
                 keep_admin_id = get_platform_admin_id()
             upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
+
+            try:
+                credit_welcome_balance("ALLY", ally_id, keep_admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (platform ally approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vinculo APPROVED de ally {ally_id}: {e}")
 
@@ -15554,18 +15687,20 @@ def ally_approval_callback(update, context):
         u = get_user_by_id(ally_user_id)
         ally_telegram_id = u["telegram_id"]
 
-        context.bot.send_message(
-            chat_id=ally_telegram_id,
-            text=(
-                "Tu registro como aliado '{}' ha sido {}.\n"
-                "{}"
-            ).format(
-                business_name,
-                "APROBADO" if accion == "approve" else "RECHAZADO",
-                "Ya puedes usar el bot para crear pedidos." if accion == "approve"
-                else "Si crees que es un error, comunícate con el administrador."
+        if accion == "approve":
+            msg = (
+                "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+                "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
+                "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
+                "o no. Sin presión.\n\n"
+                "Usa /menu para ver tus opciones."
             )
-        )
+        else:
+            msg = (
+                "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
+                "Si crees que es un error, comunícate con el administrador."
+            ).format(business_name)
+        context.bot.send_message(chat_id=ally_telegram_id, text=msg)
     except Exception as e:
         print("Error notificando aliado:", e)
 
@@ -15776,6 +15911,11 @@ def courier_approval_callback(update, context):
 
             upsert_admin_courier_link(keep_admin_id, courier_id, "APPROVED", 1)
             deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
+
+            try:
+                credit_welcome_balance("COURIER", courier_id, keep_admin_id, 5000)
+            except Exception as e:
+                print("[WARN] credit_welcome_balance (platform courier approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vínculo APPROVED de courier {courier_id}: {e}")
 
@@ -15794,7 +15934,13 @@ def courier_approval_callback(update, context):
         courier_telegram_id = u["telegram_id"]
 
         if accion == "approve":
-            msg = "Tu registro como repartidor ha sido APROBADO. Bienvenido, {}.".format(full_name)
+            msg = (
+                "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
+                "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
+                "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
+                "o no. Sin presión.\n\n"
+                "Usa /menu para ver tus opciones."
+            )
         else:
             msg = (
                 "Tu registro como repartidor ha sido RECHAZADO, {}.\n"

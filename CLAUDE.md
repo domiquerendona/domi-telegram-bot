@@ -719,26 +719,30 @@ La plataforma opera como una **red cooperativa**: cualquier repartidor activo (d
 - El parámetro `admin_id` existe pero es opcional (`admin_id=None`) y se ignora en la query.
 
 **Modelo de comisiones (simétrico):**
-- Aliado crea pedido → fee al aliado → comisión va al **admin del aliado**.
-- Courier acepta pedido → fee al courier → comisión va al **admin del courier**.
-- Cada admin gana solo de sus propios miembros, sin importar con quién interactúan.
+- Aliado crea pedido → fee $300 al aliado al entregar (o al expirar sin courier) → $200 al admin del aliado, $100 a Plataforma.
+- Courier entrega pedido → fee $300 al courier → $200 al admin del courier, $100 a Plataforma.
+- Cada admin gana $200 por cada servicio de sus propios miembros, sin importar con quién interactúan.
+- Si el admin es Plataforma: gana los $300 completos (no hay split).
+- Pedidos creados por admin (admin_pedido): **el admin creador no paga fee**; solo paga el courier que entrega ($200 su admin, $100 a Plataforma).
 
 **Flujo técnico post-implementación:**
 ```
 Aliado (Admin A) crea pedido
   → publish_order_to_couriers(admin_id=A)
-  → check_service_fee_available(ALLY, ally_id, admin_id=A)   # A debe tener saldo
+  → check_service_fee_available(ALLY, ally_id, admin_id=A)   # verifica que aliado tenga $300
   → get_eligible_couriers_for_order(ally_id=X)               # Sin filtro → TODOS los couriers activos
   → Para cada courier: get_approved_admin_id_for_courier(courier_id) → courier_admin_id
     → check_service_fee_available(COURIER, courier_id, courier_admin_id)
-    → Solo pasan couriers con saldo en su propio admin
+    → Solo pasan couriers con saldo en su propio admin ($300 mínimo)
 
 Courier (Admin B) acepta
   → courier_admin_id_snapshot = B (guardado en orders al aceptar)
 
 Courier entrega
-  → apply_service_fee(ALLY, ally_id, admin_id=A)              → Admin A cobra comisión
-  → apply_service_fee(COURIER, courier_id, admin_id=B)        → Admin B cobra comisión
+  → apply_service_fee(ALLY, ally_id, admin_id=A)
+      admin_allies.balance(aliado) −$300 | admins.balance(Admin A) +$200 | admins.balance(Plataforma) +$100
+  → apply_service_fee(COURIER, courier_id, admin_id=B)
+      admin_couriers.balance(courier) −$300 | admins.balance(Admin B) +$200 | admins.balance(Plataforma) +$100
 ```
 
 **Archivos modificados:**
@@ -861,6 +865,21 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 - DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
 - `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
 
+### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
+
+**Ciclo de pedido**
+
+0 min → pedido publicado  
+5 min → sugerencia de incentivo adicional  
+10 min → expiración automática  
+
+**Cancelación del aliado**
+
+≤60 segundos desde creación → cancelación sin costo  
+>60 segundos desde creación → cobro de $300  
+Expiración automática → cobro de $300  
+Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 
 Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar el pedido, si sigue en status `PUBLISHED` (ningún courier lo aceptó), se envía un mensaje al creador sugiriendo agregar incentivo.
@@ -902,9 +921,10 @@ Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con t
 
 ### Características
 
-- **Sin fee check**: el fee check del aliado se omite completamente (`skip_fee_check=True`).
+- **Sin fee al admin creador**: el admin no paga comisión por crear el pedido. El courier que lo entrega sí paga su fee normal ($300).
+- **Sin fee check del aliado**: no hay aliado, `ally_id=NULL`, `skip_fee_check=True` omite la verificación de saldo.
 - **Tarifa manual**: el admin ingresa el monto que pagará al courier.
-- **Sin débito de saldo**: el pago se maneja fuera del sistema.
+- **Sin débito de saldo al admin**: el pago de la tarifa al courier se maneja fuera del sistema.
 - **`creator_admin_id`**: nueva columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
 - **`ally_id = NULL`**: los pedidos especiales de admin no tienen `ally_id`.
 - **Direcciones de recogida**: el admin gestiona sus propias ubicaciones de pickup en `admin_locations`.
@@ -1012,7 +1032,7 @@ En `admin_pedido_confirmar_callback`:
 2. `publish_order_to_couriers(order_id, None, context, admin_id_override=admin_id, skip_fee_check=True)` — publica a todos los couriers activos
 3. `increment_admin_location_usage(pickup_location_id, admin_id)` — si ubicación guardada
 
-**Nota:** `skip_fee_check=True` es necesario porque los pedidos de admin no tienen deducción de saldo. El fee check del aliado se omite automáticamente cuando `ally_id=None`.
+**Nota:** `skip_fee_check=True` omite la verificación previa de saldo del aliado (no hay aliado). El courier que acepta el pedido sí paga su fee normal al entregar ($300 → $200 a su admin, $100 a Plataforma). El admin creador no paga ninguna comisión.
 
 ---
 

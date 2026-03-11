@@ -24,3 +24,68 @@ class UserResponse(BaseModel):
         # Ejemplo: UserRole.COURIER → "COURIER"
         # Esto es ideal para APIs REST y frontend (Angular)
         use_enum_values = True
+
+
+# Schema de respuesta para un administrador local
+class AdminResponse(BaseModel):
+    id: int
+    full_name: str
+    phone: str
+    city: str
+    barrio: str
+    status: str
+    team_name: str
+    document_number: str
+    created_at: str
+
+    class Config:
+        use_enum_values = True
+
+
+class CourierResponse(BaseModel):
+    id: int
+    full_name: str
+    phone: str
+    city: str
+    barrio: str
+    status: str
+    id_number: str
+    plate: str
+    bike_type: str
+
+    class Config:
+        use_enum_values = True
+
+
+class AllyResponse(BaseModel):
+    id: int
+    business_name: str
+    owner_name: str
+    phone: str
+    city: str
+    barrio: str
+    status: str
+    address: str
+
+    class Config:
+        use_enum_values = True
+
+
+class OrderResponse(BaseModel):
+    id: int
+    status: str
+    customer_name: str
+    customer_phone: str
+    customer_address: str
+    customer_city: str
+    customer_barrio: str
+    total_fee: int
+    additional_incentive: int
+    courier_name: str
+    ally_name: str
+    created_at: str
+    delivered_at: str
+    canceled_at: str
+
+    class Config:
+        use_enum_values = True
