@@ -5,6 +5,28 @@ Este archivo define las reglas técnicas, operativas y de flujo de trabajo que T
 ⚠️ No seguir estas reglas se considera un error grave.
 ⚠️ Estas reglas tienen prioridad absoluta sobre cualquier sugerencia del agente.
 
+Jerarquía documental oficial
+
+Nivel 1 — Reglas obligatorias del proyecto
+- Fuente de verdad: `AGENTS.md`
+- Temas: arquitectura obligatoria, flujo de trabajo del repositorio, callbacks y convenciones, reglas de base de datos, ramas, coordinación entre agentes y reglas anti-regresión documental.
+
+Nivel 2 — Guía técnica y arquitectura explicada
+- Fuente: `CLAUDE.md`
+- Propósito: explicar arquitectura, estructura del repo, módulos, flujos y despliegue.
+- Si hay conflicto con `AGENTS.md`, manda `AGENTS.md`.
+
+Nivel 3 — Gobernanza específica de componentes
+- `docs/callback_governance_2026-03-12.md` → fuente de verdad de callbacks
+- `Backend/DEPLOY.md` → fuente de verdad de despliegue
+- `docs/business/contexto-negocio-domiquerendona.md` → fuente de verdad de negocio
+- `WORKLOG.md` → fuente de verdad de coordinación de agentes
+
+Nivel 4 — Documentos históricos / snapshot
+- `docs/alineacion_codigo_documentacion_2026-03-12.md`
+- `docs/HITOS.md`
+- Estos documentos describen auditorías o hitos pasados y no son normativa vigente.
+
 1. Restricciones críticas (NO negociables)
 
 PROHIBIDO usar parse_mode o Markdown en cualquier mensaje del bot.
@@ -111,40 +133,86 @@ Regla obligatoria de direcciones (ciudad + barrio/sector):
 
 2D. Estándar obligatorio de callback_data
 
-Formato: {dominio}_{accion} o {dominio}_{accion}_{id}
+Formato estándar actual: `{dominio}_{accion}` o `{dominio}_{accion}_{id}`
+
+También se aceptan formatos compuestos cuando el flujo lo requiere, por ejemplo:
+- `pedido_inc_{order_id}x{monto}`
+- `ruta_entregar_{route_id}_{seq}`
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local
 - admpedidos_  → panel de pedidos del administrador (listado, filtros por estado)
 - agenda_      → agenda de pedidos
 - ally_        → acciones específicas del aliado (fuera del flujo de pedido)
+- allycust_    → agenda de clientes del aliado
 - chgreq_      → solicitudes de cambio de perfil (profile_changes.py)
 - chgteam_     → cambio de equipo/grupo
 - config_      → configuración del sistema
 - cotizar_     → flujo de cotización de envío
 - courier_     → acciones de repartidor
 - cust_        → acciones de cliente
+- acust_       → agenda de clientes del administrador
+- adirs_       → direcciones del administrador
 - dir_         → gestión de direcciones de recogida del aliado
 - guardar_     → guardar dirección de cliente tras un pedido
 - menu_        → navegación de menú
+- local_       → panel operativo del administrador local
+- offer_       → sugerencias de incentivo/oferta
 - order_       → ofertas y entrega de pedidos (order_delivery.py)
 - pagos_       → sistema de pagos
 - pedido_      → flujo de creación de pedidos
 - perfil_      → cambios de perfil de usuarios (profile_changes.py)
+- plat_        → panel de recargas/plataforma
 - pickup_      → selección de punto de recogida
 - preview_     → previsualización de pedido antes de confirmar
 - pricing_     → configuración de tarifas
+- rating_      → calificación post-entrega
 - recargar_    → sistema de recargas
+- recharge_    → revisión/aprobación de recargas (deprecado, compatibilidad vigente)
 - ref_         → validación de referencias
+- solequipo_   → solicitud de cambio/unión de equipo
 - terms_       → aceptación de términos y condiciones
 - ubicacion_   → selección de ubicación GPS
 - ingreso_     → registro de ingreso externo del administrador de plataforma
 
+Formato estándar vigente para selección de equipo:
+- `ally_team_TEAM1`
+- `courier_team_TEAM1`
+
+Formato deprecado pero soportado temporalmente:
+- `ally_team:TEAM1`
+- `courier_team:TEAM1`
+
+Ver inventario completo y gobernanza operativa en `docs/callback_governance_2026-03-12.md`.
+
 Reglas:
 - PROHIBIDO crear un prefijo nuevo sin aprobación explícita del usuario.
 - PROHIBIDO usar callback_data sin prefijo de dominio.
-- El separador es siempre guion bajo (_). No usar guion, punto ni slash.
+- El separador vigente es guion bajo (_). No crear callbacks nuevos con `:`, guion, punto ni slash.
 - Antes de agregar un callback nuevo, verificar con git grep que no existe uno equivalente.
+
+2G. Entry points del sistema
+
+Entry points vigentes:
+- Bot Telegram → `Backend/main.py`
+- Web FastAPI → `Backend/web_app.py`
+
+Arranque local del bot:
+- `python main.py`
+
+Arranque local web:
+- `uvicorn web_app:app --reload --port 8000`
+
+2H. Regla obligatoria de documentación
+
+Si un cambio modifica arquitectura, callbacks, entrypoints, estructura del repositorio o reglas del sistema, el cambio DEBE actualizar la documentación correspondiente en el mismo ciclo.
+
+Orden obligatorio de actualización documental:
+1. `AGENTS.md`
+2. Documento específico del tema (`docs/callback_governance_2026-03-12.md`, `Backend/DEPLOY.md`, etc.)
+3. `CLAUDE.md` si afecta arquitectura explicada o guía técnica
+
+No se aceptan cambios estructurales sin actualización documental consistente.
 
 2E. Regla de módulos adicionales
 

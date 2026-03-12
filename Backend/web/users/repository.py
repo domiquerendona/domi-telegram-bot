@@ -1,59 +1,49 @@
-# Importa los enums que definen roles y estados válidos del usuario
-# Esto evita usar strings sueltos y asegura consistencia en todo el sistema
+import os
+from dataclasses import dataclass
+
 from web.users.models import UserRole, UserStatus
 
 
-class User:
+@dataclass
+class WebUser:
     """
-    Entidad Usuario simulada (mock).
+    Identidad minima real del panel web.
 
-    Representa la estructura básica de un usuario
-    mientras no existe aún la base de datos real.
+    En esta fase el sistema expone un unico usuario web configurable por entorno.
+    No reemplaza un sistema multiusuario completo.
     """
 
-    def __init__(self, id: int, role: UserRole, status: UserStatus):
-        # Identificador único del usuario
-        self.id = id
-
-        # Rol del usuario dentro del sistema (admin, courier, etc.)
-        self.role = role
-
-        # Estado actual del usuario (aprobado, pendiente, inactivo, etc.)
-        self.status = status
+    id: int
+    username: str
+    role: UserRole
+    status: UserStatus
 
 
-# ------------------ Base de datos simulada ------------------
-
-# Lista en memoria que simula una tabla de usuarios
-# Se usa solo para desarrollo y pruebas
-_USERS = [
-    User(1, UserRole.PLATFORM_ADMIN, UserStatus.APPROVED),
-    User(2, UserRole.ADMIN_LOCAL, UserStatus.APPROVED),
-    User(3, UserRole.COURIER, UserStatus.PENDING),
-    User(4, UserRole.ALLY, UserStatus.INACTIVE),
-]
+def get_configured_web_user() -> WebUser:
+    username = os.getenv("WEB_ADMIN_USER", "admin").strip()
+    user_id = int(os.getenv("WEB_ADMIN_ID", "1"))
+    role = UserRole(os.getenv("WEB_ADMIN_ROLE", UserRole.PLATFORM_ADMIN.value).strip().upper())
+    status = UserStatus(os.getenv("WEB_ADMIN_STATUS", UserStatus.APPROVED.value).strip().upper())
+    return WebUser(
+        id=user_id,
+        username=username,
+        role=role,
+        status=status,
+    )
 
 
 def list_users():
     """
-    Devuelve todos los usuarios del sistema.
+    Devuelve la identidad real minima del panel web.
 
-    Usado por:
-    - Panel administrativo
-    - Dashboard
-    - Listados en la web
-
-    Retorna una lista de objetos User.
+    Esta fase no implementa catalogo completo de usuarios web.
     """
-    return _USERS
+    return [get_configured_web_user()]
 
 
 def get_user_by_id(user_id: int):
     """
-    Busca un usuario por su ID.
-
-    Recorre la lista de usuarios simulada y retorna:
-    - El usuario si existe
-    - None si no se encuentra
+    Busca el unico usuario web real configurado por entorno.
     """
-    return next((user for user in _USERS if user.id == user_id), None)
+    user = get_configured_web_user()
+    return user if user.id == user_id else None

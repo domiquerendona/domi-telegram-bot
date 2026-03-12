@@ -1,5 +1,29 @@
 # Guía de Despliegue — DEV y PROD en Railway
 
+Fuente de verdad de despliegue del proyecto.
+
+## Procesos del sistema
+
+El proyecto tiene dos entry points distintos:
+
+- Bot Telegram
+  - Archivo: `Backend/main.py`
+  - Arranque local: `python main.py`
+
+- Web FastAPI
+  - Archivo: `Backend/web_app.py`
+  - Arranque local: `uvicorn web_app:app --reload --port 8000`
+
+Diferencia:
+
+- El bot Telegram registra handlers, jobs y hace polling.
+- La app web expone la API FastAPI para el panel web.
+
+Nota:
+
+Actualmente el despliegue en Railway ejecuta solo el bot Telegram.
+La aplicacion web puede ejecutarse localmente o desplegarse en un proceso separado si se habilita un panel web en produccion.
+
 ## Arquitectura de Ambientes
 
 Hay **dos bots corriendo en Railway** de forma permanente:

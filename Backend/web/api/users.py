@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from web.auth.dependencies import get_current_user
 
 # Guard que valida si el usuario puede acceder al sistema según su estado
-from web.auth.guards import can_access_system
+from web.auth.guards import require_panel_access
 
 # Funciones del repository para obtener usuarios
 from web.users.repository import get_user_by_id, list_users
@@ -27,8 +27,7 @@ def get_users(current_user=Depends(get_current_user)):
     """
 
     # Verifica si el usuario autenticado tiene permiso para usar el sistema
-    if not can_access_system(current_user):
-        raise HTTPException(status_code=403, detail="Usuario bloqueado")
+    require_panel_access(current_user)
 
     # Retorna la lista de usuarios usando el schema UserResponse
     return list_users()
@@ -40,6 +39,8 @@ def get_my_profile(current_user=Depends(get_current_user)):
     Devuelve el perfil del usuario autenticado.
     Usado por la página 'Mi cuenta'.
     """
+
+    require_panel_access(current_user)
 
     # Retorna el usuario autenticado serializado con UserResponse
     return current_user
@@ -55,8 +56,7 @@ def get_user_detail(
     """
 
     # Verifica si el usuario autenticado puede acceder al sistema
-    if not can_access_system(current_user):
-        raise HTTPException(status_code=403, detail="Usuario bloqueado")
+    require_panel_access(current_user)
 
     # Obtiene el usuario solicitado desde el repository
     user = get_user_by_id(user_id)

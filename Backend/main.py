@@ -16,81 +16,6 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-# Importa la clase principal de FastAPI
-from fastapi import FastAPI
-
-# Importa el router administrativo
-# Router de endpoints administrativos
-from web.api.admin import router as admin_router
-# Router de endpoints de usuarios
-from web.api.users import router as users_router
-# Router de endpoints del dashboard
-from web.api.dashboard import router as dashboard_router
-# Router de autenticación del panel web
-from web.api.auth import router as auth_router
-
-
-
-
-# Se crea la instancia principal de la aplicación FastAPI
-# Esta es la app que se ejecuta con Uvicorn
-app = FastAPI()
-
-
-# Se registran las rutas administrativas dentro de la aplicación
-# Esto habilita endpoints como:
-# POST /admin/users/{user_id}/approve
-
-# Registra las rutas de administración
-app.include_router(auth_router)
-# Registra las rutas de administración
-app.include_router(admin_router)
-# Registra las rutas de usuarios
-app.include_router(users_router)
-# Registra las rutas del dashboard
-app.include_router(dashboard_router)
-from fastapi.responses import HTMLResponse
-
-# Importa el middleware que permite manejar CORS en FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-# Lista de orígenes permitidos (frontend autorizado)
-# En este caso, Angular corre en el puerto 4200 en desarrollo
-origins = [
-    "http://localhost:4200",
-]
-
-# Se agrega el middleware CORS a la aplicación
-app.add_middleware(
-    CORSMiddleware,
-
-    # Orígenes que pueden hacer peticiones al backend
-    allow_origins=origins,
-
-    # Permite enviar cookies o credenciales (importante si usas JWT en cookies)
-    allow_credentials=True,
-
-    # Permite todos los métodos HTTP (GET, POST, PUT, DELETE, etc.)
-    allow_methods=["*"],
-
-    # Permite todos los headers en las solicitudes
-    allow_headers=["*"],
-)
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return """
-    <html>
-        <head>
-            <title>Domi App</title>
-        </head>
-        <body>
-            <h1>Panel Web Domi 🚀</h1>
-            <p>Backend funcionando correctamente.</p>
-        </body>
-    </html>
-    """
-
 from services import (
     register_platform_income,
     admin_puede_operar,
@@ -204,8 +129,9 @@ from services import (
     update_courier_status,
     update_courier_status_by_id,
     credit_welcome_balance,
-    get_connection,
-    P,
+    get_courier_approval_notification_chat_id,
+    get_ally_approval_notification_chat_id,
+    parse_team_selection_callback,
     get_all_couriers,
     update_courier,
     delete_courier,
@@ -302,13 +228,13 @@ from services import (
     restore_admin_customer_address,
     get_admin_customer_address_by_id,
     list_admin_customer_addresses,
+    sync_all_courier_link_statuses,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
     init_db,
     force_platform_admin,
     ensure_pricing_defaults,
-    sync_all_courier_link_statuses,
 )
 from profile_changes import (
     profile_change_conv,
@@ -2268,10 +2194,10 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
             label = f"{team_name} ({team_code})"
             if admin_status == 'PENDING':
                 label += " [Pendiente]"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team:{team_code}")])
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team_{team_code}")])
 
     # Opción Ninguno (default plataforma)
-    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="ally_team:NONE")])
+    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="ally_team_NONE")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -2298,8 +2224,8 @@ def ally_team_callback(update, context):
     print(f"[DEBUG] ally_team_callback recibió data={data}")
     query.answer()
 
-    # Validación básica
-    if not data.startswith("ally_team:"):
+    selected = parse_team_selection_callback(data, "ally_team")
+    if selected is None:
         return ALLY_TEAM
 
     ally_id = context.user_data.get("ally_id")
@@ -2307,8 +2233,6 @@ def ally_team_callback(update, context):
         query.edit_message_text("Error técnico: no encuentro el ID del aliado. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
-
-    selected = data.split("ally_team:", 1)[1].strip()
 
     # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
@@ -2893,9 +2817,9 @@ def show_courier_team_selection(update, context):
             label = f"{team_name} ({team_code})"
             if admin_status == 'PENDING':
                 label += " [Pendiente]"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"courier_team:{team_code}")])
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"courier_team_{team_code}")])
 
-    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="courier_team:NONE")])
+    keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="courier_team_NONE")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -2914,7 +2838,8 @@ def courier_team_callback(update, context):
     data = (query.data or "").strip()
     query.answer()
 
-    if not data.startswith("courier_team:"):
+    selected = parse_team_selection_callback(data, "courier_team")
+    if selected is None:
         return COURIER_TEAM
 
     courier_id = context.user_data.get("new_courier_id")
@@ -2922,8 +2847,6 @@ def courier_team_callback(update, context):
         query.edit_message_text("Error técnico: no encuentro el ID del repartidor. Intenta /soy_repartidor de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
-
-    selected = data.split("courier_team:", 1)[1].strip()
 
     if selected.upper() == "NONE":
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
@@ -12444,7 +12367,7 @@ ally_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_ubicacion_handler),
         ],
         ALLY_CONFIRM: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_confirm)],
-        ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team:")],
+        ALLY_TEAM: [CallbackQueryHandler(ally_team_callback, pattern=r"^ally_team(?::|_)")],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
@@ -12503,7 +12426,7 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_confirm)
         ],
         COURIER_TEAM: [
-            CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team:")
+            CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team(?::|_)")
         ],
     },
     fallbacks=[
@@ -16208,19 +16131,7 @@ def admin_local_callback(update, context):
             print("[WARN] credit_welcome_balance (local courier approve):", e)
 
         try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                cur.execute(
-                    f"SELECT users.telegram_id AS telegram_id "
-                    f"FROM users JOIN couriers ON couriers.user_id = users.id "
-                    f"WHERE couriers.id = {P}",
-                    (courier_id,),
-                )
-                row = cur.fetchone()
-            finally:
-                conn.close()
-            courier_telegram_id = row["telegram_id"] if row else None
+            courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
             if courier_telegram_id:
                 context.bot.send_message(
                     chat_id=courier_telegram_id,
@@ -16385,19 +16296,7 @@ def admin_local_callback(update, context):
                 print("[WARN] credit_welcome_balance (local ally approve):", e)
 
             try:
-                conn = get_connection()
-                cur = conn.cursor()
-                try:
-                    cur.execute(
-                        f"SELECT users.telegram_id AS telegram_id "
-                        f"FROM users JOIN allies ON allies.user_id = users.id "
-                        f"WHERE allies.id = {P}",
-                        (ally_id_val,),
-                    )
-                    row = cur.fetchone()
-                finally:
-                    conn.close()
-                ally_telegram_id = row["telegram_id"] if row else None
+                ally_telegram_id = get_ally_approval_notification_chat_id(ally_id_val)
                 if ally_telegram_id:
                     context.bot.send_message(
                         chat_id=ally_telegram_id,

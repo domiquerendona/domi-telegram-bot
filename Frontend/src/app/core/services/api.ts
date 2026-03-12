@@ -1,5 +1,6 @@
 // Cliente HTTP para realizar peticiones al backend (POST, GET, DELETE, PUT)
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../environments/environment';
 
 // Permite que el servicio pueda ser inyectado en toda la aplicación
 import { Injectable } from '@angular/core';
@@ -9,9 +10,9 @@ import { Injectable } from '@angular/core';
 })
 export class ApiService {
 
-  // URL base del backend (FastAPI en desarrollo)
+  // URL base del backend configurable por environment
   // En producción debería estar en environment.ts
-  private baseUrl = 'http://127.0.0.1:8000';
+  private baseUrl = environment.apiBaseUrl;
 
   // Inyección del cliente HTTP de Angular
   constructor(private http: HttpClient) { }

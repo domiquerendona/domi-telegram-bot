@@ -6,8 +6,8 @@ load_dotenv()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import ConversationHandler, CallbackQueryHandler, MessageHandler, CommandHandler, Filters
 
-from services import extract_lat_lng_from_text
-from db import (
+from services import (
+    extract_lat_lng_from_text,
     ensure_user,
     get_admin_by_user_id,
     get_courier_by_user_id,
@@ -23,13 +23,7 @@ from db import (
     list_pending_profile_change_requests,
     mark_profile_change_request_approved,
     mark_profile_change_request_rejected,
-    get_ally_by_id,
-    get_connection,
-    get_admin_by_team_code,
-    upsert_admin_courier_link,
-    upsert_admin_ally_link,
-    deactivate_other_approved_admin_courier_links,
-    deactivate_other_approved_admin_ally_links,
+    apply_profile_change_request_update,
 )
 
 
@@ -367,99 +361,7 @@ def pc_new_value(update, context):
 
 
 def apply_profile_change_request(request_row):
-    target_role = request_row["target_role"]
-    target_role_id = request_row["target_role_id"]
-    field_name = request_row["field_name"]
-    new_value = request_row["new_value"]
-    new_lat = request_row["new_lat"]
-    new_lng = request_row["new_lng"]
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    if target_role == "admin":
-        if field_name == "phone":
-            cur.execute("UPDATE admins SET phone = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "city":
-            cur.execute("UPDATE admins SET city = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "barrio":
-            cur.execute("UPDATE admins SET barrio = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "residence_address":
-            cur.execute("UPDATE admins SET residence_address = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "residence_location":
-            cur.execute(
-                "UPDATE admins SET residence_lat = ?, residence_lng = ? WHERE id = ?",
-                (new_lat, new_lng, target_role_id)
-            )
-    elif target_role == "courier":
-        if field_name == "phone":
-            cur.execute("UPDATE couriers SET phone = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "city":
-            cur.execute("UPDATE couriers SET city = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "barrio":
-            cur.execute("UPDATE couriers SET barrio = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "plate":
-            cur.execute("UPDATE couriers SET plate = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "bike_type":
-            cur.execute("UPDATE couriers SET bike_type = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "residence_address":
-            cur.execute("UPDATE couriers SET residence_address = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "residence_location":
-            cur.execute(
-                "UPDATE couriers SET residence_lat = ?, residence_lng = ? WHERE id = ?",
-                (new_lat, new_lng, target_role_id)
-            )
-        elif field_name == "admin_team_code":
-            pass
-    else:
-        if field_name == "phone":
-            cur.execute("UPDATE allies SET phone = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "city":
-            cur.execute("UPDATE allies SET city = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "barrio":
-            cur.execute("UPDATE allies SET barrio = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "address":
-            cur.execute("UPDATE allies SET address = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "business_name":
-            cur.execute("UPDATE allies SET business_name = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "owner_name":
-            cur.execute("UPDATE allies SET owner_name = ? WHERE id = ?", (new_value, target_role_id))
-        elif field_name == "ally_default_location":
-            cur.execute("""
-                UPDATE ally_locations
-                SET lat = ?, lng = ?, address = ?
-                WHERE ally_id = ? AND is_default = 1
-            """, (new_lat, new_lng, new_value, target_role_id))
-            if cur.rowcount == 0:
-                ally = get_ally_by_id(target_role_id)
-                city = ally["city"] if ally and ally["city"] else ""
-                barrio = ally["barrio"] if ally and ally["barrio"] else ""
-                cur.execute("""
-                    INSERT INTO ally_locations (ally_id, label, address, city, barrio, is_default, lat, lng, created_at)
-                    VALUES (?, 'Principal', ?, ?, ?, 1, ?, ?, datetime('now'))
-                """, (target_role_id, new_value, city, barrio, new_lat, new_lng))
-        elif field_name == "admin_team_code":
-            pass
-
-    conn.commit()
-    conn.close()
-
-    if field_name == "admin_team_code":
-        team_code = (new_value or "").strip().upper()
-        admin_row = get_admin_by_team_code(team_code)
-        if not admin_row:
-            raise ValueError("Admin destino no encontrado para team_code={}".format(team_code))
-        admin_id = admin_row["id"]
-        admin_status = admin_row["status"]
-        if admin_status != "APPROVED":
-            raise ValueError("Admin destino no esta APPROVED.")
-
-        if target_role == "courier":
-            upsert_admin_courier_link(admin_id, target_role_id, status="APPROVED", is_active=1)
-            deactivate_other_approved_admin_courier_links(target_role_id, admin_id)
-        elif target_role == "ally":
-            upsert_admin_ally_link(admin_id, target_role_id, status="APPROVED")
-            deactivate_other_approved_admin_ally_links(target_role_id, admin_id)
+    apply_profile_change_request_update(request_row)
 
 
 def pc_confirm(update, context):

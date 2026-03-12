@@ -1,3 +1,8 @@
+\# DOCUMENTO HISTÓRICO
+#
+# Este archivo describe el estado del sistema en una auditoría pasada.
+# No debe usarse como fuente normativa del proyecto.
+
 \# Hitos del proyecto Domiquerendona
 
 

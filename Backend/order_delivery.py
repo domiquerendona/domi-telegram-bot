@@ -2484,6 +2484,8 @@ def _handle_delivered(update, context, order_id):
     try:
         ally_fee_charged = 300 if fee_ally_ok else 0
         courier_fee_charged = 300 if fee_courier_ok else 0
+        creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
+        settlement_admin_id = creator_admin_id or ally_admin_id or courier_admin_id
         settlement_note = (
             "Fees cobrados OK"
             if (fee_ally_ok and fee_courier_ok)
@@ -2491,7 +2493,7 @@ def _handle_delivered(update, context, order_id):
         )
         upsert_order_accounting_settlement(
             order_id=order_id,
-            admin_id=admin_id,
+            admin_id=settlement_admin_id,
             ally_id=ally_id,
             courier_id=courier_id,
             order_total_fee=int(order["total_fee"] or 0),

@@ -29,10 +29,22 @@ from db import (
     get_connection,
     P,
     DB_ENGINE,
+    get_order_status_by_id,
+    cancel_order,
     get_admin_by_telegram_id,
     get_user_by_telegram_id,
     get_admin_by_user_id,
     can_admin_validate_references,
+    get_courier_telegram_id,
+    get_ally_telegram_id,
+    create_profile_change_request,
+    has_pending_profile_change_request,
+    list_pending_profile_change_requests,
+    get_profile_change_request_by_id,
+    mark_profile_change_request_approved,
+    mark_profile_change_request_rejected,
+    apply_profile_change_request_data,
+    sync_all_courier_link_statuses,
     # Re-exports para que main.py no acceda a db directamente
     ensure_user,
     get_user_by_id,
@@ -211,6 +223,11 @@ from db import (
     cancel_route_stop,
     get_all_pending_support_requests,
     get_support_request_full,
+    get_all_orders,
+    get_admin_panel_balances_data,
+    get_admin_panel_users_data,
+    get_admin_panel_earnings_data,
+    get_dashboard_stats_data,
 )
 import math
 import re
@@ -2080,8 +2097,10 @@ def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[b
     return True, courier, rows, "OK"
 
 
-# TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
-# Usar apply_service_fee(target_type="COURIER", target_id=courier_id, admin_id=admin_id, ref_type="ORDER", ref_id=order_id)
+# Nota de alineacion:
+# El cobro de fee al courier ya esta implementado en los flujos de entrega de
+# order_delivery.py y en la resolucion web de soporte. Si cambia la politica de
+# cobro, actualizar esos puntos de integracion y esta nota en el mismo cambio.
 
 
 def _get_important_alert_config():
@@ -2222,6 +2241,212 @@ def save_pricing_setting(field: str, value_str: str) -> None:
     else:
         setting_key = f"pricing_{field}"
     set_setting(setting_key, value_str)
+
+
+def get_admin_panel_balances() -> dict:
+    """Retorna saldos consolidados para el panel web administrativo."""
+    return get_admin_panel_balances_data()
+
+
+def get_admin_panel_users() -> list:
+    """Retorna el consolidado de usuarios para el panel web administrativo."""
+    return get_admin_panel_users_data()
+
+
+def get_admin_panel_earnings() -> dict:
+    """Retorna resumen e historial de ganancias para el panel web administrativo."""
+    return get_admin_panel_earnings_data()
+
+
+def get_dashboard_stats() -> dict:
+    """Retorna las metricas agregadas del dashboard web."""
+    return get_dashboard_stats_data()
+
+
+def get_courier_approval_notification_chat_id(courier_id: int):
+    """Retorna el chat_id a notificar cuando se aprueba un courier."""
+    return get_courier_telegram_id(courier_id)
+
+
+def get_ally_approval_notification_chat_id(ally_id: int):
+    """Retorna el chat_id a notificar cuando se aprueba un aliado."""
+    return get_ally_telegram_id(ally_id)
+
+
+def parse_team_selection_callback(data: str, domain: str):
+    """Acepta temporalmente formatos legacy con ':' y estandar con '_'."""
+    raw = (data or "").strip()
+    modern_prefix = "{}_".format(domain)
+    legacy_prefix = "{}:".format(domain)
+
+    if raw.startswith(modern_prefix):
+        return raw.split(modern_prefix, 1)[1].strip()
+    if raw.startswith(legacy_prefix):
+        return raw.split(legacy_prefix, 1)[1].strip()
+    return None
+
+
+def apply_profile_change_request_update(request_row) -> None:
+    """Aplica el cambio de perfil aprobado y coordina migraciones de equipo."""
+    target_role = request_row["target_role"]
+    target_role_id = request_row["target_role_id"]
+    field_name = request_row["field_name"]
+    new_value = request_row["new_value"]
+    new_lat = request_row["new_lat"]
+    new_lng = request_row["new_lng"]
+
+    apply_profile_change_request_data(
+        target_role=target_role,
+        target_role_id=target_role_id,
+        field_name=field_name,
+        new_value=new_value,
+        new_lat=new_lat,
+        new_lng=new_lng,
+    )
+
+    if field_name != "admin_team_code":
+        return
+
+    team_code = (new_value or "").strip().upper()
+    admin_row = get_admin_by_team_code(team_code)
+    if not admin_row:
+        raise ValueError("Admin destino no encontrado para team_code={}".format(team_code))
+    if admin_row["status"] != "APPROVED":
+        raise ValueError("Admin destino no esta APPROVED.")
+
+    admin_id = admin_row["id"]
+    if target_role == "courier":
+        upsert_admin_courier_link(admin_id, target_role_id, status="APPROVED", is_active=1)
+        deactivate_other_approved_admin_courier_links(target_role_id, admin_id)
+    elif target_role == "ally":
+        upsert_admin_ally_link(admin_id, target_role_id, status="APPROVED")
+        deactivate_other_approved_admin_ally_links(target_role_id, admin_id)
+
+
+def get_admin_panel_pricing_settings() -> dict:
+    """Retorna las claves de pricing expuestas por el panel web."""
+    keys = [
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    ]
+    return {key: get_setting(key) for key in keys}
+
+
+def update_admin_panel_pricing_settings(payload: dict) -> None:
+    """Actualiza solo las claves de pricing permitidas por el panel web."""
+    allowed = {
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    }
+    for key, value in payload.items():
+        if key in allowed:
+            set_setting(key, str(value))
+
+
+def cancel_order_from_admin_panel(order_id: int) -> str:
+    """Cancela un pedido desde el panel web si todavia no esta finalizado."""
+    status = get_order_status_by_id(order_id)
+    if status is None:
+        raise LookupError("Pedido no encontrado")
+    if status in ("DELIVERED", "CANCELLED"):
+        raise ValueError(status)
+    cancel_order(order_id, "ADMIN")
+    return status
+
+
+def resolve_support_request_from_admin_panel(support_id: int, action: str, admin_db_id: int) -> int:
+    """
+    Resuelve una solicitud de soporte del panel web manteniendo las mismas reglas
+    operativas que ya usa el backend del bot.
+    """
+    if action not in ("fin", "cancel_courier", "cancel_ally"):
+        raise ValueError("Accion invalida")
+    if not admin_db_id:
+        raise ValueError("admin_db_id requerido")
+
+    req = get_support_request_full(support_id)
+    if not req:
+        raise LookupError("Solicitud no encontrada")
+    if req["status"] != "PENDING":
+        raise RuntimeError("Solicitud ya resuelta")
+
+    order_id = req["order_id"]
+    courier_id = req["courier_id"]
+    if not order_id:
+        raise NotImplementedError("Solicitud de ruta no soportada aun desde web")
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        raise RuntimeError("El pedido no esta en estado de entrega")
+
+    if action == "fin":
+        ally_id = order["ally_id"]
+        ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+        if ally_admin_link:
+            apply_service_fee(
+                target_type="ALLY",
+                target_id=ally_id,
+                admin_id=ally_admin_link["admin_id"],
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        set_order_status(order_id, "DELIVERED", "delivered_at")
+        resolve_support_request(support_id, "DELIVERED", admin_db_id)
+        return order_id
+
+    if action == "cancel_courier":
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        cancel_order(order_id, "ADMIN")
+        resolve_support_request(support_id, "CANCELLED_COURIER", admin_db_id)
+        return order_id
+
+    ally_id = order["ally_id"]
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    if ally_admin_link:
+        apply_service_fee(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=ally_admin_link["admin_id"],
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+    courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+    if courier_admin_id:
+        apply_service_fee(
+            target_type="COURIER",
+            target_id=courier_id,
+            admin_id=courier_admin_id,
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+    cancel_order(order_id, "ADMIN")
+    resolve_support_request(support_id, "CANCELLED_ALLY", admin_db_id)
+    return order_id
 
 
 # ---------------------------------------------------------------------------
