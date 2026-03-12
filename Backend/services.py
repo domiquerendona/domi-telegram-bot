@@ -204,6 +204,11 @@ from db import (
     list_admin_customer_addresses,
     # Re-exports offer queue
     clear_offer_queue,
+    # Re-exports order_support_requests
+    create_order_support_request,
+    get_pending_support_request,
+    resolve_support_request,
+    cancel_route_stop,
 )
 import math
 import re

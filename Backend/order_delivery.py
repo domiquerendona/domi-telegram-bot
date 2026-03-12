@@ -65,6 +65,11 @@ from db import (
     get_active_route_for_courier,
     get_courier_delivery_time_stats,
     get_approved_admin_id_for_courier,
+    get_admin_by_telegram_id,
+    create_order_support_request,
+    get_pending_support_request,
+    resolve_support_request,
+    cancel_route_stop,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km
 
@@ -129,6 +134,25 @@ ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia p
 OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
 DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repartidor
 DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
+DELIVERY_RADIUS_KM = 0.1               # 100 metros para validar entrega GPS
+
+GPS_INACTIVE_MSG = (
+    "Tu ubicacion GPS no esta activa.\n\n"
+    "Para continuar, activa tu ubicacion en vivo en Telegram:\n"
+    "1. Abre el chat con el bot.\n"
+    "2. Toca el clip (adjuntar).\n"
+    "3. Selecciona \"Ubicacion\".\n"
+    "4. Elige \"Compartir ubicacion en vivo\".\n\n"
+    "Una vez activa tu ubicacion podras continuar con el servicio."
+)
+
+
+def _is_courier_gps_active(courier):
+    """Retorna True si el courier tiene GPS activo con coordenadas validas."""
+    active = int(_row_value(courier, "live_location_active", 0) or 0)
+    lat = _row_value(courier, "live_lat")
+    lng = _row_value(courier, "live_lng")
+    return active == 1 and lat is not None and lng is not None
 
 
 def _offer_reply_markup(order_id):
@@ -1425,15 +1449,7 @@ def order_courier_callback(update, context):
         return _handle_pickup(update, context, order_id)
     if data.startswith("order_delivered_confirm_"):
         order_id = int(data.replace("order_delivered_confirm_", ""))
-        keyboard = [[
-            InlineKeyboardButton("Si", callback_data="order_delivered_{}".format(order_id)),
-            InlineKeyboardButton("No", callback_data="order_delivered_cancel_{}".format(order_id)),
-        ]]
-        query.edit_message_text(
-            "Ya entregaste el pedido #{}?".format(order_id),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return
+        return _handle_delivered_confirm(update, context, order_id)
     if data.startswith("order_delivered_cancel_"):
         order_id = int(data.replace("order_delivered_cancel_", ""))
         query.edit_message_text("Ok. El pedido #{} sigue en curso.".format(order_id))
@@ -1474,6 +1490,21 @@ def order_courier_callback(update, context):
     if data.startswith("order_cancel_"):
         order_id = int(data.replace("order_cancel_", ""))
         return _handle_cancel_ally(update, context, order_id)
+    if data.startswith("order_confirm_pickup_"):
+        order_id = int(data.replace("order_confirm_pickup_", ""))
+        return _handle_confirm_pickup(update, context, order_id)
+    if data.startswith("order_pinissue_"):
+        order_id = int(data.replace("order_pinissue_", ""))
+        return _handle_pin_issue_report(update, context, order_id)
+    if data.startswith("admin_pinissue_fin_"):
+        order_id = int(data.replace("admin_pinissue_fin_", ""))
+        return _handle_admin_pinissue_action(update, context, order_id, "fin")
+    if data.startswith("admin_pinissue_cancel_courier_"):
+        order_id = int(data.replace("admin_pinissue_cancel_courier_", ""))
+        return _handle_admin_pinissue_action(update, context, order_id, "cancel_courier")
+    if data.startswith("admin_pinissue_cancel_ally_"):
+        order_id = int(data.replace("admin_pinissue_cancel_ally_", ""))
+        return _handle_admin_pinissue_action(update, context, order_id, "cancel_ally")
     return None
 
 
@@ -2342,21 +2373,8 @@ def _handle_pickup_confirmation_by_ally(update, context, order_id, approve):
         return
 
     if approve:
-        set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
-        query.edit_message_text("Recogida confirmada. El repartidor fue notificado para continuar a entrega.")
-        _notify_courier_pickup_approved(context, order)
-        context.job_queue.run_once(
-            _delivery_reminder_job,
-            DELIVERY_REMINDER_SECONDS,
-            context={"order_id": order_id},
-            name="delivery_reminder_{}".format(order_id),
-        )
-        context.job_queue.run_once(
-            _delivery_admin_alert_job,
-            DELIVERY_ADMIN_ALERT_SECONDS,
-            context={"order_id": order_id},
-            name="delivery_admin_alert_{}".format(order_id),
-        )
+        query.edit_message_text("Llegada confirmada. Esperando que el repartidor confirme la recogida del pedido.")
+        _notify_courier_awaiting_pickup_confirm(context, order)
     else:
         query.edit_message_text("Recogida rechazada. El repartidor fue notificado.")
         _notify_courier_pickup_rejected(context, order)
@@ -2734,8 +2752,68 @@ def _notify_ally_courier_arrived(context, order, courier_name):
         print("[WARN] _notify_ally_courier_arrived: {}".format(e))
 
 
+def _notify_courier_awaiting_pickup_confirm(context, order):
+    """Notifica al courier que el aliado confirmo su llegada y debe confirmar que recogió el pedido."""
+    try:
+        if not order["courier_id"]:
+            return
+        courier = get_courier_by_id(order["courier_id"])
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=(
+                "El aliado confirmo tu llegada al punto de recogida - Pedido #{}\n\n"
+                "Confirma que ya recogiste el pedido para continuar."
+            ).format(order["id"]),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "Confirmar recogida",
+                    callback_data="order_confirm_pickup_{}".format(order["id"])
+                )
+            ]]),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar confirmacion pendiente al courier: {}".format(e))
+
+
+def _handle_confirm_pickup(update, context, order_id):
+    """Courier confirma que recogió el pedido. Transiciona a PICKED_UP y revela datos del cliente."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+    if order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido ya no requiere confirmacion de recogida.")
+        return
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para confirmar este pedido.")
+        return
+    set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
+    query.edit_message_text("Recogida confirmada. A continuacion encontraras los datos de entrega.")
+    _notify_courier_pickup_approved(context, get_order_by_id(order_id))
+    context.job_queue.run_once(
+        _delivery_reminder_job,
+        DELIVERY_REMINDER_SECONDS,
+        context={"order_id": order_id},
+        name="delivery_reminder_{}".format(order_id),
+    )
+    context.job_queue.run_once(
+        _delivery_admin_alert_job,
+        DELIVERY_ADMIN_ALERT_SECONDS,
+        context={"order_id": order_id},
+        name="delivery_admin_alert_{}".format(order_id),
+    )
+
+
 def _notify_courier_pickup_approved(context, order):
-    """Envia al courier la entrega cuando el aliado confirma la recogida."""
+    """Envia al courier los datos de entrega tras confirmar la recogida."""
     try:
         if not order["courier_id"]:
             return
@@ -2749,15 +2827,16 @@ def _notify_courier_pickup_approved(context, order):
         dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
         keyboard = []
         keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
-        keyboard.append([InlineKeyboardButton("Marcar como entregado", callback_data="order_delivered_{}".format(order["id"]))])
+        keyboard.append([InlineKeyboardButton("Finalizar servicio", callback_data="order_delivered_confirm_{}".format(order["id"]))])
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
             text=(
-                "Recogida confirmada por el aliado - Pedido #{}\n\n"
+                "Datos de entrega - Pedido #{}\n\n"
                 "Entrega en: {}\n"
                 "Cliente: {}\n"
-                "Telefono cliente: {}\n\n"
-                "Dirigete al punto de entrega."
+                "Telefono: {}\n\n"
+                "Dirigete al punto de entrega. Solo podras finalizar el servicio cuando estes "
+                "a menos de 100 metros del lugar de entrega."
             ).format(
                 order["id"],
                 order["customer_address"] or "No disponible",
@@ -3418,6 +3497,39 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         query.edit_message_text("Solo el repartidor asignado puede confirmar entregas.")
         return
 
+    # Validar GPS activo
+    if not _is_courier_gps_active(courier):
+        query.edit_message_text(GPS_INACTIVE_MSG)
+        return
+
+    # Obtener coordenadas de la parada
+    stops = get_route_destinations(route_id)
+    stop = next((s for s in stops if s["sequence"] == seq), None)
+    if not stop:
+        query.edit_message_text("Parada no encontrada.")
+        return
+
+    stop_lat = _row_value(stop, "dropoff_lat")
+    stop_lng = _row_value(stop, "dropoff_lng")
+    courier_lat = float(_row_value(courier, "live_lat") or 0)
+    courier_lng = float(_row_value(courier, "live_lng") or 0)
+
+    if stop_lat is not None and stop_lng is not None:
+        dist = haversine_km(courier_lat, courier_lng, float(stop_lat), float(stop_lng))
+        if dist > DELIVERY_RADIUS_KM:
+            query.edit_message_text(
+                "No puedes finalizar esta parada porque no estas cerca del punto de entrega.\n"
+                "Distancia actual: {:.0f} metros. Debes estar a menos de 100 metros.\n\n"
+                "Si ya estas en el lugar pero el pin esta mal ubicado, usa el boton de ayuda.".format(dist * 1000),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Estoy aqui pero el pin esta mal",
+                        callback_data="ruta_pinissue_{}_{}".format(route_id, seq)
+                    )
+                ]]),
+            )
+            return
+
     deliver_route_stop(route_id, seq)
     query.edit_message_text("Parada {} confirmada como entregada.".format(seq))
 
@@ -3530,6 +3642,31 @@ def handle_route_callback(update, context):
     if data.startswith("ruta_liberar_"):
         route_id = int(data.replace("ruta_liberar_", ""))
         return _handle_route_release_menu(update, context, route_id)
+
+    if data.startswith("ruta_pinissue_"):
+        parts = data.replace("ruta_pinissue_", "").split("_")
+        if len(parts) == 2:
+            try:
+                route_id = int(parts[0])
+                seq = int(parts[1])
+                return _handle_route_pin_issue(update, context, route_id, seq)
+            except ValueError:
+                pass
+
+    if data.startswith("admin_ruta_pinissue_fin_"):
+        parts = data.replace("admin_ruta_pinissue_fin_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_route_pinissue_action(update, context, int(parts[0]), int(parts[1]), "fin")
+
+    if data.startswith("admin_ruta_pinissue_cancel_courier_"):
+        parts = data.replace("admin_ruta_pinissue_cancel_courier_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_route_pinissue_action(update, context, int(parts[0]), int(parts[1]), "cancel_courier")
+
+    if data.startswith("admin_ruta_pinissue_cancel_ally_"):
+        parts = data.replace("admin_ruta_pinissue_cancel_ally_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_route_pinissue_action(update, context, int(parts[0]), int(parts[1]), "cancel_ally")
 
     return None
 
@@ -3714,3 +3851,567 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         "excluded_couriers": {courier["id"]},
     }
     _send_next_route_offer(route_id, context)
+
+
+# ---------------------------------------------------------------------------
+# Validación GPS + finalización de pedido con check de distancia
+# ---------------------------------------------------------------------------
+
+def _handle_delivered_confirm(update, context, order_id):
+    """Valida GPS y distancia antes de mostrar la confirmacion de entrega."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+    if order["status"] != "PICKED_UP":
+        query.edit_message_text("Este pedido no esta en estado de entrega.")
+        return
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para finalizar este pedido.")
+        return
+
+    # Bloquear si GPS inactivo
+    if not _is_courier_gps_active(courier):
+        query.edit_message_text(GPS_INACTIVE_MSG)
+        return
+
+    # Validar distancia al punto de entrega
+    dropoff_lat = _row_value(order, "dropoff_lat")
+    dropoff_lng = _row_value(order, "dropoff_lng")
+    if dropoff_lat is not None and dropoff_lng is not None:
+        courier_lat = float(_row_value(courier, "live_lat") or 0)
+        courier_lng = float(_row_value(courier, "live_lng") or 0)
+        dist = haversine_km(courier_lat, courier_lng, float(dropoff_lat), float(dropoff_lng))
+        if dist > DELIVERY_RADIUS_KM:
+            query.edit_message_text(
+                "No puedes finalizar el servicio porque no estas cerca del punto de entrega.\n"
+                "Distancia actual: {:.0f} metros. Debes estar a menos de 100 metros.\n\n"
+                "Si ya estas en el lugar pero el pin esta mal ubicado, usa el boton de ayuda.".format(dist * 1000),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Estoy aqui pero el pin esta mal",
+                        callback_data="order_pinissue_{}".format(order_id)
+                    )
+                ]]),
+            )
+            return
+
+    keyboard = [[
+        InlineKeyboardButton("Si", callback_data="order_delivered_{}".format(order_id)),
+        InlineKeyboardButton("No", callback_data="order_delivered_cancel_{}".format(order_id)),
+    ]]
+    query.edit_message_text(
+        "Ya entregaste el pedido #{}?".format(order_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flujo pin mal ubicado — pedido
+# ---------------------------------------------------------------------------
+
+def _handle_pin_issue_report(update, context, order_id):
+    """Courier reporta que el pin de entrega esta mal. Notifica al admin del equipo."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        query.edit_message_text("Este pedido no esta disponible para esta accion.")
+        return
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para esta accion.")
+        return
+
+    if not _is_courier_gps_active(courier):
+        query.edit_message_text(GPS_INACTIVE_MSG)
+        return
+
+    # Evitar duplicados: si ya hay una solicitud pendiente, no crear otra
+    existing = get_pending_support_request(order_id=order_id)
+    if existing:
+        query.edit_message_text(
+            "Ya enviaste una solicitud de ayuda para este pedido.\n"
+            "Tu administrador fue notificado y respondera pronto."
+        )
+        return
+
+    admin_id = get_approved_admin_id_for_courier(courier["id"])
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id = create_order_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        order_id=order_id,
+    )
+    query.edit_message_text(
+        "Solicitud enviada. Tu administrador fue notificado y podra ayudarte a finalizar el servicio.\n"
+        "Permanece en el lugar hasta recibir respuesta."
+    )
+    _notify_admin_pin_issue(context, order, courier, admin_id, support_id)
+
+
+def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
+    """Envia al admin del equipo la alerta de pin mal ubicado con opciones de accion."""
+    try:
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user.get("telegram_id"):
+            return
+
+        courier_lat = _row_value(courier, "live_lat")
+        courier_lng = _row_value(courier, "live_lng")
+        dropoff_lat = _row_value(order, "dropoff_lat")
+        dropoff_lng = _row_value(order, "dropoff_lng")
+
+        maps_courier = ""
+        if courier_lat is not None and courier_lng is not None:
+            maps_courier = "https://maps.google.com/?q={},{}".format(courier_lat, courier_lng)
+
+        maps_delivery = ""
+        if dropoff_lat is not None and dropoff_lng is not None:
+            maps_delivery = "https://maps.google.com/?q={},{}".format(dropoff_lat, dropoff_lng)
+
+        courier_user = get_user_by_id(courier["user_id"])
+        courier_tg = ""
+        if courier_user and courier_user.get("telegram_id"):
+            courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
+
+        lines = [
+            "Uno de tus repartidores necesita tu ayuda - Pedido #{}".format(order["id"]),
+            "",
+            "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
+            "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
+            "Direccion de entrega guardada: {}".format(order["customer_address"] or "N/D"),
+            "Cliente: {}".format(order["customer_name"] or "N/D"),
+        ]
+        if maps_delivery:
+            lines.append("Pin de entrega: {}".format(maps_delivery))
+        if maps_courier:
+            lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+
+        keyboard = [
+            [InlineKeyboardButton(
+                "Finalizar servicio",
+                callback_data="admin_pinissue_fin_{}".format(order["id"])
+            )],
+            [InlineKeyboardButton(
+                "Cancelar — falla del repartidor",
+                callback_data="admin_pinissue_cancel_courier_{}".format(order["id"])
+            )],
+            [InlineKeyboardButton(
+                "Cancelar — falla del aliado",
+                callback_data="admin_pinissue_cancel_ally_{}".format(order["id"])
+            )],
+        ]
+        if courier_tg:
+            keyboard.append([InlineKeyboardButton(
+                "Chatear con el repartidor",
+                url=courier_tg
+            )])
+
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text="\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar pin issue al admin (pedido {}): {}".format(order["id"], e))
+
+
+def _handle_admin_pinissue_action(update, context, order_id, action):
+    """Admin resuelve la solicitud de ayuda: finaliza o cancela con atribucion de falla."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+    if order["status"] != "PICKED_UP":
+        query.edit_message_text("Este pedido ya fue resuelto o no esta en estado de entrega.")
+        return
+
+    support = get_pending_support_request(order_id=order_id)
+    if not support:
+        query.edit_message_text("No hay solicitud de ayuda pendiente para este pedido.")
+        return
+
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin or admin["id"] != support["admin_id"]:
+        query.edit_message_text("No tienes permiso para resolver esta solicitud.")
+        return
+
+    if action == "fin":
+        resolve_support_request(support["id"], "DELIVERED", admin["id"])
+        _cancel_delivery_reminder_jobs(context, order_id)
+        _do_deliver_order(context, order, support["courier_id"])
+        query.edit_message_text(
+            "Servicio #{} finalizado correctamente. "
+            "Se aplicaron los cargos de comision normales.".format(order_id)
+        )
+        _notify_courier_support_resolved(context, support["courier_id"], order_id, "fin")
+
+    elif action == "cancel_courier":
+        resolve_support_request(support["id"], "CANCELLED_COURIER", admin["id"])
+        _cancel_delivery_reminder_jobs(context, order_id)
+        cancel_order(order_id, "ADMIN")
+        # Courier paga $300, aliado no paga
+        courier_admin_id = get_approved_admin_id_for_courier(support["courier_id"])
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=support["courier_id"],
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        query.edit_message_text(
+            "Pedido #{} cancelado. Falla atribuida al repartidor.\n"
+            "Se cobro comision al repartidor. El aliado no fue cargado.".format(order_id)
+        )
+        _notify_courier_support_resolved(context, support["courier_id"], order_id, "cancel_courier")
+
+    elif action == "cancel_ally":
+        resolve_support_request(support["id"], "CANCELLED_ALLY", admin["id"])
+        _cancel_delivery_reminder_jobs(context, order_id)
+        cancel_order(order_id, "ADMIN")
+        # Ambos pagan $300
+        ally_id = order["ally_id"]
+        if ally_id:
+            ally_admin_link = get_approved_admin_link_for_ally(ally_id)
+            if ally_admin_link:
+                apply_service_fee(
+                    target_type="ALLY",
+                    target_id=ally_id,
+                    admin_id=ally_admin_link["admin_id"],
+                    ref_type="ORDER",
+                    ref_id=order_id,
+                )
+        courier_admin_id = get_approved_admin_id_for_courier(support["courier_id"])
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=support["courier_id"],
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        query.edit_message_text(
+            "Pedido #{} cancelado. Falla atribuida al aliado.\n"
+            "Se cobro comision al aliado y al repartidor.".format(order_id)
+        )
+        _notify_courier_support_resolved(context, support["courier_id"], order_id, "cancel_ally")
+
+
+def _do_deliver_order(context, order, courier_id):
+    """Aplica fees y marca el pedido como DELIVERED (usado en resolucion de admin)."""
+    order_id = order["id"]
+    ally_id = order["ally_id"]
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
+    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+    if courier_admin_id is None:
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+
+    if ally_admin_id:
+        apply_service_fee(
+            target_type="ALLY", target_id=ally_id, admin_id=ally_admin_id,
+            ref_type="ORDER", ref_id=order_id,
+        )
+    if courier_admin_id:
+        apply_service_fee(
+            target_type="COURIER", target_id=courier_id, admin_id=courier_admin_id,
+            ref_type="ORDER", ref_id=order_id,
+        )
+    set_order_status(order_id, "DELIVERED", "delivered_at")
+    delete_offer_queue(order_id)
+
+
+def _notify_courier_support_resolved(context, courier_id, order_id, resolution):
+    """Notifica al courier el resultado de la intervencion del admin."""
+    try:
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+        messages = {
+            "fin": (
+                "Tu administrador finalizo el servicio #{} en tu nombre. "
+                "Los cargos normales fueron aplicados.".format(order_id)
+            ),
+            "cancel_courier": (
+                "El pedido #{} fue cancelado por tu administrador. "
+                "La falla fue atribuida a ti. Se cobro la comision.\n"
+                "Debes devolver el producto al punto de recogida.".format(order_id)
+            ),
+            "cancel_ally": (
+                "El pedido #{} fue cancelado por tu administrador. "
+                "La falla fue atribuida al aliado. Se cobro comision a ambas partes.\n"
+                "Debes devolver el producto al punto de recogida.".format(order_id)
+            ),
+        }
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=messages.get(resolution, "El pedido #{} fue resuelto por tu administrador.".format(order_id)),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar resolucion al courier {}: {}".format(courier_id, e))
+
+
+# ---------------------------------------------------------------------------
+# Flujo pin mal ubicado — rutas multi-parada
+# ---------------------------------------------------------------------------
+
+def _handle_route_pin_issue(update, context, route_id, seq):
+    """Courier reporta pin mal ubicado en una parada de ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta en curso.")
+        return
+    telegram_id = update.effective_user.id
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier or courier["id"] != route.get("courier_id"):
+        query.edit_message_text("No tienes permiso para esta accion.")
+        return
+
+    if not _is_courier_gps_active(courier):
+        query.edit_message_text(GPS_INACTIVE_MSG)
+        return
+
+    existing = get_pending_support_request(route_id=route_id, route_seq=seq)
+    if existing:
+        query.edit_message_text(
+            "Ya enviaste una solicitud de ayuda para esta parada.\n"
+            "Tu administrador fue notificado y respondera pronto."
+        )
+        return
+
+    admin_id = get_approved_admin_id_for_courier(courier["id"])
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    stops = get_route_destinations(route_id)
+    stop = next((s for s in stops if s["sequence"] == seq), None)
+    if not stop:
+        query.edit_message_text("Parada no encontrada.")
+        return
+
+    support_id = create_order_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        route_id=route_id,
+        route_seq=seq,
+    )
+    query.edit_message_text(
+        "Solicitud enviada. Tu administrador fue notificado.\n"
+        "Permanece en el lugar hasta recibir respuesta. "
+        "Despues continuaras con las demas paradas."
+    )
+    _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id)
+
+
+def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id):
+    """Envia al admin del equipo la alerta de pin mal ubicado en parada de ruta."""
+    try:
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user.get("telegram_id"):
+            return
+
+        courier_lat = _row_value(courier, "live_lat")
+        courier_lng = _row_value(courier, "live_lng")
+        stop_lat = _row_value(stop, "dropoff_lat")
+        stop_lng = _row_value(stop, "dropoff_lng")
+        seq = stop["sequence"]
+
+        maps_courier = ""
+        if courier_lat is not None and courier_lng is not None:
+            maps_courier = "https://maps.google.com/?q={},{}".format(courier_lat, courier_lng)
+        maps_stop = ""
+        if stop_lat is not None and stop_lng is not None:
+            maps_stop = "https://maps.google.com/?q={},{}".format(stop_lat, stop_lng)
+
+        courier_user = get_user_by_id(courier["user_id"])
+        courier_tg = ""
+        if courier_user and courier_user.get("telegram_id"):
+            courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
+
+        lines = [
+            "Uno de tus repartidores necesita tu ayuda - Ruta #{} Parada {}".format(route["id"], seq),
+            "",
+            "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
+            "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
+            "Cliente: {}".format(stop["customer_name"] or "N/D"),
+            "Direccion guardada: {}".format(stop["customer_address"] or "N/D"),
+        ]
+        if maps_stop:
+            lines.append("Pin de entrega: {}".format(maps_stop))
+        if maps_courier:
+            lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+
+        route_seq_str = "{}_{}".format(route["id"], seq)
+        keyboard = [
+            [InlineKeyboardButton(
+                "Finalizar esta parada",
+                callback_data="admin_ruta_pinissue_fin_{}".format(route_seq_str)
+            )],
+            [InlineKeyboardButton(
+                "Cancelar parada — falla del repartidor",
+                callback_data="admin_ruta_pinissue_cancel_courier_{}".format(route_seq_str)
+            )],
+            [InlineKeyboardButton(
+                "Cancelar parada — falla del aliado",
+                callback_data="admin_ruta_pinissue_cancel_ally_{}".format(route_seq_str)
+            )],
+        ]
+        if courier_tg:
+            keyboard.append([InlineKeyboardButton(
+                "Chatear con el repartidor",
+                url=courier_tg
+            )])
+
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text="\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar pin issue de ruta al admin: {}".format(e))
+
+
+def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
+    """Admin resuelve pin issue en parada de ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta en curso.")
+        return
+
+    support = get_pending_support_request(route_id=route_id, route_seq=seq)
+    if not support:
+        query.edit_message_text("No hay solicitud de ayuda pendiente para esta parada.")
+        return
+
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin or admin["id"] != support["admin_id"]:
+        query.edit_message_text("No tienes permiso para resolver esta solicitud.")
+        return
+
+    courier_id = support["courier_id"]
+
+    if action == "fin":
+        resolve_support_request(support["id"], "DELIVERED", admin["id"])
+        deliver_route_stop(route_id, seq)
+        query.edit_message_text("Parada {} de la ruta #{} finalizada.".format(seq, route_id))
+        _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, "fin")
+
+    elif action in ("cancel_courier", "cancel_ally"):
+        resolution = "CANCELLED_COURIER" if action == "cancel_courier" else "CANCELLED_ALLY"
+        resolve_support_request(support["id"], resolution, admin["id"])
+        cancel_route_stop(route_id, seq, resolution)
+
+        # Aplicar fees segun culpable
+        if action == "cancel_ally":
+            stops = get_route_destinations(route_id)
+            stop = next((s for s in stops if s["sequence"] == seq), None)
+            # Fee al aliado de la ruta
+            ally_id = route["ally_id"]
+            if ally_id:
+                ally_admin_link = get_approved_admin_link_for_ally(ally_id)
+                if ally_admin_link:
+                    apply_service_fee(
+                        target_type="ALLY", target_id=ally_id,
+                        admin_id=ally_admin_link["admin_id"],
+                        ref_type="ROUTE", ref_id=route_id,
+                    )
+        # Siempre fee al courier en cancel_courier; en cancel_ally también
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER", target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ROUTE", ref_id=route_id,
+            )
+
+        label = "falla del repartidor" if action == "cancel_courier" else "falla del aliado"
+        query.edit_message_text(
+            "Parada {} cancelada ({}).\n"
+            "El repartidor continuara con las demas paradas.".format(seq, label)
+        )
+        _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, action)
+
+    # Verificar si quedan paradas pendientes para continuar la ruta
+    pending = get_pending_route_stops(route_id)
+    if pending:
+        courier = get_courier_by_id(courier_id)
+        if courier:
+            courier_user = get_user_by_id(courier["user_id"])
+            if courier_user and courier_user.get("telegram_id"):
+                next_stop = pending[0]
+                _send_route_stop_to_courier(context, courier_user["telegram_id"], route, next_stop)
+    else:
+        # Todas las paradas resueltas (entregadas o canceladas)
+        update_route_status(route_id, "DELIVERED", "delivered_at")
+        _notify_ally_route_delivered(context, route)
+        # Notificar al courier si hay devoluciones pendientes
+        cancelled = [s for s in get_route_destinations(route_id)
+                     if str(s.get("status", "")).startswith("CANCELLED")]
+        if cancelled:
+            try:
+                courier = get_courier_by_id(courier_id)
+                courier_user = get_user_by_id(courier["user_id"]) if courier else None
+                if courier_user and courier_user.get("telegram_id"):
+                    names = [s["customer_name"] or "Parada {}".format(s["sequence"]) for s in cancelled]
+                    context.bot.send_message(
+                        chat_id=courier_user["telegram_id"],
+                        text=(
+                            "Ruta #{} completada.\n\n"
+                            "Tienes {} parada(s) cancelada(s) que requieren devolucion:\n"
+                            "{}\n\n"
+                            "Dirígete al punto de recogida para devolver los productos."
+                        ).format(route_id, len(cancelled), "\n".join("- " + n for n in names)),
+                    )
+            except Exception as e:
+                print("[WARN] No se pudo notificar devoluciones al courier: {}".format(e))
+
+
+def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, resolution):
+    """Notifica al courier el resultado de la intervencion del admin en una parada."""
+    try:
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user.get("telegram_id"):
+            return
+        messages = {
+            "fin": "Tu administrador finalizo la parada {} de la ruta #{}.".format(seq, route_id),
+            "cancel_courier": (
+                "La parada {} de la ruta #{} fue cancelada. Falla atribuida a ti. "
+                "Continua con las demas paradas.".format(seq, route_id)
+            ),
+            "cancel_ally": (
+                "La parada {} de la ruta #{} fue cancelada. Falla atribuida al aliado. "
+                "Continua con las demas paradas.".format(seq, route_id)
+            ),
+        }
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=messages.get(resolution, "Parada {} resuelta por tu administrador.".format(seq)),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar resolucion de parada al courier {}: {}".format(courier_id, e))

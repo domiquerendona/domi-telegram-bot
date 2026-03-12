@@ -1547,6 +1547,24 @@ def mi_repartidor(update, context):
     )
     reply_markup = get_repartidor_menu_keyboard(courier)
     active_order = get_active_order_for_courier(courier["id"])
+    active_route = get_active_route_for_courier(courier["id"])
+    has_active_service = (active_order and active_order["status"] in ("ACCEPTED", "PICKED_UP")) or (active_route and active_route["status"] == "ACCEPTED")
+
+    if has_active_service:
+        gps_active = (
+            int(_row_value(courier, "live_location_active", 0) or 0) == 1
+            and _row_value(courier, "live_lat") is not None
+        )
+        if not gps_active:
+            update.message.reply_text(
+                "Tu ubicacion GPS no esta activa y tienes un servicio en curso.\n\n"
+                "Debes activar tu ubicacion en vivo para poder usar tus funciones de repartidor:\n"
+                "1. Abre el chat con el bot.\n"
+                "2. Toca el clip (adjuntar).\n"
+                "3. Selecciona \"Ubicacion\".\n"
+                "4. Elige \"Compartir ubicacion en vivo\"."
+            )
+
     if active_order and active_order["status"] in ("ACCEPTED", "PICKED_UP"):
         status_labels = {"ACCEPTED": "asignado", "PICKED_UP": "en camino al cliente"}
         label = status_labels.get(active_order["status"], active_order["status"])
@@ -1743,9 +1761,6 @@ def courier_pedidos_en_curso(update, context):
                 )
             ])
         update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb) if kb else None)
-
-    update.message.reply_text("No puedes aceptar nuevos pedidos o rutas hasta finalizar el actual.")
-
 
 def _get_chat_id(update):
     """Extrae chat_id de forma robusta desde update."""
@@ -17951,8 +17966,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
     dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier)_\d+(?:_.+)?$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pinissue_(fin|cancel_courier|cancel_ally)_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
@@ -18005,7 +18021,8 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega

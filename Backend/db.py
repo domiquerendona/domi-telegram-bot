@@ -1104,6 +1104,25 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id)")
 
+    # Tabla: order_support_requests (solicitudes de ayuda por pin mal ubicado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_support_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            route_id INTEGER,
+            route_seq INTEGER,
+            courier_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            resolution TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT,
+            resolved_by INTEGER
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status)")
+
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
     order_columns = [col[1] for col in cur.fetchall()]
@@ -7634,6 +7653,88 @@ def reset_route_offer_queue(route_id):
         WHERE route_id = {P}
         """,
         (route_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# order_support_requests — solicitudes de ayuda por pin mal ubicado
+# ---------------------------------------------------------------------------
+
+def create_order_support_request(courier_id: int, admin_id: int,
+                                  order_id: int = None, route_id: int = None,
+                                  route_seq: int = None) -> int:
+    """Crea una solicitud de ayuda. Retorna el id generado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    support_id = _insert_returning_id(
+        cur,
+        f"""
+        INSERT INTO order_support_requests
+            (order_id, route_id, route_seq, courier_id, admin_id, status, created_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
+        """,
+        (order_id, route_id, route_seq, courier_id, admin_id),
+    )
+    conn.commit()
+    conn.close()
+    return support_id
+
+
+def get_pending_support_request(order_id: int = None, route_id: int = None,
+                                 route_seq: int = None):
+    """Retorna la solicitud PENDING para un pedido o parada de ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if order_id is not None:
+        cur.execute(
+            f"SELECT * FROM order_support_requests WHERE order_id = {P} AND status = 'PENDING' LIMIT 1",
+            (order_id,)
+        )
+    else:
+        cur.execute(
+            f"""SELECT * FROM order_support_requests
+                WHERE route_id = {P} AND route_seq = {P} AND status = 'PENDING' LIMIT 1""",
+            (route_id, route_seq)
+        )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def resolve_support_request(support_id: int, resolution: str, resolved_by: int) -> bool:
+    """Marca la solicitud como resuelta. Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE order_support_requests
+        SET status = 'RESOLVED', resolution = {P}, resolved_at = {now_sql}, resolved_by = {P}
+        WHERE id = {P} AND status = 'PENDING'
+        """,
+        (resolution, resolved_by, support_id)
+    )
+    ok = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def cancel_route_stop(route_id: int, seq: int, resolution: str):
+    """Marca una parada de ruta como cancelada (CANCELLED_COURIER o CANCELLED_ALLY)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_destinations
+        SET status = {P}, delivered_at = {now_sql}
+        WHERE route_id = {P} AND sequence = {P} AND status = 'PENDING'
+        """,
+        (resolution, route_id, seq)
     )
     conn.commit()
     conn.close()

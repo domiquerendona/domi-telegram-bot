@@ -737,3 +737,20 @@ CREATE INDEX IF NOT EXISTS idx_routes_courier_id ON routes(courier_id);
 CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status);
 CREATE INDEX IF NOT EXISTS idx_route_destinations_route_id ON route_destinations(route_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_route_offer_queue_route_id ON route_offer_queue(route_id, status);
+
+-- Support requests (pin mal ubicado)
+CREATE TABLE IF NOT EXISTS order_support_requests (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT,
+    route_id BIGINT,
+    route_seq INTEGER,
+    courier_id BIGINT NOT NULL,
+    admin_id BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    resolution TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    resolved_at TIMESTAMP,
+    resolved_by BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status);
