@@ -240,9 +240,12 @@ Objetivo
 
 El sistema debe funcionar correctamente en:
 
-SQLite (LOCAL / desarrollo)
+SQLite (entorno de pruebas unitarias / scripts puntuales)
 
-PostgreSQL (PROD / Railway)
+PostgreSQL (DEV y PROD — ambos en Railway)
+
+Nota: el bot DEV corre en Railway (rama staging) con PostgreSQL. No hay ejecución local del bot.
+SQLite solo se usa como fallback en tests o herramientas de diagnóstico sin DATABASE_URL.
 
 Reglas obligatorias
 
@@ -250,7 +253,7 @@ La selección de motor se determina exclusivamente por:
 
 DATABASE_URL presente → PostgreSQL
 
-DATABASE_URL ausente → SQLite
+DATABASE_URL ausente → SQLite (solo para pruebas locales sin Railway)
 
 PROHIBIDO usar sintaxis exclusiva de un motor sin bifurcación controlada.
 
@@ -344,7 +347,7 @@ En PROD el sistema debe registrar:
 
 Motor detectado (postgres/sqlite)
 
-Ambiente (LOCAL/PROD)
+Ambiente (DEV/PROD)
 
 Confirmación de conexión exitosa
 
