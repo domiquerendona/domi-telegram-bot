@@ -1673,7 +1673,7 @@ def courier_pedidos_en_curso(update, context):
         if order_status == "ACCEPTED":
             kb.append([
                 InlineKeyboardButton(
-                    "Solicitar confirmacion de recogida",
+                    "Confirmar llegada",
                     callback_data="order_pickup_{}".format(order_id),
                 ),
             ])

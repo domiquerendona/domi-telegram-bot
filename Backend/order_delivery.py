@@ -149,7 +149,7 @@ def _cancel_offer_jobs(context, order_id, queue_id):
 
 
 def _cancel_arrival_jobs(context, order_id):
-    """Cancela los 3 jobs de tracking de llegada programados al aceptar el pedido."""
+    """Cancela los 3 jobs de tracking de llegada y limpia prompts temporales del pedido."""
     for name in [
         "arr_inactive_{}".format(order_id),
         "arr_warn_{}".format(order_id),
@@ -157,6 +157,7 @@ def _cancel_arrival_jobs(context, order_id):
     ]:
         for job in context.job_queue.get_jobs_by_name(name):
             job.schedule_removal()
+    context.bot_data.get("arrival_manual_prompted", {}).pop(order_id, None)
 
 
 def _cancel_no_response_job(context, order_id):
@@ -169,6 +170,57 @@ def _cancel_order_expire_job(context, order_id):
     """Cancela el job de expiración automática T+10 para un pedido."""
     for job in context.job_queue.get_jobs_by_name("order_expire_{}".format(order_id)):
         job.schedule_removal()
+
+
+def _courier_is_within_pickup_radius(order, courier):
+    """Retorna True si el courier esta dentro del radio valido para confirmar llegada."""
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+    if pickup_lat is None or pickup_lng is None:
+        return False
+
+    courier_lat = _row_value(courier, "live_lat") or _row_value(courier, "residence_lat")
+    courier_lng = _row_value(courier, "live_lng") or _row_value(courier, "residence_lng")
+    if courier_lat is None or courier_lng is None:
+        return False
+
+    dist_km = haversine_km(
+        float(courier_lat),
+        float(courier_lng),
+        float(pickup_lat),
+        float(pickup_lng),
+    )
+    return dist_km <= ARRIVAL_RADIUS_KM
+
+
+def _notify_courier_arrival_detected(context, order, courier):
+    """
+    Notifica una sola vez por pedido que el GPS detecto cercania y que la llegada
+    debe confirmarse manualmente desde el boton del courier.
+    """
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    if not courier_user or not courier_user.get("telegram_id"):
+        return
+
+    prompted = context.bot_data.setdefault("arrival_manual_prompted", {})
+    if prompted.get(order["id"]):
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Confirmar llegada", callback_data="order_pickup_{}".format(order["id"]))],
+        [InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order["id"]))],
+    ])
+    try:
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=(
+                "Detectamos que estas cerca del punto de recogida del pedido #{}.\n\n"
+                "Confirma tu llegada manualmente para avisarle al aliado."
+            ).format(order["id"]),
+            reply_markup=keyboard,
+        )
+        prompted[order["id"]] = True
+    except Exception:
+        pass
 
 
 def _parse_dt(val):
@@ -1663,7 +1715,7 @@ def _arrival_deadline_job(context):
 def check_courier_arrival_at_pickup(courier_id, lat, lng, context):
     """
     Verifica si el courier está a <=100m del pickup de su pedido activo (ACCEPTED).
-    Si es así, marca la llegada y notifica al aliado para confirmación.
+    Si es así, solo habilita la confirmación manual de llegada del courier.
     Llamada desde courier_live_location_handler en main.py en cada actualización.
     """
     order = get_active_order_for_courier(courier_id)
@@ -1681,28 +1733,8 @@ def check_courier_arrival_at_pickup(courier_id, lat, lng, context):
     if dist_km > ARRIVAL_RADIUS_KM:
         return  # Aún lejos
 
-    # Llegó al radio de 100m
-    set_courier_arrived(order["id"])
-    _cancel_arrival_jobs(context, order["id"])
-
     courier = get_courier_by_id(courier_id)
-    courier_name = courier["full_name"] if courier else "El repartidor"
-
-    upsert_order_pickup_confirmation(order["id"], courier_id, order["ally_id"], "PENDING")
-    _notify_ally_courier_arrived(context, order, courier_name)
-
-    courier_user = get_user_by_id(courier["user_id"]) if courier else None
-    if courier_user:
-        try:
-            context.bot.send_message(
-                chat_id=courier_user["telegram_id"],
-                text=(
-                    "Detectamos que estas en el punto de recogida del pedido #{}. "
-                    "Esperando confirmacion del aliado para entregarte los datos del cliente."
-                ).format(order["id"]),
-            )
-        except Exception:
-            pass
+    _notify_courier_arrival_detected(context, order, courier)
 
 
 # ---------------------------------------------------------------------------
@@ -1780,6 +1812,7 @@ def _handle_accept(update, context, order_id):
         "Dirigete ahora al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
         "Manten tu GPS encendido.\n"
         "Tienes 15 minutos para llegar al punto de recogida.\n"
+        "Cuando el sistema detecte que llegaste, confirma tu llegada manualmente desde el boton del pedido.\n"
         "Si no puedes llegar, presiona \"Liberar pedido\".\n"
         "El aliado confirmara tu llegada antes de entregarte los datos del cliente.".format(
             order_id,
@@ -2154,6 +2187,7 @@ def _handle_cancel_ally(update, context, order_id):
 
 
 def _handle_pickup(update, context, order_id):
+    """Confirma manualmente la llegada del courier una vez el GPS detecta cercania al pickup."""
     query = update.callback_query
     order = get_order_by_id(order_id)
     if not order:
@@ -2170,14 +2204,40 @@ def _handle_pickup(update, context, order_id):
         query.edit_message_text("No tienes permiso para confirmar este pedido.")
         return
 
+    if _row_value(order, "courier_arrived_at"):
+        query.edit_message_text(
+            "Ya confirmaste tu llegada al punto de recogida del pedido #{}.\n\n"
+            "Espera la confirmacion del aliado o libera el pedido si surge un problema.".format(order_id),
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))]]
+            ),
+        )
+        return
+
+    courier = get_courier_by_id(courier["id"]) or courier
+    if not _courier_is_within_pickup_radius(order, courier):
+        pickup_lat, pickup_lng = _get_pickup_coords(order)
+        keyboard = []
+        keyboard.extend(_build_navigation_rows(pickup_lat, pickup_lng))
+        keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
+        query.edit_message_text(
+            "Aun no podemos confirmar tu llegada al pedido #{}.\n\n"
+            "Acercate mas al punto de recogida y vuelve a presionar \"Confirmar llegada\" cuando estes alli."
+            .format(order_id),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    set_courier_arrived(order_id)
+    _cancel_arrival_jobs(context, order_id)
     upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
     courier_name = courier["full_name"] or "Repartidor"
-    _notify_ally_pickup(context, order, courier_name)
+    _notify_ally_courier_arrived(context, order, courier_name)
 
     keyboard = [[InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))]]
     query.edit_message_text(
-        "Pedido #{} - Solicitud enviada.\n\n"
-        "El aliado debe confirmar la entrega del pedido en recogida.\n"
+        "Pedido #{} - Llegada confirmada.\n\n"
+        "Avisamos al aliado para que confirme tu llegada al punto de recogida.\n"
         "Cuando confirme, te enviaremos la ruta al punto de entrega.".format(order_id),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -2558,7 +2618,7 @@ def _notify_ally_order_accepted(context, order, courier_name):
 
 
 def _notify_ally_courier_arrived(context, order, courier_name):
-    """Notifica al aliado que el courier llegó al punto de recogida (GPS detectado)."""
+    """Notifica al aliado que el courier confirmo manualmente su llegada al pickup."""
     try:
         ally = get_ally_by_id(order["ally_id"])
         if not ally:
@@ -2582,41 +2642,13 @@ def _notify_ally_courier_arrived(context, order, courier_name):
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text=(
-                "El repartidor {} esta en tu punto de recogida (pedido #{}).\n\n"
+                "El repartidor {} confirmo su llegada al punto de recogida (pedido #{}).\n\n"
                 "Confirma su llegada para que reciba los datos del cliente y proceda a entregar."
             ).format(courier_name, order_id),
             reply_markup=keyboard,
         )
     except Exception as e:
         print("[WARN] _notify_ally_courier_arrived: {}".format(e))
-
-
-def _notify_ally_pickup(context, order, courier_name):
-    """Solicita confirmacion al aliado antes de habilitar la entrega al repartidor."""
-    try:
-        ally = get_ally_by_id(order["ally_id"])
-        if not ally:
-            return False
-        ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
-            return False
-        keyboard = [
-            [InlineKeyboardButton("Confirmar entrega al repartidor", callback_data="order_pickupconfirm_approve_{}".format(order["id"]))],
-            [InlineKeyboardButton("Reportar problema", callback_data="order_pickupconfirm_reject_{}".format(order["id"]))],
-        ]
-        context.bot.send_message(
-            chat_id=ally_user["telegram_id"],
-            text=(
-                "Seguridad de recogida - Pedido #{}\n\n"
-                "El repartidor {} indica que recibio el pedido.\n"
-                "Confirma para habilitar la ruta de entrega."
-            ).format(order["id"], courier_name),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return True
-    except Exception as e:
-        print("[WARN] No se pudo notificar pickup al aliado: {}".format(e))
-        return False
 
 
 def _notify_courier_pickup_approved(context, order):
@@ -2680,8 +2712,8 @@ def _notify_courier_pickup_rejected(context, order):
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
             text=(
-                "El aliado rechazo la confirmacion de recogida del pedido #{}.\n"
-                "Verifica en el punto de recogida y vuelve a solicitar confirmacion."
+                "El aliado rechazo la confirmacion de llegada del pedido #{}.\n"
+                "Verifica en el punto de recogida y vuelve a confirmar tu llegada."
             ).format(order["id"]),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
