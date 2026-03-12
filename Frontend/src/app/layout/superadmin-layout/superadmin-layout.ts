@@ -31,34 +31,33 @@ import { FooterComponent } from '../components/footer/footer';
       <div class="content-container">
         <router-outlet></router-outlet>
       </div>
-
-      <app-footer></app-footer>
+ <app-footer></app-footer>
+     
 
     </div>
 
   </div>
   `,
 
-  styles: [`
-    .app {
-      display: flex;
-      min-height: 100vh;
-      background: #eef1f6;
-    }
+styles: [`
+ .app {
+    display: flex;
+    flex-direction: row;
+    background: #eef1f6;
+  }
 
-    .content-wrapper {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-    }
+  .content-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
 
-    .content-container {
-      background: #f6f7fb;
-      flex: 1;
-      border-radius: 20px;
-      padding: 30px;
-    }
-  `]
+  .content-container {
+    background: #f6f7fb;
+    flex: 1;
+    padding: 30px;
+  }
+`]
 })
 export class SuperadminLayoutComponent {}
