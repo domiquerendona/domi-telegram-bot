@@ -24,3 +24,7 @@ Frontend/.angular/cache 2/
 *.db-journal
 *.db-shm
 *.db-wal
+
+# Artefactos locales
+.claude/
+package-lock.json
