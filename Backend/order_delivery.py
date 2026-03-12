@@ -127,6 +127,8 @@ ARRIVAL_DEADLINE_SECONDS = 20 * 60     # 20 min: auto-liberar
 ARRIVAL_RADIUS_KM = 0.1                # 100 metros
 ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia pickup
 OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
+DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repartidor
+DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
 
 
 def _offer_reply_markup(order_id):
@@ -158,6 +160,72 @@ def _cancel_arrival_jobs(context, order_id):
         for job in context.job_queue.get_jobs_by_name(name):
             job.schedule_removal()
     context.bot_data.get("arrival_manual_prompted", {}).pop(order_id, None)
+
+
+def _cancel_delivery_reminder_jobs(context, order_id):
+    """Cancela los jobs de recordatorio de entrega T+30 y alerta admin T+60."""
+    for name in [
+        "delivery_reminder_{}".format(order_id),
+        "delivery_admin_alert_{}".format(order_id),
+    ]:
+        for job in context.job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
+
+
+def _delivery_reminder_job(context):
+    """T+30: recuerda al repartidor que tiene un pedido en curso sin finalizar."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        return
+    courier = get_courier_by_id(order["courier_id"])
+    if not courier:
+        return
+    courier_user = get_user_by_id(courier["user_id"])
+    if not courier_user:
+        return
+    try:
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text="Recuerda finalizar el pedido en curso #{}. "
+                 "Presiona \"Pedidos en curso\" cuando hayas entregado.".format(order_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo enviar recordatorio de entrega al repartidor (pedido {}): {}".format(order_id, e))
+
+
+def _delivery_admin_alert_job(context):
+    """T+60: notifica al admin del equipo que el pedido lleva mucho tiempo en curso."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        return
+    courier_id = order["courier_id"]
+    admin_id = get_approved_admin_id_for_courier(courier_id)
+    if not admin_id:
+        return
+    admin = get_admin_by_id(admin_id)
+    if not admin:
+        return
+    admin_user = get_user_by_id(admin["user_id"])
+    if not admin_user:
+        return
+    courier = get_courier_by_id(courier_id)
+    courier_name = courier["full_name"] if courier else "Repartidor #{}".format(courier_id)
+    try:
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text="El repartidor {} lleva mas de 60 minutos con el pedido en curso #{}. "
+                 "Verifica que haya finalizado la entrega.".format(courier_name, order_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo enviar alerta de entrega al admin (pedido {}): {}".format(order_id, e))
 
 
 def _cancel_no_response_job(context, order_id):
@@ -1284,6 +1352,7 @@ def _admin_order_cancel(update, context, data):
             for job in jobs:
                 job.schedule_removal()
 
+    _cancel_delivery_reminder_jobs(context, order_id)
     cancel_order(order_id, "ADMIN")
     delete_offer_queue(order_id)
 
@@ -2122,6 +2191,7 @@ def _handle_cancel_ally(update, context, order_id):
 
     # Cancelar jobs de arrival si estaba en estado ACCEPTED
     _cancel_arrival_jobs(context, order_id)
+    _cancel_delivery_reminder_jobs(context, order_id)
 
     # Cancelar jobs de timeout y sugerencia si estaba en ciclo de ofertas
     _cancel_no_response_job(context, order_id)
@@ -2275,6 +2345,18 @@ def _handle_pickup_confirmation_by_ally(update, context, order_id, approve):
         set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
         query.edit_message_text("Recogida confirmada. El repartidor fue notificado para continuar a entrega.")
         _notify_courier_pickup_approved(context, order)
+        context.job_queue.run_once(
+            _delivery_reminder_job,
+            DELIVERY_REMINDER_SECONDS,
+            context={"order_id": order_id},
+            name="delivery_reminder_{}".format(order_id),
+        )
+        context.job_queue.run_once(
+            _delivery_admin_alert_job,
+            DELIVERY_ADMIN_ALERT_SECONDS,
+            context={"order_id": order_id},
+            name="delivery_admin_alert_{}".format(order_id),
+        )
     else:
         query.edit_message_text("Recogida rechazada. El repartidor fue notificado.")
         _notify_courier_pickup_rejected(context, order)
@@ -2289,6 +2371,7 @@ def _handle_delivered(update, context, order_id):
         return
 
     _cancel_arrival_jobs(context, order_id)
+    _cancel_delivery_reminder_jobs(context, order_id)
 
     if order["status"] != "PICKED_UP":
         query.edit_message_text("Este pedido no esta en estado de entrega.")

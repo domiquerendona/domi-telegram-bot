@@ -1546,6 +1546,16 @@ def mi_repartidor(update, context):
         "Selecciona una opcion:"
     )
     reply_markup = get_repartidor_menu_keyboard(courier)
+    active_order = get_active_order_for_courier(courier["id"])
+    if active_order and active_order["status"] in ("ACCEPTED", "PICKED_UP"):
+        status_labels = {"ACCEPTED": "asignado", "PICKED_UP": "en camino al cliente"}
+        label = status_labels.get(active_order["status"], active_order["status"])
+        update.message.reply_text(
+            "Tienes un pedido en curso (#{}  {}).\n"
+            "Presiona \"Pedidos en curso\" para finalizarlo.".format(
+                active_order["id"], label
+            )
+        )
     update.message.reply_text(msg, reply_markup=reply_markup)
 
 
