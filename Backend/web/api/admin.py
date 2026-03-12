@@ -24,7 +24,11 @@ from db import (
     get_all_couriers, update_courier_status_by_id,
     get_all_allies, update_ally_status_by_id,
     get_all_orders, get_connection, cancel_order,
+    get_all_pending_support_requests, get_support_request_full,
+    resolve_support_request, get_order_by_id, set_order_status,
+    get_approved_admin_link_for_ally, get_approved_admin_id_for_courier,
 )
+from services import apply_service_fee
 
 
 # Router para endpoints administrativos
@@ -621,3 +625,115 @@ def update_pricing_settings(payload: dict, admin=Depends(get_current_user)):
         if k in allowed:
             set_setting(k, str(v))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Solicitudes de ayuda — pin mal ubicado
+# ---------------------------------------------------------------------------
+
+@router.get("/support-requests")
+def list_support_requests(admin=Depends(get_current_user)):
+    """Lista todas las solicitudes de ayuda pendientes con datos de courier y pedido."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    rows = get_all_pending_support_requests()
+    return rows
+
+
+@router.get("/support-requests/{support_id}")
+def get_support_request(support_id: int, admin=Depends(get_current_user)):
+    """Retorna detalle completo de una solicitud de ayuda."""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    req = get_support_request_full(support_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    return req
+
+
+@router.post("/support-requests/{support_id}/resolve")
+def resolve_support_request_endpoint(support_id: int, payload: dict, admin=Depends(get_current_user)):
+    """
+    Resuelve una solicitud de ayuda desde el panel web.
+    payload: { "action": "fin" | "cancel_courier" | "cancel_ally", "admin_db_id": int }
+    Aplica fees en BD. No envía notificaciones Telegram (canal bot).
+    """
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    action = payload.get("action")
+    admin_db_id = payload.get("admin_db_id")
+    if action not in ("fin", "cancel_courier", "cancel_ally"):
+        raise HTTPException(status_code=400, detail="Accion invalida")
+    if not admin_db_id:
+        raise HTTPException(status_code=400, detail="admin_db_id requerido")
+
+    req = get_support_request_full(support_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if req["status"] != "PENDING":
+        raise HTTPException(status_code=409, detail="Esta solicitud ya fue resuelta")
+
+    order_id = req["order_id"]
+    courier_id = req["courier_id"]
+
+    if not order_id:
+        raise HTTPException(status_code=400, detail="Solicitud de ruta no soportada aun desde web")
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        raise HTTPException(status_code=409, detail="El pedido no esta en estado de entrega")
+
+    if action == "fin":
+        # Aplicar fees normales y marcar DELIVERED
+        ally_id = order["ally_id"]
+        ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+        if ally_admin_link:
+            apply_service_fee(
+                target_type="ALLY", target_id=ally_id,
+                admin_id=ally_admin_link["admin_id"],
+                ref_type="ORDER", ref_id=order_id,
+            )
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER", target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER", ref_id=order_id,
+            )
+        set_order_status(order_id, "DELIVERED", "delivered_at")
+        resolve_support_request(support_id, "DELIVERED", admin_db_id)
+
+    elif action == "cancel_courier":
+        # Solo courier paga $300
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER", target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER", ref_id=order_id,
+            )
+        cancel_order(order_id, "ADMIN")
+        resolve_support_request(support_id, "CANCELLED_COURIER", admin_db_id)
+
+    elif action == "cancel_ally":
+        # Ambos pagan $300
+        ally_id = order["ally_id"]
+        ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+        if ally_admin_link:
+            apply_service_fee(
+                target_type="ALLY", target_id=ally_id,
+                admin_id=ally_admin_link["admin_id"],
+                ref_type="ORDER", ref_id=order_id,
+            )
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER", target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER", ref_id=order_id,
+            )
+        cancel_order(order_id, "ADMIN")
+        resolve_support_request(support_id, "CANCELLED_ALLY", admin_db_id)
+
+    return {"ok": True, "action": action, "order_id": order_id}

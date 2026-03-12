@@ -21,6 +21,7 @@ import {PoliticaUsoComponent} from './features/superadmin/legal/política-uso'
 import { CentroAyudaComponent } from './features/superadmin/soporte/centro-ayuda';
 import {ContactoComponent} from './features/superadmin/soporte/contacto'
 import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
+import { SolicitudesSoporteComponent } from './features/superadmin/soporte/solicitudes-soporte';
 import { LoginComponent } from './features/login/login';
 import { AuthGuard } from './core/guards/auth.guard';
 // Definición de las rutas principales de la aplicación
@@ -114,9 +115,14 @@ export const routes: Routes = [
         component: ContactoComponent ,
       data: { title: 'Contacto' }
     },
-    { path: 'preguntas-frecuentes', 
+    { path: 'preguntas-frecuentes',
         component:  PreguntasFrecuentesComponent,
       data: { title: 'Preguntas Frecuentes' }
+    },
+    {
+      path: 'solicitudes-soporte',
+      component: SolicitudesSoporteComponent,
+      data: { title: 'Soporte — Pin mal ubicado' }
     },
     ]
   }

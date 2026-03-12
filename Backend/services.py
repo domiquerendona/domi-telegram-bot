@@ -209,6 +209,8 @@ from db import (
     get_pending_support_request,
     resolve_support_request,
     cancel_route_stop,
+    get_all_pending_support_requests,
+    get_support_request_full,
 )
 import math
 import re

@@ -231,7 +231,8 @@ Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
 | `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`. |
-| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
+| `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
+| `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
@@ -276,7 +277,9 @@ Separador: siempre guion bajo (`_`). **PROHIBIDO** guion, punto o slash.
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
+| `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos. Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
+| `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas. Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente) |
 | `perfil_` | Cambios de perfil |
@@ -1354,4 +1357,146 @@ Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar d
 
 ---
 
-*Última actualización: 2026-03-07*
+## Flujo de Entrega con Validación GPS (IMPLEMENTADO 2026-03-12)
+
+### Nuevo ciclo de entrega
+
+```
+Aliado confirma llegada del courier al pickup
+  → courier recibe botón "Confirmar recogida" (sin GPS requerido)
+  → courier confirma → PICKED_UP + datos del cliente revelados + jobs T+30/T+60
+
+Courier intenta finalizar el servicio:
+  → GPS inactivo (con pedido activo) → BLOQUEADO — instrucciones para reactivar
+  → GPS activo + courier a ≤100m de dropoff_lat/lng → confirmación normal
+  → GPS activo + courier a >100m → explicación + botón "Estoy aquí pero el pin está mal"
+```
+
+**Aplica igual a rutas multi-parada**: cada parada valida GPS + distancia a `route_destinations.dropoff_lat/lng`.
+
+### Constantes en `order_delivery.py`
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `DELIVERY_RADIUS_KM` | 0.1 (100 m) | Radio máximo para finalizar entrega |
+| `DELIVERY_REMINDER_SECONDS` | 1800 (30 min) | Job recordatorio al courier en PICKED_UP |
+| `DELIVERY_ADMIN_ALERT_SECONDS` | 3600 (60 min) | Job alerta al admin si courier no finaliza |
+| `GPS_INACTIVE_MSG` | (constante texto) | Mensaje estándar cuando GPS está inactivo |
+
+### Helper GPS
+
+```python
+_is_courier_gps_active(courier) → bool
+# Retorna True si live_location_active == 1 y live_lat/live_lng no son None
+```
+
+### GPS bloqueante (con servicio activo)
+
+- `mi_repartidor()` en `main.py`: si el courier tiene pedido o ruta activa (`ACCEPTED`/`PICKED_UP`) y GPS inactivo → muestra aviso con instrucciones antes del menú.
+- Las funciones `_handle_delivered_confirm`, `_handle_pin_issue_report`, `_handle_route_deliver_stop`, `_handle_route_pin_issue` también verifican GPS y bloquean si está inactivo.
+- **NO aplica** cuando el courier no tiene servicios activos.
+
+---
+
+## Flujo de Soporte por Pin Mal Ubicado (IMPLEMENTADO 2026-03-12)
+
+### Flujo completo — Pedido normal
+
+```
+Courier reporta "Estoy aquí pero el pin está mal" (order_pinissue_{id})
+  → Crea order_support_requests (idempotente: no crea duplicados)
+  → Notifica al admin del equipo en Telegram:
+      - Datos del pedido y cliente
+      - Link Google Maps al pin de entrega guardado (dropoff_lat/lng)
+      - Link Google Maps a ubicación actual del courier (live_lat/lng)
+      - Link Telegram directo al courier (para chat)
+      - Botones: Finalizar / Cancelar falla courier / Cancelar falla aliado
+  → Courier: "Solicitud enviada. Permanece en el lugar."
+
+Admin toca Finalizar:
+  → resolve_support_request(DELIVERED) + apply_service_fee(ALLY) + apply_service_fee(COURIER)
+  → set_order_status(DELIVERED)
+  → Courier notificado: "Admin finalizó el servicio"
+
+Admin toca Cancelar falla courier:
+  → resolve_support_request(CANCELLED_COURIER) + apply_service_fee(COURIER solo)
+  → cancel_order(ADMIN)
+  → Courier notificado: "Pedido cancelado. Falla atribuida a ti. Devuelve el producto."
+
+Admin toca Cancelar falla aliado:
+  → resolve_support_request(CANCELLED_ALLY) + apply_service_fee(ALLY) + apply_service_fee(COURIER)
+  → cancel_order(ADMIN)
+  → Courier notificado: "Pedido cancelado. Falla del aliado. Devuelve el producto."
+```
+
+### Flujo completo — Ruta multi-parada
+
+```
+Courier reporta pin malo en parada (ruta_pinissue_{route_id}_{seq})
+  → Misma lógica de notificación al admin, con datos de la parada
+  → Admin puede: Finalizar parada / Cancelar parada (courier) / Cancelar parada (aliado)
+  → Al resolver: courier continúa con las demás paradas pendientes
+  → Al finalizar la ruta: si hay paradas canceladas → resumen de devoluciones al courier
+```
+
+### Tabla de fees por resolución
+
+| Acción admin | Aliado | Courier | Estado orden |
+|---|:---:|:---:|---|
+| Finalizar | $300 | $300 | DELIVERED |
+| Cancelar falla courier | $0 | $300 | CANCELLED |
+| Cancelar falla aliado | $300 | $300 | CANCELLED |
+
+### Funciones nuevas en `order_delivery.py`
+
+| Función | Descripción |
+|---------|-------------|
+| `_notify_courier_awaiting_pickup_confirm(context, order)` | Envía botón "Confirmar recogida" al courier tras aprobación del aliado |
+| `_handle_confirm_pickup(update, context, order_id)` | Courier confirma recogida → PICKED_UP + revela datos |
+| `_handle_delivered_confirm(update, context, order_id)` | Valida GPS + distancia antes de la confirmación de entrega |
+| `_handle_pin_issue_report(update, context, order_id)` | Courier reporta pin malo; crea solicitud y notifica admin |
+| `_notify_admin_pin_issue(context, order, courier, admin_id, support_id)` | Envía alerta al admin con datos y botones |
+| `_handle_admin_pinissue_action(update, context, order_id, action)` | Admin resuelve: fin/cancel_courier/cancel_ally |
+| `_do_deliver_order(context, order, courier_id)` | Aplica fees y marca DELIVERED (usado por admin al finalizar) |
+| `_notify_courier_support_resolved(context, courier_id, order_id, resolution)` | Notifica al courier el resultado |
+| `_handle_route_pin_issue(update, context, route_id, seq)` | Equivalente para rutas |
+| `_notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id)` | Alerta al admin con datos de la parada |
+| `_handle_admin_route_pinissue_action(update, context, route_id, seq, action)` | Admin resuelve parada de ruta |
+| `_notify_courier_route_stop_resolved(context, courier_id, route_id, seq, resolution)` | Notifica al courier resultado de parada |
+| `_cancel_delivery_reminder_jobs(context, order_id)` | Cancela jobs T+30 y T+60 |
+| `_delivery_reminder_job(context)` | Job T+30: recordatorio al courier en PICKED_UP |
+| `_delivery_admin_alert_job(context)` | Job T+60: alerta al admin si courier no finaliza |
+
+### Funciones nuevas en `db.py`
+
+| Función | Descripción |
+|---------|-------------|
+| `create_order_support_request(courier_id, admin_id, order_id, route_id, route_seq)` | Crea solicitud; retorna id generado |
+| `get_pending_support_request(order_id, route_id, route_seq)` | Retorna solicitud PENDING del pedido o parada |
+| `resolve_support_request(support_id, resolution, resolved_by)` | Marca como RESOLVED; retorna bool |
+| `cancel_route_stop(route_id, seq, resolution)` | Marca parada con CANCELLED_COURIER o CANCELLED_ALLY |
+| `get_all_pending_support_requests()` | Lista todos los PENDING con datos de courier y pedido (para panel web) |
+| `get_support_request_full(support_id)` | Retorna solicitud con todos los datos JOIN para el panel web |
+
+Todas re-exportadas en `services.py`.
+
+### Panel web — Solicitudes de ayuda (`/superadmin/soporte`)
+
+El panel web del Platform Admin expone:
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /admin/support-requests` | Lista todas las solicitudes (PENDING y recientes RESOLVED) |
+| `GET /admin/support-requests/{id}` | Detalle completo con datos de courier, pedido, mapas |
+| `POST /admin/support-requests/{id}/resolve` | Resuelve la solicitud (mismo modelo de fees que el bot) |
+
+El componente Angular (`SoporteComponent`) muestra:
+- Tabla de solicitudes con estado y datos del courier
+- Panel de detalle con link al pin de entrega y ubicación del courier (Google Maps)
+- Link Telegram directo al courier para comunicación
+- Botones de acción: Finalizar / Cancelar falla courier / Cancelar falla aliado
+- **Nota:** la resolución desde el panel web aplica los fees en BD pero NO envía notificaciones Telegram al courier (el courier solo recibe notificación cuando el admin actúa desde el bot).
+
+---
+
+*Última actualización: 2026-03-12*

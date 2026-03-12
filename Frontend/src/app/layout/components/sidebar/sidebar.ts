@@ -86,6 +86,12 @@ import { NgIf } from '@angular/common';
               <span *ngIf="!collapsed()">Mapa</span>
       </a>
 
+          <a routerLink="/superadmin/solicitudes-soporte"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">support_agent</span>
+          <span *ngIf="!collapsed()">Soporte</span>
+        </a>
+
         <a routerLink="/superadmin/settings"
            routerLinkActive="active">
           <span class="material-symbols-outlined">settings</span>

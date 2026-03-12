@@ -7740,3 +7740,70 @@ def cancel_route_stop(route_id: int, seq: int, resolution: str):
     conn.close()
 
 
+def get_all_pending_support_requests():
+    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            sr.id, sr.order_id, sr.route_id, sr.route_seq,
+            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.created_at, sr.resolved_at,
+            c.full_name  AS courier_name,
+            c.phone      AS courier_phone,
+            u.telegram_id AS courier_telegram_id,
+            c.live_lat   AS courier_lat,
+            c.live_lng   AS courier_lng,
+            o.customer_address AS delivery_address,
+            o.customer_name    AS customer_name,
+            o.customer_phone   AS customer_phone,
+            o.status           AS order_status,
+            o.dropoff_lat,
+            o.dropoff_lng,
+            a.full_name  AS admin_name
+        FROM order_support_requests sr
+        LEFT JOIN couriers c ON c.id = sr.courier_id
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN admins a ON a.id = sr.admin_id
+        WHERE sr.status = 'PENDING'
+        ORDER BY sr.created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_support_request_full(support_id: int):
+    """Retorna una solicitud con todos sus datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            sr.id, sr.order_id, sr.route_id, sr.route_seq,
+            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.created_at, sr.resolved_at, sr.resolved_by,
+            c.full_name  AS courier_name,
+            c.phone      AS courier_phone,
+            u.telegram_id AS courier_telegram_id,
+            c.live_lat   AS courier_lat,
+            c.live_lng   AS courier_lng,
+            o.customer_address AS delivery_address,
+            o.customer_name    AS customer_name,
+            o.customer_phone   AS customer_phone,
+            o.status           AS order_status,
+            o.dropoff_lat,
+            o.dropoff_lng,
+            a.full_name  AS admin_name
+        FROM order_support_requests sr
+        LEFT JOIN couriers c ON c.id = sr.courier_id
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN admins a ON a.id = sr.admin_id
+        WHERE sr.id = {P}
+    """, (support_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
