@@ -1046,7 +1046,6 @@ El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota dia
 - Si `api_usage_daily >= lÃ­mite`: retornar error informativo, **no llamar** a la API.
 - Toda llamada debe incrementar `api_usage_daily` de forma atÃ³mica.
 
-<<<<<<< HEAD
 ### Costeo por OperaciÃ³n (Google Maps) â€” IMPLEMENTADO
 
 AdemÃ¡s del fusible diario (`api_usage_daily`), existe tracking por evento para estimar costo promedio por tipo de operaciÃ³n:
@@ -1060,37 +1059,15 @@ AdemÃ¡s del fusible diario (`api_usage_daily`), existe tracking por evento par
   - `get_distance_from_api_coords()` â†’ `distance_matrix_coords`
   - `get_distance_from_api()` â†’ `distance_matrix_text`
 - EstimaciÃ³n de costo por variables de entorno (valores en USD por llamada):
-=======
-### Costeo por Operación (Google Maps) — IMPLEMENTADO
-
-Además del fusible diario (`api_usage_daily`), existe tracking por evento para estimar costo promedio por tipo de operación:
-
-- Tabla: `api_usage_events` (SQLite y PostgreSQL).
-- Inserción oficial: `Backend/db.py:record_api_usage_event()` (INSERT en `api_usage_events` + incrementa `api_usage_daily` en la misma transacción).
-- Instrumentación centralizada: `Backend/services.py` registra eventos en:
-  - `google_place_details()` → `place_details`
-  - `google_geocode_forward()` → `geocode_forward`
-  - `google_places_text_search()` → `places_text_search`
-  - `get_distance_from_api_coords()` → `distance_matrix_coords`
-  - `get_distance_from_api()` → `distance_matrix_text`
-- Estimación de costo por variables de entorno (valores en USD por llamada; ajustar según precios actuales de Google):
->>>>>>> verify/google-maps-usage-cost-20260302
   - `GOOGLE_COST_USD_PLACE_DETAILS`
   - `GOOGLE_COST_USD_GEOCODE_FORWARD`
   - `GOOGLE_COST_USD_PLACES_TEXT_SEARCH`
   - `GOOGLE_COST_USD_DISTANCE_MATRIX_COORDS`
   - `GOOGLE_COST_USD_DISTANCE_MATRIX_TEXT`
 - Privacidad: **PROHIBIDO** guardar direcciones/coords o cualquier PII en `api_usage_events.meta_json`. Solo metadata no sensible (status, provider, mode).
-<<<<<<< HEAD
 - Helper de consulta rÃ¡pida: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
 
 ### Regla de CachÃ©
-=======
-
-Helper disponible para consulta rápida desde Python: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
-
-### Regla de Caché
->>>>>>> verify/google-maps-usage-cost-20260302
 - Distancias entre pares de coordenadas **deben cachearse** en base de datos.
 - **PROHIBIDO** recalcular una distancia ya cacheada para la misma consulta.
 
