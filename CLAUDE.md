@@ -374,13 +374,12 @@ Archivo de referencia: `Backend/.env.example`
 
 | Variable | Descripción | Requerida en |
 |----------|-------------|--------------|
-| `ENV` | `LOCAL` o `PROD` | Siempre |
-| `BOT_TOKEN` | Token del bot de Telegram | Siempre |
+| `ENV` | `DEV` o `PROD` | Siempre |
+| `BOT_TOKEN` | Token del bot de Telegram | Siempre (distinto por ambiente) |
 | `ADMIN_USER_ID` | Telegram ID del admin de plataforma | Siempre |
-| `COURIER_CHAT_ID` | ID del grupo de repartidores en Telegram | PROD |
-| `RESTAURANT_CHAT_ID` | ID del grupo de aliados en Telegram | PROD |
-| `DB_PATH` | Ruta del archivo SQLite | LOCAL |
-| `DATABASE_URL` | URL de conexión PostgreSQL | PROD |
+| `COURIER_CHAT_ID` | ID del grupo de repartidores en Telegram | DEV y PROD |
+| `RESTAURANT_CHAT_ID` | ID del grupo de aliados en Telegram | DEV y PROD |
+| `DATABASE_URL` | URL de conexión PostgreSQL | DEV y PROD (Railway) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
 
@@ -388,27 +387,22 @@ En PROD: si `DATABASE_URL` no está presente, el sistema debe lanzar error fatal
 
 ---
 
-## Desarrollo Local
+## Desarrollo y pruebas
 
-### Backend (Bot + API)
+> **El bot DEV corre en Railway** (rama `staging`), no en local.
+> Para ver cualquier cambio en el bot DEV: **`git push origin staging`**.
+> Railway auto-deploya al recibir el push. Ver `Backend/DEPLOY.md`.
+
+### Backend — compilación y verificación (sin necesidad de correr local)
 
 ```bash
 cd Backend/
 
-# 1. Copiar variables de entorno
-cp .env.example .env
-# Editar .env con: ENV=LOCAL, BOT_TOKEN=<token_dev>, ADMIN_USER_ID=<tu_id>
+# Verificar que el código compila antes de hacer push
+python -m py_compile main.py services.py db.py order_delivery.py profile_changes.py
 
-# 2. Instalar dependencias
+# Instalar dependencias si se necesita inspeccionar algo localmente
 pip install -r requirements.txt
-
-# 3. Ejecutar el bot
-python main.py
-
-# Logs esperados:
-# [ENV] Ambiente: LOCAL - .env cargado
-# [BOT] TOKEN fingerprint: hash=... suffix=...
-# [BOOT] Iniciando polling...
 ```
 
 ### Frontend (Panel Angular)
@@ -482,12 +476,21 @@ git grep "nombre_funcion" -- "*.py"
 
 ## Despliegue
 
-### Railway (PROD)
+### Arquitectura: dos servicios Railway permanentes
+
+| Ambiente | Rama git | Trigger de deploy |
+|----------|----------|-------------------|
+| **DEV** | `staging` | `git push origin staging` |
+| **PROD** | `main` | `git push origin main` (o merge staging→main) |
+
+**Regla crítica para agentes:** cualquier cambio solo es visible en el bot DEV después de hacer `git push origin staging`. Railway auto-deploya al recibir el push — no hay paso manual adicional. Ver `Backend/DEPLOY.md` para detalles completos.
+
+### Railway (ambos servicios)
 
 - **Motor**: `worker: python3 main.py` (Procfile)
-- **Variables**: configurar en el dashboard de Railway (sin `.env`)
-- **Base de datos**: PostgreSQL con `DATABASE_URL`
-- **Rama de producción**: `main`
+- **Variables**: configurar en el dashboard de Railway por servicio (sin `.env`)
+- **Base de datos**: PostgreSQL con `DATABASE_URL` (cada servicio tiene la suya)
+- DEV y PROD usan **BOT_TOKEN distintos** — nunca el mismo token en ambos
 
 ### Docker
 

@@ -1,164 +1,110 @@
-# Guía de Despliegue - Separación DEV/PROD
+# Guía de Despliegue — DEV y PROD en Railway
 
-## Problema Resuelto
+## Arquitectura de Ambientes
 
-**Error:** `telegram.error.Conflict: terminated by other getUpdates request`
+Hay **dos bots corriendo en Railway** de forma permanente:
 
-**Causa:** DEV (PC local) y PROD (Railway) usaban el mismo `BOT_TOKEN`, causando conflicto cuando ambos intentaban obtener actualizaciones de Telegram simultáneamente.
+| Ambiente | Rama git | Bot de Telegram | Base de datos |
+|----------|----------|-----------------|---------------|
+| **DEV** | `staging` | Bot de desarrollo | PostgreSQL DEV (separada) |
+| **PROD** | `main` | Bot de producción | PostgreSQL PROD |
 
-**Solución:** Separación completa de tokens y ambientes mediante variable `ENV`.
-
----
-
-## Configuración DEV (Local)
-
-### 1. Crear Bot de Desarrollo
-
-1. Abre Telegram y habla con [@BotFather](https://t.me/BotFather)
-2. Crea un nuevo bot: `/newbot`
-3. Sigue las instrucciones y guarda el token (será tu `BOT_TOKEN` de DEV)
-4. **IMPORTANTE:** Este bot es SOLO para desarrollo, NO es el bot de producción
-
-### 2. Configurar Variables de Entorno
-
-```bash
-# Copiar archivo de ejemplo
-cp .env.example .env
-
-# Editar .env
-nano .env
-```
-
-Configurar:
-```bash
-ENV=LOCAL
-BOT_TOKEN=<tu_token_de_bot_de_desarrollo>
-ADMIN_USER_ID=<tu_telegram_user_id>
-DB_PATH=domiquerendona_dev.db  # Base de datos separada para DEV
-```
-
-### 3. Instalar Dependencias
-
-```bash
-pip install python-dotenv
-pip install -r requirements.txt
-```
-
-### 4. Ejecutar en Local
-
-```bash
-python main.py
-```
-
-**Logs esperados:**
-```
-[ENV] Ambiente: LOCAL - .env cargado
-[BOT] TOKEN fingerprint: hash=a1b2c3d4 suffix=...XYZ123
-[BOT] Ambiente: LOCAL
-[BOOT] Iniciando polling...
-```
+> **Regla de Oro:** DEV y PROD usan tokens de Telegram **distintos**. NUNCA el mismo `BOT_TOKEN` en ambos servicios al mismo tiempo.
 
 ---
 
-## Configuración PROD (Railway)
+## Flujo de trabajo para ver cambios
 
-### 1. Variables de Entorno en Railway
+```
+Implementar en local
+  → git push origin staging
+      ↓
+  Railway auto-deploya el servicio DEV (rama staging)
+      ↓
+  Probar en el bot DEV de Telegram
+      ↓ (validado)
+  Mergear staging → main
+      ↓
+  Railway auto-deploya el servicio PROD (rama main)
+```
 
-En el dashboard de Railway, configura:
+**En resumen: para ver cualquier cambio en el bot DEV, hay que hacer `git push origin staging`.**
+El push ya activa el deploy en Railway automáticamente — no hay paso manual adicional.
+
+---
+
+## Variables de Entorno
+
+Cada servicio Railway tiene sus propias variables. Configurar en el dashboard de Railway:
+
+### Servicio DEV (rama `staging`)
+
+```
+ENV=DEV
+BOT_TOKEN=<token_bot_desarrollo>
+ADMIN_USER_ID=<telegram_id_admin_dev>
+DATABASE_URL=<postgresql_dev_url>
+COURIER_CHAT_ID=<grupo_repartidores_dev>
+RESTAURANT_CHAT_ID=<grupo_restaurantes_dev>
+```
+
+### Servicio PROD (rama `main`)
 
 ```
 ENV=PROD
-BOT_TOKEN=<tu_token_de_bot_de_producción>
-ADMIN_USER_ID=<admin_telegram_id>
-COURIER_CHAT_ID=<id_grupo_repartidores>
-RESTAURANT_CHAT_ID=<id_grupo_restaurantes>
+BOT_TOKEN=<token_bot_produccion>
+ADMIN_USER_ID=<telegram_id_admin_prod>
+DATABASE_URL=<postgresql_prod_url>
+COURIER_CHAT_ID=<grupo_repartidores_prod>
+RESTAURANT_CHAT_ID=<grupo_restaurantes_prod>
 ```
 
-**IMPORTANTE:**
-- NO agregues archivo `.env` al repositorio
-- Railway tomará las variables de su configuración
-- El código NO cargará `.env` cuando `ENV=PROD`
-
-### 2. Verificar Logs en Railway
-
-Después del despliegue, verifica los logs:
-
-```
-[ENV] Ambiente: PROD - usando variables de entorno del sistema (Railway/PROD)
-[BOT] TOKEN fingerprint: hash=x9y8z7w6 suffix=...ABC789
-[BOT] Ambiente: PROD
-[BOOT] Iniciando polling...
-```
-
-**Verificación:** El fingerprint del token debe ser DIFERENTE al de DEV.
+> **IMPORTANTE:** Railway toma las variables de su configuración. **NUNCA** agregar `.env` al repositorio.
 
 ---
 
-## Verificación de Separación
+## Verificar que el deploy fue exitoso
 
-### ✅ Configuración Correcta
+En los logs de Railway tras el deploy:
 
-**DEV:**
 ```
-[ENV] Ambiente: LOCAL
-[BOT] TOKEN fingerprint: hash=a1b2c3d4 suffix=...XYZ123
-```
-
-**PROD:**
-```
-[ENV] Ambiente: PROD
-[BOT] TOKEN fingerprint: hash=x9y8z7w6 suffix=...ABC789
+[ENV] Ambiente: DEV (o PROD)
+[BOT] TOKEN fingerprint: hash=XXXXXXXX suffix=...XXXXX
+[BOOT] Iniciando polling...
 ```
 
-Los fingerprints son DIFERENTES → ✅ OK
-
-### ❌ Configuración Incorrecta
-
-Si los fingerprints son IGUALES:
-```
-DEV:  hash=a1b2c3d4 suffix=...XYZ123
-PROD: hash=a1b2c3d4 suffix=...XYZ123  ← ❌ MISMO TOKEN
-```
-
-Resultado: Error `Conflict: terminated by other getUpdates request`
+Los fingerprints del token deben ser **distintos** en DEV y PROD.
 
 ---
 
 ## Troubleshooting
 
+### No veo mis cambios en el bot DEV
+
+1. ¿Hiciste `git push origin staging`? → Verifica con `git log --oneline origin/staging`
+2. ¿Railway deployó? → Revisar logs del servicio DEV en el dashboard de Railway
+3. ¿El deploy falló? → Revisar si hay errores de compilación en los logs
+
 ### Error: "Conflict: terminated by other getUpdates request"
 
-**Solución:**
-1. Verifica que DEV y PROD usen tokens diferentes
-2. Revisa logs y compara fingerprints
-3. Asegúrate que Railway tiene `ENV=PROD`
-4. Verifica que `.env` local tenga `ENV=LOCAL`
+DEV y PROD están usando el **mismo token**. Verifica que cada servicio Railway tenga su propio `BOT_TOKEN`.
 
-### Error: "Falta BOT_TOKEN en variables de entorno"
+### Inicializar base de datos DEV desde cero
 
-**En LOCAL:**
-- Verifica que `.env` existe y contiene `BOT_TOKEN`
-- Verifica que `python-dotenv` está instalado
-
-**En PROD (Railway):**
-- Verifica que configuraste `BOT_TOKEN` en variables de Railway
-- Asegúrate que no esté vacío
+```bash
+python3 -c "from db import init_db, force_platform_admin; init_db(); force_platform_admin()"
+```
 
 ---
 
-## Seguridad
+## Despliegue a Producción
 
-- `.env` está en `.gitignore` y NUNCA debe subirse al repositorio
-- Los tokens nunca se imprimen completos en logs (solo fingerprints)
-- Cada ambiente (DEV/PROD) usa su propio token y base de datos
+Solo cuando los cambios estén **validados en DEV**:
 
----
+```bash
+git checkout main
+git merge staging
+git push origin main
+```
 
-## Resumen
-
-| Ambiente | ENV | BOT_TOKEN | .env | DB |
-|----------|-----|-----------|------|-----|
-| DEV (Local) | LOCAL | Token DEV | ✅ Carga | domiquerendona_dev.db |
-| PROD (Railway) | PROD | Token PROD | ❌ NO carga | domiquerendona.db |
-
-**Regla de Oro:** NUNCA uses el mismo `BOT_TOKEN` en DEV y PROD al mismo tiempo.
+Railway auto-deploya PROD al detectar el push en `main`.
