@@ -5547,6 +5547,14 @@ def _pedido_incentivo_menu_text(order):
     ).format(order_id, _fmt_pesos(incentive), _fmt_pesos(total_fee))
 
 
+def _get_refreshed_order_after_incentive_update(order_id):
+    """
+    Recarga el pedido despues de aumentar incentivo para que notificaciones y UI
+    salgan siempre del estado ya persistido en BD.
+    """
+    return get_order_by_id(int(order_id))
+
+
 def pedido_incentivo_menu_callback(update, context):
     """Muestra menú para aumentar incentivo de un pedido ya creado."""
     query = update.callback_query
@@ -5596,6 +5604,9 @@ def pedido_incentivo_existing_fixed_callback(update, context):
         query.edit_message_text(msg)
         return
 
+    # Usar siempre el pedido recargado para evitar textos con totals parciales.
+    refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
+
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
         repost_order_to_couriers(order_id, context)
@@ -5604,8 +5615,8 @@ def pedido_incentivo_existing_fixed_callback(update, context):
 
     if courier_telegram_id:
         try:
-            incentive = int(order["additional_incentive"] or 0)
-            total_fee = int(order["total_fee"] or 0)
+            incentive = int(refreshed_order["additional_incentive"] or 0)
+            total_fee = int(refreshed_order["total_fee"] or 0)
             context.bot.send_message(
                 chat_id=courier_telegram_id,
                 text=(
@@ -5619,7 +5630,7 @@ def pedido_incentivo_existing_fixed_callback(update, context):
             pass
 
     keyboard = _pedido_incentivo_keyboard(order_id=order_id)
-    query.edit_message_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+    query.edit_message_text(_pedido_incentivo_menu_text(refreshed_order), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 def pedido_incentivo_existing_otro_start(update, context):
@@ -5678,6 +5689,7 @@ def pedido_incentivo_existing_monto_handler(update, context):
         return ConversationHandler.END
 
     context.user_data.pop("pedido_incentivo_edit_order_id", None)
+    refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
 
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
@@ -5687,8 +5699,8 @@ def pedido_incentivo_existing_monto_handler(update, context):
 
     if courier_telegram_id:
         try:
-            incentive = int(order["additional_incentive"] or 0)
-            total_fee = int(order["total_fee"] or 0)
+            incentive = int(refreshed_order["additional_incentive"] or 0)
+            total_fee = int(refreshed_order["total_fee"] or 0)
             context.bot.send_message(
                 chat_id=courier_telegram_id,
                 text=(
@@ -5702,7 +5714,7 @@ def pedido_incentivo_existing_monto_handler(update, context):
             pass
 
     keyboard = _pedido_incentivo_keyboard(order_id=int(order_id))
-    update.message.reply_text(_pedido_incentivo_menu_text(order), reply_markup=InlineKeyboardMarkup(keyboard))
+    update.message.reply_text(_pedido_incentivo_menu_text(refreshed_order), reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
 
@@ -5738,16 +5750,19 @@ def offer_suggest_inc_fixed_callback(update, context):
         query.edit_message_text(msg)
         return
 
+    refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or updated
+
     # Re-ofertar a todos los couriers y re-programar T+5
     repost_count = repost_order_to_couriers(order_id, context)
 
-    total_fee = int(updated["total_fee"] or 0)
-    incentive = int(updated["additional_incentive"] or 0)
+    total_fee = int(refreshed_order["total_fee"] or 0)
+    incentive = int(refreshed_order["additional_incentive"] or 0)
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
+        "Incentivo acumulado: ${:,}\n"
         "Tarifa total del pedido: ${:,}\n"
         "Re-ofertando a {} repartidores activos.".format(
-            delta, total_fee, repost_count
+            delta, incentive, total_fee, repost_count
         )
     )
 
@@ -5813,14 +5828,16 @@ def offer_suggest_inc_monto_handler(update, context):
         update.message.reply_text(msg)
         return ConversationHandler.END
 
+    refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or updated
     repost_count = repost_order_to_couriers(int(order_id), context)
-    total_fee = int(updated["total_fee"] or 0)
-    incentive = int(updated["additional_incentive"] or 0)
+    total_fee = int(refreshed_order["total_fee"] or 0)
+    incentive = int(refreshed_order["additional_incentive"] or 0)
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
+        "Incentivo acumulado: ${:,}\n"
         "Tarifa total del pedido: ${:,}\n"
         "Re-ofertando a {} repartidores activos.".format(
-            delta, total_fee, repost_count
+            delta, incentive, total_fee, repost_count
         )
     )
     return ConversationHandler.END
