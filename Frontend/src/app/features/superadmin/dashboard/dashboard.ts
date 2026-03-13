@@ -2,6 +2,9 @@ import { Component, signal, afterNextRender } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NgIf } from '@angular/common';
 
+
+import { CommonModule } from '@angular/common';
+
 interface DashboardStats {
   admins: { total: number; activos: number; pendientes: number };
   couriers: { total: number; activos: number; pendientes: number };
@@ -11,6 +14,7 @@ interface DashboardStats {
   ganancias_mes: number;
   ganancias_total: number;
 }
+
 
 @Component({
   selector: 'app-dashboard',
