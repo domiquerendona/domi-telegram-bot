@@ -1104,6 +1104,25 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id)")
 
+    # Tabla: order_support_requests (solicitudes de ayuda por pin mal ubicado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_support_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            route_id INTEGER,
+            route_seq INTEGER,
+            courier_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            resolution TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT,
+            resolved_by INTEGER
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status)")
+
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
     order_columns = [col[1] for col in cur.fetchall()]
@@ -1978,6 +1997,36 @@ def get_user_by_id(user_id: int):
     }
 
 
+def get_courier_telegram_id(courier_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM users u
+        JOIN couriers c ON c.user_id = u.id
+        WHERE c.id = {P}
+        LIMIT 1
+    """, (courier_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_value(row, "telegram_id", 0) if row else None
+
+
+def get_ally_telegram_id(ally_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM users u
+        JOIN allies a ON a.user_id = u.id
+        WHERE a.id = {P}
+        LIMIT 1
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_value(row, "telegram_id", 0) if row else None
+
+
 def ensure_user(telegram_id: int, username: str = None):
     """
     Si el usuario no existe en la tabla users, lo crea.
@@ -2598,6 +2647,16 @@ def cancel_order(order_id: int, canceled_by: str):
     """, (canceled_by, order_id))
     conn.commit()
     conn.close()
+
+
+def get_order_status_by_id(order_id: int):
+    """Retorna el status de un pedido por id, o None si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT status FROM orders WHERE id = {P} LIMIT 1", (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_value(row, "status", 0) if row else None
 
 
 def release_order_from_courier(order_id: int):
@@ -4473,6 +4532,349 @@ def get_all_orders(status_filter: str = None, limit: int = 20):
     return rows
 
 
+def get_admin_panel_balances_data():
+    """Retorna saldos de admins, repartidores y aliados para el panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT a.id, a.full_name, a.balance, a.status, a.city
+        FROM admins a
+        ORDER BY a.balance DESC
+    """)
+    admins_rows = cur.fetchall()
+
+    cur.execute("""
+        SELECT c.id, c.full_name, ac.balance, ac.status AS link_status,
+               c.status AS courier_status, c.city, a.full_name AS admin_name
+        FROM admin_couriers ac
+        JOIN couriers c ON c.id = ac.courier_id
+        JOIN admins a ON a.id = ac.admin_id
+        WHERE ac.status = 'APPROVED'
+        ORDER BY ac.balance DESC
+    """)
+    couriers_rows = cur.fetchall()
+
+    cur.execute("""
+        SELECT al.id, al.business_name, aa.balance, aa.status AS link_status,
+               al.status AS ally_status, al.city, a.full_name AS admin_name
+        FROM admin_allies aa
+        JOIN allies al ON al.id = aa.ally_id
+        JOIN admins a ON a.id = aa.admin_id
+        WHERE aa.status = 'APPROVED'
+        ORDER BY aa.balance DESC
+    """)
+    allies_rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "admins": [
+            {
+                "id": _row_value(r, "id", 0, 0),
+                "nombre": _row_value(r, "full_name", 1, "") or "",
+                "balance": _row_value(r, "balance", 2, 0) or 0,
+                "status": _row_value(r, "status", 3, "") or "",
+                "ciudad": _row_value(r, "city", 4, "") or "",
+            }
+            for r in admins_rows
+        ],
+        "couriers": [
+            {
+                "id": _row_value(r, "id", 0, 0),
+                "nombre": _row_value(r, "full_name", 1, "") or "",
+                "balance": _row_value(r, "balance", 2, 0) or 0,
+                "status": _row_value(r, "courier_status", 4, "") or "",
+                "ciudad": _row_value(r, "city", 5, "") or "",
+                "admin_nombre": _row_value(r, "admin_name", 6, "") or "",
+            }
+            for r in couriers_rows
+        ],
+        "aliados": [
+            {
+                "id": _row_value(r, "id", 0, 0),
+                "nombre": _row_value(r, "business_name", 1, "") or "",
+                "balance": _row_value(r, "balance", 2, 0) or 0,
+                "status": _row_value(r, "ally_status", 4, "") or "",
+                "ciudad": _row_value(r, "city", 5, "") or "",
+                "admin_nombre": _row_value(r, "admin_name", 6, "") or "",
+            }
+            for r in allies_rows
+        ],
+    }
+
+
+def get_admin_panel_users_data():
+    """Retorna el consolidado de usuarios del panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            u.id, u.telegram_id, u.username, u.created_at,
+            COALESCE(a.full_name, c.full_name, al.business_name, u.username, '') AS nombre,
+            COALESCE(a.phone, c.phone, al.phone, '') AS phone,
+            COALESCE(a.city, c.city, al.city, '') AS ciudad,
+            COALESCE(a.status, c.status, al.status, '') AS status,
+            CASE
+                WHEN a.id IS NOT NULL AND (a.team_name = 'PLATAFORMA' OR u.role IN ('PLATFORM_ADMIN','ADMIN_PLATFORM'))
+                    THEN 'PLATFORM_ADMIN'
+                WHEN a.id IS NOT NULL THEN 'ADMIN_LOCAL'
+                WHEN c.id IS NOT NULL THEN 'COURIER'
+                WHEN al.id IS NOT NULL THEN 'ALLY'
+                WHEN u.role IN ('PLATFORM_ADMIN','ADMIN_PLATFORM') THEN 'PLATFORM_ADMIN'
+                ELSE COALESCE(u.role, '')
+            END AS rol_inferido
+        FROM users u
+        LEFT JOIN admins a ON a.user_id = u.id AND a.is_deleted = 0
+        LEFT JOIN couriers c ON c.user_id = u.id
+        LEFT JOIN allies al ON al.user_id = u.id AND (al.is_deleted IS NULL OR al.is_deleted = 0)
+        ORDER BY u.id DESC
+    """)
+    telegram_users = cur.fetchall()
+
+    cur.execute("SELECT id, full_name, phone, city, status, created_at FROM couriers ORDER BY id")
+    all_couriers = cur.fetchall()
+
+    cur.execute("""
+        SELECT id, business_name, phone, city, status, created_at
+        FROM allies
+        WHERE is_deleted IS NULL OR is_deleted = 0
+        ORDER BY id
+    """)
+    all_allies = cur.fetchall()
+    conn.close()
+
+    result = []
+    for r in telegram_users:
+        result.append({
+            "id": _row_value(r, "id", 0, 0),
+            "telegram_id": _row_value(r, "telegram_id", 1, 0),
+            "username": _row_value(r, "username", 2, "") or "",
+            "role": _row_value(r, "rol_inferido", 8, "") or "",
+            "created_at": str(_row_value(r, "created_at", 3, "")) or "",
+            "nombre": _row_value(r, "nombre", 4, "") or "",
+            "phone": _row_value(r, "phone", 5, "") or "",
+            "ciudad": _row_value(r, "ciudad", 6, "") or "",
+            "status": _row_value(r, "status", 7, "") or "",
+        })
+
+    courier_ids_seen = {
+        _row_value(r, "id", 0, 0)
+        for r in telegram_users
+        if _row_value(r, "rol_inferido", 8, "") == "COURIER"
+    }
+    ally_ids_seen = {
+        _row_value(r, "id", 0, 0)
+        for r in telegram_users
+        if _row_value(r, "rol_inferido", 8, "") == "ALLY"
+    }
+
+    for c in all_couriers:
+        cid = _row_value(c, "id", 0, 0)
+        if cid not in courier_ids_seen:
+            result.append({
+                "id": cid,
+                "telegram_id": 0,
+                "username": "",
+                "role": "COURIER",
+                "created_at": str(_row_value(c, "created_at", 5, "")) or "",
+                "nombre": _row_value(c, "full_name", 1, "") or "",
+                "phone": _row_value(c, "phone", 2, "") or "",
+                "ciudad": _row_value(c, "city", 3, "") or "",
+                "status": _row_value(c, "status", 4, "") or "",
+            })
+
+    for a in all_allies:
+        aid = _row_value(a, "id", 0, 0)
+        if aid not in ally_ids_seen:
+            result.append({
+                "id": aid,
+                "telegram_id": 0,
+                "username": "",
+                "role": "ALLY",
+                "created_at": str(_row_value(a, "created_at", 5, "")) or "",
+                "nombre": _row_value(a, "business_name", 1, "") or "",
+                "phone": _row_value(a, "phone", 2, "") or "",
+                "ciudad": _row_value(a, "city", 3, "") or "",
+                "status": _row_value(a, "status", 4, "") or "",
+            })
+
+    return result
+
+
+def get_admin_panel_earnings_data():
+    """Retorna resumen e historial de ganancias para el panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            SUM(CASE WHEN date(created_at) = date('now') THEN amount ELSE 0 END) AS hoy,
+            SUM(CASE WHEN created_at >= date('now', 'weekday 0', '-7 days') THEN amount ELSE 0 END) AS semana,
+            SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now') THEN amount ELSE 0 END) AS mes,
+            SUM(amount) AS total
+        FROM ledger
+        WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
+    """)
+    resumen_row = cur.fetchone()
+
+    cur.execute("""
+        SELECT a.full_name, SUM(l.amount) AS total
+        FROM ledger l
+        JOIN admins a ON a.id = l.to_id
+        WHERE l.kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND l.to_type = 'ADMIN'
+        GROUP BY l.to_id, a.full_name
+        ORDER BY total DESC
+    """)
+    por_admin_rows = cur.fetchall()
+
+    cur.execute("""
+        SELECT l.id, l.kind, l.amount, l.from_type, l.from_id, l.note, l.created_at,
+               a.full_name AS admin_nombre
+        FROM ledger l
+        LEFT JOIN admins a ON a.id = l.to_id AND l.to_type = 'ADMIN'
+        WHERE l.kind IN ('FEE_INCOME', 'PLATFORM_FEE', 'INCOME')
+        ORDER BY l.created_at DESC
+        LIMIT 50
+    """)
+    historial_rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "resumen": {
+            "hoy": _row_value(resumen_row, "hoy", 0, 0) or 0,
+            "semana": _row_value(resumen_row, "semana", 1, 0) or 0,
+            "mes": _row_value(resumen_row, "mes", 2, 0) or 0,
+            "total": _row_value(resumen_row, "total", 3, 0) or 0,
+        },
+        "por_admin": [
+            {
+                "nombre": _row_value(r, "full_name", 0, "") or "",
+                "total": _row_value(r, "total", 1, 0) or 0,
+            }
+            for r in por_admin_rows
+        ],
+        "historial": [
+            {
+                "id": _row_value(r, "id", 0),
+                "kind": _row_value(r, "kind", 1, "") or "",
+                "amount": _row_value(r, "amount", 2, 0) or 0,
+                "from_type": _row_value(r, "from_type", 3, "") or "",
+                "note": _row_value(r, "note", 5, "") or "",
+                "created_at": str(_row_value(r, "created_at", 6, "")) or "",
+                "admin_nombre": _row_value(r, "admin_nombre", 7, "") or "",
+            }
+            for r in historial_rows
+        ],
+    }
+
+
+def get_dashboard_stats_data():
+    """Retorna las metricas agregadas del dashboard web."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL
+    """)
+    total_admins = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE (u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL)
+          AND a.status = 'APPROVED'
+    """)
+    admins_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("""
+        SELECT COUNT(*) FROM admins a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE (u.role NOT IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM') OR u.role IS NULL)
+          AND a.status = 'PENDING'
+    """)
+    admins_pendientes = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM couriers")
+    total_couriers = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM couriers WHERE status = 'APPROVED'")
+    couriers_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM couriers WHERE status = 'PENDING'")
+    couriers_pendientes = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM allies")
+    total_aliados = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM allies WHERE status = 'APPROVED'")
+    aliados_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM allies WHERE status = 'PENDING'")
+    aliados_pendientes = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status IN ('PUBLISHED','ACCEPTED','PICKED_UP')")
+    pedidos_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND DATE(delivered_at) = DATE('now')")
+    pedidos_entregados_hoy = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED'")
+    pedidos_total_entregados = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
+
+    cur.execute("""
+        SELECT a.balance FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE u.role IN ('PLATFORM_ADMIN', 'ADMIN_PLATFORM')
+        LIMIT 1
+    """)
+    saldo_row = cur.fetchone()
+    saldo_plataforma = _row_value(saldo_row, "balance", 0, 0) if saldo_row else 0
+
+    cur.execute("""
+        SELECT COALESCE(SUM(amount), 0) FROM ledger
+        WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
+          AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+    """)
+    ganancias_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    cur.execute("""
+        SELECT COALESCE(SUM(amount), 0) FROM ledger
+        WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
+    """)
+    ganancias_total = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    conn.close()
+
+    return {
+        "admins": {
+            "total": total_admins,
+            "activos": admins_activos,
+            "pendientes": admins_pendientes,
+        },
+        "couriers": {
+            "total": total_couriers,
+            "activos": couriers_activos,
+            "pendientes": couriers_pendientes,
+        },
+        "aliados": {
+            "total": total_aliados,
+            "activos": aliados_activos,
+            "pendientes": aliados_pendientes,
+        },
+        "pedidos": {
+            "activos": pedidos_activos,
+            "entregados_hoy": pedidos_entregados_hoy,
+            "total_entregados": pedidos_total_entregados,
+        },
+        "saldo_plataforma": saldo_plataforma,
+        "ganancias_mes": ganancias_mes,
+        "ganancias_total": ganancias_total,
+    }
+
+
 # ---------- ESTADÍSTICAS DE TIEMPOS DE ENTREGA ----------
 
 def get_courier_delivery_time_stats(admin_id=None, courier_id=None, days=30):
@@ -5124,7 +5526,10 @@ def get_admin_link_for_courier(courier_id: int):
         JOIN admins a ON a.id = ac.admin_id
         WHERE ac.courier_id = {P}
           AND a.is_deleted = 0
-        ORDER BY ac.created_at DESC
+        ORDER BY CASE WHEN ac.status = 'APPROVED' THEN 0 ELSE 1 END,
+                 ac.updated_at DESC,
+                 ac.created_at DESC,
+                 ac.id DESC
         LIMIT 1;
     """, (courier_id,))
     row = cur.fetchone()
@@ -5970,6 +6375,28 @@ def get_last_order_by_ally(ally_id: int):
     return row
 
 
+def get_recent_delivery_addresses_for_ally(ally_id: int, limit: int = 5):
+    """
+    Retorna las últimas N direcciones de entrega únicas usadas por el aliado,
+    desde pedidos completados o activos. Útil para sugerir reutilización.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT customer_address, customer_city, customer_barrio, dropoff_lat, dropoff_lng
+        FROM orders
+        WHERE ally_id = {P}
+          AND customer_address IS NOT NULL
+          AND customer_address != ''
+        GROUP BY customer_address, customer_city, customer_barrio
+        ORDER BY MAX(id) DESC
+        LIMIT {P}
+    """, (ally_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 # ---------- CACHE DE LINKS DE UBICACIÓN ----------
 
 def get_link_cache(raw_link: str):
@@ -6353,6 +6780,76 @@ def update_ally_link_balance(ally_id: int, admin_id: int, delta: int):
         )
     conn.commit()
     conn.close()
+
+
+def credit_welcome_balance(user_type: str, target_id: int, admin_id: int, amount: int = 5000) -> bool:
+    """
+    Acredita saldo de bienvenida a un COURIER o ALLY (en su vínculo con admin)
+    y registra el movimiento en ledger de forma atómica.
+
+    Retorna True si fue exitoso, False si falló.
+    """
+    user_type = (user_type or "").strip().upper()
+    if user_type not in ("COURIER", "ALLY"):
+        return False
+    if not target_id or not admin_id:
+        return False
+    if amount is None or int(amount) <= 0:
+        return False
+
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        if user_type == "COURIER":
+            cur.execute(
+                f"UPDATE admin_couriers SET balance = balance + {P}, updated_at = {now_sql} "
+                f"WHERE courier_id = {P} AND admin_id = {P}",
+                (int(amount), int(target_id), int(admin_id)),
+            )
+        else:
+            cur.execute(
+                f"UPDATE admin_allies SET balance = balance + {P}, updated_at = {now_sql} "
+                f"WHERE ally_id = {P} AND admin_id = {P}",
+                (int(amount), int(target_id), int(admin_id)),
+            )
+
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False
+
+        cur.execute(
+            "INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note) "
+            "VALUES (" + ", ".join([P] * 9) + ")",
+            (
+                "RECHARGE",
+                "PLATFORM",
+                0,
+                user_type,
+                int(target_id),
+                int(amount),
+                None,
+                None,
+                "Bienvenida: recarga inicial de regalo",
+            ),
+        )
+
+        conn.commit()
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print("[ERROR] credit_welcome_balance:", e)
+        return False
+    finally:
+        conn.close()
 
 
 def exists_pending_recharge_by_proof(proof_file_id: str) -> bool:
@@ -7265,6 +7762,94 @@ def mark_profile_change_request_rejected(request_id, reviewer_user_id, reviewer_
     conn.close()
 
 
+def _upsert_default_ally_location_for_profile_change(cur, ally_id, address, lat, lng):
+    cur.execute(f"""
+        UPDATE ally_locations
+        SET lat = {P}, lng = {P}, address = {P}
+        WHERE ally_id = {P} AND is_default = 1
+    """, (lat, lng, address, ally_id))
+    if cur.rowcount > 0:
+        return
+
+    cur.execute(f"""
+        SELECT city, barrio
+        FROM allies
+        WHERE id = {P}
+    """, (ally_id,))
+    ally = cur.fetchone()
+    city = ally["city"] if ally and ally["city"] else ""
+    barrio = ally["barrio"] if ally and ally["barrio"] else ""
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        INSERT INTO ally_locations (
+            ally_id, label, address, city, barrio, is_default, lat, lng, created_at
+        )
+        VALUES ({P}, 'Principal', {P}, {P}, {P}, 1, {P}, {P}, {now_sql})
+    """, (ally_id, address, city, barrio, lat, lng))
+
+
+def apply_profile_change_request_data(target_role, target_role_id, field_name, new_value, new_lat, new_lng):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if target_role == "admin":
+        if field_name == "phone":
+            cur.execute(f"UPDATE admins SET phone = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "city":
+            cur.execute(f"UPDATE admins SET city = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "barrio":
+            cur.execute(f"UPDATE admins SET barrio = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "residence_address":
+            cur.execute(f"UPDATE admins SET residence_address = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "residence_location":
+            cur.execute(
+                f"UPDATE admins SET residence_lat = {P}, residence_lng = {P} WHERE id = {P}",
+                (new_lat, new_lng, target_role_id),
+            )
+    elif target_role == "courier":
+        if field_name == "phone":
+            cur.execute(f"UPDATE couriers SET phone = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "city":
+            cur.execute(f"UPDATE couriers SET city = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "barrio":
+            cur.execute(f"UPDATE couriers SET barrio = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "plate":
+            cur.execute(f"UPDATE couriers SET plate = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "bike_type":
+            cur.execute(f"UPDATE couriers SET bike_type = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "residence_address":
+            cur.execute(f"UPDATE couriers SET residence_address = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "residence_location":
+            cur.execute(
+                f"UPDATE couriers SET residence_lat = {P}, residence_lng = {P} WHERE id = {P}",
+                (new_lat, new_lng, target_role_id),
+            )
+    elif target_role == "ally":
+        if field_name == "phone":
+            cur.execute(f"UPDATE allies SET phone = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "city":
+            cur.execute(f"UPDATE allies SET city = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "barrio":
+            cur.execute(f"UPDATE allies SET barrio = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "address":
+            cur.execute(f"UPDATE allies SET address = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "business_name":
+            cur.execute(f"UPDATE allies SET business_name = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "owner_name":
+            cur.execute(f"UPDATE allies SET owner_name = {P} WHERE id = {P}", (new_value, target_role_id))
+        elif field_name == "ally_default_location":
+            _upsert_default_ally_location_for_profile_change(
+                cur,
+                ally_id=target_role_id,
+                address=new_value,
+                lat=new_lat,
+                lng=new_lng,
+            )
+
+    conn.commit()
+    conn.close()
+
+
 # ===== RUTAS MULTI-PARADA =====
 
 
@@ -7545,5 +8130,154 @@ def reset_route_offer_queue(route_id):
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# order_support_requests — solicitudes de ayuda por pin mal ubicado
+# ---------------------------------------------------------------------------
+
+def create_order_support_request(courier_id: int, admin_id: int,
+                                  order_id: int = None, route_id: int = None,
+                                  route_seq: int = None) -> int:
+    """Crea una solicitud de ayuda. Retorna el id generado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    support_id = _insert_returning_id(
+        cur,
+        f"""
+        INSERT INTO order_support_requests
+            (order_id, route_id, route_seq, courier_id, admin_id, status, created_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
+        """,
+        (order_id, route_id, route_seq, courier_id, admin_id),
+    )
+    conn.commit()
+    conn.close()
+    return support_id
+
+
+def get_pending_support_request(order_id: int = None, route_id: int = None,
+                                 route_seq: int = None):
+    """Retorna la solicitud PENDING para un pedido o parada de ruta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if order_id is not None:
+        cur.execute(
+            f"SELECT * FROM order_support_requests WHERE order_id = {P} AND status = 'PENDING' LIMIT 1",
+            (order_id,)
+        )
+    else:
+        cur.execute(
+            f"""SELECT * FROM order_support_requests
+                WHERE route_id = {P} AND route_seq = {P} AND status = 'PENDING' LIMIT 1""",
+            (route_id, route_seq)
+        )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def resolve_support_request(support_id: int, resolution: str, resolved_by: int) -> bool:
+    """Marca la solicitud como resuelta. Retorna True si se actualizó."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE order_support_requests
+        SET status = 'RESOLVED', resolution = {P}, resolved_at = {now_sql}, resolved_by = {P}
+        WHERE id = {P} AND status = 'PENDING'
+        """,
+        (resolution, resolved_by, support_id)
+    )
+    ok = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def cancel_route_stop(route_id: int, seq: int, resolution: str):
+    """Marca una parada de ruta como cancelada (CANCELLED_COURIER o CANCELLED_ALLY)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        UPDATE route_destinations
+        SET status = {P}, delivered_at = {now_sql}
+        WHERE route_id = {P} AND sequence = {P} AND status = 'PENDING'
+        """,
+        (resolution, route_id, seq)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_pending_support_requests():
+    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            sr.id, sr.order_id, sr.route_id, sr.route_seq,
+            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.created_at, sr.resolved_at,
+            c.full_name  AS courier_name,
+            c.phone      AS courier_phone,
+            u.telegram_id AS courier_telegram_id,
+            c.live_lat   AS courier_lat,
+            c.live_lng   AS courier_lng,
+            o.customer_address AS delivery_address,
+            o.customer_name    AS customer_name,
+            o.customer_phone   AS customer_phone,
+            o.status           AS order_status,
+            o.dropoff_lat,
+            o.dropoff_lng,
+            a.full_name  AS admin_name
+        FROM order_support_requests sr
+        LEFT JOIN couriers c ON c.id = sr.courier_id
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN admins a ON a.id = sr.admin_id
+        WHERE sr.status = 'PENDING'
+        ORDER BY sr.created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_support_request_full(support_id: int):
+    """Retorna una solicitud con todos sus datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            sr.id, sr.order_id, sr.route_id, sr.route_seq,
+            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.created_at, sr.resolved_at, sr.resolved_by,
+            c.full_name  AS courier_name,
+            c.phone      AS courier_phone,
+            u.telegram_id AS courier_telegram_id,
+            c.live_lat   AS courier_lat,
+            c.live_lng   AS courier_lng,
+            o.customer_address AS delivery_address,
+            o.customer_name    AS customer_name,
+            o.customer_phone   AS customer_phone,
+            o.status           AS order_status,
+            o.dropoff_lat,
+            o.dropoff_lng,
+            a.full_name  AS admin_name
+        FROM order_support_requests sr
+        LEFT JOIN couriers c ON c.id = sr.courier_id
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN admins a ON a.id = sr.admin_id
+        WHERE sr.id = {P}
+    """, (support_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 

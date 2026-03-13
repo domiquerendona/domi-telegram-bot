@@ -1,3 +1,8 @@
+# README GENERADO POR ANGULAR CLI
+
+No describe la arquitectura real del panel.
+No debe considerarse documentación del sistema.
+
 # Frontend
 
 This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 21.1.4.

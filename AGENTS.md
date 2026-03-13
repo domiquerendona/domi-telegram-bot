@@ -5,6 +5,28 @@ Este archivo define las reglas técnicas, operativas y de flujo de trabajo que T
 ⚠️ No seguir estas reglas se considera un error grave.
 ⚠️ Estas reglas tienen prioridad absoluta sobre cualquier sugerencia del agente.
 
+Jerarquía documental oficial
+
+Nivel 1 — Reglas obligatorias del proyecto
+- Fuente de verdad: `AGENTS.md`
+- Temas: arquitectura obligatoria, flujo de trabajo del repositorio, callbacks y convenciones, reglas de base de datos, ramas, coordinación entre agentes y reglas anti-regresión documental.
+
+Nivel 2 — Guía técnica y arquitectura explicada
+- Fuente: `CLAUDE.md`
+- Propósito: explicar arquitectura, estructura del repo, módulos, flujos y despliegue.
+- Si hay conflicto con `AGENTS.md`, manda `AGENTS.md`.
+
+Nivel 3 — Gobernanza específica de componentes
+- `docs/callback_governance_2026-03-12.md` → fuente de verdad de callbacks
+- `Backend/DEPLOY.md` → fuente de verdad de despliegue
+- `docs/business/contexto-negocio-domiquerendona.md` → fuente de verdad de negocio
+- `WORKLOG.md` → fuente de verdad de coordinación de agentes
+
+Nivel 4 — Documentos históricos / snapshot
+- `docs/alineacion_codigo_documentacion_2026-03-12.md`
+- `docs/HITOS.md`
+- Estos documentos describen auditorías o hitos pasados y no son normativa vigente.
+
 1. Restricciones críticas (NO negociables)
 
 PROHIBIDO usar parse_mode o Markdown en cualquier mensaje del bot.
@@ -111,40 +133,86 @@ Regla obligatoria de direcciones (ciudad + barrio/sector):
 
 2D. Estándar obligatorio de callback_data
 
-Formato: {dominio}_{accion} o {dominio}_{accion}_{id}
+Formato estándar actual: `{dominio}_{accion}` o `{dominio}_{accion}_{id}`
+
+También se aceptan formatos compuestos cuando el flujo lo requiere, por ejemplo:
+- `pedido_inc_{order_id}x{monto}`
+- `ruta_entregar_{route_id}_{seq}`
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local
 - admpedidos_  → panel de pedidos del administrador (listado, filtros por estado)
 - agenda_      → agenda de pedidos
 - ally_        → acciones específicas del aliado (fuera del flujo de pedido)
+- allycust_    → agenda de clientes del aliado
 - chgreq_      → solicitudes de cambio de perfil (profile_changes.py)
 - chgteam_     → cambio de equipo/grupo
 - config_      → configuración del sistema
 - cotizar_     → flujo de cotización de envío
 - courier_     → acciones de repartidor
 - cust_        → acciones de cliente
+- acust_       → agenda de clientes del administrador
+- adirs_       → direcciones del administrador
 - dir_         → gestión de direcciones de recogida del aliado
 - guardar_     → guardar dirección de cliente tras un pedido
 - menu_        → navegación de menú
+- local_       → panel operativo del administrador local
+- offer_       → sugerencias de incentivo/oferta
 - order_       → ofertas y entrega de pedidos (order_delivery.py)
 - pagos_       → sistema de pagos
 - pedido_      → flujo de creación de pedidos
 - perfil_      → cambios de perfil de usuarios (profile_changes.py)
+- plat_        → panel de recargas/plataforma
 - pickup_      → selección de punto de recogida
 - preview_     → previsualización de pedido antes de confirmar
 - pricing_     → configuración de tarifas
+- rating_      → calificación post-entrega
 - recargar_    → sistema de recargas
+- recharge_    → revisión/aprobación de recargas (deprecado, compatibilidad vigente)
 - ref_         → validación de referencias
+- solequipo_   → solicitud de cambio/unión de equipo
 - terms_       → aceptación de términos y condiciones
 - ubicacion_   → selección de ubicación GPS
 - ingreso_     → registro de ingreso externo del administrador de plataforma
 
+Formato estándar vigente para selección de equipo:
+- `ally_team_TEAM1`
+- `courier_team_TEAM1`
+
+Formato deprecado pero soportado temporalmente:
+- `ally_team:TEAM1`
+- `courier_team:TEAM1`
+
+Ver inventario completo y gobernanza operativa en `docs/callback_governance_2026-03-12.md`.
+
 Reglas:
 - PROHIBIDO crear un prefijo nuevo sin aprobación explícita del usuario.
 - PROHIBIDO usar callback_data sin prefijo de dominio.
-- El separador es siempre guion bajo (_). No usar guion, punto ni slash.
+- El separador vigente es guion bajo (_). No crear callbacks nuevos con `:`, guion, punto ni slash.
 - Antes de agregar un callback nuevo, verificar con git grep que no existe uno equivalente.
+
+2G. Entry points del sistema
+
+Entry points vigentes:
+- Bot Telegram → `Backend/main.py`
+- Web FastAPI → `Backend/web_app.py`
+
+Arranque local del bot:
+- `python main.py`
+
+Arranque local web:
+- `uvicorn web_app:app --reload --port 8000`
+
+2H. Regla obligatoria de documentación
+
+Si un cambio modifica arquitectura, callbacks, entrypoints, estructura del repositorio o reglas del sistema, el cambio DEBE actualizar la documentación correspondiente en el mismo ciclo.
+
+Orden obligatorio de actualización documental:
+1. `AGENTS.md`
+2. Documento específico del tema (`docs/callback_governance_2026-03-12.md`, `Backend/DEPLOY.md`, etc.)
+3. `CLAUDE.md` si afecta arquitectura explicada o guía técnica
+
+No se aceptan cambios estructurales sin actualización documental consistente.
 
 2E. Regla de módulos adicionales
 
@@ -240,9 +308,12 @@ Objetivo
 
 El sistema debe funcionar correctamente en:
 
-SQLite (LOCAL / desarrollo)
+SQLite (entorno de pruebas unitarias / scripts puntuales)
 
-PostgreSQL (PROD / Railway)
+PostgreSQL (DEV y PROD — ambos en Railway)
+
+Nota: el bot DEV corre en Railway (rama staging) con PostgreSQL. No hay ejecución local del bot.
+SQLite solo se usa como fallback en tests o herramientas de diagnóstico sin DATABASE_URL.
 
 Reglas obligatorias
 
@@ -250,7 +321,7 @@ La selección de motor se determina exclusivamente por:
 
 DATABASE_URL presente → PostgreSQL
 
-DATABASE_URL ausente → SQLite
+DATABASE_URL ausente → SQLite (solo para pruebas locales sin Railway)
 
 PROHIBIDO usar sintaxis exclusiva de un motor sin bifurcación controlada.
 
@@ -344,7 +415,7 @@ En PROD el sistema debe registrar:
 
 Motor detectado (postgres/sqlite)
 
-Ambiente (LOCAL/PROD)
+Ambiente (DEV/PROD)
 
 Confirmación de conexión exitosa
 
@@ -762,9 +833,15 @@ Regla de elegibilidad:
   Retorna todos los couriers con admin_couriers.status = 'APPROVED' y couriers.status = 'APPROVED'.
 
 Regla de comisiones (simétrica):
-  - Fee del aliado → admin del aliado (get_approved_admin_link_for_ally).
-  - Fee del courier → admin del courier al momento de aceptar (order.courier_admin_id_snapshot).
+  - Fee del aliado ($300): admin del aliado recibe $200, Plataforma recibe $100.
+    Admin se determina con get_approved_admin_link_for_ally.
+  - Fee del courier ($300): admin del courier recibe $200, Plataforma recibe $100.
+    Admin se determina con order.courier_admin_id_snapshot (guardado al aceptar).
     Fallback: get_approved_admin_link_for_courier si el snapshot es NULL.
+  - Si el admin es Plataforma: recibe los $300 completos (sin split).
+  - Pedidos de admin (creator_admin_id != NULL, ally_id = NULL):
+    el admin creador NO paga fee. El courier que entrega sí paga su fee normal.
+    _expire_order con ally_id=None no cobra ni crashea (guard implementado).
   - Cada admin gana únicamente de sus propios miembros.
 
 Regla de pre-verificación de saldo (publish_order_to_couriers):
@@ -1122,11 +1199,31 @@ Antes de ejecutar git push origin staging, el agente DEBE:
              Necesito instruccion antes de pushear."
           → Esperar instruccion explicita.
 
-  3. PROHIBIDO git push --force en cualquier circunstancia.
+ 3. PROHIBIDO git push --force en cualquier circunstancia.
 
 Comando rapido para detectar solapamiento de archivos:
   git diff --name-only HEAD origin/staging
   (compara contra los archivos que tu modificaste en esta sesion)
+
+15H. Coherencia obligatoria entre DEV y PROD
+
+Los bots de DEV y PROD deben mantenerse coherentes entre si en toda regla funcional visible
+para usuarios, operadores o administradores.
+
+Reglas:
+
+1. Todo cambio en requisitos, validaciones, textos operativos, estados, botones o flujos del bot
+   DEBE dejar consistentes entre si a staging (DEV) y main (PROD).
+2. PROHIBIDO dar por terminada una tarea si el cambio deja a un bot con una regla y al otro con
+   una distinta, salvo instruccion explicita de Luis Felipe.
+3. Si un cambio modifica un requisito funcional, el agente DEBE actualizar en el mismo trabajo:
+   - la logica real que valida el requisito
+   - los textos del bot que lo describen
+   - la documentacion normativa aplicable
+4. Si por instruccion explicita el cambio queda solo en DEV, el agente DEBE reportarlo de forma
+   textual y exacta como: "IMPLEMENTADO SOLO EN DEV; PROD sigue distinto por instruccion explicita."
+5. Antes de promover staging a main, verificar especificamente que los archivos tocados para ese
+   cambio reflejan la misma regla en ambos entornos.
 
 16. Donde documentar (routing de documentacion)
 

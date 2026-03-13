@@ -1,6 +1,6 @@
 
 import { Component, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { RouterLink, RouterLinkActive, Router } from '@angular/router';
 import { NgIf } from '@angular/common';
 
 @Component({
@@ -44,6 +44,24 @@ import { NgIf } from '@angular/common';
           <span *ngIf="!collapsed()">Usuarios</span>
         </a>
 
+        <a routerLink="/superadmin/administradores"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">admin_panel_settings</span>
+          <span *ngIf="!collapsed()">Administradores</span>
+        </a>
+
+        <a routerLink="/superadmin/repartidores"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">delivery_dining</span>
+          <span *ngIf="!collapsed()">Repartidores</span>
+        </a>
+
+        <a routerLink="/superadmin/aliados"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">storefront</span>
+          <span *ngIf="!collapsed()">Aliados</span>
+        </a>
+
         <a routerLink="/superadmin/orders"
            routerLinkActive="active">
           <span class="material-symbols-outlined">inventory_2</span>
@@ -68,6 +86,12 @@ import { NgIf } from '@angular/common';
               <span *ngIf="!collapsed()">Mapa</span>
       </a>
 
+          <a routerLink="/superadmin/solicitudes-soporte"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">support_agent</span>
+          <span *ngIf="!collapsed()">Soporte</span>
+        </a>
+
         <a routerLink="/superadmin/settings"
            routerLinkActive="active">
           <span class="material-symbols-outlined">settings</span>
@@ -79,7 +103,7 @@ import { NgIf } from '@angular/common';
 
     <!-- ================= LOGOUT ================= -->
     <div class="logout">
-      <a>
+      <a (click)="logout()" style="cursor:pointer">
         <span class="material-icons">logout</span>
         <span *ngIf="!collapsed()">Cerrar sesión</span>
       </a>
@@ -200,8 +224,18 @@ export class SidebarComponent {
   // Signal que controla si el sidebar está colapsado
   collapsed = signal(false);
 
+  constructor(private router: Router) {}
+
   // Método que alterna el estado del sidebar
   toggle() {
     this.collapsed.update(v => !v);
+  }
+
+  logout() {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('admin_token');
+      localStorage.removeItem('admin_username');
+    }
+    this.router.navigate(['/login']);
   }
 }

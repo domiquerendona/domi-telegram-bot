@@ -9,6 +9,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Node / Frontend
+node_modules/
+Frontend/.angular/cache/
+**/.angular/cache/
+Frontend/.angular/cache 2/
+**/.angular/cache 2/
+
 # Sistema
 .DS_Store
 
@@ -17,3 +24,7 @@ __pycache__/
 *.db-journal
 *.db-shm
 *.db-wal
+
+# Artefactos locales
+.claude/
+package-lock.json

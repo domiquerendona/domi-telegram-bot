@@ -1,3 +1,5 @@
+from fastapi import HTTPException
+
 # Importa los enums que definen los roles y estados posibles de un usuario
 # Usar enums evita errores por strings mal escritos y centraliza reglas
 from web.users.models import UserRole, UserStatus
@@ -40,3 +42,22 @@ def is_blocked(user) -> bool:
     dentro de los estados bloqueados.
     """
     return user.status in BLOCKED_USERS
+
+
+def require_panel_access(user):
+    """
+    Exige que el usuario autenticado estÃ© en estado habilitado para usar el panel.
+    """
+    if not can_access_system(user):
+        raise HTTPException(status_code=403, detail="Usuario bloqueado")
+    return user
+
+
+def require_panel_admin(user):
+    """
+    Exige acceso al panel y rol administrativo.
+    """
+    require_panel_access(user)
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="No autorizado")
+    return user

@@ -16,6 +16,7 @@ from db import (
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
     update_courier_link_balance, update_ally_link_balance,
+    credit_welcome_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
@@ -28,10 +29,22 @@ from db import (
     get_connection,
     P,
     DB_ENGINE,
+    get_order_status_by_id,
+    cancel_order,
     get_admin_by_telegram_id,
     get_user_by_telegram_id,
     get_admin_by_user_id,
     can_admin_validate_references,
+    get_courier_telegram_id,
+    get_ally_telegram_id,
+    create_profile_change_request,
+    has_pending_profile_change_request,
+    list_pending_profile_change_requests,
+    get_profile_change_request_by_id,
+    mark_profile_change_request_approved,
+    mark_profile_change_request_rejected,
+    apply_profile_change_request_data,
+    sync_all_courier_link_statuses,
     # Re-exports para que main.py no acceda a db directamente
     ensure_user,
     get_user_by_id,
@@ -129,6 +142,7 @@ from db import (
     get_customer_address_by_id,
     list_customer_addresses,
     get_last_order_by_ally,
+    get_recent_delivery_addresses_for_ally,
     get_link_cache,
     upsert_link_cache,
     get_all_approved_links_for_courier,
@@ -202,6 +216,18 @@ from db import (
     list_admin_customer_addresses,
     # Re-exports offer queue
     clear_offer_queue,
+    # Re-exports order_support_requests
+    create_order_support_request,
+    get_pending_support_request,
+    resolve_support_request,
+    cancel_route_stop,
+    get_all_pending_support_requests,
+    get_support_request_full,
+    get_all_orders,
+    get_admin_panel_balances_data,
+    get_admin_panel_users_data,
+    get_admin_panel_earnings_data,
+    get_dashboard_stats_data,
 )
 import math
 import re
@@ -799,7 +825,7 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
     }
 
 
-def admin_puede_operar(admin_id: int, min_couriers: int = 5, min_allies: int = 5,
+def admin_puede_operar(admin_id: int, min_couriers: int = 10, min_allies: int = 5,
                         min_balance: int = 5000, min_admin_balance: int = 60000):
     """
     Regla de negocio: un admin local puede operar si:
@@ -1800,16 +1826,22 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
                       ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
     """
-    Cobra tarifa de $300 por servicio al courier/aliado.
-    - Si admin es PLATFORM: 300 van a plataforma.
-    - Si admin es local: 300 del miembro + 100 del admin (comision plataforma).
+    Cobra tarifa de $300 por servicio al courier/aliado y distribuye el ingreso.
+    Distribucion:
+    - Si admin es PLATFORM: $300 van a plataforma.
+    - Si admin es local: $200 al admin del miembro, $100 a plataforma.
+    El admin no paga comision; recibe ingresos por cada servicio de su equipo.
     Retorna: (success, message)
     """
     fee = 300
-    platform_commission = 100
+    admin_share = 200
+    platform_share = 100
 
     platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin["id"] == admin_id
+    if not platform_admin:
+        return False, "Plataforma no configurada."
+    platform_id = platform_admin["id"]
+    is_platform = (admin_id == platform_id)
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -1821,38 +1853,45 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     if balance < fee:
         return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, fee)
 
-    if not is_platform:
-        admin_balance = get_admin_balance(admin_id)
-        if admin_balance < platform_commission:
-            return False, "ADMIN_SIN_SALDO"
-
     if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, -fee)
     elif target_type == "ALLY":
         update_ally_link_balance(target_id, admin_id, -fee)
 
-    insert_ledger_entry(
-        kind="FEE",
-        from_type=target_type,
-        from_id=target_id,
-        to_type="ADMIN",
-        to_id=admin_id,
-        amount=fee,
-        ref_type=ref_type,
-        ref_id=ref_id,
-        note="Tarifa de servicio"
-    )
-
-    if not is_platform:
+    if is_platform:
+        # Plataforma gana los $300 completos
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=fee,
+            kind="FEE_INCOME",
+            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+    else:
+        # Admin local gana $200
         update_admin_balance_with_ledger(
             admin_id=admin_id,
-            delta=-platform_commission,
+            delta=admin_share,
+            kind="FEE_INCOME",
+            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+        # Plataforma gana $100
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=platform_share,
             kind="PLATFORM_FEE",
             note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
             ref_type=ref_type,
             ref_id=ref_id,
-            from_type="ADMIN",
-            from_id=admin_id,
+            from_type=target_type,
+            from_id=target_id,
         )
 
     return True, "Tarifa de ${:,} aplicada.".format(fee)
@@ -1860,15 +1899,12 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
     """
-    Verifica si hay saldo suficiente para cobrar el fee, sin cobrar.
+    Verifica si el miembro tiene saldo suficiente para cobrar el fee ($300), sin cobrar.
+    El admin no paga comision (recibe ingresos), por lo que no se valida su saldo aqui.
     Retorna: (can_operate, error_code)
-    error_code: 'OK', 'MEMBER_SIN_SALDO', 'ADMIN_SIN_SALDO'
+    error_code: 'OK' o 'MEMBER_SIN_SALDO'
     """
     fee = 300
-    platform_commission = 100
-
-    platform_admin = get_platform_admin()
-    is_platform = platform_admin and platform_admin["id"] == admin_id
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -1879,11 +1915,6 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
 
     if balance < fee:
         return False, "MEMBER_SIN_SALDO"
-
-    if not is_platform:
-        admin_balance = get_admin_balance(admin_id)
-        if admin_balance < platform_commission:
-            return False, "ADMIN_SIN_SALDO"
 
     return True, "OK"
 
@@ -2066,8 +2097,10 @@ def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[b
     return True, courier, rows, "OK"
 
 
-# TODO: Fase 2 - Implementar cobro al courier cuando complete entrega
-# Usar apply_service_fee(target_type="COURIER", target_id=courier_id, admin_id=admin_id, ref_type="ORDER", ref_id=order_id)
+# Nota de alineacion:
+# El cobro de fee al courier ya esta implementado en los flujos de entrega de
+# order_delivery.py y en la resolucion web de soporte. Si cambia la politica de
+# cobro, actualizar esos puntos de integracion y esta nota en el mismo cambio.
 
 
 def _get_important_alert_config():
@@ -2147,7 +2180,10 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
         cmds.append("/soy_aliado")
     if not courier:
         cmds.append("/soy_repartidor")
-    if not admin_local and not es_admin_plataforma_flag:
+    admin_status = None
+    if admin_local:
+        admin_status = admin_local.get("status", "PENDING") if isinstance(admin_local, dict) else admin_local["status"]
+    if (not admin_local or admin_status == "INACTIVE") and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
 
@@ -2207,6 +2243,212 @@ def save_pricing_setting(field: str, value_str: str) -> None:
     set_setting(setting_key, value_str)
 
 
+def get_admin_panel_balances() -> dict:
+    """Retorna saldos consolidados para el panel web administrativo."""
+    return get_admin_panel_balances_data()
+
+
+def get_admin_panel_users() -> list:
+    """Retorna el consolidado de usuarios para el panel web administrativo."""
+    return get_admin_panel_users_data()
+
+
+def get_admin_panel_earnings() -> dict:
+    """Retorna resumen e historial de ganancias para el panel web administrativo."""
+    return get_admin_panel_earnings_data()
+
+
+def get_dashboard_stats() -> dict:
+    """Retorna las metricas agregadas del dashboard web."""
+    return get_dashboard_stats_data()
+
+
+def get_courier_approval_notification_chat_id(courier_id: int):
+    """Retorna el chat_id a notificar cuando se aprueba un courier."""
+    return get_courier_telegram_id(courier_id)
+
+
+def get_ally_approval_notification_chat_id(ally_id: int):
+    """Retorna el chat_id a notificar cuando se aprueba un aliado."""
+    return get_ally_telegram_id(ally_id)
+
+
+def parse_team_selection_callback(data: str, domain: str):
+    """Acepta temporalmente formatos legacy con ':' y estandar con '_'."""
+    raw = (data or "").strip()
+    modern_prefix = "{}_".format(domain)
+    legacy_prefix = "{}:".format(domain)
+
+    if raw.startswith(modern_prefix):
+        return raw.split(modern_prefix, 1)[1].strip()
+    if raw.startswith(legacy_prefix):
+        return raw.split(legacy_prefix, 1)[1].strip()
+    return None
+
+
+def apply_profile_change_request_update(request_row) -> None:
+    """Aplica el cambio de perfil aprobado y coordina migraciones de equipo."""
+    target_role = request_row["target_role"]
+    target_role_id = request_row["target_role_id"]
+    field_name = request_row["field_name"]
+    new_value = request_row["new_value"]
+    new_lat = request_row["new_lat"]
+    new_lng = request_row["new_lng"]
+
+    apply_profile_change_request_data(
+        target_role=target_role,
+        target_role_id=target_role_id,
+        field_name=field_name,
+        new_value=new_value,
+        new_lat=new_lat,
+        new_lng=new_lng,
+    )
+
+    if field_name != "admin_team_code":
+        return
+
+    team_code = (new_value or "").strip().upper()
+    admin_row = get_admin_by_team_code(team_code)
+    if not admin_row:
+        raise ValueError("Admin destino no encontrado para team_code={}".format(team_code))
+    if admin_row["status"] != "APPROVED":
+        raise ValueError("Admin destino no esta APPROVED.")
+
+    admin_id = admin_row["id"]
+    if target_role == "courier":
+        upsert_admin_courier_link(admin_id, target_role_id, status="APPROVED", is_active=1)
+        deactivate_other_approved_admin_courier_links(target_role_id, admin_id)
+    elif target_role == "ally":
+        upsert_admin_ally_link(admin_id, target_role_id, status="APPROVED")
+        deactivate_other_approved_admin_ally_links(target_role_id, admin_id)
+
+
+def get_admin_panel_pricing_settings() -> dict:
+    """Retorna las claves de pricing expuestas por el panel web."""
+    keys = [
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    ]
+    return {key: get_setting(key) for key in keys}
+
+
+def update_admin_panel_pricing_settings(payload: dict) -> None:
+    """Actualiza solo las claves de pricing permitidas por el panel web."""
+    allowed = {
+        "pricing_precio_0_2km",
+        "pricing_precio_2_3km",
+        "pricing_base_distance_km",
+        "pricing_km_extra_normal",
+        "pricing_umbral_km_largo",
+        "pricing_km_extra_largo",
+    }
+    for key, value in payload.items():
+        if key in allowed:
+            set_setting(key, str(value))
+
+
+def cancel_order_from_admin_panel(order_id: int) -> str:
+    """Cancela un pedido desde el panel web si todavia no esta finalizado."""
+    status = get_order_status_by_id(order_id)
+    if status is None:
+        raise LookupError("Pedido no encontrado")
+    if status in ("DELIVERED", "CANCELLED"):
+        raise ValueError(status)
+    cancel_order(order_id, "ADMIN")
+    return status
+
+
+def resolve_support_request_from_admin_panel(support_id: int, action: str, admin_db_id: int) -> int:
+    """
+    Resuelve una solicitud de soporte del panel web manteniendo las mismas reglas
+    operativas que ya usa el backend del bot.
+    """
+    if action not in ("fin", "cancel_courier", "cancel_ally"):
+        raise ValueError("Accion invalida")
+    if not admin_db_id:
+        raise ValueError("admin_db_id requerido")
+
+    req = get_support_request_full(support_id)
+    if not req:
+        raise LookupError("Solicitud no encontrada")
+    if req["status"] != "PENDING":
+        raise RuntimeError("Solicitud ya resuelta")
+
+    order_id = req["order_id"]
+    courier_id = req["courier_id"]
+    if not order_id:
+        raise NotImplementedError("Solicitud de ruta no soportada aun desde web")
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PICKED_UP":
+        raise RuntimeError("El pedido no esta en estado de entrega")
+
+    if action == "fin":
+        ally_id = order["ally_id"]
+        ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+        if ally_admin_link:
+            apply_service_fee(
+                target_type="ALLY",
+                target_id=ally_id,
+                admin_id=ally_admin_link["admin_id"],
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        set_order_status(order_id, "DELIVERED", "delivered_at")
+        resolve_support_request(support_id, "DELIVERED", admin_db_id)
+        return order_id
+
+    if action == "cancel_courier":
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id:
+            apply_service_fee(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+                ref_type="ORDER",
+                ref_id=order_id,
+            )
+        cancel_order(order_id, "ADMIN")
+        resolve_support_request(support_id, "CANCELLED_COURIER", admin_db_id)
+        return order_id
+
+    ally_id = order["ally_id"]
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    if ally_admin_link:
+        apply_service_fee(
+            target_type="ALLY",
+            target_id=ally_id,
+            admin_id=ally_admin_link["admin_id"],
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+    courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+    if courier_admin_id:
+        apply_service_fee(
+            target_type="COURIER",
+            target_id=courier_id,
+            admin_id=courier_admin_id,
+            ref_type="ORDER",
+            ref_id=order_id,
+        )
+    cancel_order(order_id, "ADMIN")
+    resolve_support_request(support_id, "CANCELLED_ALLY", admin_db_id)
+    return order_id
+
+
 # ---------------------------------------------------------------------------
 # Candidatos de referencias (alias de ubicación)
 # ---------------------------------------------------------------------------
@@ -2242,6 +2484,36 @@ def get_user_db_id_from_update(update) -> int:
     user_tg = update.effective_user
     user_row = ensure_user(user_tg.id, user_tg.username)
     return user_row["id"]
+
+
+def can_use_cotizador(telegram_id: int):
+    """
+    Permite usar /cotizar solo a usuarios registrados (ally/courier/admin)
+    y con rol en estado APPROVED.
+    Retorna (ok, message).
+    """
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        return False, "Para usar /cotizar primero debes iniciar el bot con /start."
+
+    user_id = user["id"]
+
+    admin = get_admin_by_user_id(user_id)
+    if admin and str(admin.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    ally = get_ally_by_user_id(user_id)
+    if ally and str(ally.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    courier = get_courier_by_user_id(user_id)
+    if courier and str(courier.get("status") or "").upper() == "APPROVED":
+        return True, "OK"
+
+    if admin or ally or courier:
+        return False, "Tu registro aun no esta aprobado. Cuando estes en estado APPROVED podras usar /cotizar."
+
+    return False, "Para usar /cotizar debes estar registrado como aliado, repartidor o admin y estar en estado APPROVED."
 
 
 # ---------------------------------------------------------------------------
