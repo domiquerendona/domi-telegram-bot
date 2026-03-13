@@ -1,22 +1,16 @@
 from fastapi import Header, HTTPException, Depends
 
 from web.auth.token import verify_token
-from web.users.repository import get_configured_web_user
+from web.users.repository import get_user_by_id, get_web_user_by_username
 from web.users.roles import Permission
 from web.auth.guards import require_panel_access, has_permission
-
-
-def _resolve_web_admin_user(username: str):
-    user = get_configured_web_user()
-    if username != user.username:
-        raise HTTPException(status_code=401, detail="Usuario autenticado no reconocido")
-    return user
 
 
 def get_current_user(authorization: str = Header(default="")):
     """
     Dependencia FastAPI que valida el token del header Authorization.
     Formato esperado: "Bearer <token>"
+    Resuelve el usuario desde la tabla web_users en BD.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token requerido")
@@ -27,7 +21,11 @@ def get_current_user(authorization: str = Header(default="")):
     if not username:
         raise HTTPException(status_code=401, detail="Token invalido o expirado")
 
-    return _resolve_web_admin_user(username)
+    user = get_web_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+
+    return user
 
 
 def require_permission(permission: Permission):

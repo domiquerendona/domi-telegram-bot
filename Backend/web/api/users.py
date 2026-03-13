@@ -10,8 +10,11 @@ from web.auth.guards import require_panel_access
 # Funciones del repository para obtener usuarios
 from web.users.repository import get_user_by_id, list_users
 
+# Permisos por rol para armar la respuesta de /me
+from web.users.roles import ROLE_PERMISSIONS
+
 # Schema de salida que define cómo se envían los usuarios al frontend
-from web.schemas.user import UserResponse
+from web.schemas.user import UserResponse, MeResponse
 
 
 # Se define el router para todos los endpoints de usuarios
@@ -33,17 +36,21 @@ def get_users(current_user=Depends(get_current_user)):
     return list_users()
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=MeResponse)
 def get_my_profile(current_user=Depends(get_current_user)):
     """
-    Devuelve el perfil del usuario autenticado.
-    Usado por la página 'Mi cuenta'.
+    Devuelve el perfil del usuario autenticado con rol y permisos.
+    Usado por el frontend para saber qué rutas y acciones están disponibles.
     """
-
     require_panel_access(current_user)
-
-    # Retorna el usuario autenticado serializado con UserResponse
-    return current_user
+    permissions = [p.value for p in ROLE_PERMISSIONS.get(current_user.role, set())]
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role,
+        "status": current_user.status,
+        "permissions": permissions,
+    }
 
 
 @router.get("/{user_id}", response_model=UserResponse)

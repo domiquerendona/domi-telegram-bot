@@ -1,49 +1,70 @@
-import os
 from dataclasses import dataclass
+from typing import Optional
 
 from web.users.models import UserRole, UserStatus
 
 
 @dataclass
 class WebUser:
-    """
-    Identidad minima real del panel web.
-
-    En esta fase el sistema expone un unico usuario web configurable por entorno.
-    No reemplaza un sistema multiusuario completo.
-    """
-
     id: int
     username: str
     role: UserRole
     status: UserStatus
+    admin_id: Optional[int] = None  # admins.id del equipo; None para PLATFORM_ADMIN
 
 
-def get_configured_web_user() -> WebUser:
-    username = os.getenv("WEB_ADMIN_USER", "admin").strip()
-    user_id = int(os.getenv("WEB_ADMIN_ID", "1"))
-    role = UserRole(os.getenv("WEB_ADMIN_ROLE", UserRole.PLATFORM_ADMIN.value).strip().upper())
-    status = UserStatus(os.getenv("WEB_ADMIN_STATUS", UserStatus.APPROVED.value).strip().upper())
+def _row_to_web_user(row) -> Optional["WebUser"]:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return WebUser(
+            id=row["id"],
+            username=row["username"],
+            role=UserRole(row["role"]),
+            status=UserStatus(row["status"]),
+            admin_id=row.get("admin_id"),
+        )
+    # SQLite row por índice: id, username, password_hash, role, status, admin_id
     return WebUser(
-        id=user_id,
-        username=username,
-        role=role,
-        status=status,
+        id=row[0],
+        username=row[1],
+        role=UserRole(row[3]),
+        status=UserStatus(row[4]),
+        admin_id=row[5] if len(row) > 5 else None,
     )
 
 
+def get_web_user_by_username(username: str) -> Optional[WebUser]:
+    """Retorna WebUser desde BD o None."""
+    from db import get_web_user_by_username as _db_get
+    return _row_to_web_user(_db_get(username))
+
+
+def get_user_by_id(user_id: int) -> Optional[WebUser]:
+    """Retorna WebUser desde BD o None."""
+    from db import get_web_user_by_id as _db_get
+    return _row_to_web_user(_db_get(user_id))
+
+
 def list_users():
-    """
-    Devuelve la identidad real minima del panel web.
-
-    Esta fase no implementa catalogo completo de usuarios web.
-    """
-    return [get_configured_web_user()]
-
-
-def get_user_by_id(user_id: int):
-    """
-    Busca el unico usuario web real configurado por entorno.
-    """
-    user = get_configured_web_user()
-    return user if user.id == user_id else None
+    """Lista todos los usuarios del panel web."""
+    from db import list_web_users as _db_list
+    result = []
+    for row in _db_list():
+        if isinstance(row, dict):
+            result.append(WebUser(
+                id=row["id"],
+                username=row["username"],
+                role=UserRole(row["role"]),
+                status=UserStatus(row["status"]),
+                admin_id=row.get("admin_id"),
+            ))
+        else:
+            result.append(WebUser(
+                id=row[0],
+                username=row[1],
+                role=UserRole(row[2]),
+                status=UserStatus(row[3]),
+                admin_id=row[4] if len(row) > 4 else None,
+            ))
+    return result

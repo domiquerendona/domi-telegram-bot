@@ -24,6 +24,7 @@ import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preg
 import { SolicitudesSoporteComponent } from './features/superadmin/soporte/solicitudes-soporte';
 import { LoginComponent } from './features/login/login';
 import { AuthGuard } from './core/guards/auth.guard';
+import { roleGuard } from './core/guards/role.guard';
 // Definición de las rutas principales de la aplicación
 export const routes: Routes = [
 
@@ -56,7 +57,8 @@ export const routes: Routes = [
       {
         path: 'administradores',
         component: AdministradoresComponent,
-        data: { title: 'Administradores' }
+        canActivate: [roleGuard],
+        data: { title: 'Administradores', requiredPermission: 'manage_settings' }
       },
       {
         path: 'repartidores',
@@ -83,10 +85,11 @@ export const routes: Routes = [
         component: GananciasComponent,
         data: { title: 'Ganancias' }
       },
-      { 
-        path: 'settings',           // Ruta para configuración: "/superadmin/settings"
+      {
+        path: 'settings',
         component: SettingsComponent,
-        data: { title: 'Configuración' }
+        canActivate: [roleGuard],
+        data: { title: 'Configuración', requiredPermission: 'manage_settings' }
       },
       { 
         path: 'mapa',               // Ruta para mapa: "/superadmin/mapa"

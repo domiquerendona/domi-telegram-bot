@@ -1,5 +1,6 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, OnInit, signal, computed } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 
 interface Admin {
@@ -14,81 +15,196 @@ interface Admin {
   created_at: string;
 }
 
+interface WebPanelUser {
+  id: number;
+  username: string;
+  role: string;
+  status: string;
+  admin_id: number | null;
+}
+
 @Component({
   selector: 'app-administradores',
   standalone: true,
-  imports: [NgFor, NgIf, NgClass],
+  imports: [NgFor, NgIf, NgClass, FormsModule],
   template: `
     <div class="page">
 
       <!-- Encabezado -->
       <div class="page-header">
         <h1>Administradores</h1>
-        <span class="total">{{ filtrados().length }} registros</span>
       </div>
 
-      <!-- Filtros por estado -->
-      <div class="filtros">
-        <button
-          *ngFor="let f of filtroOpciones"
-          [class.activo]="filtroActivo() === f.valor"
-          (click)="filtroActivo.set(f.valor)">
-          {{ f.label }}
-        </button>
+      <!-- Tabs -->
+      <div class="tabs">
+        <button [class.activo]="vista() === 'bot'" (click)="cambiarVista('bot')">Admins Bot</button>
+        <button [class.activo]="vista() === 'panel'" (click)="cambiarVista('panel')">Usuarios Panel</button>
       </div>
 
-      <!-- Estado de carga -->
-      <div class="estado" *ngIf="cargando()">Cargando...</div>
-      <div class="estado error" *ngIf="error()">{{ error() }}</div>
+      <!-- ===== VISTA: ADMINS BOT ===== -->
+      <ng-container *ngIf="vista() === 'bot'">
 
-      <!-- Tabla -->
-      <div class="tabla-wrapper" *ngIf="!cargando() && !error()">
-        <table>
-          <thead>
-            <tr>
-              <th>Nombre</th>
-              <th>Teléfono</th>
-              <th>Ciudad</th>
-              <th>Equipo</th>
-              <th>Estado</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr *ngFor="let a of filtrados()">
-              <td>
-                <div class="nombre">{{ a.full_name }}</div>
-                <div class="doc">CC {{ a.document_number }}</div>
-              </td>
-              <td>{{ a.phone }}</td>
-              <td>{{ a.city }}, {{ a.barrio }}</td>
-              <td>{{ a.team_name }}</td>
-              <td>
-                <span class="badge" [ngClass]="a.status.toLowerCase()">
-                  {{ etiquetaEstado(a.status) }}
-                </span>
-              </td>
-              <td class="acciones">
-                <button *ngIf="a.status === 'PENDING'" class="btn aprobar" (click)="accion(a, 'approve')">Aprobar</button>
-                <button *ngIf="a.status === 'PENDING'" class="btn rechazar" (click)="accion(a, 'reject')">Rechazar</button>
-                <button *ngIf="a.status === 'APPROVED'" class="btn inactivar" (click)="accion(a, 'deactivate')">Inactivar</button>
-                <button *ngIf="a.status === 'INACTIVE'" class="btn reactivar" (click)="accion(a, 'reactivate')">Reactivar</button>
-                <span *ngIf="a.status === 'REJECTED'" class="sin-accion">—</span>
-              </td>
-            </tr>
-            <tr *ngIf="filtrados().length === 0">
-              <td colspan="6" class="vacio">No hay administradores en este estado.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        <div class="filtros">
+          <button
+            *ngFor="let f of filtroOpciones"
+            [class.activo]="filtroActivo() === f.valor"
+            (click)="filtroActivo.set(f.valor)">
+            {{ f.label }}
+          </button>
+          <span class="total">{{ filtrados().length }} registros</span>
+        </div>
+
+        <div class="estado" *ngIf="cargando()">Cargando...</div>
+        <div class="estado error" *ngIf="errorBot()">{{ errorBot() }}</div>
+
+        <div class="tabla-wrapper" *ngIf="!cargando() && !errorBot()">
+          <table>
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Teléfono</th>
+                <th>Ciudad</th>
+                <th>Equipo</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let a of filtrados()">
+                <td>
+                  <div class="nombre">{{ a.full_name }}</div>
+                  <div class="doc">CC {{ a.document_number }}</div>
+                </td>
+                <td>{{ a.phone }}</td>
+                <td>{{ a.city }}, {{ a.barrio }}</td>
+                <td>{{ a.team_name }}</td>
+                <td>
+                  <span class="badge" [ngClass]="a.status.toLowerCase()">
+                    {{ etiquetaEstado(a.status) }}
+                  </span>
+                </td>
+                <td class="acciones">
+                  <button *ngIf="a.status === 'PENDING'" class="btn aprobar" (click)="accionBot(a, 'approve')">Aprobar</button>
+                  <button *ngIf="a.status === 'PENDING'" class="btn rechazar" (click)="accionBot(a, 'reject')">Rechazar</button>
+                  <button *ngIf="a.status === 'APPROVED'" class="btn inactivar" (click)="accionBot(a, 'deactivate')">Inactivar</button>
+                  <button *ngIf="a.status === 'INACTIVE'" class="btn reactivar" (click)="accionBot(a, 'reactivate')">Reactivar</button>
+                  <span *ngIf="a.status === 'REJECTED'" class="sin-accion">—</span>
+                </td>
+              </tr>
+              <tr *ngIf="filtrados().length === 0">
+                <td colspan="6" class="vacio">No hay administradores en este estado.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </ng-container>
+
+      <!-- ===== VISTA: USUARIOS PANEL ===== -->
+      <ng-container *ngIf="vista() === 'panel'">
+
+        <!-- Toolbar con botón crear -->
+        <div class="toolbar">
+          <span class="total">{{ webUsers().length }} usuarios</span>
+          <button class="btn-crear" (click)="toggleCrear()">
+            {{ creandoVisible() ? 'Cancelar' : '+ Nuevo usuario' }}
+          </button>
+        </div>
+
+        <!-- Formulario de creación -->
+        <div class="form-crear" *ngIf="creandoVisible()">
+          <h3>Nuevo usuario del panel</h3>
+          <div class="form-fila">
+            <label>Usuario</label>
+            <input type="text" [(ngModel)]="nuevoUsername" placeholder="nombre_usuario" autocomplete="off" />
+          </div>
+          <div class="form-fila">
+            <label>Contraseña</label>
+            <input type="password" [(ngModel)]="nuevoPassword" placeholder="••••••••" autocomplete="new-password" />
+          </div>
+          <div class="form-fila">
+            <label>Rol</label>
+            <select [(ngModel)]="nuevoRole">
+              <option value="ADMIN_PLATFORM">Admin Plataforma</option>
+              <option value="ADMIN_LOCAL">Admin Local</option>
+            </select>
+          </div>
+          <div class="form-fila" *ngIf="nuevoRole === 'ADMIN_LOCAL'">
+            <label>Admin Bot vinculado</label>
+            <select [(ngModel)]="nuevoAdminId">
+              <option value="">— Sin vincular —</option>
+              <option *ngFor="let a of adminsAprobados()" [value]="a.id">
+                {{ a.full_name }} ({{ a.city }})
+              </option>
+            </select>
+            <small>El ID del admin del bot al que pertenece este usuario.</small>
+          </div>
+          <div class="form-error" *ngIf="errorCrear()">{{ errorCrear() }}</div>
+          <div class="form-acciones">
+            <button class="btn aprobar" [disabled]="creando()" (click)="crearUsuario()">
+              {{ creando() ? 'Creando...' : 'Crear usuario' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Carga / error -->
+        <div class="estado" *ngIf="cargandoPanel()">Cargando...</div>
+        <div class="estado error" *ngIf="errorPanel()">{{ errorPanel() }}</div>
+
+        <!-- Tabla de usuarios del panel -->
+        <div class="tabla-wrapper" *ngIf="!cargandoPanel() && !errorPanel()">
+          <table>
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Rol</th>
+                <th>Admin Bot</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let u of webUsers()">
+                <td><div class="nombre">{{ u.username }}</div></td>
+                <td>
+                  <span class="badge" [ngClass]="u.role === 'ADMIN_PLATFORM' ? 'plataforma' : 'local'">
+                    {{ u.role === 'ADMIN_PLATFORM' ? 'Plataforma' : 'Local' }}
+                  </span>
+                </td>
+                <td>{{ nombreAdmin(u.admin_id) }}</td>
+                <td>
+                  <span class="badge" [ngClass]="u.status.toLowerCase()">
+                    {{ u.status === 'APPROVED' ? 'Activo' : 'Inactivo' }}
+                  </span>
+                </td>
+                <td class="acciones">
+                  <button
+                    *ngIf="u.status === 'APPROVED'"
+                    class="btn inactivar"
+                    (click)="cambiarEstadoPanel(u, 'INACTIVE')">
+                    Inactivar
+                  </button>
+                  <button
+                    *ngIf="u.status === 'INACTIVE'"
+                    class="btn reactivar"
+                    (click)="cambiarEstadoPanel(u, 'APPROVED')">
+                    Activar
+                  </button>
+                </td>
+              </tr>
+              <tr *ngIf="webUsers().length === 0">
+                <td colspan="5" class="vacio">No hay usuarios del panel registrados.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </ng-container>
 
     </div>
   `,
   styles: [`
-    .page {
-      padding: 24px;
-    }
+    .page { padding: 24px; }
 
     .page-header {
       display: flex;
@@ -97,22 +213,43 @@ interface Admin {
       margin-bottom: 20px;
     }
 
-    h1 {
-      font-size: 24px;
-      font-weight: 700;
-      margin: 0;
+    h1 { font-size: 24px; font-weight: 700; margin: 0; }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 2px solid #e5e7eb;
     }
 
-    .total {
+    .tabs button {
+      padding: 8px 20px;
+      border: none;
+      background: none;
+      cursor: pointer;
       font-size: 14px;
+      font-weight: 500;
       color: #6b7280;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: all 0.15s;
     }
 
+    .tabs button.activo {
+      color: #4338ca;
+      border-bottom-color: #4338ca;
+    }
+
+    .tabs button:hover:not(.activo) { color: #374151; }
+
+    /* Filtros */
     .filtros {
       display: flex;
       gap: 8px;
       margin-bottom: 20px;
       flex-wrap: wrap;
+      align-items: center;
     }
 
     .filtros button {
@@ -126,17 +263,79 @@ interface Admin {
       transition: all 0.15s;
     }
 
-    .filtros button:hover {
-      border-color: #4338ca;
-      color: #4338ca;
+    .filtros button:hover { border-color: #4338ca; color: #4338ca; }
+    .filtros button.activo { background: #4338ca; color: white; border-color: #4338ca; }
+
+    /* Toolbar panel */
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
     }
 
-    .filtros button.activo {
+    .btn-crear {
+      padding: 8px 20px;
       background: #4338ca;
       color: white;
-      border-color: #4338ca;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+    .btn-crear:hover { opacity: 0.88; }
+
+    /* Formulario crear */
+    .form-crear {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 20px;
     }
 
+    .form-crear h3 { margin: 0 0 16px; font-size: 15px; font-weight: 700; color: #111827; }
+
+    .form-fila {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+
+    .form-fila label { font-size: 12px; font-weight: 600; color: #6b7280; text-transform: uppercase; }
+
+    .form-fila input,
+    .form-fila select {
+      padding: 9px 12px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #111827;
+      max-width: 380px;
+      outline: none;
+    }
+
+    .form-fila input:focus,
+    .form-fila select:focus { border-color: #4338ca; }
+
+    .form-fila small { font-size: 11px; color: #9ca3af; }
+
+    .form-error {
+      background: #fef2f2;
+      border: 1px solid #fca5a5;
+      color: #dc2626;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .form-acciones { display: flex; gap: 8px; }
+
+    /* Tabla */
     .tabla-wrapper {
       background: white;
       border-radius: 12px;
@@ -144,14 +343,8 @@ interface Admin {
       box-shadow: 0 1px 4px rgba(0,0,0,0.08);
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    thead {
-      background: #f9fafb;
-    }
+    table { width: 100%; border-collapse: collapse; }
+    thead { background: #f9fafb; }
 
     th {
       padding: 12px 16px;
@@ -171,15 +364,10 @@ interface Admin {
       border-bottom: 1px solid #f3f4f6;
     }
 
-    .nombre {
-      font-weight: 600;
-    }
+    .nombre { font-weight: 600; }
+    .doc { font-size: 12px; color: #9ca3af; margin-top: 2px; }
 
-    .doc {
-      font-size: 12px;
-      color: #9ca3af;
-      margin-top: 2px;
-    }
+    .total { font-size: 14px; color: #6b7280; }
 
     .badge {
       padding: 4px 10px;
@@ -192,12 +380,10 @@ interface Admin {
     .badge.approved  { background: #d1fae5; color: #065f46; }
     .badge.inactive  { background: #f3f4f6; color: #6b7280; }
     .badge.rejected  { background: #fee2e2; color: #991b1b; }
+    .badge.plataforma { background: #ede9fe; color: #5b21b6; }
+    .badge.local      { background: #dbeafe; color: #1e40af; }
 
-    .acciones {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
+    .acciones { display: flex; gap: 8px; align-items: center; }
 
     .btn {
       padding: 5px 12px;
@@ -209,7 +395,8 @@ interface Admin {
       transition: opacity 0.15s;
     }
 
-    .btn:hover { opacity: 0.85; }
+    .btn:hover:not(:disabled) { opacity: 0.85; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .aprobar   { background: #10b981; color: white; }
     .rechazar  { background: #ef4444; color: white; }
@@ -218,24 +405,17 @@ interface Admin {
 
     .sin-accion { color: #d1d5db; }
 
-    .estado {
-      padding: 20px;
-      color: #6b7280;
-    }
-
+    .estado { padding: 20px; color: #6b7280; }
     .estado.error { color: #ef4444; }
 
-    .vacio {
-      text-align: center;
-      color: #9ca3af;
-      padding: 40px;
-    }
+    .vacio { text-align: center; color: #9ca3af; padding: 40px; }
   `]
 })
 export class AdministradoresComponent implements OnInit {
+  // Bot admins
   admins = signal<Admin[]>([]);
   cargando = signal(true);
-  error = signal('');
+  errorBot = signal('');
   filtroActivo = signal('PENDING');
 
   filtroOpciones = [
@@ -246,22 +426,51 @@ export class AdministradoresComponent implements OnInit {
     { label: 'Todos', valor: 'TODOS' },
   ];
 
+  // Web panel users
+  webUsers = signal<WebPanelUser[]>([]);
+  cargandoPanel = signal(false);
+  errorPanel = signal('');
+
+  // Vista activa
+  vista = signal<'bot' | 'panel'>('bot');
+
+  // Formulario crear
+  creandoVisible = signal(false);
+  creando = signal(false);
+  errorCrear = signal('');
+  nuevoUsername = '';
+  nuevoPassword = '';
+  nuevoRole = 'ADMIN_LOCAL';
+  nuevoAdminId: string | number = '';
+
+  adminsAprobados = computed(() => this.admins().filter(a => a.status === 'APPROVED'));
+  // Map admin_id → full_name for display
+  private adminMap = computed<Record<number, string>>(() =>
+    Object.fromEntries(this.admins().map(a => [a.id, a.full_name]))
+  );
+
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
-    this.cargar();
+    this.cargarBot();
   }
 
-  cargar() {
+  cambiarVista(v: 'bot' | 'panel') {
+    this.vista.set(v);
+    if (v === 'panel' && this.webUsers().length === 0 && !this.cargandoPanel()) {
+      this.cargarPanel();
+    }
+  }
+
+  // ── Bot admins ──────────────────────────────────────────────────────────────
+
+  cargarBot() {
     this.cargando.set(true);
-    this.error.set('');
+    this.errorBot.set('');
     this.http.get<Admin[]>('http://localhost:8000/admin/admins').subscribe({
-      next: (data) => {
-        this.admins.set(data);
-        this.cargando.set(false);
-      },
+      next: (data) => { this.admins.set(data); this.cargando.set(false); },
       error: () => {
-        this.error.set('No se pudo conectar con el servidor. ¿Está corriendo el backend?');
+        this.errorBot.set('No se pudo conectar con el servidor.');
         this.cargando.set(false);
       }
     });
@@ -275,22 +484,84 @@ export class AdministradoresComponent implements OnInit {
 
   etiquetaEstado(status: string): string {
     const map: Record<string, string> = {
-      PENDING: 'Pendiente',
-      APPROVED: 'Aprobado',
-      INACTIVE: 'Inactivo',
-      REJECTED: 'Rechazado',
+      PENDING: 'Pendiente', APPROVED: 'Aprobado', INACTIVE: 'Inactivo', REJECTED: 'Rechazado',
     };
     return map[status] ?? status;
   }
 
-  accion(a: Admin, tipo: string) {
+  accionBot(a: Admin, tipo: string) {
     const labels: Record<string, string> = {
       approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
     };
     if (!confirm(`¿${labels[tipo] ?? tipo} a ${a.full_name}?`)) return;
     this.http.post(`http://localhost:8000/admin/admins/${a.id}/${tipo}`, {}).subscribe({
-      next: () => this.cargar(),
+      next: () => this.cargarBot(),
       error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });
+  }
+
+  // ── Web panel users ─────────────────────────────────────────────────────────
+
+  cargarPanel() {
+    this.cargandoPanel.set(true);
+    this.errorPanel.set('');
+    this.http.get<WebPanelUser[]>('http://localhost:8000/admin/web-users').subscribe({
+      next: (data) => { this.webUsers.set(data); this.cargandoPanel.set(false); },
+      error: () => {
+        this.errorPanel.set('No se pudo cargar la lista de usuarios del panel.');
+        this.cargandoPanel.set(false);
+      }
+    });
+  }
+
+  toggleCrear() {
+    this.creandoVisible.update(v => !v);
+    this.errorCrear.set('');
+    this.nuevoUsername = '';
+    this.nuevoPassword = '';
+    this.nuevoRole = 'ADMIN_LOCAL';
+    this.nuevoAdminId = '';
+  }
+
+  crearUsuario() {
+    const username = this.nuevoUsername.trim();
+    const password = this.nuevoPassword.trim();
+    if (!username || !password) {
+      this.errorCrear.set('El usuario y la contraseña son obligatorios.');
+      return;
+    }
+    this.creando.set(true);
+    this.errorCrear.set('');
+    const body: Record<string, unknown> = {
+      username,
+      password,
+      role: this.nuevoRole,
+      admin_id: this.nuevoRole === 'ADMIN_LOCAL' && this.nuevoAdminId ? Number(this.nuevoAdminId) : null,
+    };
+    this.http.post('http://localhost:8000/admin/web-users', body).subscribe({
+      next: () => {
+        this.creando.set(false);
+        this.creandoVisible.set(false);
+        this.cargarPanel();
+      },
+      error: (e) => {
+        this.errorCrear.set(e.error?.detail ?? 'Error al crear el usuario.');
+        this.creando.set(false);
+      }
+    });
+  }
+
+  cambiarEstadoPanel(u: WebPanelUser, status: string) {
+    const accion = status === 'INACTIVE' ? 'inactivar' : 'activar';
+    if (!confirm(`¿${accion} al usuario "${u.username}"?`)) return;
+    this.http.patch(`http://localhost:8000/admin/web-users/${u.id}/status`, { status }).subscribe({
+      next: () => this.cargarPanel(),
+      error: (e) => alert(e.error?.detail ?? 'Error al cambiar el estado.')
+    });
+  }
+
+  nombreAdmin(admin_id: number | null): string {
+    if (!admin_id) return '—';
+    return this.adminMap()[admin_id] ?? `#${admin_id}`;
   }
 }

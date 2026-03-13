@@ -11,6 +11,10 @@ from web.api.users import router as users_router
 
 load_dotenv()
 
+from db import init_db, ensure_web_admin
+init_db()
+ensure_web_admin()
+
 app = FastAPI()
 
 app.include_router(auth_router)

@@ -1,5 +1,6 @@
 # BaseModel es la clase base de Pydantic
 # Se usa para validar y serializar datos de entrada y salida en la API
+from typing import List
 from pydantic import BaseModel
 
 # Importa los enums de rol y estado del usuario
@@ -23,6 +24,18 @@ class UserResponse(BaseModel):
         # Hace que los enums se serialicen como strings
         # Ejemplo: UserRole.COURIER → "COURIER"
         # Esto es ideal para APIs REST y frontend (Angular)
+        use_enum_values = True
+
+
+class MeResponse(BaseModel):
+    """Schema extendido para GET /users/me — incluye username y permisos."""
+    id: int
+    username: str
+    role: UserRole
+    status: UserStatus
+    permissions: List[str]
+
+    class Config:
         use_enum_values = True
 
 

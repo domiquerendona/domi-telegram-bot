@@ -14,7 +14,7 @@ Este archivo describe la estructura del proyecto, flujos de trabajo y convencion
 
 1. **Bot de Telegram** (Backend/): bot conversacional que gestiona pedidos, registros y operaciones de todos los actores del sistema.
 2. **API Web** (Backend/web/): API REST con FastAPI que expone endpoints para el panel administrativo.
-3. **Panel Web** (Frontend/): aplicaciÃ³n Angular 21 con SSR para el superadministrador.
+3. **Panel Web** (Frontend/): aplicaciÃ³n Angular 21 con SSR para administradores del panel. Soporta dos roles: `ADMIN_PLATFORM` (acceso total) y `ADMIN_LOCAL` (vistas filtradas por equipo).
 
 Los actores principales del sistema son:
 - **Platform Admin**: administrador global de la plataforma (un solo usuario).
@@ -239,6 +239,7 @@ AquÃ­ solo se conserva el contexto tÃ©cnico: las migraciones del proyecto so
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | ConfiguraciÃ³n del sistema (clave-valor) |
 | `profile_change_requests` | Solicitudes de cambio de perfil |
+| `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
 
 ---
 
@@ -389,6 +390,8 @@ Archivo de referencia: `Backend/.env.example`
 | `COURIER_CHAT_ID` | ID del grupo de repartidores en Telegram | DEV y PROD |
 | `RESTAURANT_CHAT_ID` | ID del grupo de aliados en Telegram | DEV y PROD |
 | `DATABASE_URL` | URL de conexiÃ³n PostgreSQL | DEV y PROD (Railway) |
+| `WEB_ADMIN_USER` | Username del admin inicial del panel web | Opcional (default: `admin`) |
+| `WEB_ADMIN_PASSWORD` | Contraseña del admin inicial del panel web | Opcional (default: `changeme`) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultÃ¡neamente.
 
@@ -593,6 +596,72 @@ Obligatorio cuando el cambio afecta BD, migraciones, `init_db()`, flujos crÃ­t
 ---
 
 ## GestiÃ³n de Roles (Panel Web - FastAPI)
+
+### Multi-usuario (IMPLEMENTADO 2026-03-13)
+
+El panel soporta múltiples usuarios con roles distintos. Los usuarios se almacenan en `web_users` con contraseñas hasheadas con **bcrypt**.
+
+**Roles del panel:**
+
+| Rol | Valor en BD | Acceso |
+|-----|-------------|--------|
+| Admin Plataforma | `ADMIN_PLATFORM` | Datos globales + gestión de usuarios del panel |
+| Admin Local | `ADMIN_LOCAL` | Datos filtrados por su equipo (admin_id) |
+
+**Flujo de autenticación:**
+1. `POST /auth/login` verifica bcrypt → retorna `{ token, username, role }`
+2. Frontend guarda `admin_token`, `admin_username`, `admin_role` en localStorage
+3. `AuthService` (Angular) lee `admin_role` y mantiene permisos en signals
+4. `RoleGuard` (`role.guard.ts`) protege rutas por permiso (ej. `manage_settings`)
+5. `AuthGuard` verifica presencia del token; si no existe, llama `authService.clear()` y redirige a login
+
+**Seeding del admin inicial:**
+- `ensure_web_admin()` en `db.py` crea el usuario `ADMIN_PLATFORM` al arrancar la app si no existe.
+- Credenciales desde variables de entorno `WEB_ADMIN_USER` / `WEB_ADMIN_PASSWORD`.
+- Es idempotente: no sobreescribe si ya existe.
+- Llamado en `web_app.py` al arrancar: `init_db(); ensure_web_admin()`.
+
+**Scoping de datos por rol (`_scoped_admin_id` en `web/api/admin.py`):**
+- `ADMIN_PLATFORM` → `admin_id = None` → datos globales
+- `ADMIN_LOCAL` → `admin_id = current_user.admin_id` → datos del equipo
+
+**Endpoints de gestión de usuarios del panel (solo `ADMIN_PLATFORM`):**
+- `GET /admin/web-users` — lista todos los usuarios del panel
+- `POST /admin/web-users` — crea nuevo usuario (username, password, role, admin_id opcional)
+- `PATCH /admin/web-users/{id}/status` — activa (`APPROVED`) o inactiva (`INACTIVE`) un usuario
+
+**Funciones nuevas en `db.py` (re-exportadas en `services.py`):**
+- `create_web_user(username, password_hash, role, admin_id)` → int
+- `get_web_user_by_username(username)` → row
+- `get_web_user_by_id(user_id)` → row
+- `list_web_users()` → list[row]
+- `update_web_user_status(user_id, status)`
+- `update_web_user_password(user_id, password_hash)`
+- `ensure_web_admin()` — seed idempotente desde env vars
+
+**Frontend Angular:**
+- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `clear()`
+- `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
+- Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
+- Sidebar: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`
+
+**Permisos por rol (frontend y backend son espejo):**
+
+| Permiso | ADMIN_PLATFORM | ADMIN_LOCAL |
+|---------|:-:|:-:|
+| `view_dashboard` | ✓ | ✓ |
+| `view_users` | ✓ | ✓ |
+| `approve_user` | ✓ | ✓ |
+| `reject_user` | ✓ | — |
+| `deactivate_user` | ✓ | ✓ |
+| `reactivate_user` | ✓ | ✓ |
+| `view_couriers_map` | ✓ | ✓ |
+| `view_unassigned_orders` | ✓ | ✓ |
+| `manage_settings` | ✓ | — |
+
+---
+
+### Roles y grupos (código existente)
 
 La capa web tiene su propio modelo de roles/estados independiente del bot:
 

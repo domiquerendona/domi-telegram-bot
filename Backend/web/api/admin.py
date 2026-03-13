@@ -9,11 +9,19 @@ from web.auth.guards import require_panel_admin
 from web.admin.services import approve_user, reject_user, deactivate_user
 
 # Función del repository para obtener usuarios por ID
-from web.users.repository import get_user_by_id
+from web.users.repository import get_user_by_id, list_users as list_web_panel_users
 
 # Dependencias de autenticación y permisos
 from web.auth.dependencies import get_current_user, require_permission
 from web.users.roles import Permission
+from web.users.models import UserRole
+
+
+def _scoped_admin_id(current_user):
+    """Retorna admin_id si el usuario es ADMIN_LOCAL, None si es PLATFORM_ADMIN."""
+    if current_user.role == UserRole.ADMIN_LOCAL:
+        return current_user.admin_id
+    return None
 
 # Schemas de respuesta
 from web.schemas.user import UserResponse, AdminResponse, CourierResponse, AllyResponse, OrderResponse
@@ -30,6 +38,7 @@ from services import (
     get_admin_panel_earnings, get_admin_panel_pricing_settings,
     update_admin_panel_pricing_settings, cancel_order_from_admin_panel,
     resolve_support_request_from_admin_panel,
+    create_web_user, update_web_user_status,
 )
 
 
@@ -282,23 +291,23 @@ def list_orders(status: str = None, admin=Depends(get_current_user)):
 
 @router.get("/saldos")
 def get_saldos(admin=Depends(get_current_user)):
-    """Retorna saldos de admins, repartidores y aliados."""
+    """Retorna saldos filtrados por equipo (ADMIN_LOCAL) o globales (PLATFORM_ADMIN)."""
     require_panel_admin(admin)
-    return get_admin_panel_balances()
+    return get_admin_panel_balances(admin_id=_scoped_admin_id(admin))
 
 
 @router.get("/users")
 def list_all_users(admin=Depends(get_current_user)):
-    """Lista todos los usuarios del sistema con su perfil de rol."""
+    """Lista usuarios filtrados por equipo (ADMIN_LOCAL) o globales (PLATFORM_ADMIN)."""
     require_panel_admin(admin)
-    return get_admin_panel_users()
+    return get_admin_panel_users(admin_id=_scoped_admin_id(admin))
 
 
 @router.get("/ganancias")
 def get_ganancias(admin=Depends(get_current_user)):
-    """Retorna resumen de ganancias del sistema a partir del ledger."""
+    """Retorna ganancias filtradas por equipo (ADMIN_LOCAL) o globales (PLATFORM_ADMIN)."""
     require_panel_admin(admin)
-    return get_admin_panel_earnings()
+    return get_admin_panel_earnings(admin_id=_scoped_admin_id(admin))
 
 
 @router.post("/orders/{order_id}/cancel")
@@ -374,3 +383,66 @@ def resolve_support_request_endpoint(support_id: int, payload: dict, admin=Depen
             raise HTTPException(status_code=409, detail="Esta solicitud ya fue resuelta")
         raise HTTPException(status_code=409, detail=detail)
     return {"ok": True, "action": action, "order_id": order_id}
+
+
+# ---------------------------------------------------------------------------
+# Usuarios del panel web (solo PLATFORM_ADMIN)
+# ---------------------------------------------------------------------------
+
+@router.get("/web-users")
+def list_web_users_endpoint(admin=Depends(require_permission(Permission.MANAGE_SETTINGS))):
+    """Lista todos los usuarios del panel web."""
+    users = list_web_panel_users()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role.value,
+            "status": u.status.value,
+            "admin_id": u.admin_id,
+        }
+        for u in users
+    ]
+
+
+@router.post("/web-users")
+def create_web_user_endpoint(
+    payload: dict,
+    admin=Depends(require_permission(Permission.MANAGE_SETTINGS)),
+):
+    """Crea un nuevo usuario del panel web. Solo PLATFORM_ADMIN."""
+    import bcrypt
+
+    username = (payload.get("username") or "").strip()
+    password = (payload.get("password") or "").strip()
+    role = payload.get("role", "ADMIN_LOCAL")
+    admin_id = payload.get("admin_id")
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username y password son requeridos")
+    if role not in ("ADMIN_PLATFORM", "ADMIN_LOCAL"):
+        raise HTTPException(status_code=400, detail="role invalido")
+
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    try:
+        new_id = create_web_user(username, hashed, role=role, admin_id=admin_id or None)
+    except Exception as exc:
+        msg = str(exc)
+        if "UNIQUE" in msg or "unique" in msg.lower() or "duplicate" in msg.lower():
+            raise HTTPException(status_code=409, detail="El nombre de usuario ya existe")
+        raise HTTPException(status_code=500, detail="Error al crear el usuario")
+    return {"ok": True, "id": new_id}
+
+
+@router.patch("/web-users/{user_id}/status")
+def update_web_user_status_endpoint(
+    user_id: int,
+    payload: dict,
+    admin=Depends(require_permission(Permission.MANAGE_SETTINGS)),
+):
+    """Activa o inactiva un usuario del panel web. Solo PLATFORM_ADMIN."""
+    status = payload.get("status")
+    if status not in ("APPROVED", "INACTIVE"):
+        raise HTTPException(status_code=400, detail="status debe ser APPROVED o INACTIVE")
+    update_web_user_status(user_id, status)
+    return {"ok": True}

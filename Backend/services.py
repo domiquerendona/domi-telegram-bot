@@ -228,6 +228,14 @@ from db import (
     get_admin_panel_users_data,
     get_admin_panel_earnings_data,
     get_dashboard_stats_data,
+    # Re-exports web_users (panel web multiusuario)
+    create_web_user,
+    get_web_user_by_username,
+    get_web_user_by_id,
+    list_web_users,
+    update_web_user_status,
+    update_web_user_password,
+    ensure_web_admin,
 )
 import math
 import re
@@ -2243,24 +2251,32 @@ def save_pricing_setting(field: str, value_str: str) -> None:
     set_setting(setting_key, value_str)
 
 
-def get_admin_panel_balances() -> dict:
-    """Retorna saldos consolidados para el panel web administrativo."""
-    return get_admin_panel_balances_data()
+def get_admin_panel_balances(admin_id=None) -> dict:
+    """Retorna saldos consolidados para el panel web.
+    admin_id: si se provee, filtra al equipo de ese admin (ADMIN_LOCAL).
+    """
+    return get_admin_panel_balances_data(admin_id=admin_id)
 
 
-def get_admin_panel_users() -> list:
-    """Retorna el consolidado de usuarios para el panel web administrativo."""
-    return get_admin_panel_users_data()
+def get_admin_panel_users(admin_id=None) -> list:
+    """Retorna el consolidado de usuarios para el panel web.
+    admin_id: si se provee, filtra al equipo de ese admin (ADMIN_LOCAL).
+    """
+    return get_admin_panel_users_data(admin_id=admin_id)
 
 
-def get_admin_panel_earnings() -> dict:
-    """Retorna resumen e historial de ganancias para el panel web administrativo."""
-    return get_admin_panel_earnings_data()
+def get_admin_panel_earnings(admin_id=None) -> dict:
+    """Retorna ganancias para el panel web.
+    admin_id: si se provee, filtra al equipo de ese admin (ADMIN_LOCAL).
+    """
+    return get_admin_panel_earnings_data(admin_id=admin_id)
 
 
-def get_dashboard_stats() -> dict:
-    """Retorna las metricas agregadas del dashboard web."""
-    return get_dashboard_stats_data()
+def get_dashboard_stats(admin_id=None) -> dict:
+    """Retorna metricas del dashboard web.
+    admin_id: si se provee, filtra al equipo de ese admin (ADMIN_LOCAL).
+    """
+    return get_dashboard_stats_data(admin_id=admin_id)
 
 
 def get_courier_approval_notification_chat_id(courier_id: int):

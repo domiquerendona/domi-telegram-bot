@@ -18,6 +18,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-03-13 | claude | Backend/db.py, Backend/services.py, Backend/web_app.py, Backend/requirements.txt, Backend/web/api/auth.py, Backend/web/api/admin.py, Backend/web/api/users.py, Backend/web/auth/dependencies.py, Backend/web/users/repository.py, Backend/web/schemas/user.py, Frontend/src/app/core/services/auth.service.ts, Frontend/src/app/core/guards/role.guard.ts, Frontend/src/app/core/guards/auth.guard.ts, Frontend/src/app/features/login/login.ts, Frontend/src/app/app.routes.ts, Frontend/src/app/layout/components/sidebar/sidebar.ts, Frontend/src/app/features/superadmin/administradores/administradores.ts, CLAUDE.md | Multi-usuario real panel web: tabla web_users + bcrypt, ADMIN_LOCAL scoping, AuthService + RoleGuard Angular, gestión usuarios panel | COMPLETADO |
 | 2026-03-12 | claude | Backend/web/users/roles.py, Backend/web/auth/guards.py, Backend/web/auth/dependencies.py, Backend/web/api/admin.py | RBAC fino panel web: Permission enum, ROLE_PERMISSIONS, has_permission(), require_permission() factory — endpoints /reject y /settings/pricing exclusivos PLATFORM_ADMIN | COMPLETADO |
 | 2026-03-09 | codex | Backend/main.py, Backend/services.py, Backend/db.py, WORKLOG.md | Bienvenida courier: mensaje + recarga automática $5.000 al aprobar (Admin Local y Plataforma) | COMPLETADO |
 | 2026-03-05 | claude | Backend/main.py, CLAUDE.md | Fix: pedido_nueva_dir ahora pasa por geocoding completo (PEDIDO_UBICACION) | COMPLETADO |

@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { NgIf } from '@angular/common';
+import { AuthService } from '../../core/services/auth.service';
 
 @Component({
   selector: 'app-login',
@@ -167,14 +168,18 @@ export class LoginComponent {
   cargando = signal(false);
   error = signal('');
 
-  constructor(private http: HttpClient, private router: Router) {}
+  constructor(
+    private http: HttpClient,
+    private router: Router,
+    private authService: AuthService,
+  ) {}
 
   login() {
     if (!this.username || !this.password) return;
     this.cargando.set(true);
     this.error.set('');
 
-    this.http.post<{ token: string; username: string }>(
+    this.http.post<{ token: string; username: string; role: string }>(
       'http://localhost:8000/auth/login',
       { username: this.username, password: this.password }
     ).subscribe({
@@ -183,6 +188,7 @@ export class LoginComponent {
           localStorage.setItem('admin_token', res.token);
           localStorage.setItem('admin_username', res.username);
         }
+        this.authService.setUser(res.role);
         this.router.navigate(['/superadmin']);
       },
       error: (e) => {

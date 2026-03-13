@@ -2,6 +2,7 @@
 import { Component, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, Router } from '@angular/router';
 import { NgIf } from '@angular/common';
+import { AuthService } from '../../../core/services/auth.service';
 
 @Component({
   selector: 'app-sidebar', // Selector del componente
@@ -44,7 +45,8 @@ import { NgIf } from '@angular/common';
           <span *ngIf="!collapsed()">Usuarios</span>
         </a>
 
-        <a routerLink="/superadmin/administradores"
+        <a *ngIf="authService.isPlatformAdmin()"
+           routerLink="/superadmin/administradores"
            routerLinkActive="active">
           <span class="material-symbols-outlined">admin_panel_settings</span>
           <span *ngIf="!collapsed()">Administradores</span>
@@ -92,7 +94,8 @@ import { NgIf } from '@angular/common';
           <span *ngIf="!collapsed()">Soporte</span>
         </a>
 
-        <a routerLink="/superadmin/settings"
+        <a *ngIf="authService.isPlatformAdmin()"
+           routerLink="/superadmin/settings"
            routerLinkActive="active">
           <span class="material-symbols-outlined">settings</span>
           <span *ngIf="!collapsed()">Configuración</span>
@@ -224,7 +227,10 @@ export class SidebarComponent {
   // Signal que controla si el sidebar está colapsado
   collapsed = signal(false);
 
-  constructor(private router: Router) {}
+  constructor(
+    private router: Router,
+    public authService: AuthService,
+  ) {}
 
   // Método que alterna el estado del sidebar
   toggle() {
@@ -232,10 +238,7 @@ export class SidebarComponent {
   }
 
   logout() {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('admin_token');
-      localStorage.removeItem('admin_username');
-    }
+    this.authService.clear();
     this.router.navigate(['/login']);
   }
 }
