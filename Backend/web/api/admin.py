@@ -2,17 +2,18 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
-# Guard que valida si el usuario autenticado tiene permisos de administrador
+# Guards de autorización
 from web.auth.guards import require_panel_admin
 
-# Servicios de administraciÃ³n que modifican el estado del usuario
+# Servicios de administración que modifican el estado del usuario
 from web.admin.services import approve_user, reject_user, deactivate_user
 
-# FunciÃ³n del repository para obtener usuarios por ID
+# Función del repository para obtener usuarios por ID
 from web.users.repository import get_user_by_id
 
-# Dependencia que obtiene el usuario autenticado (mock o JWT en el futuro)
-from web.auth.dependencies import get_current_user
+# Dependencias de autenticación y permisos
+from web.auth.dependencies import get_current_user, require_permission
+from web.users.roles import Permission
 
 # Schemas de respuesta
 from web.schemas.user import UserResponse, AdminResponse, CourierResponse, AllyResponse, OrderResponse
@@ -94,9 +95,8 @@ def approve_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
 
 
 @router.post("/admins/{admin_id}/reject")
-def reject_admin_endpoint(admin_id: int, admin=Depends(get_current_user)):
-    """Rechaza un administrador local."""
-    require_panel_admin(admin)
+def reject_admin_endpoint(admin_id: int, admin=Depends(require_permission(Permission.REJECT_USER))):
+    """Rechaza un administrador local. Solo PLATFORM_ADMIN."""
     update_admin_status_by_id(admin_id, "REJECTED")
     return {"ok": True}
 
@@ -138,8 +138,8 @@ def approve_courier(courier_id: int, admin=Depends(get_current_user)):
 
 
 @router.post("/couriers/{courier_id}/reject")
-def reject_courier(courier_id: int, admin=Depends(get_current_user)):
-    require_panel_admin(admin)
+def reject_courier(courier_id: int, admin=Depends(require_permission(Permission.REJECT_USER))):
+    """Solo PLATFORM_ADMIN puede rechazar definitivamente."""
     update_courier_status_by_id(courier_id, "REJECTED")
     return {"ok": True}
 
@@ -178,8 +178,8 @@ def approve_ally(ally_id: int, admin=Depends(get_current_user)):
 
 
 @router.post("/allies/{ally_id}/reject")
-def reject_ally(ally_id: int, admin=Depends(get_current_user)):
-    require_panel_admin(admin)
+def reject_ally(ally_id: int, admin=Depends(require_permission(Permission.REJECT_USER))):
+    """Solo PLATFORM_ADMIN puede rechazar definitivamente."""
     update_ally_status_by_id(ally_id, "REJECTED")
     return {"ok": True}
 
@@ -315,16 +315,14 @@ def cancel_order_endpoint(order_id: int, admin=Depends(get_current_user)):
 
 
 @router.get("/settings/pricing")
-def get_pricing_settings(admin=Depends(get_current_user)):
-    """Retorna las tarifas de precios configuradas en settings."""
-    require_panel_admin(admin)
+def get_pricing_settings(admin=Depends(require_permission(Permission.MANAGE_SETTINGS))):
+    """Retorna las tarifas de precios. Solo PLATFORM_ADMIN."""
     return get_admin_panel_pricing_settings()
 
 
 @router.post("/settings/pricing")
-def update_pricing_settings(payload: dict, admin=Depends(get_current_user)):
-    """Actualiza las tarifas de precios en settings."""
-    require_panel_admin(admin)
+def update_pricing_settings(payload: dict, admin=Depends(require_permission(Permission.MANAGE_SETTINGS))):
+    """Actualiza las tarifas de precios. Solo PLATFORM_ADMIN."""
     update_admin_panel_pricing_settings(payload)
     return {"ok": True}
 

@@ -1,46 +1,79 @@
+from enum import Enum
 from .models import UserRole
 
-"""
-Reglas de acceso basadas en roles (RBAC).
 
-Este archivo centraliza los permisos del sistema y define
-qué roles pueden acceder a determinadas áreas o ejecutar
-acciones específicas.
+# ---------------------------------------------------------------------------
+# Permisos individuales por acción
+# ---------------------------------------------------------------------------
 
-Beneficios:
-- Evita permisos duplicados en el código
-- Facilita cambios futuros en reglas de acceso
-- Mejora la seguridad y mantenibilidad del sistema
-"""
+class Permission(str, Enum):
+    """
+    Acciones específicas que un rol puede ejecutar en el panel web.
+
+    Cada endpoint debe declarar qué Permission requiere.
+    El mapping ROLE_PERMISSIONS define qué roles tienen qué permisos.
+    """
+
+    VIEW_DASHBOARD          = "view_dashboard"
+    VIEW_USERS              = "view_users"
+    APPROVE_USER            = "approve_user"
+    REJECT_USER             = "reject_user"           # Solo PLATFORM_ADMIN
+    DEACTIVATE_USER         = "deactivate_user"
+    REACTIVATE_USER         = "reactivate_user"
+    VIEW_COURIERS_MAP       = "view_couriers_map"
+    VIEW_UNASSIGNED_ORDERS  = "view_unassigned_orders"
+    MANAGE_SETTINGS         = "manage_settings"       # Solo PLATFORM_ADMIN
 
 
-# Acceso exclusivo del administrador global
+# ---------------------------------------------------------------------------
+# Mapping rol → conjunto de permisos
+# ---------------------------------------------------------------------------
 
-PLATFORM_ADMIN_ONLY = {
-    UserRole.PLATFORM_ADMIN  # Control total de la plataforma
+ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
+    UserRole.PLATFORM_ADMIN: {
+        Permission.VIEW_DASHBOARD,
+        Permission.VIEW_USERS,
+        Permission.APPROVE_USER,
+        Permission.REJECT_USER,        # Exclusivo: estado terminal REJECTED
+        Permission.DEACTIVATE_USER,
+        Permission.REACTIVATE_USER,
+        Permission.VIEW_COURIERS_MAP,
+        Permission.VIEW_UNASSIGNED_ORDERS,
+        Permission.MANAGE_SETTINGS,    # Exclusivo: configuración global
+    },
+    UserRole.ADMIN_LOCAL: {
+        Permission.VIEW_DASHBOARD,
+        Permission.VIEW_USERS,
+        Permission.APPROVE_USER,
+        # SIN REJECT_USER: Admin Local no puede rechazar definitivamente
+        Permission.DEACTIVATE_USER,
+        Permission.REACTIVATE_USER,
+        Permission.VIEW_COURIERS_MAP,
+        Permission.VIEW_UNASSIGNED_ORDERS,
+        # SIN MANAGE_SETTINGS: configuración es exclusiva de plataforma
+    },
+    UserRole.COURIER: set(),   # Sin acceso al panel web
+    UserRole.ALLY:    set(),   # Sin acceso al panel web
 }
 
-# Acceso permitido a administradores
-# (global y local)
+
+# ---------------------------------------------------------------------------
+# Grupos de roles (compatibilidad con código existente)
+# ---------------------------------------------------------------------------
+
+PLATFORM_ADMIN_ONLY = {UserRole.PLATFORM_ADMIN}
+
 ADMIN_ALLOWED = {
-    UserRole.PLATFORM_ADMIN,  # Administrador global
-    UserRole.ADMIN_LOCAL      # Administrador de sede / negocio
+    UserRole.PLATFORM_ADMIN,
+    UserRole.ADMIN_LOCAL,
 }
 
-# Acceso exclusivo para repartidores
-COURIER_ONLY = {
-    UserRole.COURIER  # Usuario encargado de realizar domicilios
-}
+COURIER_ONLY = {UserRole.COURIER}
 
-# Acceso exclusivo para aliados (negocios)
-ALLY_ONLY = {
-    UserRole.ALLY  # Negocios o socios comerciales
-}
+ALLY_ONLY = {UserRole.ALLY}
 
-# Roles autorizados para operar pedidos
-# (crear, asignar, actualizar estados, etc.)
 CAN_OPERATE_ORDERS = {
-    UserRole.COURIER,          # Ejecuta entregas
-    UserRole.ADMIN_LOCAL,      # Gestiona pedidos locales
-    UserRole.PLATFORM_ADMIN    # Control total
+    UserRole.COURIER,
+    UserRole.ADMIN_LOCAL,
+    UserRole.PLATFORM_ADMIN,
 }

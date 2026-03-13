@@ -10,6 +10,7 @@ import hashlib
 import base64
 import time
 import os
+from typing import Optional
 
 _TOKEN_TTL = 60 * 60 * 24  # 24 horas
 
@@ -33,7 +34,7 @@ def create_token(username: str) -> str:
     return f"{payload_b64}.{sig}"
 
 
-def verify_token(token: str) -> str | None:
+def verify_token(token: str) -> Optional[str]:
     """Verifica el token. Retorna el username si es válido, None si no."""
     try:
         parts = token.split(".")

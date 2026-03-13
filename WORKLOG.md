@@ -18,6 +18,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-03-12 | claude | Backend/web/users/roles.py, Backend/web/auth/guards.py, Backend/web/auth/dependencies.py, Backend/web/api/admin.py | RBAC fino panel web: Permission enum, ROLE_PERMISSIONS, has_permission(), require_permission() factory — endpoints /reject y /settings/pricing exclusivos PLATFORM_ADMIN | COMPLETADO |
 | 2026-03-09 | codex | Backend/main.py, Backend/services.py, Backend/db.py, WORKLOG.md | Bienvenida courier: mensaje + recarga automática $5.000 al aprobar (Admin Local y Plataforma) | COMPLETADO |
 | 2026-03-05 | claude | Backend/main.py, CLAUDE.md | Fix: pedido_nueva_dir ahora pasa por geocoding completo (PEDIDO_UBICACION) | COMPLETADO |
 | 2026-03-02 | claude | AGENTS.md, CLAUDE.md, Backend/db.py, Backend/services.py, Backend/order_delivery.py | Tracking tiempos de entrega + estadísticas por repartidor | COMPLETADO |
