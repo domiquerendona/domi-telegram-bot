@@ -71,7 +71,7 @@ from db import (
     resolve_support_request,
     cancel_route_stop,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee
 
 
 def _format_duration(seconds):
@@ -3541,6 +3541,9 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         _send_route_stop_to_courier(context, query.message.chat_id, route, next_stop)
     else:
         update_route_status(route_id, "DELIVERED", "delivered_at")
+        ok, msg = liquidate_route_additional_stops_fee(route_id)
+        if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
+            print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))
         context.bot.send_message(
             chat_id=query.message.chat_id,
             text="Ruta #{} completada. Todas las paradas fueron entregadas.".format(route_id),
@@ -4368,6 +4371,9 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
     else:
         # Todas las paradas resueltas (entregadas o canceladas)
         update_route_status(route_id, "DELIVERED", "delivered_at")
+        ok, msg = liquidate_route_additional_stops_fee(route_id)
+        if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
+            print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))
         _notify_ally_route_delivered(context, route)
         # Notificar al courier si hay devoluciones pendientes
         cancelled = [s for s in get_route_destinations(route_id)

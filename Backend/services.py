@@ -15,6 +15,7 @@ from db import (
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
+    settle_route_additional_stops_fee,
     update_courier_link_balance, update_ally_link_balance,
     credit_welcome_balance,
     get_courier_link_balance, get_ally_link_balance,
@@ -1983,6 +1984,44 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
         )
 
     return True, "Tarifa de ${:,} aplicada.".format(fee)
+
+
+def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
+    """
+    Liquida el additional_stops_fee de una ruta entregada sin incidencias canceladas.
+    """
+    route = get_route_by_id(route_id)
+    if not route:
+        return False, "Ruta no encontrada."
+    if route.get("status") != "DELIVERED":
+        return False, "La ruta no esta entregada."
+
+    amount = int(route.get("additional_stops_fee") or 0)
+    if amount <= 0:
+        return False, "La ruta no tiene additional_stops_fee para liquidar."
+
+    destinations = get_route_destinations(route_id)
+    if any(str(stop.get("status", "")).startswith("CANCELLED") for stop in destinations):
+        return False, "La ruta tuvo incidencias/cancelaciones; no se liquida additional_stops_fee."
+
+    platform_admin = get_platform_admin()
+    if not platform_admin:
+        return False, "Plataforma no configurada."
+
+    admin_id = route.get("ally_admin_id_snapshot")
+    if not admin_id:
+        ally_admin_link = get_approved_admin_link_for_ally(route["ally_id"])
+        admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
+    if not admin_id:
+        return False, "No se pudo determinar el admin de la ruta."
+
+    return settle_route_additional_stops_fee(
+        route_id=route_id,
+        ally_id=route["ally_id"],
+        admin_id=admin_id,
+        platform_admin_id=platform_admin["id"],
+        amount=amount,
+    )
 
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:

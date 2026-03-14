@@ -6992,6 +6992,121 @@ def register_platform_income(admin_id: int, amount: int, method: str, note: str 
     )
 
 
+def settle_route_additional_stops_fee(
+    route_id: int,
+    ally_id: int,
+    admin_id: int,
+    platform_admin_id: int,
+    amount: int,
+) -> Tuple[bool, str]:
+    """
+    Liquida el additional_stops_fee de una ruta cobrando al saldo operativo del aliado
+    y acreditando el ingreso a admin/plataforma en una sola transaccion.
+    """
+    amount_int = int(amount or 0)
+    if amount_int <= 0:
+        return False, "La ruta no tiene additional_stops_fee para liquidar."
+
+    note_prefix = "Ruta additional_stops_fee"
+    is_platform_owner = admin_id == platform_admin_id
+    admin_share = 0 if is_platform_owner else amount_int // 2
+    platform_share = amount_int if is_platform_owner else amount_int - admin_share
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM ledger
+            WHERE ref_type = {P}
+              AND ref_id = {P}
+              AND note LIKE {P}
+            LIMIT 1
+            """,
+            ("ROUTE", route_id, note_prefix + "%"),
+        )
+        if cur.fetchone():
+            conn.rollback()
+            return False, "La ruta ya tenia liquidado el additional_stops_fee."
+
+        cur.execute(
+            f"""
+            SELECT balance
+            FROM admin_allies
+            WHERE ally_id = {P} AND admin_id = {P}
+            """,
+            (ally_id, admin_id),
+        )
+        row = cur.fetchone()
+        current_balance = int(_row_value(row, "balance", 0, 0) or 0)
+        if current_balance < amount_int:
+            conn.rollback()
+            return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(current_balance, amount_int)
+
+        cur.execute(
+            f"""
+            UPDATE admin_allies
+            SET balance = balance - {P}, updated_at = {"NOW()" if DB_ENGINE == "postgres" else "datetime('now')"}
+            WHERE ally_id = {P} AND admin_id = {P}
+              AND balance >= {P}
+            """,
+            (amount_int, ally_id, admin_id, amount_int),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(current_balance, amount_int)
+
+        for target_admin_id, share, kind, note in (
+            (
+                admin_id,
+                admin_share,
+                "FEE_INCOME",
+                "{} admin ruta #{}".format(note_prefix, route_id),
+            ),
+            (
+                platform_admin_id,
+                platform_share,
+                "PLATFORM_FEE",
+                "{} plataforma ruta #{}".format(note_prefix, route_id),
+            ),
+        ):
+            if share <= 0:
+                continue
+
+            cur.execute(f"SELECT id FROM admins WHERE id = {P}", (target_admin_id,))
+            if not cur.fetchone():
+                conn.rollback()
+                raise ValueError(f"Admin id={target_admin_id} no existe.")
+
+            cur.execute(
+                f"UPDATE admins SET balance = balance + {P} WHERE id = {P}",
+                (share, target_admin_id),
+            )
+            _insert_returning_id(
+                cur,
+                f"""
+                INSERT INTO ledger
+                    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+                VALUES ({P}, 'ALLY', {P}, 'ADMIN', {P}, {P}, {P}, {P}, {P})
+                """,
+                (kind, ally_id, target_admin_id, share, "ROUTE", route_id, note),
+            )
+
+        conn.commit()
+        return True, "Liquidacion de ruta aplicada."
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_courier_link_balance(courier_id: int, admin_id: int) -> int:
     """Retorna el saldo del vínculo courier-admin."""
     conn = get_connection()
