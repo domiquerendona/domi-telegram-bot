@@ -4,6 +4,7 @@ import re
 import json
 import time
 import logging
+from typing import Tuple
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
