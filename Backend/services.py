@@ -970,14 +970,22 @@ def get_pricing_config():
     Carga la configuración de precios desde BD (tabla settings).
     Retorna un dict con todos los parámetros necesarios para calcular_precio_distancia.
     """
+    tier1_max_km = _to_float(get_setting("pricing_tier1_max_km", "1.5"), 1.5)
+    tier2_max_km = _to_float(get_setting("pricing_tier2_max_km", "2.5"), 2.5)
+    if tier1_max_km <= 0:
+        tier1_max_km = 1.5
+    if tier2_max_km <= tier1_max_km:
+        tier2_max_km = max(2.5, tier1_max_km)
     return {
         "precio_0_2km": _to_int(get_setting("pricing_precio_0_2km", "5000"), 5000),
         "precio_2_3km": _to_int(get_setting("pricing_precio_2_3km", "6000"), 6000),
-        "base_distance_km": _to_float(get_setting("pricing_base_distance_km", "3.0"), 3.0),
+        "tier1_max_km": tier1_max_km,
+        "tier2_max_km": tier2_max_km,
+        "base_distance_km": tier2_max_km,
         "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
         "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
         "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
-        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "4000"), 4000),
+        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "200"), 200),
     }
 
 
@@ -1086,6 +1094,8 @@ def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:
 
     precio_0_2km = config["precio_0_2km"]
     precio_2_3km = config["precio_2_3km"]
+    tier1_max_km = config.get("tier1_max_km", 1.5)
+    tier2_max_km = config.get("tier2_max_km", 2.5)
     base_distance_km = config["base_distance_km"]
     precio_km_extra_normal = config["precio_km_extra_normal"]
     umbral_km_largo = config["umbral_km_largo"]
@@ -1094,10 +1104,10 @@ def calcular_precio_distancia(distancia_km: float, config: dict = None) -> int:
     if distancia_km <= 0:
         return 0
 
-    if distancia_km <= 2.0:
+    if distancia_km <= tier1_max_km:
         return precio_0_2km
 
-    if distancia_km <= 3.0:
+    if distancia_km <= tier2_max_km:
         return precio_2_3km
 
     km_extra = math.ceil(distancia_km - base_distance_km)
@@ -1128,12 +1138,45 @@ def quote_order(distance_km: float) -> dict:
     }
 
 
+def build_order_pricing_breakdown(
+    distance_km: float,
+    service_type: str = "",
+    buy_products_count: int = 0,
+    additional_incentive: int = 0,
+    config: dict = None,
+    buy_config: dict = None,
+) -> dict:
+    """Construye el desglose persistible de precio para pedidos normales/admin."""
+    if config is None:
+        config = get_pricing_config()
+
+    distance_fee = calcular_precio_distancia(distance_km, config)
+    buy_surcharge = 0
+    if service_type == "Compras":
+        if buy_config is None:
+            buy_config = get_buy_pricing_config()
+        buy_surcharge = calc_buy_products_surcharge(int(buy_products_count or 0), buy_config)
+
+    additional_incentive = max(0, int(additional_incentive or 0))
+    subtotal_fee = distance_fee + buy_surcharge
+    return {
+        "distance_fee": distance_fee,
+        "base_fee": distance_fee,
+        "buy_surcharge": buy_surcharge,
+        "subtotal_fee": subtotal_fee,
+        "additional_incentive": additional_incentive,
+        "total_fee": subtotal_fee + additional_incentive,
+        "distance_km": float(distance_km or 0),
+        "config": config,
+    }
+
+
 def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict = None) -> dict:
     """
     Calcula el precio de una ruta multi-parada.
 
     - distance_fee: precio de la distancia total (fórmula existente de calcular_precio_distancia)
-    - additional_stops_fee: (num_stops - 1) * tarifa_parada_adicional (default 4000)
+    - additional_stops_fee: (num_stops - 1) * tarifa_parada_adicional (default 200)
     - total_fee: suma de ambos
 
     Args:
@@ -1146,12 +1189,13 @@ def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict 
     """
     if config is None:
         config = get_pricing_config()
-    tarifa_parada_adicional = config.get("tarifa_parada_adicional", 4000)
+    tarifa_parada_adicional = config.get("tarifa_parada_adicional", 200)
     distance_fee = calcular_precio_distancia(total_distance_km, config)
     additional_fee = (num_stops - 1) * tarifa_parada_adicional
     return {
         "distance_fee": distance_fee,
         "additional_stops_fee": additional_fee,
+        "tarifa_parada_adicional": tarifa_parada_adicional,
         "total_fee": distance_fee + additional_fee,
         "total_distance_km": total_distance_km,
         "num_stops": num_stops,
@@ -1384,6 +1428,42 @@ def quote_order_by_addresses(pickup_text: str, dropoff_text: str, city_hint: str
         "success": True,
         "quote_source": "text_fallback_local",
     }
+
+
+def quote_order_from_inputs(
+    pickup_text: str,
+    dropoff_text: str,
+    pickup_city: str = "",
+    dropoff_city: str = "",
+    pickup_lat: float = None,
+    pickup_lng: float = None,
+    dropoff_lat: float = None,
+    dropoff_lng: float = None,
+) -> dict:
+    """Unifica la cotizacion por coordenadas o por texto con el mismo fallback operativo."""
+    cotizacion = None
+    if pickup_lat is not None and pickup_lng is not None and dropoff_lat is not None and dropoff_lng is not None:
+        cotizacion = quote_order_by_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+
+    if cotizacion and cotizacion.get("success"):
+        return cotizacion
+
+    effective_city = pickup_city or "Pereira"
+    delivery_city = dropoff_city or effective_city
+
+    origin = pickup_text
+    if effective_city and effective_city.lower() not in (pickup_text or "").lower():
+        origin = f"{pickup_text}, {effective_city}, Colombia"
+    elif "colombia" not in (pickup_text or "").lower():
+        origin = f"{pickup_text}, Colombia"
+
+    destination = dropoff_text
+    if delivery_city and delivery_city.lower() not in (dropoff_text or "").lower():
+        destination = f"{dropoff_text}, {delivery_city}, Colombia"
+    elif "colombia" not in (dropoff_text or "").lower():
+        destination = f"{dropoff_text}, Colombia"
+
+    return quote_order_by_addresses(origin, destination, f"{effective_city}, Colombia")
 
 
 # ---------- RESOLVER UBICACION INTELIGENTE ----------
@@ -2244,11 +2324,19 @@ def save_pricing_setting(field: str, value_str: str) -> None:
         int_val = int(value_str.strip())
         if int_val < 0:
             raise ValueError(f"El campo '{field}' no puede ser negativo (valor: {int_val}).")
+    if field in ("tier1_max_km", "tier2_max_km", "umbral_km_largo"):
+        float_val = _to_float(value_str, -1)
+        if float_val <= 0:
+            raise ValueError(f"El campo '{field}' debe ser mayor que 0.")
     if field.startswith("buy_"):
         setting_key = field
     else:
         setting_key = f"pricing_{field}"
     set_setting(setting_key, value_str)
+    if field == "tier2_max_km":
+        set_setting("pricing_base_distance_km", value_str)
+    elif field == "base_distance_km":
+        set_setting("pricing_tier2_max_km", value_str)
 
 
 def get_admin_panel_balances(admin_id=None) -> dict:
@@ -2344,10 +2432,14 @@ def get_admin_panel_pricing_settings() -> dict:
     keys = [
         "pricing_precio_0_2km",
         "pricing_precio_2_3km",
-        "pricing_base_distance_km",
+        "pricing_tier1_max_km",
+        "pricing_tier2_max_km",
         "pricing_km_extra_normal",
         "pricing_umbral_km_largo",
         "pricing_km_extra_largo",
+        "pricing_tarifa_parada_adicional",
+        "buy_free_threshold",
+        "buy_extra_fee",
     ]
     return {key: get_setting(key) for key in keys}
 
@@ -2357,14 +2449,20 @@ def update_admin_panel_pricing_settings(payload: dict) -> None:
     allowed = {
         "pricing_precio_0_2km",
         "pricing_precio_2_3km",
-        "pricing_base_distance_km",
+        "pricing_tier1_max_km",
+        "pricing_tier2_max_km",
         "pricing_km_extra_normal",
         "pricing_umbral_km_largo",
         "pricing_km_extra_largo",
+        "pricing_tarifa_parada_adicional",
+        "buy_free_threshold",
+        "buy_extra_fee",
     }
     for key, value in payload.items():
         if key in allowed:
             set_setting(key, str(value))
+            if key == "pricing_tier2_max_km":
+                set_setting("pricing_base_distance_km", str(value))
 
 
 def cancel_order_from_admin_panel(order_id: int) -> str:

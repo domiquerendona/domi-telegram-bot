@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS orders (
     pay_at_store_amount INTEGER DEFAULT 0,
     base_fee INTEGER DEFAULT 0,
     distance_km NUMERIC DEFAULT 0,
+    buy_surcharge INTEGER DEFAULT 0,
     rain_extra INTEGER DEFAULT 0,
     high_demand_extra INTEGER DEFAULT 0,
     night_extra INTEGER DEFAULT 0,

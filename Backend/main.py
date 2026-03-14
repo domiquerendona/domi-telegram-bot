@@ -18,6 +18,7 @@ from telegram.ext import (
 
 from services import (
     register_platform_income,
+    build_order_pricing_breakdown,
     admin_puede_operar,
     calcular_precio_distancia,
     get_pricing_config,
@@ -25,6 +26,7 @@ from services import (
     calc_buy_products_surcharge,
     quote_order_by_addresses,
     quote_order_by_coords,
+    quote_order_from_inputs,
     extract_lat_lng_from_text,
     expand_short_url,
     can_call_google_today,
@@ -971,7 +973,6 @@ ADMIN_PEDIDO_PICKUP    = 908   # Seleccionar/crear dirección de recogida
 ADMIN_PEDIDO_CUST_NAME = 909   # Nombre del cliente
 ADMIN_PEDIDO_CUST_PHONE= 910   # Teléfono del cliente
 ADMIN_PEDIDO_CUST_ADDR = 911   # Dirección de entrega (texto/GPS/geocoding)
-ADMIN_PEDIDO_TARIFA    = 912   # Tarifa manualmente ingresada
 ADMIN_PEDIDO_INSTRUC   = 913   # Instrucciones adicionales
 ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicación)
 
@@ -3766,32 +3767,16 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     context.user_data["pickup_lat"] = pickup_lat
     context.user_data["pickup_lng"] = pickup_lng
 
-    # Intentar cotizar por coordenadas (usa estrategia en 3 capas: cache -> haversine -> google)
-    cotizacion = None
-    if pickup_lat and pickup_lng and dropoff_lat and dropoff_lng:
-        cotizacion = quote_order_by_coords(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-
-    # Si no hay coords, usar texto como fallback (requiere Google API)
-    if not cotizacion or not cotizacion.get("success"):
-        # Determinar ciudad efectiva
-        effective_city = pickup_city or "Pereira"
-        delivery_city = customer_city or effective_city
-
-        # Construir direcciones completas
-        origin = pickup_text
-        if effective_city.lower() not in pickup_text.lower():
-            origin = f"{pickup_text}, {effective_city}, Colombia"
-        elif "colombia" not in pickup_text.lower():
-            origin = f"{pickup_text}, Colombia"
-
-        destination = customer_address
-        if delivery_city.lower() not in customer_address.lower():
-            destination = f"{customer_address}, {delivery_city}, Colombia"
-        elif "colombia" not in customer_address.lower():
-            destination = f"{customer_address}, Colombia"
-
-        city_hint = f"{effective_city}, Colombia"
-        cotizacion = quote_order_by_addresses(origin, destination, city_hint)
+    cotizacion = quote_order_from_inputs(
+        pickup_text=pickup_text,
+        dropoff_text=customer_address,
+        pickup_city=pickup_city,
+        dropoff_city=customer_city,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        dropoff_lat=dropoff_lat,
+        dropoff_lng=dropoff_lng,
+    )
 
     # Verificar si fallo
     if not cotizacion.get("success"):
@@ -3804,16 +3789,15 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
 
     # Guardar datos de cotizacion
     context.user_data["quote_distance_km"] = cotizacion["distance_km"]
-    base_price = cotizacion["price"]
-
-    # Si es servicio de Compras, calcular recargo por productos
-    buy_surcharge = 0
-    if context.user_data.get("service_type") == "Compras":
-        n_products = context.user_data.get("buy_products_count", 0)
-        buy_surcharge = calc_buy_products_surcharge(n_products)
-        context.user_data["buy_surcharge"] = buy_surcharge
-
-    context.user_data["quote_price"] = base_price + buy_surcharge
+    pricing = build_order_pricing_breakdown(
+        distance_km=cotizacion["distance_km"],
+        service_type=context.user_data.get("service_type", ""),
+        buy_products_count=context.user_data.get("buy_products_count", 0),
+        additional_incentive=context.user_data.get("pedido_incentivo", 0),
+    )
+    context.user_data["quote_distance_fee"] = pricing["distance_fee"]
+    context.user_data["buy_surcharge"] = pricing["buy_surcharge"]
+    context.user_data["quote_price"] = pricing["subtotal_fee"]
     context.user_data["quote_source"] = cotizacion.get("quote_source", "text")
     context.user_data["distance_source"] = cotizacion.get("distance_source", "")
 
@@ -5295,9 +5279,10 @@ def construir_resumen_pedido(context):
     pickup_label = context.user_data.get("pickup_label", "")
     pickup_address = context.user_data.get("pickup_address", "")
     distancia = context.user_data.get("quote_distance_km", 0)
-    precio_base = int(context.user_data.get("quote_price", 0) or 0)
+    subtotal_servicio = int(context.user_data.get("quote_price", 0) or 0)
+    tarifa_distancia = int(context.user_data.get("quote_distance_fee", subtotal_servicio) or 0)
     incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
-    total = precio_base + incentivo
+    total = subtotal_servicio + incentivo
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
     buy_products = context.user_data.get("buy_products_count", 0)
@@ -5327,13 +5312,12 @@ def construir_resumen_pedido(context):
         if buy_list:
             resumen += f"Lista de productos:\n{buy_list}\n"
         if buy_products > 0:
-            tarifa_distancia = precio_base - buy_surcharge
             resumen += "Tarifa distancia: " + _fmt_pesos(tarifa_distancia) + "\n"
             resumen += f"Total unidades: {buy_products}\n"
             if buy_surcharge > 0:
                 resumen += "Recargo productos: " + _fmt_pesos(buy_surcharge) + "\n"
 
-    resumen += "Valor base del servicio: " + _fmt_pesos(precio_base) + "\n"
+    resumen += "Subtotal del servicio: " + _fmt_pesos(subtotal_servicio) + "\n"
     if incentivo > 0:
         resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
     resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
@@ -5790,13 +5774,24 @@ def _admin_ped_preview_text(ctx):
     tarifa = int(ctx.get("admin_ped_tarifa") or 0)
     incentivo = int(ctx.get("admin_ped_incentivo") or 0)
     total = tarifa + incentivo
+    distancia_km = float(ctx.get("admin_ped_distance_km") or 0)
     instruc = ctx.get("admin_ped_instruc") or "Ninguna"
+    quote_source = ctx.get("admin_ped_quote_source") or "text"
+    source_label = "Ruta estimada"
+    if quote_source == "coords":
+        source_label = "Ruta por coordenadas"
+    elif "cache" in quote_source:
+        source_label = "Ruta desde cache"
+    elif "fallback" in quote_source:
+        source_label = "Ruta estimada local"
     text = (
         "Resumen del pedido especial:\n\n"
         "Recogida: {}\n"
         "Cliente: {} / {}\n"
         "Entrega: {}\n"
-        "Tarifa al courier: ${:,}\n"
+        "Distancia: {:.1f} km\n"
+        "Tarifa calculada: ${:,}\n"
+        "Fuente: {}\n"
         "{}"
         "Instrucciones: {}\n\n"
         "Total oferta: ${:,}"
@@ -5805,7 +5800,9 @@ def _admin_ped_preview_text(ctx):
         ctx.get("admin_ped_cust_name", ""),
         ctx.get("admin_ped_cust_phone", ""),
         ctx.get("admin_ped_cust_addr", ""),
+        distancia_km,
         tarifa,
+        source_label,
         "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
         instruc,
         total,
@@ -5821,6 +5818,65 @@ def _admin_ped_preview_text(ctx):
         [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
+
+
+def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
+    """Calcula la cotizacion del pedido especial admin y pide instrucciones."""
+    pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
+    pickup_city = context.user_data.get("admin_ped_pickup_city", "")
+    pickup_lat = context.user_data.get("admin_ped_pickup_lat")
+    pickup_lng = context.user_data.get("admin_ped_pickup_lng")
+    dropoff_addr = context.user_data.get("admin_ped_cust_addr", "")
+    dropoff_city = context.user_data.get("admin_ped_dropoff_city", "")
+    dropoff_lat = context.user_data.get("admin_ped_dropoff_lat")
+    dropoff_lng = context.user_data.get("admin_ped_dropoff_lng")
+
+    cotizacion = quote_order_from_inputs(
+        pickup_text=pickup_addr,
+        dropoff_text=dropoff_addr,
+        pickup_city=pickup_city,
+        dropoff_city=dropoff_city,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        dropoff_lat=dropoff_lat,
+        dropoff_lng=dropoff_lng,
+    )
+    context.user_data.setdefault("admin_ped_incentivo", 0)
+    pricing = build_order_pricing_breakdown(
+        distance_km=cotizacion["distance_km"],
+        additional_incentive=context.user_data.get("admin_ped_incentivo", 0),
+    )
+    context.user_data["admin_ped_distance_km"] = pricing["distance_km"]
+    context.user_data["admin_ped_tarifa"] = pricing["subtotal_fee"]
+    context.user_data["admin_ped_base_fee"] = pricing["base_fee"]
+    context.user_data["admin_ped_buy_surcharge"] = pricing["buy_surcharge"]
+    context.user_data["admin_ped_quote_source"] = cotizacion.get("quote_source", "text")
+    source_label = "Ruta estimada"
+    if cotizacion.get("quote_source") == "coords":
+        source_label = "Ruta por coordenadas"
+    elif "cache" in str(cotizacion.get("quote_source", "")):
+        source_label = "Ruta desde cache"
+    elif "fallback" in str(cotizacion.get("quote_source", "")):
+        source_label = "Ruta estimada local"
+    text = (
+        "Distancia: {:.1f} km\n"
+        "Tarifa calculada: ${:,}\n"
+        "Fuente: {}\n\n"
+        "Escribe instrucciones adicionales para el courier "
+        "o toca 'Sin instrucciones'."
+    ).format(
+        pricing["distance_km"],
+        pricing["subtotal_fee"],
+        source_label,
+    )
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]])
+    if edit and hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    elif hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_INSTRUC
 
 
 def admin_nuevo_pedido_start(update, context):
@@ -6097,7 +6153,7 @@ def admin_pedido_cust_selected(update, context):
 
 
 def admin_pedido_addr_selected(update, context):
-    """Direccion seleccionada de la agenda. Avanza directamente a TARIFA."""
+    """Direccion seleccionada de la agenda. Calcula tarifa automaticamente."""
     query = update.callback_query
     query.answer()
     address_id = int(query.data.replace("acust_pedido_addr_", ""))
@@ -6119,11 +6175,11 @@ def admin_pedido_addr_selected(update, context):
     context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
 
     query.edit_message_text(
-        "Cliente: {}\nEntrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+        "Cliente: {}\nEntrega: {}\n\nCalculando tarifa...".format(
             cust_name, address["address_text"]
         )
     )
-    return ADMIN_PEDIDO_TARIFA
+    return _admin_pedido_calcular_preview(query, context, edit=False)
 
 
 def admin_pedido_addr_nueva(update, context):
@@ -6183,10 +6239,8 @@ def admin_pedido_cust_gps_handler(update, context):
     context.user_data["admin_ped_dropoff_lng"] = lng
     context.user_data["admin_ped_dropoff_city"] = ""
     context.user_data["admin_ped_dropoff_barrio"] = ""
-    update.message.reply_text(
-        "Direccion de entrega registrada.\n\nTarifa al courier (ingresa el monto en pesos):"
-    )
-    return ADMIN_PEDIDO_TARIFA
+    update.message.reply_text("Direccion de entrega registrada.\n\nCalculando tarifa...")
+    return _admin_pedido_calcular_preview(update, context, edit=False)
 
 
 def admin_pedido_geo_callback(update, context):
@@ -6202,11 +6256,11 @@ def admin_pedido_geo_callback(update, context):
         context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
         context.user_data.pop("admin_ped_geo_cust_pending", None)
         query.edit_message_text(
-            "Entrega: {}\n\nTarifa al courier (ingresa el monto en pesos):".format(
+            "Entrega: {}\n\nCalculando tarifa...".format(
                 context.user_data["admin_ped_cust_addr"]
             )
         )
-        return ADMIN_PEDIDO_TARIFA
+        return _admin_pedido_calcular_preview(query, context, edit=False)
     else:
         original = pending.get("original_text", "")
         seen = [pending["address"]] if pending.get("address") else []
@@ -6237,26 +6291,6 @@ def admin_pedido_geo_callback(update, context):
             )
             context.user_data.pop("admin_ped_geo_cust_pending", None)
             return ADMIN_PEDIDO_CUST_ADDR
-
-
-def admin_pedido_tarifa_handler(update, context):
-    """Captura la tarifa manual al courier."""
-    texto = update.message.text.strip().replace(",", "").replace(".", "")
-    if not texto.isdigit() or int(texto) <= 0:
-        update.message.reply_text("Ingresa un monto valido en pesos (numero entero mayor que 0).")
-        return ADMIN_PEDIDO_TARIFA
-    tarifa = int(texto)
-    if tarifa > 500000:
-        update.message.reply_text("La tarifa parece muy alta (maximo $500,000). Verifica el monto.")
-        return ADMIN_PEDIDO_TARIFA
-    context.user_data["admin_ped_tarifa"] = tarifa
-    context.user_data.setdefault("admin_ped_incentivo", 0)
-    keyboard = [[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]]
-    update.message.reply_text(
-        "Tarifa: ${:,}\n\nInstrucciones adicionales para el courier (o toca 'Sin instrucciones'):".format(tarifa),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return ADMIN_PEDIDO_INSTRUC
 
 
 def admin_pedido_instruc_handler(update, context):
@@ -6338,6 +6372,8 @@ def admin_pedido_confirmar_callback(update, context):
     dropoff_lng = context.user_data.get("admin_ped_dropoff_lng")
     dropoff_city = context.user_data.get("admin_ped_dropoff_city", "")
     dropoff_barrio = context.user_data.get("admin_ped_dropoff_barrio", "")
+    distance_km = float(context.user_data.get("admin_ped_distance_km") or 0)
+    quote_source = context.user_data.get("admin_ped_quote_source", "admin")
     instruc = context.user_data.get("admin_ped_instruc", "")
     try:
         order_id = create_order(
@@ -6352,7 +6388,8 @@ def admin_pedido_confirmar_callback(update, context):
             pay_at_store_required=False,
             pay_at_store_amount=0,
             base_fee=tarifa,
-            distance_km=0.0,
+            distance_km=distance_km,
+            buy_surcharge=0,
             rain_extra=0,
             high_demand_extra=0,
             night_extra=0,
@@ -6365,7 +6402,7 @@ def admin_pedido_confirmar_callback(update, context):
             pickup_lng=pickup_lng,
             dropoff_lat=dropoff_lat,
             dropoff_lng=dropoff_lng,
-            quote_source="admin",
+            quote_source=quote_source,
             ally_admin_id_snapshot=admin_id,
         )
     except Exception as e:
@@ -6583,7 +6620,12 @@ def pedido_confirmacion_callback(update, context):
             pedido_incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
             if pedido_incentivo < 0:
                 pedido_incentivo = 0
-            total_fee = int(quote_price or 0) + pedido_incentivo
+            pricing = build_order_pricing_breakdown(
+                distance_km=distance_km,
+                service_type=service_type,
+                buy_products_count=context.user_data.get("buy_products_count", 0),
+                additional_incentive=pedido_incentivo,
+            )
             order_id = create_order(
                 ally_id=ally_id,
                 customer_name=customer_name,
@@ -6594,13 +6636,14 @@ def pedido_confirmacion_callback(update, context):
                 pickup_location_id=pickup_location_id,
                 pay_at_store_required=False,
                 pay_at_store_amount=0,
-                base_fee=0,
-                distance_km=distance_km,
+                base_fee=pricing["base_fee"],
+                distance_km=pricing["distance_km"],
+                buy_surcharge=pricing["buy_surcharge"],
                 rain_extra=0,
                 high_demand_extra=0,
                 night_extra=0,
-                additional_incentive=pedido_incentivo,
-                total_fee=total_fee,
+                additional_incentive=pricing["additional_incentive"],
+                total_fee=pricing["total_fee"],
                 instructions=instructions_final,
                 requires_cash=requires_cash,
                 cash_required_amount=cash_required_amount,
@@ -12563,6 +12606,7 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     distance_fee = precio_info["distance_fee"]
     additional_fee = precio_info["additional_stops_fee"]
     total_fee = precio_info["total_fee"]
+    stop_fee = precio_info.get("tarifa_parada_adicional", 0)
     context.user_data["ruta_precio"] = precio_info
     text = "RUTA DE ENTREGA\n\nRecoge en: {}\n\n".format(pickup_address)
     for i, p in enumerate(paradas, 1):
@@ -12572,7 +12616,7 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     text += "\nDistancia total: {:.1f} km\n".format(total_km)
     text += "Precio base (distancia): ${:,}\n".format(distance_fee)
     if additional_fee > 0:
-        text += "Paradas adicionales ({} x $4,000): ${:,}\n".format(len(paradas) - 1, additional_fee)
+        text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(paradas) - 1, stop_fee, additional_fee)
     text += "TOTAL: ${:,}".format(total_fee)
     keyboard = [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
@@ -13749,9 +13793,6 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
         ],
-        ADMIN_PEDIDO_TARIFA: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
-        ],
         ADMIN_PEDIDO_INSTRUC: [
             CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
             CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
@@ -13849,15 +13890,17 @@ def _build_tarifas_texto(config, buy_config):
     return (
         "CONFIGURACION DE TARIFAS\n\n"
         "TARIFAS POR DISTANCIA:\n"
-        f"1. Precio 0-2 km: ${config['precio_0_2km']:,}\n"
-        f"2. Precio 2-3 km: ${config['precio_2_3km']:,}\n"
-        f"3. Base distancia (km): {config['base_distance_km']}\n"
-        f"4. Precio km extra normal (<=10km): ${config['precio_km_extra_normal']:,}\n"
-        f"5. Umbral km largo: {config['umbral_km_largo']} km\n"
-        f"6. Precio km extra largo (>10km): ${config['precio_km_extra_largo']:,}\n"
+        f"1. Precio tramo 1 (0-{config['tier1_max_km']} km): ${config['precio_0_2km']:,}\n"
+        f"2. Precio tramo 2 (>{config['tier1_max_km']}-{config['tier2_max_km']} km): ${config['precio_2_3km']:,}\n"
+        f"3. Limite tramo 1 (km): {config['tier1_max_km']}\n"
+        f"4. Limite tramo 2 / base km extra (km): {config['tier2_max_km']}\n"
+        f"5. Precio km extra normal (<= {config['umbral_km_largo']} km): ${config['precio_km_extra_normal']:,}\n"
+        f"6. Umbral km largo: {config['umbral_km_largo']} km\n"
+        f"7. Precio km extra largo (>{config['umbral_km_largo']} km): ${config['precio_km_extra_largo']:,}\n"
+        f"8. Ruta: parada adicional: ${config['tarifa_parada_adicional']:,}\n"
         "\nTARIFAS COMPRAS (recargo por productos):\n"
-        f"7. Productos incluidos gratis: {buy_config['free_threshold']}\n"
-        f"8. Recargo por producto adicional: ${buy_config['extra_fee']:,} c/u\n"
+        f"9. Productos incluidos gratis: {buy_config['free_threshold']}\n"
+        f"10. Recargo por producto adicional: ${buy_config['extra_fee']:,} c/u\n"
         f"   (Ej: {buy_config['free_threshold']+3} productos -> ${3*buy_config['extra_fee']:,} de recargo)\n"
     )
 
@@ -13920,12 +13963,14 @@ def tarifas_edit_callback(update, context):
     # Submenu: editar tarifas por distancia
     if data == "pricing_menu_distancia":
         keyboard = [
-            [InlineKeyboardButton("Cambiar precio 0-2 km", callback_data="pricing_edit_precio_0_2km")],
-            [InlineKeyboardButton("Cambiar precio 2-3 km", callback_data="pricing_edit_precio_2_3km")],
-            [InlineKeyboardButton("Cambiar base distancia (km)", callback_data="pricing_edit_base_distance_km")],
+            [InlineKeyboardButton("Cambiar precio tramo 1", callback_data="pricing_edit_precio_0_2km")],
+            [InlineKeyboardButton("Cambiar precio tramo 2", callback_data="pricing_edit_precio_2_3km")],
+            [InlineKeyboardButton("Cambiar limite tramo 1", callback_data="pricing_edit_tier1_max_km")],
+            [InlineKeyboardButton("Cambiar limite tramo 2", callback_data="pricing_edit_tier2_max_km")],
             [InlineKeyboardButton("Cambiar km extra normal", callback_data="pricing_edit_precio_km_extra_normal")],
             [InlineKeyboardButton("Cambiar umbral km largo", callback_data="pricing_edit_umbral_km_largo")],
             [InlineKeyboardButton("Cambiar km extra largo", callback_data="pricing_edit_precio_km_extra_largo")],
+            [InlineKeyboardButton("Cambiar parada adicional ruta", callback_data="pricing_edit_tarifa_parada_adicional")],
             [InlineKeyboardButton("⬅️ Volver", callback_data="pricing_volver")],
         ]
         query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
@@ -13958,12 +14003,14 @@ def tarifas_edit_callback(update, context):
 
     # Mapeo de campos a nombres legibles
     field_names = {
-        "precio_0_2km": "Precio 0-2 km",
-        "precio_2_3km": "Precio 2-3 km",
-        "base_distance_km": "Base distancia (km)",
+        "precio_0_2km": "Precio tramo 1",
+        "precio_2_3km": "Precio tramo 2",
+        "tier1_max_km": "Limite tramo 1 (km)",
+        "tier2_max_km": "Limite tramo 2 / base km extra (km)",
         "precio_km_extra_normal": "Precio km extra normal",
         "umbral_km_largo": "Umbral km largo",
         "precio_km_extra_largo": "Precio km extra largo",
+        "tarifa_parada_adicional": "Ruta: parada adicional",
         "buy_free_threshold": "Compras: productos incluidos gratis (default 2)",
         "buy_extra_fee": "Compras: recargo por producto adicional en $ (default 1000)",
     }
@@ -14016,7 +14063,9 @@ def tarifas_set_valor(update, context):
     buy_config = get_buy_pricing_config()
 
     # Pruebas rapidas
-    test_31 = calcular_precio_distancia(3.1)
+    test_14 = calcular_precio_distancia(1.4)
+    test_16 = calcular_precio_distancia(1.6)
+    test_26 = calcular_precio_distancia(2.6)
     test_111 = calcular_precio_distancia(11.1)
     free_th = buy_config.get("free_threshold", 2)
     test_buy_3 = calc_buy_products_surcharge(free_th, buy_config)
@@ -14026,17 +14075,22 @@ def tarifas_set_valor(update, context):
     mensaje = (
         "Guardado.\n\n"
         "TARIFAS DISTANCIA:\n"
-        f"- Precio 0-2 km: ${config['precio_0_2km']:,}\n"
-        f"- Precio 2-3 km: ${config['precio_2_3km']:,}\n"
-        f"- Base distancia: {config['base_distance_km']} km\n"
+        f"- Precio tramo 1 (0-{config['tier1_max_km']} km): ${config['precio_0_2km']:,}\n"
+        f"- Precio tramo 2 (>{config['tier1_max_km']}-{config['tier2_max_km']} km): ${config['precio_2_3km']:,}\n"
+        f"- Limite tramo 1: {config['tier1_max_km']} km\n"
+        f"- Limite tramo 2 / base km extra: {config['tier2_max_km']} km\n"
         f"- Precio km extra normal: ${config['precio_km_extra_normal']:,}\n"
         f"- Umbral largo: {config['umbral_km_largo']} km\n"
         f"- Precio km extra largo: ${config['precio_km_extra_largo']:,}\n\n"
+        f"RUTAS:\n"
+        f"- Parada adicional: ${config['tarifa_parada_adicional']:,}\n\n"
         f"TARIFAS COMPRAS:\n"
         f"- Productos gratis: {buy_config['free_threshold']}\n"
         f"- Recargo adicional: ${buy_config['extra_fee']:,} c/u\n\n"
         f"Prueba rapida distancia:\n"
-        f"3.1 km -> ${test_31:,}\n"
+        f"1.4 km -> ${test_14:,}\n"
+        f"1.6 km -> ${test_16:,}\n"
+        f"2.6 km -> ${test_26:,}\n"
         f"11.1 km -> ${test_111:,}\n\n"
         f"Prueba rapida compras:\n"
         f"{buy_config['free_threshold']} productos -> ${test_buy_3:,}\n"

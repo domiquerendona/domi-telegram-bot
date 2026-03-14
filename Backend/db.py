@@ -899,6 +899,7 @@ def init_db():
             pay_at_store_amount INTEGER DEFAULT 0,
             base_fee INTEGER DEFAULT 0,
             distance_km REAL DEFAULT 0,
+            buy_surcharge INTEGER DEFAULT 0,
             rain_extra INTEGER DEFAULT 0,
             high_demand_extra INTEGER DEFAULT 0,
             night_extra INTEGER DEFAULT 0,
@@ -1168,6 +1169,8 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN dropoff_lng REAL")
     if 'quote_source' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN quote_source TEXT")
+    if 'buy_surcharge' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN buy_surcharge INTEGER DEFAULT 0")
     if 'ally_admin_id_snapshot' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN ally_admin_id_snapshot INTEGER")
     if 'courier_admin_id_snapshot' not in order_cols:
@@ -1636,6 +1639,7 @@ def _init_db_postgres():
         ("dropoff_lat", "REAL"),
         ("dropoff_lng", "REAL"),
         ("quote_source", "TEXT"),
+        ("buy_surcharge", "INTEGER DEFAULT 0"),
         ("courier_arrived_at", "TIMESTAMP"),
         ("courier_accepted_lat", "REAL"),
         ("courier_accepted_lng", "REAL"),
@@ -3113,15 +3117,26 @@ def ensure_pricing_defaults():
     defaults = {
         "pricing_precio_0_2km": "5000",
         "pricing_precio_2_3km": "6000",
-        "pricing_base_distance_km": "3.0",
+        "pricing_tier1_max_km": "1.5",
+        "pricing_tier2_max_km": "2.5",
+        "pricing_base_distance_km": "2.5",
         "pricing_km_extra_normal": "1200",
         "pricing_umbral_km_largo": "10.0",
         "pricing_km_extra_largo": "1000",
+        "pricing_tarifa_parada_adicional": "200",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
         if existing is None:
             set_setting(k, v)
+    tier2_value = get_setting("pricing_tier2_max_km")
+    if tier2_value is not None:
+        base_distance = get_setting("pricing_base_distance_km")
+        if base_distance in (None, "", "3", "3.0", "2", "2.0", "2.5"):
+            set_setting("pricing_base_distance_km", tier2_value)
+    stop_fee = get_setting("pricing_tarifa_parada_adicional")
+    if stop_fee in (None, "", "4000"):
+        set_setting("pricing_tarifa_parada_adicional", "200")
 
 
 # ---------- WEB USERS (PANEL WEB MULTIUSUARIO) ----------
@@ -4433,6 +4448,7 @@ def create_order(
     pay_at_store_amount: int = 0,
     base_fee: int = 0,
     distance_km: float = 0,
+    buy_surcharge: int = 0,
     rain_extra: int = 0,
     high_demand_extra: int = 0,
     night_extra: int = 0,
@@ -4472,6 +4488,7 @@ def create_order(
             pay_at_store_amount,
             base_fee,
             distance_km,
+            buy_surcharge,
             rain_extra,
             high_demand_extra,
             night_extra,
@@ -4487,7 +4504,7 @@ def create_order(
             quote_source,
             ally_admin_id_snapshot,
             courier_admin_id_snapshot
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -4501,6 +4518,7 @@ def create_order(
         pay_at_store_amount,
         base_fee,
         distance_km,
+        buy_surcharge,
         rain_extra,
         high_demand_extra,
         night_extra,
