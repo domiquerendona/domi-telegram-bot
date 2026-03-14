@@ -111,7 +111,7 @@ def _get_order_durations(order, delivered_now=False):
     accepted    = _parse(_rv(order, "accepted_at"))
     arrived     = _parse(_rv(order, "courier_arrived_at"))
     pickup_conf = _parse(_rv(order, "pickup_confirmed_at"))
-    delivered   = datetime.utcnow() if delivered_now else _parse(_rv(order, "delivered_at"))
+    delivered   = datetime.now(timezone.utc).replace(tzinfo=None) if delivered_now else _parse(_rv(order, "delivered_at"))
 
     result = {}
     if accepted and arrived:
@@ -374,7 +374,7 @@ def _schedule_order_expire_job(context, order_id):
         return
 
     created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     elapsed = 0
     if created_at:
         try:
@@ -2212,7 +2212,7 @@ def _handle_cancel_ally(update, context, order_id):
 
     # Política de cancelación del aliado (desde created_at)
     created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     elapsed_seconds = 0
     if created_at:
         try:

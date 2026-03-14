@@ -17082,7 +17082,7 @@ def admin_config_callback(update, context):
             return
 
         import datetime
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
         keyboard = []
         for c in online:

@@ -4,7 +4,7 @@ import re
 import json
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -5442,7 +5442,7 @@ def update_courier(courier_id, full_name, phone, bike_type, status):
     conn.commit()
     conn.close()
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 def create_admin(
     user_id,
@@ -5544,7 +5544,7 @@ def update_admin_status(user_id: int, new_status: str):
 def soft_delete_admin_by_id(admin_id: int):
     conn = conn = get_connection()
     cur = conn.cursor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     cur.execute(f"""
         UPDATE admins
         SET is_deleted=1, deleted_at={P}, status='INACTIVE'
@@ -7328,12 +7328,12 @@ def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, t
 def _coerce_datetime(value=None) -> datetime:
     """Convierte timestamp DB/ISO a datetime naive UTC."""
     if value is None:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
     if isinstance(value, datetime):
         return value
     raw = str(value).strip()
     if not raw:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
     raw = raw.replace("T", " ").replace("Z", "")
     raw = raw.split("+")[0]
     for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -7341,7 +7341,7 @@ def _coerce_datetime(value=None) -> datetime:
             return datetime.strptime(raw, fmt)
         except ValueError:
             continue
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _week_window_from_datetime(reference_at=None):
@@ -7422,7 +7422,7 @@ def get_courier_daily_earnings_history(courier_id: int, days: int = 7):
     """
     if days < 1:
         days = 1
-    end_dt = datetime.utcnow()
+    end_dt = datetime.now(timezone.utc).replace(tzinfo=None)
     start_dt = (end_dt - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     start_s = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_s = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")

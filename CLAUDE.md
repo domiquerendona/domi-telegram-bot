@@ -690,6 +690,7 @@ Guards disponibles en `web/auth/guards.py`:
 - Sin f-strings de Markdown en mensajes del bot (prohibido `parse_mode`)
 - Imports agrupados: stdlib â†’ terceros â†’ locales
 - Funciones de BD retornan `dict` (RealDictCursor en Postgres, Row con acceso por clave en SQLite)
+- **Datetimes UTC**: usar `datetime.now(timezone.utc).replace(tzinfo=None)` — NUNCA `datetime.utcnow()` (deprecated Python 3.12+). El `.replace(tzinfo=None)` mantiene el datetime "naive" que espera el resto del código y la BD. Limpieza aplicada 2026-03-13 en `db.py`, `order_delivery.py`, `main.py`.
 
 ### TypeScript/Angular (Frontend)
 
