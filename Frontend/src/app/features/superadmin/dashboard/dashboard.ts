@@ -1,6 +1,6 @@
-import { Component, signal, afterNextRender } from '@angular/core';
+import { Component, signal, OnInit, Inject, PLATFORM_ID } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { NgIf } from '@angular/common';
+import { NgIf, isPlatformBrowser } from '@angular/common';
 
 
 import { CommonModule } from '@angular/common';
@@ -163,7 +163,7 @@ interface DashboardStats {
     }
   `]
 })
-export class DashboardComponent {
+export class DashboardComponent implements OnInit {
   private _stats = signal<DashboardStats | null>(null);
   cargando = signal(true);
   error = signal('');
@@ -172,8 +172,15 @@ export class DashboardComponent {
     return this._stats()!;
   }
 
-  constructor(private http: HttpClient) {
-    afterNextRender(() => { this.cargar(); });
+  constructor(
+    private http: HttpClient,
+    @Inject(PLATFORM_ID) private platformId: object,
+  ) {}
+
+  ngOnInit() {
+    if (isPlatformBrowser(this.platformId)) {
+      this.cargar();
+    }
   }
 
   cargar() {

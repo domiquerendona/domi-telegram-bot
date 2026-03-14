@@ -31,6 +31,10 @@ Nivel 4 — Documentos históricos / snapshot
 
 PROHIBIDO usar parse_mode o Markdown en cualquier mensaje del bot.
 
+PROHIBIDO usar `datetime.utcnow()` en cualquier archivo Python del proyecto (deprecated desde Python 3.12).
+Usar siempre `datetime.now(timezone.utc).replace(tzinfo=None)` para obtener UTC naive (compatible con la BD).
+Asegurarse de que `timezone` esté importado: `from datetime import datetime, timezone`.
+
 PROHIBIDO duplicar:
 
 handlers
