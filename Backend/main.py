@@ -38,6 +38,7 @@ from services import (
     check_service_fee_available,
     resolve_location,
     resolve_location_next,
+    has_valid_coords,
     get_smart_distance,
     _get_important_alert_config,
     es_admin_plataforma,
@@ -2088,6 +2089,14 @@ def ally_confirm(update, context):
     ally_lat = context.user_data.get("ally_lat")
     ally_lng = context.user_data.get("ally_lng")
 
+    if not has_valid_coords(ally_lat, ally_lng):
+        update.message.reply_text(
+            "La direccion principal del aliado requiere ubicacion confirmada.\n\n"
+            "Envia un PIN de Telegram o un enlace valido para continuar."
+        )
+        _set_flow_step(context, "ally", ALLY_UBICACION)
+        return ALLY_UBICACION
+
     try:
         ally_id = create_ally(
             user_id=user_db_id,
@@ -2110,10 +2119,9 @@ def ally_confirm(update, context):
             barrio=barrio,
             phone=None,
             is_default=True,
+            lat=ally_lat,
+            lng=ally_lng,
         )
-
-        if ally_lat and ally_lng and location_id:
-            update_ally_location_coords(location_id, ally_lat, ally_lng)
 
         try:
             context.bot.send_message(
@@ -3294,6 +3302,12 @@ def pedido_seleccionar_direccion_callback(update, context):
         address_text = context.user_data.get("customer_address", "")
         lat = context.user_data.get("dropoff_lat")
         lng = context.user_data.get("dropoff_lng")
+        if address_text and not has_valid_coords(lat, lng):
+            query.edit_message_text(
+                "Esta direccion no tiene ubicacion confirmada.\n\n"
+                "Envia un PIN de Telegram o un enlace valido para guardarla y usarla en pedidos."
+            )
+            return PEDIDO_UBICACION
         if customer_id and address_text:
             create_customer_address(
                 customer_id=customer_id,
@@ -3331,6 +3345,13 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_barrio"] = address["barrio"] or ""
         context.user_data["dropoff_lat"] = address["lat"]
         context.user_data["dropoff_lng"] = address["lng"]
+
+        if not has_valid_coords(address["lat"], address["lng"]):
+            query.edit_message_text(
+                "Esta direccion guardada no tiene ubicacion confirmada.\n\n"
+                "Corrigela en tu agenda o envia una ubicacion nueva para continuar."
+            )
+            return PEDIDO_UBICACION
 
         # Guardar nota de la direccion si existe
         nota_direccion = address["notes"] or ""
@@ -4150,6 +4171,13 @@ def pedido_reciente_dir_callback(update, context):
         query.edit_message_text("Direccion no encontrada. Escribe la direccion manualmente.")
         return PEDIDO_UBICACION
     row = recientes[idx]
+    if not has_valid_coords(row.get("lat"), row.get("lng")):
+        context.user_data.pop("_recientes_dirs", None)
+        query.edit_message_text(
+            "Esa direccion antigua no tiene ubicacion confirmada.\n\n"
+            "Envia una ubicacion nueva para continuar."
+        )
+        return PEDIDO_UBICACION
     context.user_data["dropoff_lat"] = row.get("lat")
     context.user_data["dropoff_lng"] = row.get("lng")
     context.user_data["customer_city"] = row.get("city", "")
@@ -6168,6 +6196,13 @@ def admin_pedido_addr_selected(update, context):
         query.edit_message_text("Direccion no encontrada. Intenta nuevamente.")
         return ADMIN_PEDIDO_SEL_CUST_ADDR
 
+    if not has_valid_coords(address["lat"], address["lng"]):
+        query.edit_message_text(
+            "Esta direccion guardada no tiene ubicacion confirmada.\n\n"
+            "Corrigela en la agenda o envia una direccion nueva con GPS."
+        )
+        return ADMIN_PEDIDO_CUST_ADDR
+
     context.user_data["admin_ped_cust_addr"] = address["address_text"]
     context.user_data["admin_ped_dropoff_lat"] = address["lat"]
     context.user_data["admin_ped_dropoff_lng"] = address["lng"]
@@ -6375,6 +6410,11 @@ def admin_pedido_confirmar_callback(update, context):
     distance_km = float(context.user_data.get("admin_ped_distance_km") or 0)
     quote_source = context.user_data.get("admin_ped_quote_source", "admin")
     instruc = context.user_data.get("admin_ped_instruc", "")
+    if not has_valid_coords(pickup_lat, pickup_lng) or not has_valid_coords(dropoff_lat, dropoff_lng):
+        query.edit_message_text(
+            "El pedido requiere ubicacion confirmada en recogida y entrega antes de crearse."
+        )
+        return ADMIN_PEDIDO_CUST_ADDR
     try:
         order_id = create_order(
             ally_id=None,
@@ -6605,6 +6645,14 @@ def pedido_confirmacion_callback(update, context):
         dropoff_lng = context.user_data.get("dropoff_lng")
         quote_source = context.user_data.get("quote_source", "text")
 
+        if not has_valid_coords(pickup_lat, pickup_lng) or not has_valid_coords(dropoff_lat, dropoff_lng):
+            context.user_data.pop("pedido_processed", None)
+            query.edit_message_text(
+                "El pedido requiere ubicacion confirmada en recogida y entrega.\n\n"
+                "Envia la ubicacion valida antes de confirmar."
+            )
+            return PEDIDO_UBICACION
+
         # Preparar instrucciones (para Compras, incluir lista de productos)
         base_instructions = context.user_data.get("instructions", "")
         buy_products_list = context.user_data.get("buy_products_list", "")
@@ -6832,6 +6880,17 @@ def pedido_guardar_cliente_callback(update, context):
         customer_name = context.user_data.get("customer_name", "")
         customer_phone = context.user_data.get("customer_phone", "")
         customer_address = context.user_data.get("customer_address", "")
+        if customer_address and not has_valid_coords(
+            context.user_data.get("dropoff_lat"),
+            context.user_data.get("dropoff_lng"),
+        ):
+            context.user_data.clear()
+            show_main_menu(
+                update,
+                context,
+                "Pedido creado exitosamente.\nLa direccion no se guardo porque no tenia ubicacion confirmada.",
+            )
+            return ConversationHandler.END
 
         try:
             # Crear cliente si no existe uno activo por telefono.
@@ -9860,10 +9919,20 @@ def clientes_dir_editar_text(update, context):
         context.user_data.pop("current_address_id", None)
         return clientes_mostrar_menu(update, context, edit_message=False)
 
+    resolved = _clientes_resolver_direccion_para_agenda(
+        update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_DIR_EDITAR_TEXT
+    )
+    if resolved is None:
+        return CLIENTES_DIR_EDITAR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["clientes_geo_mode"] = "dir_editar"
+        context.user_data["clientes_geo_address_input"] = address_text
+        return resolved
+
     context.user_data["clientes_pending_mode"] = "dir_editar"
-    context.user_data["clientes_pending_address_text"] = address_text
-    context.user_data["clientes_pending_lat"] = address.get("lat")
-    context.user_data["clientes_pending_lng"] = address.get("lng")
+    context.user_data["clientes_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["clientes_pending_lat"] = resolved.get("lat")
+    context.user_data["clientes_pending_lng"] = resolved.get("lng")
     context.user_data["clientes_pending_notes"] = address.get("notes")
     update.message.reply_text("Escribe la ciudad de la direccion:")
     return CLIENTES_DIR_CIUDAD
@@ -10727,10 +10796,20 @@ def admin_clientes_dir_editar_text(update, context):
         context.user_data.pop("acust_current_address_id", None)
         return _admin_clientes_mostrar_menu(update, context, edit_message=False)
 
+    resolved = _admin_clientes_resolver_dir(
+        update, context, address_text, "acust_geo_si", "acust_geo_no", ADMIN_CUST_DIR_EDITAR_TEXT
+    )
+    if resolved is None:
+        return ADMIN_CUST_DIR_EDITAR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["acust_geo_mode"] = "dir_editar"
+        context.user_data["acust_geo_address_input"] = address_text
+        return resolved
+
     context.user_data["acust_pending_mode"] = "dir_editar"
-    context.user_data["acust_pending_address_text"] = address_text
-    context.user_data["acust_pending_lat"] = address.get("lat") if hasattr(address, "get") else address["lat"]
-    context.user_data["acust_pending_lng"] = address.get("lng") if hasattr(address, "get") else address["lng"]
+    context.user_data["acust_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_lat"] = resolved.get("lat")
+    context.user_data["acust_pending_lng"] = resolved.get("lng")
     context.user_data["acust_pending_notes"] = address.get("notes") if hasattr(address, "get") else address["notes"]
     update.message.reply_text("Escribe la ciudad de la direccion:")
     return ADMIN_CUST_DIR_CIUDAD
@@ -11509,10 +11588,20 @@ def ally_clientes_dir_editar_text(update, context):
         context.user_data.pop("allycust_current_address_id", None)
         return _ally_clientes_mostrar_menu(update, context, edit_message=False)
 
+    resolved = _ally_clientes_resolver_dir(
+        update, context, address_text, "allycust_geo_si", "allycust_geo_no", ALLY_CUST_DIR_EDITAR_TEXT
+    )
+    if resolved is None:
+        return ALLY_CUST_DIR_EDITAR_TEXT
+    if isinstance(resolved, int):
+        context.user_data["allycust_geo_mode"] = "dir_editar"
+        context.user_data["allycust_geo_address_input"] = address_text
+        return resolved
+
     context.user_data["allycust_pending_mode"] = "dir_editar"
-    context.user_data["allycust_pending_address_text"] = address_text
-    context.user_data["allycust_pending_lat"] = address["lat"]
-    context.user_data["allycust_pending_lng"] = address["lng"]
+    context.user_data["allycust_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["allycust_pending_lat"] = resolved.get("lat")
+    context.user_data["allycust_pending_lng"] = resolved.get("lng")
     context.user_data["allycust_pending_notes"] = address["notes"]
     update.message.reply_text("Escribe la ciudad de la direccion:")
     return ALLY_CUST_DIR_CIUDAD
@@ -12962,6 +13051,12 @@ def ruta_parada_sel_direccion_callback(update, context):
         if not addr:
             query.edit_message_text("Direccion no encontrada.")
             return RUTA_PARADA_SEL_DIRECCION
+        if not has_valid_coords(addr.get("lat"), addr.get("lng")):
+            query.edit_message_text(
+                "Esta direccion guardada no tiene ubicacion confirmada.\n\n"
+                "Envia ahora la ubicacion GPS de la parada."
+            )
+            return RUTA_PARADA_UBICACION
         context.user_data["ruta_temp_address"] = addr.get("address_text") or ""
         context.user_data["ruta_temp_city"] = addr.get("city") or ""
         context.user_data["ruta_temp_barrio"] = addr.get("barrio") or ""
@@ -12998,7 +13093,7 @@ def ruta_parada_telefono_handler(update, context):
     nombre = context.user_data.get("ruta_temp_name", "")
     update.message.reply_text(
         "PARADA {} - {}\n\n"
-        "Envia la ubicacion GPS (PIN de Telegram o lat,lng) o escribe 'omitir' para ingresar solo la direccion.".format(n, nombre)
+        "Envia la ubicacion GPS (PIN de Telegram, link o lat,lng).".format(n, nombre)
     )
     return RUTA_PARADA_UBICACION
 
@@ -13006,10 +13101,11 @@ def ruta_parada_telefono_handler(update, context):
 def ruta_parada_ubicacion_handler(update, context):
     text = update.message.text.strip()
     if text.lower() == "omitir":
-        paradas = context.user_data.get("ruta_paradas", [])
-        n = len(paradas) + 1
-        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
-        return RUTA_PARADA_DIRECCION
+        update.message.reply_text(
+            "No se puede omitir la ubicacion de una parada.\n\n"
+            "Envia un PIN de Telegram, un link de Maps o coordenadas lat,lng."
+        )
+        return RUTA_PARADA_UBICACION
     raw = text
     if "http" in text:
         raw = next((t for t in text.split() if t.startswith("http")), text)
@@ -13197,21 +13293,32 @@ def ruta_confirmacion_callback(update, context):
     pickup_lng = context.user_data.get("ruta_pickup_lng")
     pickup_location_id = context.user_data.get("ruta_pickup_location_id")
     total_km = context.user_data.get("ruta_distancia_km", 0)
+    if not has_valid_coords(pickup_lat, pickup_lng) or any(
+        not has_valid_coords(parada.get("lat"), parada.get("lng")) for parada in paradas
+    ):
+        query.edit_message_text(
+            "La ruta requiere GPS confirmado en recogida y en todas las paradas antes de crearse."
+        )
+        return RUTA_CONFIRMACION
     link = get_approved_admin_link_for_ally(ally_id)
     admin_id_snapshot = link["admin_id"] if link else None
-    route_id = create_route(
-        ally_id=ally_id,
-        pickup_location_id=pickup_location_id,
-        pickup_address=pickup_address,
-        pickup_lat=pickup_lat,
-        pickup_lng=pickup_lng,
-        total_distance_km=total_km,
-        distance_fee=precio_info.get("distance_fee", 0),
-        additional_stops_fee=precio_info.get("additional_stops_fee", 0),
-        total_fee=precio_info.get("total_fee", 0),
-        instructions=None,
-        ally_admin_id_snapshot=admin_id_snapshot,
-    )
+    try:
+        route_id = create_route(
+            ally_id=ally_id,
+            pickup_location_id=pickup_location_id,
+            pickup_address=pickup_address,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            total_distance_km=total_km,
+            distance_fee=precio_info.get("distance_fee", 0),
+            additional_stops_fee=precio_info.get("additional_stops_fee", 0),
+            total_fee=precio_info.get("total_fee", 0),
+            instructions=None,
+            ally_admin_id_snapshot=admin_id_snapshot,
+        )
+    except Exception as e:
+        query.edit_message_text("Error al crear la ruta: {}".format(str(e)))
+        return RUTA_CONFIRMACION
     if not route_id:
         query.edit_message_text("Error al crear la ruta. Intenta de nuevo.")
         show_main_menu(update, context)

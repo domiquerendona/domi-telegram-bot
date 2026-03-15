@@ -27,6 +27,7 @@ from db import (
     get_reference_alias_candidate_by_id,
     review_reference_alias_candidate,
     set_reference_alias_candidate_coords,
+    has_valid_coords,
     get_connection,
     P,
     DB_ENGINE,

@@ -59,6 +59,16 @@ def normalize_document(doc: str) -> str:
     return doc
 
 
+def has_valid_coords(lat, lng) -> bool:
+    """Valida que lat/lng existan y esten en rangos geograficos validos."""
+    try:
+        lat_f = float(lat)
+        lng_f = float(lng)
+    except (TypeError, ValueError):
+        return False
+    return -90 <= lat_f <= 90 and -180 <= lng_f <= 180
+
+
 # ----------------- Helpers multi-motor -----------------
 
 def _insert_returning_id(cur, sql, params=()):
@@ -4065,6 +4075,8 @@ def create_ally_location(
     lng: float = None,
 ):
     """Crea una dirección de recogida para un aliado."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion de recogida requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
 
@@ -4237,6 +4249,8 @@ def delete_ally_location(location_id: int, ally_id: int):
 
 def update_ally_location_coords(location_id: int, lat: float, lng: float):
     """Actualiza las coordenadas de una dirección de aliado."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion de recogida requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -4261,6 +4275,8 @@ def create_admin_location(
     is_default: bool = False,
 ):
     """Crea una dirección de recogida para un admin."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion de recogida requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     if is_default:
@@ -4471,6 +4487,10 @@ def create_order(
     Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
     Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
     """
+    if not has_valid_coords(pickup_lat, pickup_lng):
+        raise ValueError("El punto de recogida requiere ubicacion confirmada.")
+    if not has_valid_coords(dropoff_lat, dropoff_lng):
+        raise ValueError("La direccion de entrega requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     order_id = _insert_returning_id(cur, f"""
@@ -6183,6 +6203,8 @@ def create_customer_address(
     Crea una dirección para un cliente recurrente.
     Retorna el address_id creado.
     """
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -6211,6 +6233,8 @@ def update_customer_address(
     Actualiza una dirección (validando ownership por customer_id).
     Retorna True si se actualizó.
     """
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -6474,6 +6498,8 @@ def create_admin_customer_address(
     lng: float = None,
 ) -> int:
     """Crea una dirección para un cliente del admin. Retorna el address_id creado."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -6499,6 +6525,8 @@ def update_admin_customer_address(
     lng: float = None,
 ) -> bool:
     """Actualiza una dirección de cliente del admin (validando ownership). Retorna True si se actualizó."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -6621,6 +6649,8 @@ def update_admin_location(
     lng: float = None,
 ) -> bool:
     """Actualiza una dirección de recogida del admin. Retorna True si se actualizó."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion de recogida requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
@@ -6665,6 +6695,8 @@ def get_recent_delivery_addresses_for_ally(ally_id: int, limit: int = 5):
         WHERE ally_id = {P}
           AND customer_address IS NOT NULL
           AND customer_address != ''
+          AND dropoff_lat IS NOT NULL
+          AND dropoff_lng IS NOT NULL
         GROUP BY customer_address, customer_city, customer_barrio
         ORDER BY MAX(id) DESC
         LIMIT {P}
@@ -8249,6 +8281,8 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
                  total_distance_km, distance_fee, additional_stops_fee, total_fee,
                  instructions, ally_admin_id_snapshot):
     """Crea una ruta. Retorna el route_id."""
+    if not has_valid_coords(pickup_lat, pickup_lng):
+        raise ValueError("La recogida de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     return _insert_returning_id(
@@ -8270,6 +8304,8 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
                               customer_address, customer_city, customer_barrio,
                               dropoff_lat=None, dropoff_lng=None):
     """Inserta una parada de ruta. Retorna el destination_id."""
+    if not has_valid_coords(dropoff_lat, dropoff_lng):
+        raise ValueError("La parada de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
     return _insert_returning_id(
