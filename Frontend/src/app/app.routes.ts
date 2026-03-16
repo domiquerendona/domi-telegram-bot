@@ -23,6 +23,7 @@ import {ContactoComponent} from './features/superadmin/soporte/contacto'
 import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
 import { SolicitudesSoporteComponent } from './features/superadmin/soporte/solicitudes-soporte';
 import { LoginComponent } from './features/login/login';
+import { FormPedidoComponent } from './features/public/form-pedido';
 import { AuthGuard } from './core/guards/auth.guard';
 import { roleGuard } from './core/guards/role.guard';
 // Definición de las rutas principales de la aplicación
@@ -30,6 +31,9 @@ export const routes: Routes = [
 
   // Ruta de login
   { path: 'login', component: LoginComponent },
+
+  // Ruta pública: formulario de pedido del aliado (sin AuthGuard)
+  { path: 'form/:token', component: FormPedidoComponent },
 
   // Ruta raíz: cuando el usuario entra a la URL base "/"
   {

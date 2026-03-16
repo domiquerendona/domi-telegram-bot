@@ -191,6 +191,8 @@ from services import (
     restore_customer_address,
     get_customer_address_by_id,
     list_customer_addresses,
+    find_matching_customer_address,
+    update_customer_address_coords,
     get_last_order_by_ally,
     get_recent_delivery_addresses_for_ally,
     get_link_cache,
@@ -247,6 +249,16 @@ from services import (
     get_admin_customer_address_by_id,
     list_admin_customer_addresses,
     sync_all_courier_link_statuses,
+    # Bandeja de solicitudes del aliado (enlace publico)
+    get_or_create_ally_public_token,
+    list_ally_form_requests_for_ally,
+    get_ally_form_request_by_id,
+    update_ally_form_request_status,
+    mark_ally_form_request_converted,
+    update_ally_delivery_subsidy,
+    update_ally_min_purchase_for_subsidy,
+    count_ally_form_requests_by_status,
+    compute_ally_subsidy,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
@@ -279,6 +291,12 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
+
+# URL base del formulario público de pedidos del aliado.
+# Configurar en Railway como variable de entorno FORM_BASE_URL.
+# Ejemplo: https://form.domiquerendona.com
+FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
+
 
 def _registration_reset_status_label(reset_state):
     if not reset_state:
@@ -987,6 +1005,8 @@ RECARGAR_ADMIN = 951
 RECARGAR_COMPROBANTE = 952
 RECARGAR_ROL = 953
 
+CONFIG_ALLY_SUBSIDY_VALOR = 956  # Capturar nuevo subsidio de domicilio del aliado
+
 # =========================
 # Estados para configurar datos de pago
 # =========================
@@ -1074,6 +1094,9 @@ ALLY_CUST_DIR_EDITAR_NOTA  = 988
 ALLY_CUST_DIR_CIUDAD     = 989
 ALLY_CUST_DIR_BARRIO     = 990
 ALLY_CUST_DIR_CORREGIR   = 991
+
+PEDIDO_VALOR_COMPRA = 992  # Confirmar/corregir valor de compra declarado por cliente (bandeja)
+CONFIG_ALLY_MIN_PURCHASE_VALOR = 993  # Capturar nuevo mínimo de compra para subsidio condicional
 
 # =========================
 # Estados para seleccion de cliente/direccion en pedido admin
@@ -1338,7 +1361,9 @@ def get_ally_menu_keyboard():
         ['Mis pedidos', 'Agenda'],
         ['Cotizar envio', 'Recargar'],
         ['Mis repartidores', 'Mi saldo aliado'],
-        ['Mis clientes', 'Volver al menu'],
+        ['Mis clientes', 'Mis solicitudes'],
+        ['Mi enlace de pedidos'],
+        ['Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1828,6 +1853,10 @@ def menu_button_handler(update, context):
         return ally_couriers_panel(update, context)
     elif text == "Mi saldo aliado":
         return cmd_saldo(update, context)
+    elif text == "Mis solicitudes":
+        return ally_bandeja_solicitudes(update, context)
+    elif text == "Mi enlace de pedidos":
+        return ally_mi_enlace(update, context)
 
     # --- Botones del submenú Repartidor ---
     elif text == "Activar repartidor":
@@ -2845,7 +2874,6 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    courier = get_courier_by_user_id(db_user["id"])
     if not courier:
         update.message.reply_text(
             "Se registró tu usuario, pero ocurrió un error obteniendo tu perfil de repartidor.\n"
@@ -5450,6 +5478,35 @@ def construir_resumen_pedido(context):
     if requires_cash and cash_amount > 0:
         resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
 
+    purchase_amount = context.user_data.get("pedido_purchase_amount")
+    if purchase_amount is not None:
+        resumen += "Valor de compra: " + _fmt_pesos(purchase_amount) + "\n"
+
+    # Calcular subsidio efectivo al cliente y cachear en user_data para create_order
+    ally_id_ctx = context.user_data.get("ally_id")
+    subsidio_efectivo_cache = 0
+    customer_delivery_fee_cache = None
+    if ally_id_ctx and subtotal_servicio > 0:
+        try:
+            ally_row = get_ally_by_id(ally_id_ctx)
+            if ally_row:
+                delivery_subsidy = int(ally_row["delivery_subsidy"] or 0)
+                try:
+                    min_purchase_sub = ally_row["min_purchase_for_subsidy"]
+                except (KeyError, IndexError):
+                    min_purchase_sub = None
+                subsidio_efectivo_cache = compute_ally_subsidy(delivery_subsidy, min_purchase_sub, purchase_amount)
+                customer_delivery_fee_cache = max(subtotal_servicio - subsidio_efectivo_cache, 0)
+        except Exception as _e:
+            print("[WARN] construir_resumen_pedido: error calculando subsidio ally={} err={}".format(
+                ally_id_ctx, _e), flush=True)
+    # Persistir en user_data para que pedido_confirmacion_callback los pase a create_order
+    context.user_data["pedido_subsidio_efectivo"] = subsidio_efectivo_cache
+    context.user_data["pedido_customer_delivery_fee"] = customer_delivery_fee_cache
+    if subsidio_efectivo_cache > 0 and customer_delivery_fee_cache is not None:
+        resumen += "Subsidio domicilio: -" + _fmt_pesos(subsidio_efectivo_cache) + "\n"
+        resumen += "Domicilio al cliente: " + _fmt_pesos(customer_delivery_fee_cache) + "\n"
+
     resumen += (
         "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
         "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
@@ -6798,8 +6855,21 @@ def pedido_confirmacion_callback(update, context):
                 dropoff_lng=dropoff_lng,
                 quote_source=quote_source,
                 ally_admin_id_snapshot=admin_id_for_publish,
+                purchase_amount=context.user_data.get("pedido_purchase_amount"),
+                delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
+                customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
             )
             context.user_data["order_id"] = order_id
+
+            # Vincular solicitud de bandeja al pedido creado si aplica
+            _form_req_id = context.user_data.get("bandeja_form_request_id")
+            if _form_req_id:
+                _ally_id_ctx = context.user_data.get("ally_id")
+                try:
+                    mark_ally_form_request_converted(_form_req_id, _ally_id_ctx, order_id)
+                except Exception as _e:
+                    print("[WARN] mark_ally_form_request_converted failed: req={} ally={} order={} err={}".format(
+                        _form_req_id, _ally_id_ctx, order_id, _e))
 
             # Publicar pedido a couriers del equipo
             published_count = 0
@@ -11150,6 +11220,868 @@ def admin_clientes_dir_corregir_location_handler(update, context):
 
 
 # =========================
+# Bandeja de solicitudes del aliado (enlace publico)
+# Prefijo callbacks: alybandeja_
+# =========================
+
+
+def _ally_bandeja_guardar_en_agenda(ally_id, solicitud):
+    """
+    Guarda cliente y dirección desde solicitud de bandeja con anti-duplicado.
+    Retorna (msg_cliente, msg_dir).
+    """
+    phone = (solicitud["customer_phone"] or "").strip()
+    nombre = (solicitud["customer_name"] or "").strip()
+    lat = solicitud["lat"]
+    lng = solicitud["lng"]
+    direccion = (solicitud["delivery_address"] or "").strip()
+    city = (solicitud["delivery_city"] or "").strip() or None
+    barrio = (solicitud["delivery_barrio"] or "").strip() or None
+    tiene_coords = has_valid_coords(lat, lng)
+
+    cliente_existente = get_ally_customer_by_phone(ally_id, phone) if phone else None
+    if cliente_existente:
+        customer_id = cliente_existente["id"]
+        msg_cliente = "Cliente ya existia en agenda."
+    else:
+        customer_id = create_ally_customer(ally_id, nombre, phone, notes=None)
+        msg_cliente = "Cliente nuevo guardado en agenda."
+
+    msg_dir = ""
+    if direccion:
+        existente = find_matching_customer_address(customer_id, direccion, city=city, barrio=barrio)
+        if existente is None:
+            create_customer_address(
+                customer_id=customer_id,
+                label=None,
+                address_text=direccion,
+                city=city,
+                barrio=barrio,
+                notes=None,
+                lat=lat if tiene_coords else None,
+                lng=lng if tiene_coords else None,
+                require_coords=False,
+            )
+            msg_dir = " Direccion nueva guardada{}.".format(" con coordenadas" if tiene_coords else "")
+        else:
+            addr_id = existente["id"]
+            if tiene_coords and not has_valid_coords(existente.get("lat"), existente.get("lng")):
+                update_customer_address_coords(addr_id, customer_id, lat, lng)
+                msg_dir = " Direccion ya existia; coordenadas completadas."
+            else:
+                msg_dir = " Direccion ya existia en agenda."
+
+    return msg_cliente, msg_dir
+
+
+def _pedido_pedir_valor_compra(query_or_update, context, edit=False):
+    """
+    Pregunta al aliado el valor de compra antes de continuar con el flujo de pedido.
+    Se usa cuando la solicitud de bandeja trae purchase_amount_declared.
+    Retorna el estado PEDIDO_VALOR_COMPRA.
+    """
+    suggested = context.user_data.get("pedido_purchase_amount_suggested")
+    if suggested is not None:
+        msg = (
+            "Valor de compra declarado por el cliente: ${:,}\n\n"
+            "Envia el valor correcto de la compra en pesos, o 0 si no aplica:"
+        ).format(int(suggested))
+    else:
+        msg = "Envia el valor de la compra en pesos, o 0 si no aplica:"
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(msg)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(msg)
+    else:
+        query_or_update.edit_message_text(msg)
+    return PEDIDO_VALOR_COMPRA
+
+
+def pedido_valor_compra_handler(update, context):
+    """
+    Maneja la respuesta del aliado al valor de compra.
+    Acepta: entero >= 0 (en pesos), o vacío/0 para None.
+    Luego continúa al flujo normal de pedido.
+    """
+    text = update.message.text.strip() if update.message.text else ""
+    if not text or text == "0":
+        context.user_data["pedido_purchase_amount"] = None
+    else:
+        try:
+            val = int(text.replace(",", "").replace(".", "").replace("$", ""))
+            if val < 0:
+                update.message.reply_text(
+                    "El valor no puede ser negativo. Envia el monto en pesos o 0 si no aplica:"
+                )
+                return PEDIDO_VALOR_COMPRA
+            context.user_data["pedido_purchase_amount"] = val
+        except ValueError:
+            update.message.reply_text(
+                "Valor invalido. Envia solo numeros (ej: 50000) o 0 si no aplica:"
+            )
+            return PEDIDO_VALOR_COMPRA
+    if context.user_data.get("customer_address"):
+        return mostrar_pregunta_base(update, context, edit=False)
+    else:
+        update.message.reply_text(
+            "Para crear el pedido, indica la direccion de entrega.\n\n"
+            "Envia la ubicacion (pin de Telegram) o escribe la direccion:"
+        )
+        return PEDIDO_UBICACION
+
+
+def _ally_bandeja_precargar_pedido(context, ally, solicitud, request_id):
+    """
+    Limpia context.user_data y precarga los datos de la solicitud para el flujo
+    de pedido. Pre-carga también el pickup default del aliado.
+    """
+    context.user_data.clear()
+    context.user_data["ally_id"] = ally["id"]
+    context.user_data["active_ally_id"] = ally["id"]
+    context.user_data["ally"] = ally
+    context.user_data["service_type"] = "Entrega"
+    context.user_data["is_new_customer"] = True
+    context.user_data["bandeja_form_request_id"] = request_id
+    context.user_data["customer_name"] = (solicitud["customer_name"] or "").strip()
+    context.user_data["customer_phone"] = (solicitud["customer_phone"] or "").strip()
+    context.user_data["customer_address"] = (solicitud["delivery_address"] or "").strip()
+    context.user_data["customer_city"] = (solicitud["delivery_city"] or "").strip()
+    context.user_data["customer_barrio"] = (solicitud["delivery_barrio"] or "").strip()
+    if solicitud["notes"]:
+        context.user_data["instructions"] = solicitud["notes"].strip()
+    if solicitud.get("purchase_amount_declared") is not None:
+        context.user_data["pedido_purchase_amount_suggested"] = solicitud["purchase_amount_declared"]
+    if has_valid_coords(solicitud["lat"], solicitud["lng"]):
+        context.user_data["dropoff_lat"] = solicitud["lat"]
+        context.user_data["dropoff_lng"] = solicitud["lng"]
+    # Pre-cargar pickup default para que aparezca en resumen
+    default_loc = get_default_ally_location(ally["id"])
+    if default_loc:
+        context.user_data["pickup_address"] = default_loc.get("address") or ""
+        context.user_data["pickup_city"] = default_loc.get("city") or ""
+        context.user_data["pickup_barrio"] = default_loc.get("barrio") or ""
+        context.user_data["pickup_lat"] = default_loc.get("lat")
+        context.user_data["pickup_lng"] = default_loc.get("lng")
+        if default_loc.get("id"):
+            context.user_data["pickup_location_id"] = default_loc["id"]
+
+
+def _ally_bandeja_validar_entrada(query, ally_id, request_id):
+    """
+    Valida solicitud (ownership + estado procesable).
+    Retorna la solicitud si es válida, None si no (y ya editó el mensaje).
+    """
+    solicitud = get_ally_form_request_by_id(request_id, ally_id)
+    if not solicitud:
+        query.edit_message_text("Solicitud no encontrada.")
+        return None
+    if solicitud["status"] not in ("PENDING_REVIEW", "PENDING_LOCATION"):
+        query.edit_message_text(
+            "Esta solicitud ya fue procesada anteriormente.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
+        )
+        return None
+    return solicitud
+
+
+def _ally_bandeja_validar_ally_y_saldo(query, update, context):
+    """
+    Valida que el usuario sea aliado activo con saldo suficiente y términos aceptados.
+    Retorna el objeto ally si todo está bien, None si falló (y ya editó el mensaje).
+    """
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        query.edit_message_text("No estas registrado. Usa /start primero.")
+        return None
+    ally = get_ally_by_user_id(db_user["id"])
+    if not ally or ally["status"] != "APPROVED":
+        query.edit_message_text("Tu cuenta de aliado no esta activa.")
+        return None
+    _admin_link = get_approved_admin_link_for_ally(ally["id"])
+    _admin_id = _admin_link["admin_id"] if _admin_link else None
+    if not _admin_id:
+        _plat = get_platform_admin()
+        _admin_id = _plat["id"] if _plat else None
+    if _admin_id:
+        _fee_ok, _fee_code = check_service_fee_available(
+            target_type="ALLY", target_id=ally["id"], admin_id=_admin_id,
+        )
+        if not _fee_ok:
+            if _fee_code == "ADMIN_SIN_SALDO":
+                query.edit_message_text("Tu administrador no tiene saldo suficiente para operar.")
+            else:
+                query.edit_message_text("No tienes saldo suficiente. Recarga para continuar.")
+            return None
+    if not ensure_terms(update, context, user.id, role="ALLY"):
+        return None
+    return ally
+
+
+def ally_bandeja_crear_pedido_entry(update, context):
+    """
+    Entry point de nuevo_pedido_conv desde la bandeja: precarga datos y entra al flujo.
+    Callback: alybandeja_crear_{request_id}
+    """
+    query = update.callback_query
+    query.answer()
+    request_id = int(query.data.split("_")[-1])
+
+    ally = _ally_bandeja_validar_ally_y_saldo(query, update, context)
+    if not ally:
+        return ConversationHandler.END
+
+    solicitud = _ally_bandeja_validar_entrada(query, ally["id"], request_id)
+    if not solicitud:
+        return ConversationHandler.END
+
+    _ally_bandeja_precargar_pedido(context, ally, solicitud, request_id)
+
+    if context.user_data.get("pedido_purchase_amount_suggested") is not None:
+        return _pedido_pedir_valor_compra(query, context, edit=True)
+
+    if context.user_data.get("customer_address"):
+        return mostrar_pregunta_base(query, context, edit=True)
+    else:
+        query.edit_message_text(
+            "Para crear el pedido, indica la direccion de entrega.\n\n"
+            "Envia la ubicacion (pin de Telegram) o escribe la direccion:"
+        )
+        return PEDIDO_UBICACION
+
+
+def ally_bandeja_crear_y_guardar_entry(update, context):
+    """
+    Entry point de nuevo_pedido_conv desde la bandeja: guarda en agenda y luego crea pedido.
+    Callback: alybandeja_crearyguardar_{request_id}
+    """
+    query = update.callback_query
+    query.answer()
+    request_id = int(query.data.split("_")[-1])
+
+    ally = _ally_bandeja_validar_ally_y_saldo(query, update, context)
+    if not ally:
+        return ConversationHandler.END
+
+    solicitud = _ally_bandeja_validar_entrada(query, ally["id"], request_id)
+    if not solicitud:
+        return ConversationHandler.END
+
+    # 1. Guardar en agenda (anti-duplicado) antes de limpiar user_data
+    msg_cliente, msg_dir = _ally_bandeja_guardar_en_agenda(ally["id"], solicitud)
+    update_ally_form_request_status(request_id, ally["id"], "SAVED_CONTACT")
+
+    # 2. Notificar resultado del guardado
+    context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Guardado: {}{}\n\nAhora creando el pedido...".format(msg_cliente, msg_dir),
+    )
+
+    # 3. Precargar user_data y entrar al flujo de pedido
+    _ally_bandeja_precargar_pedido(context, ally, solicitud, request_id)
+
+    if context.user_data.get("pedido_purchase_amount_suggested") is not None:
+        return _pedido_pedir_valor_compra(query, context, edit=True)
+
+    if context.user_data.get("customer_address"):
+        return mostrar_pregunta_base(query, context, edit=True)
+    else:
+        query.edit_message_text(
+            "Para crear el pedido, indica la direccion de entrega.\n\n"
+            "Envia la ubicacion (pin de Telegram) o escribe la direccion:"
+        )
+        return PEDIDO_UBICACION
+
+
+def ally_bandeja_solicitudes(update, context):
+    """Entry point del boton 'Mis solicitudes' en el menu del aliado."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally:
+        update.message.reply_text("No tienes un perfil de aliado activo.")
+        return
+    _ally_bandeja_mostrar_lista(update, context, ally["id"], edit=False)
+
+
+_ALLY_ENLACE_STATUS_LABEL = {
+    "PENDING_REVIEW":   "Pendiente",
+    "PENDING_LOCATION": "Sin ubicacion",
+    "SAVED_CONTACT":    "Guardada",
+    "CONVERTED_ORDER":  "Convertida",
+    "DISMISSED":        "Ignorada",
+}
+
+_ALLY_ENLACE_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("Actualizar", callback_data="alyenlace_refresh")],
+    [InlineKeyboardButton("Ver solicitudes", callback_data="alybandeja_pendientes")],
+    [InlineKeyboardButton("Ver procesadas", callback_data="alybandeja_procesadas")],
+])
+
+
+def _ally_mi_enlace_build(ally_id):
+    """Construye (mensaje, teclado) frescos para la vista 'Mi enlace de pedidos'.
+    Lee todos los datos directamente de BD. Retorna (str, InlineKeyboardMarkup)."""
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        return "No se encontro el perfil de aliado.", _ALLY_ENLACE_KEYBOARD
+
+    token = get_or_create_ally_public_token(ally_id)
+    subsidio = int(ally["delivery_subsidy"] or 0)
+    try:
+        min_purchase = ally["min_purchase_for_subsidy"]
+    except (KeyError, IndexError):
+        min_purchase = None
+
+    if subsidio > 0 and min_purchase is not None:
+        subsidio_info = (
+            "Subsidio condicional: ${:,} por pedido\n"
+            "Aplica solo en pedidos con compra desde ${:,}.\n"
+            "Si la compra no alcanza ese valor, el cliente paga el domicilio completo."
+        ).format(subsidio, min_purchase)
+    elif subsidio > 0:
+        subsidio_info = (
+            "Subsidio fijo: ${:,} por pedido\n"
+            "Aplica en todos tus pedidos sin condicion."
+        ).format(subsidio)
+    else:
+        subsidio_info = (
+            "Sin subsidio configurado. "
+            "Tus clientes pagan el valor completo del domicilio."
+        )
+
+    conteos = count_ally_form_requests_by_status(ally_id)
+    pendientes = conteos.get("PENDING_REVIEW", 0) + conteos.get("PENDING_LOCATION", 0)
+    guardadas = conteos.get("SAVED_CONTACT", 0)
+    convertidas = conteos.get("CONVERTED_ORDER", 0)
+    ignoradas = conteos.get("DISMISSED", 0)
+    total_solicitudes = sum(conteos.values())
+    if total_solicitudes > 0:
+        uso_enlace = "Uso del enlace: {} recibidas — {} convertidas".format(
+            total_solicitudes, convertidas
+        )
+        if pendientes > 0:
+            uso_enlace += " — {} pendientes por revisar".format(pendientes)
+    else:
+        uso_enlace = "Uso del enlace: Aun no hay solicitudes."
+    actividad = (
+        "Actividad de tu enlace:\n"
+        "- Pendientes: {}\n"
+        "- Guardadas en agenda: {}\n"
+        "- Convertidas en pedido: {}\n"
+        "- Ignoradas: {}"
+    ).format(pendientes, guardadas, convertidas, ignoradas)
+
+    recientes = list_ally_form_requests_for_ally(ally_id, status=None, limit=5)
+    if recientes:
+        lineas = []
+        for r in recientes:
+            etiqueta = _ALLY_ENLACE_STATUS_LABEL.get(r["status"], r["status"])
+            nombre = (r["customer_name"] or "").split()[0] if r["customer_name"] else "?"
+            if r["status"] == "CONVERTED_ORDER" and r.get("order_id"):
+                detalle = "pedido #{}".format(r["order_id"])
+            elif r.get("delivery_barrio"):
+                detalle = r["delivery_barrio"]
+            elif r.get("delivery_address"):
+                palabras = (r["delivery_address"] or "").split()
+                detalle = " ".join(palabras[:4]) if palabras else "sin direccion"
+            else:
+                detalle = "sin ubicacion"
+            lineas.append("- {}: {} — {}".format(etiqueta, nombre, detalle))
+        movimientos = "Ultimos movimientos:\n" + "\n".join(lineas)
+    else:
+        movimientos = "Ultimos movimientos:\nAun no hay solicitudes registradas."
+
+    if FORM_BASE_URL:
+        url = "{}/form/{}".format(FORM_BASE_URL, token)
+        mensaje = (
+            "Tu enlace de pedidos:\n"
+            "{}\n"
+            "{}\n\n"
+            "{}\n\n"
+            "{}\n\n"
+            "{}\n\n"
+            "Tus clientes pueden registrar sus datos, cotizar el domicilio "
+            "y enviarte la solicitud directamente. "
+            "En proximos pedidos solo necesitaran su numero de telefono."
+            "\n\nTextos para compartir:\n\n"
+            "Corto:\n"
+            "\"Hola, aqui puedes hacerme tu pedido: {}\"\n\n"
+            "Explicativo:\n"
+            "\"Hola. Puedes enviarme tu pedido por este enlace: {}. "
+            "Ahi puedes registrar tus datos y cotizar el domicilio.\"\n\n"
+            "Cliente nuevo:\n"
+            "\"Hola. Ahora puedes hacerme tu pedido por este enlace: {}. "
+            "La primera vez llenas tus datos; despues sera mas rapido.\""
+        ).format(url, uso_enlace, subsidio_info, actividad, movimientos, url, url, url)
+    else:
+        mensaje = (
+            "Token de tu enlace: {}\n"
+            "{}\n\n"
+            "{}\n\n"
+            "{}\n\n"
+            "{}\n\n"
+            "La URL publica del formulario aun no esta configurada. "
+            "Pide al administrador que configure FORM_BASE_URL en el sistema."
+        ).format(token, uso_enlace, subsidio_info, actividad, movimientos)
+
+    return mensaje, _ALLY_ENLACE_KEYBOARD
+
+
+def ally_mi_enlace(update, context):
+    """Muestra el enlace de pedidos publico del aliado."""
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally:
+        update.message.reply_text("No tienes un perfil de aliado activo.")
+        return
+    if ally["status"] != "APPROVED":
+        update.message.reply_text(
+            "Tu perfil de aliado aun no esta aprobado. "
+            "El enlace estara disponible cuando tu cuenta este activa."
+        )
+        return
+    mensaje, markup = _ally_mi_enlace_build(ally["id"])
+    update.message.reply_text(mensaje, reply_markup=markup)
+
+
+def ally_enlace_refresh_callback(update, context):
+    """Refresca la vista 'Mi enlace de pedidos' con datos nuevos de BD."""
+    query = update.callback_query
+    query.answer()
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally:
+        query.edit_message_text("No tienes un perfil de aliado activo.")
+        return
+    if ally["status"] != "APPROVED":
+        query.edit_message_text(
+            "Tu perfil de aliado aun no esta aprobado. "
+            "El enlace estara disponible cuando tu cuenta este activa."
+        )
+        return
+    mensaje, markup = _ally_mi_enlace_build(ally["id"])
+    query.edit_message_text(mensaje, reply_markup=markup)
+
+
+def _ally_bandeja_mostrar_lista(update, context, ally_id, edit=False):
+    """Muestra la lista de solicitudes pendientes (PENDING_REVIEW o PENDING_LOCATION) del aliado."""
+    solicitudes = list_ally_form_requests_for_ally(
+        ally_id, status=["PENDING_REVIEW", "PENDING_LOCATION"], limit=15
+    )
+    if not solicitudes:
+        text = "No tienes solicitudes pendientes."
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Ver procesadas", callback_data="alybandeja_procesadas")],
+            [InlineKeyboardButton("Cerrar", callback_data="alybandeja_cerrar")],
+        ])
+        if edit and update.callback_query:
+            update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            update.effective_message.reply_text(text, reply_markup=keyboard)
+        return
+
+    # PENDING_LOCATION primero (requieren ubicacion — mas urgentes), luego PENDING_REVIEW
+    solicitudes = sorted(solicitudes, key=lambda s: 0 if s["status"] == "PENDING_LOCATION" else 1)
+
+    sin_ubicacion = sum(1 for s in solicitudes if s["status"] == "PENDING_LOCATION")
+    pendientes_rev = sum(1 for s in solicitudes if s["status"] == "PENDING_REVIEW")
+    resumen_partes = []
+    if sin_ubicacion:
+        resumen_partes.append("{} sin ubicacion".format(sin_ubicacion))
+    if pendientes_rev:
+        resumen_partes.append("{} pendientes".format(pendientes_rev))
+    resumen = " | ".join(resumen_partes)
+
+    lines = ["Solicitudes pendientes ({}):  {}\n".format(len(solicitudes), resumen)]
+    buttons = []
+    for s in solicitudes:
+        nombre = s["customer_name"] or "Sin nombre"
+        telefono = s["customer_phone"] or ""
+        direccion = s["delivery_address"] or "Sin direccion"
+        etiqueta = _BANDEJA_STATUS_LABELS.get(s["status"], s["status"])
+        lines.append("[{}] {} - {} | {}".format(etiqueta, nombre, telefono, direccion))
+        buttons.append([InlineKeyboardButton(
+            "{}: {}".format(etiqueta, nombre),
+            callback_data="alybandeja_ver_{}".format(s["id"])
+        )])
+    buttons.append([InlineKeyboardButton("Ver procesadas", callback_data="alybandeja_procesadas")])
+    buttons.append([InlineKeyboardButton("Cerrar", callback_data="alybandeja_cerrar")])
+
+    text = "\n".join(lines)
+    keyboard = InlineKeyboardMarkup(buttons)
+    if edit and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        update.effective_message.reply_text(text, reply_markup=keyboard)
+
+
+_BANDEJA_STATUS_LABELS = {
+    "PENDING_REVIEW": "Pendiente",
+    "PENDING_LOCATION": "Sin ubicacion",
+    "SAVED_CONTACT": "Guardada en agenda",
+    "DISMISSED": "Ignorada",
+    "CONVERTED_ORDER": "Convertida en pedido",
+}
+
+
+def _ally_bandeja_mostrar_procesadas(update, context, ally_id, edit=False):
+    """Muestra solicitudes ya procesadas: SAVED_CONTACT, DISMISSED, CONVERTED_ORDER."""
+    solicitudes = list_ally_form_requests_for_ally(
+        ally_id, status=["SAVED_CONTACT", "DISMISSED", "CONVERTED_ORDER"], limit=20
+    )
+    if not solicitudes:
+        text = "No hay solicitudes procesadas aun."
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Ver pendientes", callback_data="alybandeja_pendientes")],
+            [InlineKeyboardButton("Cerrar", callback_data="alybandeja_cerrar")],
+        ])
+        if edit and update.callback_query:
+            update.callback_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            update.effective_message.reply_text(text, reply_markup=keyboard)
+        return
+
+    lines = ["Solicitudes procesadas ({}):\n".format(len(solicitudes))]
+    buttons = []
+    for s in solicitudes:
+        nombre = s["customer_name"] or "Sin nombre"
+        estado = _BANDEJA_STATUS_LABELS.get(s["status"], s["status"])
+        label = "{} [{}]".format(nombre, estado)
+        buttons.append([InlineKeyboardButton(
+            label,
+            callback_data="alybandeja_verp_{}".format(s["id"])
+        )])
+        lines.append("{} | {} | {}".format(
+            nombre,
+            s["customer_phone"] or "",
+            estado,
+        ))
+
+    buttons.append([InlineKeyboardButton("Ver pendientes", callback_data="alybandeja_pendientes")])
+    buttons.append([InlineKeyboardButton("Cerrar", callback_data="alybandeja_cerrar")])
+
+    text = "\n".join(lines)
+    keyboard = InlineKeyboardMarkup(buttons)
+    if edit and update.callback_query:
+        update.callback_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        update.effective_message.reply_text(text, reply_markup=keyboard)
+
+
+_ORDER_STATUS_LABELS_ALLY = {
+    "PENDING": "Pendiente",
+    "PUBLISHED": "Buscando repartidor",
+    "ACCEPTED": "Repartidor asignado",
+    "PICKED_UP": "En camino al cliente",
+    "DELIVERED": "Entregado",
+    "CANCELLED": "Cancelado",
+}
+
+
+def _ally_bandeja_mostrar_pedido(query, ally_id, order_id):
+    """
+    Muestra el detalle de un pedido desde la bandeja del aliado.
+    Valida que el pedido pertenezca al aliado. Solo lectura.
+    """
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text(
+            "El pedido #{} no fue encontrado.".format(order_id),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a procesadas", callback_data="alybandeja_volver_procesadas")]
+            ])
+        )
+        return
+
+    if order["ally_id"] != ally_id:
+        query.edit_message_text(
+            "Este pedido no pertenece a tu cuenta.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a procesadas", callback_data="alybandeja_volver_procesadas")]
+            ])
+        )
+        return
+
+    status_label = _ORDER_STATUS_LABELS_ALLY.get(order["status"], order["status"])
+
+    courier_name = "Sin asignar"
+    if order["courier_id"]:
+        courier_row = get_courier_by_id(order["courier_id"])
+        if courier_row and courier_row["full_name"]:
+            courier_name = courier_row["full_name"]
+
+    lines = [
+        "Pedido #{}".format(order["id"]),
+        "Estado: {}".format(status_label),
+        "Cliente: {}".format(order["customer_name"] or "N/A"),
+        "Telefono: {}".format(order["customer_phone"] or "N/A"),
+        "Direccion: {}".format(order["customer_address"] or "N/A"),
+        "Repartidor: {}".format(courier_name),
+        "Tarifa courier: ${:,}".format(int(order["total_fee"] or 0)),
+    ]
+    try:
+        purchase_amount = order["purchase_amount"]
+        if purchase_amount is not None:
+            lines.append("Valor de compra: ${:,}".format(int(purchase_amount)))
+        delivery_subsidy_applied = int(order["delivery_subsidy_applied"] or 0)
+        if delivery_subsidy_applied > 0:
+            lines.append("Subsidio aplicado: -${:,}".format(delivery_subsidy_applied))
+        elif purchase_amount is not None:
+            # Hubo monto de compra confirmado pero el subsidio no aplico
+            lines.append("Subsidio aplicado: No")
+        customer_delivery_fee = order["customer_delivery_fee"]
+        if customer_delivery_fee is not None:
+            lines.append("Domicilio al cliente: ${:,}".format(int(customer_delivery_fee)))
+    except (KeyError, IndexError):
+        pass
+    if order["instructions"]:
+        lines.append("Instrucciones: {}".format(order["instructions"]))
+
+    query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Volver a procesadas", callback_data="alybandeja_volver_procesadas")]
+        ])
+    )
+
+
+def ally_bandeja_callback(update, context):
+    """Maneja todos los callbacks alybandeja_* para la bandeja del aliado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    user_db_id = get_user_db_id_from_update(update)
+    ally = get_ally_by_user_id(user_db_id)
+    if not ally:
+        query.edit_message_text("No tienes un perfil de aliado activo.")
+        return
+
+    ally_id = ally["id"]
+
+    if data == "alybandeja_cerrar":
+        query.edit_message_text("Bandeja cerrada.")
+        return
+
+    if data == "alybandeja_volver" or data == "alybandeja_pendientes":
+        _ally_bandeja_mostrar_lista(update, context, ally_id, edit=True)
+        return
+
+    if data == "alybandeja_procesadas":
+        _ally_bandeja_mostrar_procesadas(update, context, ally_id, edit=True)
+        return
+
+    if data == "alybandeja_volver_procesadas":
+        _ally_bandeja_mostrar_procesadas(update, context, ally_id, edit=True)
+        return
+
+    if data.startswith("alybandeja_ver_"):
+        request_id = int(data.split("_")[-1])
+        solicitud = get_ally_form_request_by_id(request_id, ally_id)
+        if not solicitud:
+            query.edit_message_text("Solicitud no encontrada.")
+            return
+
+        nombre = solicitud["customer_name"] or "Sin nombre"
+        telefono = solicitud["customer_phone"] or "No indicado"
+        direccion = solicitud["delivery_address"] or "No indicada"
+        ciudad = solicitud["delivery_city"] or ""
+        barrio = solicitud["delivery_barrio"] or ""
+        notas = solicitud["notes"] or ""
+
+        estado_actual = solicitud.get("status", "")
+        estado_label = _BANDEJA_STATUS_LABELS.get(estado_actual, estado_actual)
+        _ACCION_SUGERIDA = {
+            "PENDING_LOCATION": "confirmar ubicacion con el cliente.",
+            "PENDING_REVIEW": "revisar la solicitud y decidir.",
+        }
+        accion = _ACCION_SUGERIDA.get(estado_actual)
+
+        lines = [
+            "Solicitud #{}".format(solicitud["id"]),
+            "Estado: {}".format(estado_label),
+        ]
+        if accion:
+            lines.append("Accion sugerida: {}".format(accion))
+        lines += [
+            "",
+            "Cliente: {}".format(nombre),
+            "Telefono: {}".format(telefono),
+            "Direccion: {}{}{}".format(
+                direccion,
+                " - " + barrio if barrio else "",
+                ", " + ciudad if ciudad else "",
+            ),
+        ]
+        if notas:
+            lines.append("Notas: {}".format(notas))
+        purchase_amt = solicitud.get("purchase_amount_declared")
+        if purchase_amt is not None:
+            lines.append("Valor compra declarado: ${}".format("{:,}".format(int(purchase_amt))))
+
+        # Mostrar desglose economico si hay cotizacion
+        quoted = solicitud["quoted_price"]
+        subsidio = solicitud["subsidio_aliado"]
+        incentivo = solicitud["incentivo_cliente"]
+        total = solicitud["total_cliente"]
+        if quoted is not None:
+            lines.append("")
+            lines.append("Cotizacion domicilio: ${}".format("{:,}".format(int(quoted))))
+            if subsidio:
+                lines.append("  Subsidio aliado: -${}".format("{:,}".format(int(subsidio))))
+                base = max(int(quoted) - int(subsidio), 0)
+                lines.append("  Base cliente: ${}".format("{:,}".format(base)))
+            if incentivo:
+                lines.append("  Incentivo adicional: +${}".format("{:,}".format(int(incentivo))))
+            if total is not None:
+                lines.append("  Total cliente: ${}".format("{:,}".format(int(total))))
+
+        # Mostrar order_id si existe (solicitud ya convertida)
+        if solicitud.get("order_id"):
+            lines.append("")
+            lines.append("Convertida en pedido #{}".format(solicitud["order_id"]))
+
+        buttons = [
+            [InlineKeyboardButton(
+                "Crear pedido",
+                callback_data="alybandeja_crear_{}".format(solicitud["id"])
+            )],
+            [InlineKeyboardButton(
+                "Crear y guardar",
+                callback_data="alybandeja_crearyguardar_{}".format(solicitud["id"])
+            )],
+            [InlineKeyboardButton(
+                "Guardar en agenda",
+                callback_data="alybandeja_guardar_{}".format(solicitud["id"])
+            )],
+            [InlineKeyboardButton(
+                "Ignorar",
+                callback_data="alybandeja_ignorar_{}".format(solicitud["id"])
+            )],
+            [InlineKeyboardButton("Volver", callback_data="alybandeja_volver")],
+        ]
+        query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("alybandeja_verp_"):
+        request_id = int(data.split("_")[-1])
+        solicitud = get_ally_form_request_by_id(request_id, ally_id)
+        if not solicitud:
+            query.edit_message_text("Solicitud no encontrada.")
+            return
+
+        nombre = solicitud["customer_name"] or "Sin nombre"
+        telefono = solicitud["customer_phone"] or "No indicado"
+        direccion = solicitud["delivery_address"] or "No indicada"
+        ciudad = solicitud["delivery_city"] or ""
+        barrio = solicitud["delivery_barrio"] or ""
+        notas_p = solicitud["notes"] or ""
+        estado_label = _BANDEJA_STATUS_LABELS.get(solicitud["status"], solicitud["status"])
+
+        lines_p = [
+            "Solicitud #{}".format(solicitud["id"]),
+            "Estado: {}".format(estado_label),
+            "Cliente: {}".format(nombre),
+            "Telefono: {}".format(telefono),
+            "Direccion: {}{}{}".format(
+                direccion,
+                " - " + barrio if barrio else "",
+                ", " + ciudad if ciudad else "",
+            ),
+        ]
+        if notas_p:
+            lines_p.append("Notas: {}".format(notas_p))
+        purchase_amt_p = solicitud.get("purchase_amount_declared")
+        if purchase_amt_p is not None:
+            lines_p.append("Valor compra declarado: ${}".format("{:,}".format(int(purchase_amt_p))))
+
+        quoted_p = solicitud["quoted_price"]
+        subsidio_p = solicitud["subsidio_aliado"]
+        incentivo_p = solicitud["incentivo_cliente"]
+        total_p = solicitud["total_cliente"]
+        if quoted_p is not None:
+            lines_p.append("")
+            lines_p.append("Cotizacion domicilio: ${}".format("{:,}".format(int(quoted_p))))
+            if subsidio_p:
+                lines_p.append("  Subsidio aliado: -${}".format("{:,}".format(int(subsidio_p))))
+                base_p = max(int(quoted_p) - int(subsidio_p), 0)
+                lines_p.append("  Base cliente: ${}".format("{:,}".format(base_p)))
+            if incentivo_p:
+                lines_p.append("  Incentivo adicional: +${}".format("{:,}".format(int(incentivo_p))))
+            if total_p is not None:
+                lines_p.append("  Total cliente: ${}".format("{:,}".format(int(total_p))))
+
+        order_id_p = solicitud.get("order_id")
+        if order_id_p:
+            lines_p.append("")
+            lines_p.append("Convertida en pedido #{}".format(order_id_p))
+
+        back_buttons = []
+        if order_id_p:
+            back_buttons.append([InlineKeyboardButton(
+                "Ver pedido #{}".format(order_id_p),
+                callback_data="alybandeja_verpedido_{}".format(order_id_p)
+            )])
+        back_buttons.append([InlineKeyboardButton("Volver a procesadas", callback_data="alybandeja_volver_procesadas")])
+
+        query.edit_message_text(
+            "\n".join(lines_p),
+            reply_markup=InlineKeyboardMarkup(back_buttons)
+        )
+        return
+
+    if data.startswith("alybandeja_verpedido_"):
+        try:
+            order_id_req = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            query.edit_message_text("Referencia de pedido no valida.")
+            return
+        _ally_bandeja_mostrar_pedido(query, ally_id, order_id_req)
+        return
+
+    if data.startswith("alybandeja_guardar_"):
+        request_id = int(data.split("_")[-1])
+        solicitud = get_ally_form_request_by_id(request_id, ally_id)
+        if not solicitud:
+            query.edit_message_text("Solicitud no encontrada.")
+            return
+        if solicitud["status"] not in ("PENDING_REVIEW", "PENDING_LOCATION"):
+            query.edit_message_text(
+                "Esta solicitud ya fue procesada anteriormente.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
+            )
+            return
+
+        msg_cliente, msg_dir = _ally_bandeja_guardar_en_agenda(ally_id, solicitud)
+        update_ally_form_request_status(request_id, ally_id, "SAVED_CONTACT")
+        query.edit_message_text(
+            "{}{}\n\nPuedes ver el cliente en tu agenda.".format(msg_cliente, msg_dir),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
+        )
+        return
+
+    if data.startswith("alybandeja_ignorar_"):
+        request_id = int(data.split("_")[-1])
+        solicitud = get_ally_form_request_by_id(request_id, ally_id)
+        if not solicitud:
+            query.edit_message_text("Solicitud no encontrada.")
+            return
+        if solicitud["status"] not in ("PENDING_REVIEW", "PENDING_LOCATION"):
+            query.edit_message_text(
+                "Esta solicitud ya fue procesada y no puede ignorarse.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
+            )
+            return
+        update_ally_form_request_status(request_id, ally_id, "DISMISSED")
+        query.edit_message_text(
+            "Solicitud ignorada.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
+        )
+        return
+
+
+# =========================
 # Agenda de clientes del Aliado (ally_clientes_conv)
 # Prefijo callbacks: allycust_
 # Prefijo user_data: allycust_
@@ -13753,6 +14685,8 @@ nuevo_pedido_conv = ConversationHandler(
         MessageHandler(Filters.regex(r'^Nuevo pedido$'), nuevo_pedido),
         CallbackQueryHandler(nuevo_pedido_desde_cotizador, pattern=r"^cotizar_cust_(nuevo|recurrente)$"),
         CallbackQueryHandler(nuevo_pedido_tras_terms, pattern=r"^terms_accept_ALLY$"),
+        CallbackQueryHandler(ally_bandeja_crear_pedido_entry, pattern=r"^alybandeja_crear_\d+$"),
+        CallbackQueryHandler(ally_bandeja_crear_y_guardar_entry, pattern=r"^alybandeja_crearyguardar_\d+$"),
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
@@ -13825,6 +14759,10 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_PICKUP_GUARDAR: [
             CallbackQueryHandler(pedido_pickup_guardar_callback, pattern=r"^pickup_guardar_")
+        ],
+        PEDIDO_VALOR_COMPRA: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_compra_handler),
         ],
         PEDIDO_REQUIERE_BASE: [
             CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$")
@@ -17326,6 +18264,24 @@ def admin_config_callback(update, context):
             loc_text = "No disponible"
             maps_text = ""
 
+        subsidio = int(ally["delivery_subsidy"] or 0)
+        try:
+            min_purchase = ally["min_purchase_for_subsidy"]
+        except (KeyError, IndexError):
+            min_purchase = None
+        if subsidio == 0:
+            subsidio_label = "Subsidio domicilio: No configurado"
+        elif min_purchase is not None:
+            subsidio_label = (
+                "Subsidio domicilio: ${:,} por pedido\n"
+                "Modo: Condicional\n"
+                "Compra minima: ${:,}"
+            ).format(subsidio, min_purchase)
+        else:
+            subsidio_label = (
+                "Subsidio domicilio: ${:,} por pedido\n"
+                "Modo: Incondicional"
+            ).format(subsidio)
         texto = (
             "Detalle del aliado:\n\n"
             "ID: {id}\n"
@@ -17337,6 +18293,7 @@ def admin_config_callback(update, context):
             "Barrio: {barrio}\n"
             "Estado: {status}\n"
             "Reinicio de registro: {reset_status}\n"
+            "{subsidio_label}\n"
             "Ubicación: {loc}\n"
             "{maps}"
         ).format(
@@ -17349,6 +18306,7 @@ def admin_config_callback(update, context):
             barrio=ally["barrio"],
             status=ally["status"],
             reset_status=reset_status,
+            subsidio_label=subsidio_label,
             loc=loc_text,
             maps=maps_text,
         )
@@ -17367,6 +18325,16 @@ def admin_config_callback(update, context):
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
             _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
 
+        keyboard.append([InlineKeyboardButton(
+            "Editar subsidio domicilio (${:,})".format(subsidio),
+            callback_data="config_ally_subsidy_{}".format(ally_id)
+        )])
+        keyboard.append([InlineKeyboardButton(
+            "Compra minima subsidio ({})".format(
+                "${:,}".format(min_purchase) if min_purchase is not None else "sin condicion"
+            ),
+            callback_data="config_ally_minpurchase_{}".format(ally_id)
+        )])
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -17815,6 +18783,162 @@ def admin_config_callback(update, context):
         return
 
     query.answer("Opción no reconocida.", show_alert=True)
+
+
+def config_ally_subsidy_start(update, context):
+    """Entry point del ConversationHandler para editar el subsidio de domicilio de un aliado."""
+    query = update.callback_query
+    query.answer()
+    if not user_has_platform_admin(query.from_user.id):
+        query.answer("Solo el Administrador de Plataforma puede editar el subsidio.", show_alert=True)
+        return ConversationHandler.END
+    ally_id = int(query.data.split("_")[-1])
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        query.edit_message_text("No se encontro el aliado.")
+        return ConversationHandler.END
+    subsidio_actual = int(ally["delivery_subsidy"] or 0)
+    context.user_data["config_subsidy_ally_id"] = ally_id
+    query.edit_message_text(
+        "Aliado: {}\n\nSubsidio actual: ${:,}\n\n"
+        "Envia el nuevo valor del subsidio (numero entero en COP, 0 para sin subsidio).\n"
+        "Usa /cancel para cancelar.".format(ally["business_name"], subsidio_actual)
+    )
+    return CONFIG_ALLY_SUBSIDY_VALOR
+
+
+def config_ally_subsidy_valor(update, context):
+    """Captura y guarda el nuevo subsidio de domicilio del aliado."""
+    texto = (update.message.text or "").strip().replace(".", "").replace(",", "")
+    ally_id = context.user_data.get("config_subsidy_ally_id")
+    if not ally_id:
+        update.message.reply_text("Error: sesion perdida. Vuelve al menu de configuracion.")
+        return ConversationHandler.END
+    try:
+        nuevo_subsidio = int(texto)
+        if nuevo_subsidio < 0:
+            raise ValueError("negativo")
+    except ValueError:
+        update.message.reply_text(
+            "Valor invalido. Debe ser un numero entero mayor o igual a 0. Intenta de nuevo o usa /cancel."
+        )
+        return CONFIG_ALLY_SUBSIDY_VALOR
+    update_ally_delivery_subsidy(ally_id, nuevo_subsidio)
+    context.user_data.pop("config_subsidy_ally_id", None)
+    ally = get_ally_by_id(ally_id)
+    business_name = ally["business_name"] if ally else "ID {}".format(ally_id)
+    update.message.reply_text(
+        "Subsidio de domicilio actualizado.\n\n"
+        "Aliado: {}\nNuevo subsidio: ${:,}".format(business_name, nuevo_subsidio)
+    )
+    return ConversationHandler.END
+
+
+def config_ally_minpurchase_start(update, context):
+    """Inicia el flujo para editar la compra mínima requerida para aplicar el subsidio."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = query.from_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin or admin.get("role") != "PLATFORM_ADMIN":
+        query.answer("Solo el Administrador de Plataforma puede editar esto.", show_alert=True)
+        return ConversationHandler.END
+    ally_id = int(query.data.split("_")[-1])
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        query.edit_message_text("No se encontro el aliado.")
+        return ConversationHandler.END
+    try:
+        min_actual = ally["min_purchase_for_subsidy"]
+    except (KeyError, IndexError):
+        min_actual = None
+    subsidio = int(ally["delivery_subsidy"] or 0)
+    context.user_data["config_minpurchase_ally_id"] = ally_id
+    if subsidio == 0:
+        query.edit_message_text(
+            "Este aliado no tiene subsidio configurado ($0). "
+            "Configura primero el subsidio antes de definir la compra minima.\n\n"
+            "Usa /cancel para cancelar."
+        )
+        return ConversationHandler.END
+    if min_actual is not None:
+        actual_txt = "Compra minima actual: ${:,}".format(min_actual)
+        instruccion = (
+            "Envia el nuevo valor minimo de compra (entero en COP), "
+            "0 para quitar la condicion (subsidio incondicional), "
+            "o /cancel para cancelar."
+        )
+    else:
+        actual_txt = "Sin compra minima configurada (subsidio incondicional)."
+        instruccion = (
+            "Envia el valor minimo de compra requerido para aplicar el subsidio "
+            "(entero en COP, mayor a 0), o /cancel para cancelar."
+        )
+    query.edit_message_text(
+        "Aliado: {}\nSubsidio: ${:,}\n{}\n\n{}".format(
+            ally["business_name"], subsidio, actual_txt, instruccion
+        )
+    )
+    return CONFIG_ALLY_MIN_PURCHASE_VALOR
+
+
+def config_ally_minpurchase_valor(update, context):
+    """Captura y guarda la compra mínima para activar el subsidio del aliado."""
+    texto = (update.message.text or "").strip().replace(".", "").replace(",", "")
+    ally_id = context.user_data.get("config_minpurchase_ally_id")
+    if not ally_id:
+        update.message.reply_text("Error: sesion perdida. Vuelve al menu de configuracion.")
+        return ConversationHandler.END
+    try:
+        valor = int(texto)
+        if valor < 0:
+            raise ValueError("negativo")
+    except ValueError:
+        update.message.reply_text(
+            "Valor invalido. Debe ser un numero entero >= 0 (0 = subsidio incondicional). Intenta de nuevo o usa /cancel."
+        )
+        return CONFIG_ALLY_MIN_PURCHASE_VALOR
+    nuevo_min = valor if valor > 0 else None
+    update_ally_min_purchase_for_subsidy(ally_id, nuevo_min)
+    context.user_data.pop("config_minpurchase_ally_id", None)
+    ally = get_ally_by_id(ally_id)
+    business_name = ally["business_name"] if ally else "ID {}".format(ally_id)
+    if nuevo_min is not None:
+        resultado = "Compra minima para subsidio: ${:,}".format(nuevo_min)
+    else:
+        resultado = "Subsidio ahora es incondicional (sin compra minima)."
+    update.message.reply_text(
+        "Configuracion actualizada.\n\nAliado: {}\n{}".format(business_name, resultado)
+    )
+    return ConversationHandler.END
+
+
+config_ally_minpurchase_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(config_ally_minpurchase_start, pattern=r"^config_ally_minpurchase_\d+$")],
+    states={
+        CONFIG_ALLY_MIN_PURCHASE_VALOR: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, config_ally_minpurchase_valor)
+        ]
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+)
+
+
+config_ally_subsidy_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(config_ally_subsidy_start, pattern=r"^config_ally_subsidy_\d+$")],
+    states={
+        CONFIG_ALLY_SUBSIDY_VALOR: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, config_ally_subsidy_valor)
+        ]
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+)
 
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
@@ -18364,6 +19488,8 @@ def main():
     dp.add_handler(CallbackQueryHandler(pendientes_callback, pattern=r"^menu_"))
 
     # Configuraciones (botones config_*)
+    dp.add_handler(config_ally_subsidy_conv)      # debe ir ANTES del handler general config_*
+    dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
@@ -18407,6 +19533,8 @@ def main():
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
     dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
     dp.add_handler(ally_clientes_conv)     # Agenda de clientes del Aliado (entry: Mis clientes)
+    dp.add_handler(CallbackQueryHandler(ally_bandeja_callback, pattern=r"^alybandeja_"))  # Bandeja solicitudes
+    dp.add_handler(CallbackQueryHandler(ally_enlace_refresh_callback, pattern=r"^alyenlace_refresh$"))  # Refrescar Mi enlace
     # Estos tres deben ir ANTES del handler global ^admin_ para que sus entry points no sean interceptados
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
@@ -18571,7 +19699,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Mis solicitudes|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 

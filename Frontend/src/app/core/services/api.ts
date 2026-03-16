@@ -34,4 +34,22 @@ export class ApiService {
     return this.http.get<any[]>(`${this.baseUrl}/admin/orders/unassigned`);
   }
 
+  // ─── Formulario público del aliado ───────────────────────────────────────
+
+  getFormInfo(token: string) {
+    return this.http.get<any>(`${this.baseUrl}/form/${token}`);
+  }
+
+  lookupPhone(token: string, phone: string) {
+    return this.http.post<any>(`${this.baseUrl}/form/${token}/lookup-phone`, { phone });
+  }
+
+  quoteForm(token: string, lat: number, lng: number) {
+    return this.http.post<any>(`${this.baseUrl}/form/${token}/quote`, { lat, lng });
+  }
+
+  submitForm(token: string, payload: any) {
+    return this.http.post<any>(`${this.baseUrl}/form/${token}/submit`, payload);
+  }
+
 }

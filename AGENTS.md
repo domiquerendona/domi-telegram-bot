@@ -1031,6 +1031,21 @@ PROHIBIDO usar residence_lat/lng como sustituto permanente; solo se usa como fal
 
 PROHIBIDO usar .get() en objetos Row de la base de datos. Usar siempre _row_value(row, key) definido en order_delivery.py. sqlite3.Row no implementa .get(); RealDictRow de psycopg2 sí, pero el código debe ser compatible con ambos motores.
 
+Excepción permitida: cuando db.py retorna explícitamente dict(row) (por ejemplo get_ally_by_public_token), el resultado ya es un dict Python y row["key"] es seguro. Aun así PROHIBIDO usar .get() — usar row["key"] con fallback explícito (ej. row["key"] or 0) para que el comportamiento ante NULL sea visible en el código.
+
+REGLA ADICIONAL — SELECT debe incluir todas las columnas que el caller necesite:
+Antes de usar row["columna"] en cualquier función que recibe un dict de BD, verificar que la query SELECT que lo produjo incluye esa columna. Si la columna existe en la tabla pero no está en el SELECT, row["columna"] lanza KeyError. Toda nueva columna de negocio agregada a una tabla (ej. delivery_subsidy en allies) debe añadirse explícitamente al SELECT de todas las funciones que retornan esa entidad.
+
+REGLA ADICIONAL — Validación de enumerados en endpoints públicos:
+Los endpoints FastAPI que aceptan campos con valores restringidos (ej. incentivo_cliente ∈ {0, 1000, 2000, 3000}) deben validar en backend con HTTPException 422 aunque la UI solo ofrezca esos valores. El backend no puede confiar en que el cliente siempre envíe datos correctos. Patrón obligatorio:
+  ALLOWED = {0, 1000, 2000, 3000}
+  value = body.field if body.field is not None else 0
+  if value not in ALLOWED:
+      raise HTTPException(status_code=422, detail=f"field debe ser uno de {sorted(ALLOWED)}.")
+
+REGLA ADICIONAL — El backend es la fuente de verdad de precios y cálculos financieros:
+PROHIBIDO usar valores de precio o cotización enviados por el cliente (body.quoted_price, body.total, etc.) como fuente de verdad para persistencia o cálculo financiero. El backend debe recalcular siempre el precio usando sus propias funciones (quote_order_by_coords, calcular_precio_distancia, etc.) a partir de los datos geográficos recibidos. Los campos de precio en el payload del cliente pueden mantenerse por compatibilidad de UI pero deben ignorarse en la lógica de negocio. Si el recálculo no es posible (falta de coordenadas, fallo de API), persistir los campos de cotización como NULL — nunca usar el valor enviado por el cliente como fallback.
+
 13G. Pendientes (NO implementado aún)
 
 - Cuenta regresiva visible (countdown) post-aceptación.
@@ -1284,3 +1299,17 @@ Reglas de aplicacion:
 Este documento representa el estándar definitivo y vigente del proyecto Domiquerendona.
 
 Complemento operativo: CLAUDE.md contiene la estructura del repositorio, arquitectura de capas, convenciones de desarrollo, guía de variables de entorno, flujo de desarrollo local, testing y despliegue. AGENTS.md define las reglas obligatorias; CLAUDE.md explica el cómo y el qué del sistema. Ambos documentos deben leerse juntos y no tienen conflictos entre sí.
+
+---
+
+18. Regla de presentacion de codigo para revision
+
+Cuando el usuario pida "mostrar codigo para revision" o "codigo exacto para revision final":
+
+1. Mostrar SOLO el codigo final resultante. NUNCA mostrar el codigo anterior ni un diff.
+2. No usar formato "antes/despues". No usar bloques con codigo viejo tachado o comentado.
+3. Si se piden varios bloques, pegarlos en orden limpio, uno tras otro, sin comparaciones.
+4. El codigo que se muestra debe ser el que esta en el archivo en ese momento, exactamente como quedaria al ser leido por otro agente o herramienta.
+
+Razon: el usuario comparte estas revisiones con otras herramientas (como ChatGPT) que no
+distinguen colores de diff y se confunden si ven codigo viejo y nuevo mezclados.

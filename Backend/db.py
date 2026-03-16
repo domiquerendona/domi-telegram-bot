@@ -4,6 +4,7 @@ import re
 import json
 import time
 import logging
+import uuid
 from typing import Tuple
 from datetime import datetime, timedelta, timezone
 
@@ -1158,6 +1159,28 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_customer_addresses_cid ON admin_customer_addresses(customer_id)")
 
+    # Tabla: ally_form_requests (bandeja temporal de solicitudes desde enlace público del aliado)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_form_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            customer_name TEXT NOT NULL,
+            customer_phone TEXT NOT NULL,
+            delivery_address TEXT,
+            delivery_city TEXT,
+            delivery_barrio TEXT,
+            notes TEXT,
+            lat REAL,
+            lng REAL,
+            status TEXT NOT NULL DEFAULT 'PENDING_REVIEW',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_form_requests_ally ON ally_form_requests(ally_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_form_requests_status ON ally_form_requests(status)")
+
     # Tabla: order_support_requests (solicitudes de ayuda por pin mal ubicado)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS order_support_requests (
@@ -1236,6 +1259,12 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lng REAL")
     if 'creator_admin_id' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN creator_admin_id INTEGER")
+    if 'purchase_amount' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN purchase_amount INTEGER DEFAULT NULL")
+    if 'delivery_subsidy_applied' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN delivery_subsidy_applied INTEGER DEFAULT 0")
+    if 'customer_delivery_fee' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN customer_delivery_fee INTEGER DEFAULT NULL")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -1300,6 +1329,36 @@ def init_db():
     admin_loc_cols = [col[1] for col in cur.fetchall()]
     if 'status' not in admin_loc_cols:
         cur.execute("ALTER TABLE admin_locations ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
+
+    # Migración: agregar public_token a allies (enlace público del aliado)
+    cur.execute("PRAGMA table_info(allies)")
+    allies_cols = [col[1] for col in cur.fetchall()]
+    if 'public_token' not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN public_token TEXT")
+
+    # Migración: agregar delivery_subsidy a allies
+    if 'delivery_subsidy' not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN delivery_subsidy INTEGER DEFAULT 0")
+
+    # Migración: agregar min_purchase_for_subsidy a allies
+    if 'min_purchase_for_subsidy' not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN min_purchase_for_subsidy INTEGER DEFAULT NULL")
+
+    # Migración: agregar columnas de cotización a ally_form_requests
+    cur.execute("PRAGMA table_info(ally_form_requests)")
+    afr_cols = [col[1] for col in cur.fetchall()]
+    if 'quoted_price' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN quoted_price REAL DEFAULT NULL")
+    if 'subsidio_aliado' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN subsidio_aliado INTEGER DEFAULT 0")
+    if 'incentivo_cliente' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN incentivo_cliente INTEGER DEFAULT 0")
+    if 'total_cliente' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN total_cliente INTEGER DEFAULT NULL")
+    if 'order_id' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN order_id INTEGER DEFAULT NULL")
+    if 'purchase_amount_declared' not in afr_cols:
+        cur.execute("ALTER TABLE ally_form_requests ADD COLUMN purchase_amount_declared INTEGER DEFAULT NULL")
 
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
@@ -5038,6 +5097,9 @@ def create_order(
     quote_source: str = None,
     ally_admin_id_snapshot: int = None,
     creator_admin_id: int = None,
+    purchase_amount: int = None,
+    delivery_subsidy_applied: int = 0,
+    customer_delivery_fee: int = None,
 ):
     """Crea un pedido en estado PENDING y devuelve su id.
 
@@ -5081,8 +5143,11 @@ def create_order(
             dropoff_lng,
             quote_source,
             ally_admin_id_snapshot,
-            courier_admin_id_snapshot
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+            courier_admin_id_snapshot,
+            purchase_amount,
+            delivery_subsidy_applied,
+            customer_delivery_fee
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -5112,6 +5177,9 @@ def create_order(
         quote_source,
         ally_admin_id_snapshot,
         None,
+        purchase_amount,
+        delivery_subsidy_applied if delivery_subsidy_applied is not None else 0,
+        customer_delivery_fee,
     ))
     conn.commit()
     conn.close()
@@ -6026,6 +6094,28 @@ def update_ally(ally_id, business_name, owner_name, phone, address, city, barrio
     conn.close()
 
 
+def update_ally_delivery_subsidy(ally_id: int, amount: int):
+    """Actualiza el subsidio de domicilio del aliado (entero >= 0)."""
+    if amount < 0:
+        raise ValueError("delivery_subsidy no puede ser negativo")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE allies SET delivery_subsidy = {P} WHERE id = {P}", (amount, ally_id))
+    conn.commit()
+    conn.close()
+
+
+def update_ally_min_purchase_for_subsidy(ally_id: int, amount):
+    """Actualiza el monto mínimo de compra para aplicar subsidio. None = subsidio incondicional."""
+    if amount is not None and amount < 0:
+        raise ValueError("min_purchase_for_subsidy no puede ser negativo")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE allies SET min_purchase_for_subsidy = {P} WHERE id = {P}", (amount, ally_id))
+    conn.commit()
+    conn.close()
+
+
 def update_courier(courier_id, full_name, phone, bike_type, status):
     status = normalize_role_status(status)
     conn = get_connection()
@@ -6754,13 +6844,15 @@ def create_customer_address(
     barrio: str = None,
     notes: str = None,
     lat: float = None,
-    lng: float = None
+    lng: float = None,
+    require_coords: bool = True,
 ) -> int:
     """
     Crea una dirección para un cliente recurrente.
     Retorna el address_id creado.
+    require_coords=False permite guardar sin coordenadas (ej. bandeja de formulario).
     """
-    if not has_valid_coords(lat, lng):
+    if require_coords and not has_valid_coords(lat, lng):
         raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
@@ -6890,6 +6982,53 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def find_matching_customer_address(customer_id: int, address_text: str, city: str = None, barrio: str = None):
+    """
+    Busca una dirección activa del cliente que coincida tras normalización mínima
+    (strip + lower + colapso de espacios). Compara address_text, city y barrio.
+    Retorna dict de la dirección si hay match, None si no.
+    """
+    def _norm(v):
+        if not v:
+            return ""
+        return re.sub(r'\s+', ' ', v.strip().lower())
+
+    needle_addr = _norm(address_text)
+    needle_city = _norm(city)
+    needle_barrio = _norm(barrio)
+
+    rows = list_customer_addresses(customer_id)
+    for row in rows:
+        if (
+            _norm(row["address_text"]) == needle_addr
+            and _norm(row["city"]) == needle_city
+            and _norm(row["barrio"]) == needle_barrio
+        ):
+            return dict(row)
+    return None
+
+
+def update_customer_address_coords(address_id: int, customer_id: int, lat: float, lng: float) -> bool:
+    """
+    Actualiza solo las coordenadas de una dirección de cliente existente.
+    Retorna True si se actualizó. No hace nada si las coords no son válidas.
+    """
+    if not has_valid_coords(lat, lng):
+        return False
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE ally_customer_addresses
+        SET lat = {P}, lng = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (lat, lng, address_id, customer_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 # ============================================================
@@ -9266,3 +9405,188 @@ def get_support_request_full(support_id: int):
     return dict(row) if row else None
 
 
+# ============================================================
+# Funciones: ally_form_requests (enlace público del aliado)
+# ============================================================
+
+def get_or_create_ally_public_token(ally_id: int) -> str:
+    """Retorna el public_token del aliado, creándolo si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT public_token FROM allies WHERE id = {P}", (ally_id,))
+    row = cur.fetchone()
+    if row:
+        token = _row_value(row, 'public_token')
+        if token:
+            conn.close()
+            return token
+    token = str(uuid.uuid4())
+    cur.execute(f"UPDATE allies SET public_token = {P} WHERE id = {P}", (token, ally_id))
+    conn.commit()
+    conn.close()
+    return token
+
+
+def get_ally_by_public_token(token: str):
+    """Retorna el aliado APPROVED asociado al token público."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, user_id, business_name, owner_name, address, city, barrio, phone, status,
+               public_token, delivery_subsidy, min_purchase_for_subsidy
+        FROM allies
+        WHERE public_token = {P} AND status = 'APPROVED'
+    """, (token,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+_ALLY_FORM_REQUEST_VALID_STATUSES = {
+    'PENDING_REVIEW', 'PENDING_LOCATION', 'SAVED_CONTACT', 'CONVERTED_ORDER', 'DISMISSED'
+}
+
+
+def create_ally_form_request(ally_id: int, customer_name: str, customer_phone: str,
+                              delivery_address: str = None, delivery_city: str = None,
+                              delivery_barrio: str = None, notes: str = None,
+                              lat: float = None, lng: float = None,
+                              status: str = 'PENDING_REVIEW',
+                              quoted_price: float = None,
+                              subsidio_aliado: int = None,
+                              incentivo_cliente: int = None,
+                              total_cliente: int = None,
+                              purchase_amount_declared: int = None) -> int:
+    """Crea una solicitud en la bandeja temporal del aliado. Retorna el ID."""
+    if status not in _ALLY_FORM_REQUEST_VALID_STATUSES:
+        raise ValueError(f"status inválido: {status!r}. Válidos: {_ALLY_FORM_REQUEST_VALID_STATUSES}")
+    conn = get_connection()
+    cur = conn.cursor()
+    sql = f"""
+        INSERT INTO ally_form_requests
+            (ally_id, customer_name, customer_phone, delivery_address, delivery_city,
+             delivery_barrio, notes, lat, lng, status, quoted_price,
+             subsidio_aliado, incentivo_cliente, total_cliente, purchase_amount_declared)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
+    """
+    row_id = _insert_returning_id(cur, sql, (
+        ally_id, customer_name, customer_phone,
+        delivery_address, delivery_city, delivery_barrio,
+        notes, lat, lng, status, quoted_price,
+        subsidio_aliado, incentivo_cliente, total_cliente,
+        purchase_amount_declared
+    ))
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_ally_form_request_by_id(request_id: int, ally_id: int = None):
+    """Retorna una solicitud por ID. Si se pasa ally_id, valida ownership."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if ally_id:
+        cur.execute(f"""
+            SELECT id, ally_id, customer_name, customer_phone, delivery_address,
+                   delivery_city, delivery_barrio, notes, lat, lng, status,
+                   quoted_price, subsidio_aliado, incentivo_cliente, total_cliente,
+                   purchase_amount_declared, order_id, created_at, updated_at
+            FROM ally_form_requests
+            WHERE id = {P} AND ally_id = {P}
+        """, (request_id, ally_id))
+    else:
+        cur.execute(f"""
+            SELECT id, ally_id, customer_name, customer_phone, delivery_address,
+                   delivery_city, delivery_barrio, notes, lat, lng, status,
+                   quoted_price, subsidio_aliado, incentivo_cliente, total_cliente,
+                   purchase_amount_declared, order_id, created_at, updated_at
+            FROM ally_form_requests
+            WHERE id = {P}
+        """, (request_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_ally_form_request_status(request_id: int, ally_id: int, status: str) -> bool:
+    """
+    Actualiza el estado de una solicitud de formulario.
+    status: PENDING_REVIEW | PENDING_LOCATION | SAVED_CONTACT | CONVERTED_ORDER | DISMISSED
+    """
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE ally_form_requests
+        SET status = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND ally_id = {P}
+    """, (status, request_id, ally_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def mark_ally_form_request_converted(request_id: int, ally_id: int, order_id: int) -> bool:
+    """
+    Marca una solicitud de formulario como CONVERTED_ORDER y guarda el order_id del pedido creado.
+    Valida ownership por ally_id. Idempotente: no sobreescribe si ya está CONVERTED_ORDER.
+    Retorna True si actualizó algo.
+    """
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE ally_form_requests
+        SET status = 'CONVERTED_ORDER', order_id = {P}, updated_at = {now_sql}
+        WHERE id = {P} AND ally_id = {P} AND status != 'CONVERTED_ORDER'
+    """, (order_id, request_id, ally_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def list_ally_form_requests_for_ally(ally_id: int, status=None, limit: int = 20):
+    """
+    Lista las solicitudes de bandeja del aliado (más recientes primero).
+    status: None → todos | str → un estado | list → varios estados (IN)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    select = f"""
+        SELECT id, ally_id, customer_name, customer_phone, delivery_address,
+               delivery_city, delivery_barrio, notes, lat, lng, status,
+               quoted_price, subsidio_aliado, incentivo_cliente, total_cliente,
+               purchase_amount_declared, order_id, created_at, updated_at
+        FROM ally_form_requests
+    """
+    if status is None:
+        cur.execute(select + f"WHERE ally_id = {P} ORDER BY created_at DESC LIMIT {P}", (ally_id, limit))
+    elif isinstance(status, list):
+        placeholders = ", ".join([P] * len(status))
+        cur.execute(
+            select + f"WHERE ally_id = {P} AND status IN ({placeholders}) ORDER BY created_at DESC LIMIT {P}",
+            tuple([ally_id] + status + [limit])
+        )
+    else:
+        cur.execute(
+            select + f"WHERE ally_id = {P} AND status = {P} ORDER BY created_at DESC LIMIT {P}",
+            (ally_id, status, limit)
+        )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def count_ally_form_requests_by_status(ally_id: int) -> dict:
+    """Retorna {status: count} para todas las solicitudes del aliado. Statuses sin registros no aparecen."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT status, COUNT(*) as cnt FROM ally_form_requests WHERE ally_id = {P} GROUP BY status",
+        (ally_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return {_row_value(r, 'status'): int(_row_value(r, 'cnt')) for r in rows}

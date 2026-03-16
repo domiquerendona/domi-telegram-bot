@@ -158,6 +158,8 @@ from db import (
     restore_customer_address,
     get_customer_address_by_id,
     list_customer_addresses,
+    find_matching_customer_address,
+    update_customer_address_coords,
     get_last_order_by_ally,
     get_recent_delivery_addresses_for_ally,
     get_link_cache,
@@ -253,6 +255,17 @@ from db import (
     update_web_user_status,
     update_web_user_password,
     ensure_web_admin,
+    # Re-exports ally_form_requests (enlace público del aliado)
+    get_or_create_ally_public_token,
+    get_ally_by_public_token,
+    create_ally_form_request,
+    get_ally_form_request_by_id,
+    update_ally_form_request_status,
+    mark_ally_form_request_converted,
+    list_ally_form_requests_for_ally,
+    update_ally_delivery_subsidy,
+    update_ally_min_purchase_for_subsidy,
+    count_ally_form_requests_by_status,
 )
 import math
 import re
@@ -262,6 +275,25 @@ import os
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
+
+
+def compute_ally_subsidy(delivery_subsidy: int, min_purchase_for_subsidy, purchase_amount) -> int:
+    """Calcula el subsidio efectivo del aliado según las reglas de compra mínima.
+
+    Reglas:
+    1. delivery_subsidy == 0 → 0 (sin subsidio configurado)
+    2. min_purchase_for_subsidy is None → subsidio incondicional (retorna delivery_subsidy)
+    3. purchase_amount is None → subsidio desconocido, no aplicar (retorna 0)
+    4. purchase_amount >= min_purchase_for_subsidy → aplica subsidio
+    5. purchase_amount < min_purchase_for_subsidy → no aplica (retorna 0)
+    """
+    if delivery_subsidy == 0:
+        return 0
+    if min_purchase_for_subsidy is None:
+        return delivery_subsidy
+    if purchase_amount is None:
+        return 0
+    return delivery_subsidy if purchase_amount >= min_purchase_for_subsidy else 0
 
 
 def _distance_factor() -> float:

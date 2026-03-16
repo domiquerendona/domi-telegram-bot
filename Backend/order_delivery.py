@@ -1286,7 +1286,7 @@ def _admin_order_detail(update, context, data):
         "Telefono: {}\n"
         "Direccion: {}\n"
         "Distancia: {:.1f} km\n"
-        "Tarifa: ${:,}\n\n"
+        "Tarifa courier: ${:,}\n\n"
         "Trazabilidad:\n"
         "Admin aliado (snapshot): {}\n"
         "Admin repartidor (snapshot): {}\n\n"
@@ -1321,6 +1321,26 @@ def _admin_order_detail(update, context, data):
 
     if order["instructions"]:
         text += "Instrucciones: {}\n".format(order["instructions"])
+
+    # Campos de compra y subsidio (persistidos en Fase 3 — solo si existen)
+    compra_lines = []
+    try:
+        purchase_amount = order["purchase_amount"]
+        if purchase_amount is not None:
+            compra_lines.append("Valor de compra: ${:,}".format(int(purchase_amount)))
+        delivery_subsidy_applied = int(order["delivery_subsidy_applied"] or 0)
+        if delivery_subsidy_applied > 0:
+            compra_lines.append("Subsidio aplicado: -${:,}".format(delivery_subsidy_applied))
+        elif purchase_amount is not None:
+            compra_lines.append("Subsidio aplicado: No")
+        customer_delivery_fee = order["customer_delivery_fee"]
+        if customer_delivery_fee is not None:
+            compra_lines.append("Domicilio al cliente: ${:,}".format(int(customer_delivery_fee)))
+    except (KeyError, IndexError):
+        pass
+    if compra_lines:
+        text += "\n" + "\n".join(compra_lines) + "\n"
+
     keyboard = []
     if order["status"] not in ("DELIVERED", "CANCELLED"):
         keyboard.append([InlineKeyboardButton(

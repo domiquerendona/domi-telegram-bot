@@ -96,6 +96,52 @@ Todo queda registrado. Ningún pedido se pierde. Ningún repartidor acepta dos v
 
 ---
 
+## 5B. Enlace de pedido directo al cliente (PENDIENTE DE IMPLEMENTACIÓN)
+
+El aliado puede compartir un enlace único con sus clientes para que diligencie los datos del domicilio sin pasar por el bot. El aliado recibe la solicitud en Telegram y la convierte en pedido o la guarda en su agenda.
+
+### Qué puede hacer el cliente con ese enlace
+
+1. **Identificación por teléfono (siempre primero).** El primer paso es siempre el número de teléfono. El sistema verifica si ese número ya existe en la agenda de ese aliado antes de hacer cualquier otra cosa.
+
+2. **Cliente reconocido.** Si el teléfono ya existe, el sistema muestra sus direcciones guardadas. El cliente puede seleccionar una dirección existente o agregar una nueva.
+
+3. **Cliente nuevo.** Si el teléfono no existe, el cliente ingresa su nombre y una dirección de entrega.
+
+4. **Confirmación de ubicación en mapa.** Toda dirección nueva (de cliente reconocido o nuevo) debe confirmarse en mapa antes de continuar. Sin coordenadas confirmadas no hay cotización exacta.
+
+5. **Cotización desglosada.** Una vez confirmada la ubicación, el sistema calcula y presenta la cotización con sus componentes separados:
+   - Valor real del domicilio (tarifa calculada por distancia)
+   - Subsidio del aliado (descuento fijo que el aliado define para sus clientes)
+   - Incentivo adicional del cliente (monto opcional que el cliente puede agregar para atraer repartidores más rápido)
+   - Total a pagar por el cliente (valor real − subsidio + incentivo)
+
+6. **Subsidio del aliado.** El aliado configura cuánto desea subsidiar del domicilio a sus clientes. Ese monto se descuenta del valor que ve el cliente en la cotización.
+
+7. **Incentivo adicional del cliente.** El cliente puede agregar voluntariamente un monto adicional para acelerar la asignación de repartidor.
+
+8. **Bandeja temporal.** La solicitud no crea un pedido automáticamente. Entra a una bandeja transitoria y el aliado decide en Telegram qué hacer: convertir en pedido, guardar en agenda o ignorar.
+
+### Por qué este flujo importa
+
+Los aliados que tienen clientes recurrentes (domicilios a residencias o empresas habituales) pasan mucho tiempo repitiendo los mismos datos en el bot. El enlace de pedido elimina ese trabajo: el cliente diligencia sus propios datos, el aliado solo confirma.
+
+A diferencia de crear el pedido directamente desde el formulario web, este diseño mantiene al aliado en control: él decide si el domicilio se crea o no. No hay pedidos automáticos sin intervención del aliado.
+
+### Relación con la agenda de clientes
+
+El sistema de enlace de pedido no es independiente de la agenda. Es el punto de entrada externo a la misma agenda que el aliado ya gestiona en el bot. Cuando el aliado acepta la solicitud:
+
+- Si el cliente era nuevo, queda registrado en la agenda del aliado.
+- Si el cliente ya existía, su dirección puede actualizarse o complementarse.
+- El pedido que se cree tendrá los datos del cliente vinculados a su registro de agenda, no como texto suelto.
+
+### Implementación por fases
+
+Este sistema se construirá paso a paso, comenzando por la infraestructura mínima (token por aliado, endpoint público, notificación Telegram) y avanzando hacia la cotización y el subsidio en pasos posteriores.
+
+---
+
 ## 6. Cómo se financia la red
 
 El modelo económico está basado en comisiones por servicio. Cada pedido exitoso genera dos cobros de $300 COP cada uno: uno al aliado y uno al repartidor.

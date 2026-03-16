@@ -7,6 +7,7 @@ from web.api.admin import router as admin_router
 from web.api.auth import router as auth_router
 from web.api.dashboard import router as dashboard_router
 from web.api.users import router as users_router
+from web.api.form import router as form_router
 
 
 load_dotenv()
@@ -21,9 +22,12 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(users_router)
 app.include_router(dashboard_router)
+app.include_router(form_router)
 
 origins = [
     "http://localhost:4200",
+    # PENDIENTE: agregar aquí el dominio del frontend público del formulario
+    # cuando esté desplegado (ej. "https://form.domiquerendona.com")
 ]
 
 app.add_middleware(

@@ -113,6 +113,9 @@ CREATE TABLE IF NOT EXISTS allies (
     registration_reset_consumed_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
+    public_token TEXT UNIQUE,
+    delivery_subsidy INTEGER DEFAULT 0,
+    min_purchase_for_subsidy INTEGER DEFAULT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -372,7 +375,10 @@ CREATE TABLE IF NOT EXISTS orders (
     delivered_at TIMESTAMP,
     canceled_at TIMESTAMP,
     ally_admin_id_snapshot BIGINT,
-    courier_admin_id_snapshot BIGINT
+    courier_admin_id_snapshot BIGINT,
+    purchase_amount INTEGER DEFAULT NULL,
+    delivery_subsidy_applied INTEGER DEFAULT 0,
+    customer_delivery_fee INTEGER DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS order_offer_queue (
@@ -767,6 +773,32 @@ CREATE INDEX IF NOT EXISTS idx_routes_courier_id ON routes(courier_id);
 CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status);
 CREATE INDEX IF NOT EXISTS idx_route_destinations_route_id ON route_destinations(route_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_route_offer_queue_route_id ON route_offer_queue(route_id, status);
+
+-- Ally form requests (bandeja temporal de solicitudes desde enlace público del aliado)
+CREATE TABLE IF NOT EXISTS ally_form_requests (
+    id BIGSERIAL PRIMARY KEY,
+    ally_id BIGINT NOT NULL,
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    delivery_address TEXT,
+    delivery_city TEXT,
+    delivery_barrio TEXT,
+    notes TEXT,
+    lat REAL,
+    lng REAL,
+    status TEXT NOT NULL DEFAULT 'PENDING_REVIEW',
+    quoted_price REAL DEFAULT NULL,
+    subsidio_aliado INTEGER DEFAULT 0,
+    incentivo_cliente INTEGER DEFAULT 0,
+    total_cliente INTEGER DEFAULT NULL,
+    order_id BIGINT DEFAULT NULL,
+    purchase_amount_declared INTEGER DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    FOREIGN KEY (ally_id) REFERENCES allies(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ally_form_requests_ally ON ally_form_requests(ally_id);
+CREATE INDEX IF NOT EXISTS idx_ally_form_requests_status ON ally_form_requests(status);
 
 -- Support requests (pin mal ubicado)
 CREATE TABLE IF NOT EXISTS order_support_requests (
