@@ -15942,6 +15942,7 @@ def mi_admin(update, context):
         f"Estado: {status}\n"
         f"Equipo: {team_name}\n"
         f"Código de equipo: {team_code}\n"
+        f"Tu Telegram ID actual: {update.effective_user.id}\n"
         "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
     )
 
@@ -16006,6 +16007,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("🔔 Probar notificación", callback_data=f"local_test_notify_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
     ]
@@ -17601,7 +17603,7 @@ def admin_local_callback(update, context):
     admin_id = admin["id"]
 
     # Seguridad extra SOLO para callbacks que terminan en admin_id
-    if data.startswith(("local_check_", "local_status_", "local_couriers_pending_")):
+    if data.startswith(("local_check_", "local_status_", "local_couriers_pending_", "local_test_notify_")):
         try:
             target_admin_id = int(data.split("_")[-1])
             if target_admin_id != admin_id:
@@ -17665,6 +17667,7 @@ def admin_local_callback(update, context):
             [InlineKeyboardButton("⏳ Repartidores pendientes", callback_data=f"local_couriers_pending_{admin_id}")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("🔄 Verificar de nuevo", callback_data=f"local_check_{admin_id}")],
+            [InlineKeyboardButton("🔔 Probar notificación", callback_data=f"local_test_notify_{admin_id}")],
         ]
         try:
             query.edit_message_text(
@@ -17679,6 +17682,26 @@ def admin_local_callback(update, context):
                 query.answer("Sin cambios.")
                 return
             raise
+        return
+
+    if data.startswith("local_test_notify_"):
+        current_chat_id = query.message.chat_id if query.message else update.effective_user.id
+        context.bot.send_message(
+            chat_id=current_chat_id,
+            text=(
+                "Prueba de notificación local OK.\n\n"
+                "Admin ID: {}\n"
+                "Telegram ID actual: {}\n"
+                "Chat ID actual: {}\n"
+                "Equipo: {}"
+            ).format(
+                admin_id,
+                update.effective_user.id,
+                current_chat_id,
+                admin.get("team_code") or "-",
+            )
+        )
+        query.answer("Notificación enviada.")
         return
 
     if data.startswith("local_status_"):
