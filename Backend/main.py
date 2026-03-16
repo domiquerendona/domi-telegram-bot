@@ -2510,8 +2510,7 @@ def ally_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_row = get_admin_by_id(selected_admin_id) if selected_admin_id else None
-    admin_telegram_id = admin_row.get("telegram_id") if admin_row else None
+    admin_telegram_id = context.user_data.get("ally_selected_admin_telegram_id")
 
     try:
         context.bot.send_message(
@@ -2647,6 +2646,7 @@ def ally_team_callback(update, context):
             return ConversationHandler.END
 
         context.user_data["ally_selected_admin_id"] = platform_admin["id"]
+        context.user_data["ally_selected_admin_telegram_id"] = platform_admin.get("telegram_id")
         context.user_data["ally_selected_team_name"] = "PLATAFORMA"
         context.user_data["ally_selected_team_code"] = PLATFORM_TEAM_CODE
         query.edit_message_text("Equipo seleccionado: PLATAFORMA (PLATFORM).")
@@ -2663,6 +2663,7 @@ def ally_team_callback(update, context):
         return ConversationHandler.END
 
     context.user_data["ally_selected_admin_id"] = admin_row["id"]
+    context.user_data["ally_selected_admin_telegram_id"] = admin_row.get("telegram_id")
     context.user_data["ally_selected_team_name"] = admin_row["team_name"]
     context.user_data["ally_selected_team_code"] = admin_row["team_code"]
     query.edit_message_text(
@@ -3164,8 +3165,7 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    admin_row = get_admin_by_id(selected_admin_id) if selected_admin_id else None
-    admin_telegram_id = admin_row.get("telegram_id") if admin_row else None
+    admin_telegram_id = context.user_data.get("courier_selected_admin_telegram_id")
 
     try:
         context.bot.send_message(
@@ -3302,6 +3302,7 @@ def courier_team_callback(update, context):
             return ConversationHandler.END
 
         context.user_data["courier_selected_admin_id"] = platform_admin["id"]
+        context.user_data["courier_selected_admin_telegram_id"] = platform_admin.get("telegram_id")
         context.user_data["courier_selected_team_name"] = "PLATAFORMA"
         context.user_data["courier_selected_team_code"] = PLATFORM_TEAM_CODE
         query.edit_message_text("Equipo seleccionado: PLATAFORMA (PLATFORM).")
@@ -3317,6 +3318,7 @@ def courier_team_callback(update, context):
         return ConversationHandler.END
 
     context.user_data["courier_selected_admin_id"] = admin_row["id"]
+    context.user_data["courier_selected_admin_telegram_id"] = admin_row.get("telegram_id")
     context.user_data["courier_selected_team_name"] = admin_row["team_name"]
     context.user_data["courier_selected_team_code"] = admin_row["team_code"]
     query.edit_message_text(
