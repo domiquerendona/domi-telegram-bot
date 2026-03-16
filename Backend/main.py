@@ -1536,7 +1536,7 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=No
     if role_row:
         keyboard.append(role_row)
     keyboard.append(['Mi perfil', 'Ayuda'])
-    keyboard.append(['Menu'])
+    keyboard.append(['Menu', 'Actualizar menu'])
     if missing_cmds:
         if len(missing_cmds) == 1:
             register_rows = [missing_cmds]
@@ -2050,6 +2050,8 @@ def menu_button_handler(update, context):
         return
     elif text == "Menu":
         return start(update, context)
+    elif text == "Actualizar menu":
+        return show_main_menu(update, context, "Menu actualizado. Selecciona una opcion:")
 
     # --- Botones del submenú Aliado ---
     elif text == "Mis pedidos":
@@ -19911,7 +19913,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Admin plataforma|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Mis solicitudes|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Admin plataforma|Mi perfil|Ayuda|Menu|Actualizar menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Mis solicitudes|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
