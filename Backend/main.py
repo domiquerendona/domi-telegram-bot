@@ -315,7 +315,7 @@ def _append_registration_reset_button(keyboard, role_prefix: str, role_id: int, 
         keyboard.append([InlineKeyboardButton("Revocar reinicio", callback_data="{}_reset_clear_{}".format(role_prefix, role_id))])
         return
     if reset_state and reset_state.get("registration_reset_consumed_at"):
-        if role_prefix != "config_ally" or role_status != "REJECTED":
+        if role_prefix != "config_ally":
             return
     keyboard.append([InlineKeyboardButton("Autorizar reinicio", callback_data="{}_reset_enable_{}".format(role_prefix, role_id))])
 
