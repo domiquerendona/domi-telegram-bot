@@ -199,3 +199,56 @@ Este ciclo no introdujo refactors masivos, priorizando cambios pequeños, verifi
 
 
 
+
+## Cierre C1 - Reinicio de registro por Plataforma
+
+Fecha de cierre: marzo 2026
+
+### QuÃ© resuelve C1
+
+Plataforma puede autorizar o revocar un reinicio de registro para:
+
+- Administradores Locales
+- Aliados
+- Repartidores
+
+### QuÃ© no cambia
+
+- `INACTIVE` sigue intacto como estado de bloqueo operativo.
+- No se creÃ³ un nuevo status.
+- No se crean nuevas filas operativas del rol.
+- No se alterÃ³ la semÃ¡ntica normal de aprobaciÃ³n, rechazo o inactivaciÃ³n.
+
+### ImplementaciÃ³n final
+
+- El reset quedÃ³ separado del campo `status`.
+- La autorizaciÃ³n de reset es exclusiva de Plataforma.
+- El gate de reingreso exige `INACTIVE + reset activo`.
+- La reinscripciÃ³n reutiliza la misma fila del rol mediante reset in-place.
+- El reset se consume al completar la reinscripciÃ³n autorizada.
+- Antes del overwrite se guarda auditorÃ­a mÃ­nima en `registration_reset_audit`.
+
+### ValidaciÃ³n tÃ©cnica lograda
+
+C1 quedÃ³ validado en:
+
+- SQLite
+- PostgreSQL real
+
+La validaciÃ³n cubriÃ³:
+
+- migraciones y esquema
+- helpers base
+- services plataforma-only
+- gates de entrypoints
+- reset in-place
+- auditorÃ­a previa al overwrite
+- callbacks de Plataforma
+
+### Alcance pendiente opcional
+
+Quedan como mejoras opcionales, no como deuda crÃ­tica:
+
+- historial visual de resets en panel
+- nota libre al autorizar reset
+- futura exposiciÃ³n en panel web

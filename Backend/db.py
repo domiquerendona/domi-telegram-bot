@@ -516,6 +516,24 @@ def init_db():
         );
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS registration_reset_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role_type TEXT NOT NULL,
+            role_id INTEGER NOT NULL,
+            person_id INTEGER,
+            user_id INTEGER,
+            previous_status TEXT,
+            previous_payload_json TEXT NOT NULL,
+            reset_note TEXT,
+            authorized_by_admin_id INTEGER,
+            authorized_at TEXT,
+            consumed_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role ON registration_reset_audit(role_type, role_id)")
+
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
     # ============================================================
@@ -597,6 +615,14 @@ def init_db():
         cur.execute("ALTER TABLE admins ADD COLUMN rejection_reason TEXT")
     if "rejected_at" not in admins_cols:
         cur.execute("ALTER TABLE admins ADD COLUMN rejected_at TEXT")
+    if "registration_reset_enabled_at" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN registration_reset_enabled_at TEXT")
+    if "registration_reset_by_admin_id" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN registration_reset_by_admin_id INTEGER")
+    if "registration_reset_note" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN registration_reset_note TEXT")
+    if "registration_reset_consumed_at" not in admins_cols:
+        cur.execute("ALTER TABLE admins ADD COLUMN registration_reset_consumed_at TEXT")
 
     # allies: rejection_type, rejection_reason, rejected_at
     cur.execute("PRAGMA table_info(allies)")
@@ -607,6 +633,14 @@ def init_db():
         cur.execute("ALTER TABLE allies ADD COLUMN rejection_reason TEXT")
     if "rejected_at" not in allies_cols:
         cur.execute("ALTER TABLE allies ADD COLUMN rejected_at TEXT")
+    if "registration_reset_enabled_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN registration_reset_enabled_at TEXT")
+    if "registration_reset_by_admin_id" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN registration_reset_by_admin_id INTEGER")
+    if "registration_reset_note" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN registration_reset_note TEXT")
+    if "registration_reset_consumed_at" not in allies_cols:
+        cur.execute("ALTER TABLE allies ADD COLUMN registration_reset_consumed_at TEXT")
 
     # couriers: rejection_type, rejection_reason, rejected_at
     cur.execute("PRAGMA table_info(couriers)")
@@ -617,6 +651,14 @@ def init_db():
         cur.execute("ALTER TABLE couriers ADD COLUMN rejection_reason TEXT")
     if "rejected_at" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN rejected_at TEXT")
+    if "registration_reset_enabled_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN registration_reset_enabled_at TEXT")
+    if "registration_reset_by_admin_id" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN registration_reset_by_admin_id INTEGER")
+    if "registration_reset_note" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN registration_reset_note TEXT")
+    if "registration_reset_consumed_at" not in couriers_cols:
+        cur.execute("ALTER TABLE couriers ADD COLUMN registration_reset_consumed_at TEXT")
     if "cedula_front_file_id" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN cedula_front_file_id TEXT")
     if "cedula_back_file_id" not in couriers_cols:
@@ -1614,6 +1656,10 @@ def _init_db_postgres():
         ("cedula_front_file_id", "TEXT"),
         ("cedula_back_file_id", "TEXT"),
         ("selfie_file_id", "TEXT"),
+        ("registration_reset_enabled_at", "TIMESTAMP"),
+        ("registration_reset_by_admin_id", "BIGINT"),
+        ("registration_reset_note", "TEXT"),
+        ("registration_reset_consumed_at", "TIMESTAMP"),
     ]:
         _pg_add_col("admins", col, ctype)
 
@@ -1628,8 +1674,21 @@ def _init_db_postgres():
         ("cedula_front_file_id", "TEXT"),
         ("cedula_back_file_id", "TEXT"),
         ("selfie_file_id", "TEXT"),
+        ("registration_reset_enabled_at", "TIMESTAMP"),
+        ("registration_reset_by_admin_id", "BIGINT"),
+        ("registration_reset_note", "TEXT"),
+        ("registration_reset_consumed_at", "TIMESTAMP"),
     ]:
         _pg_add_col("couriers", col, ctype)
+
+    # allies
+    for col, ctype in [
+        ("registration_reset_enabled_at", "TIMESTAMP"),
+        ("registration_reset_by_admin_id", "BIGINT"),
+        ("registration_reset_note", "TEXT"),
+        ("registration_reset_consumed_at", "TIMESTAMP"),
+    ]:
+        _pg_add_col("allies", col, ctype)
 
     # ally_locations
     for col, ctype in [
@@ -1640,6 +1699,27 @@ def _init_db_postgres():
         ("last_used_at", "TIMESTAMP"),
     ]:
         _pg_add_col("ally_locations", col, ctype)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS registration_reset_audit (
+            id BIGSERIAL PRIMARY KEY,
+            role_type TEXT NOT NULL,
+            role_id BIGINT NOT NULL,
+            person_id BIGINT,
+            user_id BIGINT,
+            previous_status TEXT,
+            previous_payload_json TEXT NOT NULL,
+            reset_note TEXT,
+            authorized_by_admin_id BIGINT,
+            authorized_at TIMESTAMP,
+            consumed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
+        ON registration_reset_audit(role_type, role_id)
+    """)
 
     # orders
     for col, ctype in [
@@ -3833,6 +3913,483 @@ def get_courier_rejection_type_by_id(courier_id: int):
     row = cur.fetchone()
     conn.close()
     return _row_value(row, "rejection_type", 0)
+
+
+def _get_registration_reset_state(table: str, entity_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            id,
+            status,
+            registration_reset_enabled_at,
+            registration_reset_by_admin_id,
+            registration_reset_note,
+            registration_reset_consumed_at
+        FROM {table}
+        WHERE id = {P}
+          AND (is_deleted IS NULL OR is_deleted = 0)
+        LIMIT 1
+    """, (entity_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    enabled_at = _row_value(row, "registration_reset_enabled_at", default=None)
+    consumed_at = _row_value(row, "registration_reset_consumed_at", default=None)
+    return {
+        "id": _row_value(row, "id", default=entity_id),
+        "status": _row_value(row, "status", default=None),
+        "registration_reset_enabled_at": enabled_at,
+        "registration_reset_by_admin_id": _row_value(row, "registration_reset_by_admin_id", default=None),
+        "registration_reset_note": _row_value(row, "registration_reset_note", default=None),
+        "registration_reset_consumed_at": consumed_at,
+        "registration_reset_active": bool(enabled_at is not None and consumed_at is None),
+    }
+
+
+def _enable_registration_reset(table: str, entity_id: int, platform_admin_id: int, note: str = None) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE {table}
+        SET registration_reset_enabled_at = {now_sql},
+            registration_reset_by_admin_id = {P},
+            registration_reset_note = {P},
+            registration_reset_consumed_at = NULL
+        WHERE id = {P}
+          AND (is_deleted IS NULL OR is_deleted = 0)
+    """, (platform_admin_id, note, entity_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def _clear_registration_reset(table: str, entity_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE {table}
+        SET registration_reset_enabled_at = NULL,
+            registration_reset_by_admin_id = NULL,
+            registration_reset_note = NULL,
+            registration_reset_consumed_at = NULL
+        WHERE id = {P}
+          AND (is_deleted IS NULL OR is_deleted = 0)
+    """, (entity_id,))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_admin_reset_state_by_id(admin_id: int):
+    return _get_registration_reset_state("admins", admin_id)
+
+
+def get_ally_reset_state_by_id(ally_id: int):
+    return _get_registration_reset_state("allies", ally_id)
+
+
+def get_courier_reset_state_by_id(courier_id: int):
+    return _get_registration_reset_state("couriers", courier_id)
+
+
+def enable_admin_registration_reset(admin_id: int, platform_admin_id: int, note: str = None) -> bool:
+    return _enable_registration_reset("admins", admin_id, platform_admin_id, note=note)
+
+
+def enable_ally_registration_reset(ally_id: int, platform_admin_id: int, note: str = None) -> bool:
+    return _enable_registration_reset("allies", ally_id, platform_admin_id, note=note)
+
+
+def enable_courier_registration_reset(courier_id: int, platform_admin_id: int, note: str = None) -> bool:
+    return _enable_registration_reset("couriers", courier_id, platform_admin_id, note=note)
+
+
+def clear_admin_registration_reset(admin_id: int) -> bool:
+    return _clear_registration_reset("admins", admin_id)
+
+
+def clear_ally_registration_reset(ally_id: int) -> bool:
+    return _clear_registration_reset("allies", ally_id)
+
+
+def clear_courier_registration_reset(courier_id: int) -> bool:
+    return _clear_registration_reset("couriers", courier_id)
+
+
+def admin_has_active_registration_reset(admin_id: int) -> bool:
+    state = get_admin_reset_state_by_id(admin_id)
+    return bool(state and state["registration_reset_active"])
+
+
+def ally_has_active_registration_reset(ally_id: int) -> bool:
+    state = get_ally_reset_state_by_id(ally_id)
+    return bool(state and state["registration_reset_active"])
+
+
+def courier_has_active_registration_reset(courier_id: int) -> bool:
+    state = get_courier_reset_state_by_id(courier_id)
+    return bool(state and state["registration_reset_active"])
+
+
+def _require_inactive_active_registration_reset(table: str, entity_id: int, entity_label: str):
+    state = _get_registration_reset_state(table, entity_id)
+    if not state:
+        raise ValueError(f"{entity_label} no encontrado.")
+    if state["status"] != "INACTIVE":
+        raise ValueError(f"El registro de {entity_label.lower()} debe estar INACTIVE para reiniciarse.")
+    if not state["registration_reset_active"]:
+        raise ValueError(f"El registro de {entity_label.lower()} no tiene un reinicio autorizado activo.")
+    return state
+
+
+def _fetch_registration_reset_row_for_update(cur, table: str, entity_id: int):
+    deleted_filter = "is_deleted = 0" if table == "admins" else "(is_deleted IS NULL OR is_deleted = 0)"
+    cur.execute(f"SELECT * FROM {table} WHERE id = {P} AND {deleted_filter} LIMIT 1", (entity_id,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _serialize_registration_reset_payload(previous_row: dict) -> str:
+    return json.dumps(previous_row, ensure_ascii=False, default=str)
+
+
+def _insert_registration_reset_audit(
+    cur,
+    role_type: str,
+    previous_row: dict,
+    reset_note: str,
+    authorized_by_admin_id,
+    authorized_at,
+    consumed_at,
+):
+    cur.execute(f"""
+        INSERT INTO registration_reset_audit (
+            role_type,
+            role_id,
+            person_id,
+            user_id,
+            previous_status,
+            previous_payload_json,
+            reset_note,
+            authorized_by_admin_id,
+            authorized_at,
+            consumed_at
+        )
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
+    """, (
+        role_type,
+        previous_row.get("id"),
+        previous_row.get("person_id"),
+        previous_row.get("user_id"),
+        previous_row.get("status"),
+        _serialize_registration_reset_payload(previous_row),
+        reset_note,
+        authorized_by_admin_id,
+        authorized_at,
+        consumed_at,
+    ))
+    return cur.lastrowid
+
+
+def create_registration_reset_audit(
+    role_type: str,
+    previous_row: dict,
+    reset_note: str = None,
+    authorized_by_admin_id=None,
+    authorized_at=None,
+    consumed_at=None,
+):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        audit_id = _insert_registration_reset_audit(
+            cur,
+            role_type=role_type,
+            previous_row=previous_row,
+            reset_note=reset_note,
+            authorized_by_admin_id=authorized_by_admin_id,
+            authorized_at=authorized_at,
+            consumed_at=consumed_at,
+        )
+        conn.commit()
+        return audit_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def reset_admin_registration_in_place(
+    admin_id: int,
+    full_name: str,
+    phone: str,
+    city: str,
+    barrio: str,
+    team_name: str,
+    document_number: str,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
+):
+    _require_inactive_active_registration_reset("admins", admin_id, "Administrador")
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        previous_row = _fetch_registration_reset_row_for_update(cur, "admins", admin_id)
+        if not previous_row:
+            raise ValueError("Administrador no encontrado.")
+        if previous_row.get("status") != "INACTIVE":
+            raise ValueError("El registro de administrador debe estar INACTIVE para reiniciarse.")
+        if not previous_row.get("registration_reset_enabled_at") or previous_row.get("registration_reset_consumed_at"):
+            raise ValueError("El registro de administrador no tiene un reinicio autorizado activo.")
+
+        cur.execute(f"SELECT {now_sql} AS consumed_at")
+        consumed_at = _row_value(cur.fetchone(), "consumed_at", 0)
+        _insert_registration_reset_audit(
+            cur,
+            role_type="ADMIN",
+            previous_row=previous_row,
+            reset_note=previous_row.get("registration_reset_note"),
+            authorized_by_admin_id=previous_row.get("registration_reset_by_admin_id"),
+            authorized_at=previous_row.get("registration_reset_enabled_at"),
+            consumed_at=consumed_at,
+        )
+
+        cur.execute(f"""
+            UPDATE admins
+            SET full_name = {P},
+                phone = {P},
+                city = {P},
+                barrio = {P},
+                team_name = {P},
+                document_number = {P},
+                residence_address = {P},
+                residence_lat = {P},
+                residence_lng = {P},
+                cedula_front_file_id = {P},
+                cedula_back_file_id = {P},
+                selfie_file_id = {P},
+                status = 'PENDING',
+                rejection_type = 0,
+                rejection_reason = NULL,
+                rejected_at = NULL,
+                registration_reset_enabled_at = NULL,
+                registration_reset_by_admin_id = NULL,
+                registration_reset_note = NULL,
+                registration_reset_consumed_at = {P}
+            WHERE id = {P}
+              AND is_deleted = 0
+        """, (
+            full_name,
+            normalize_phone(phone),
+            city,
+            barrio,
+            team_name,
+            normalize_document(document_number),
+            residence_address,
+            residence_lat,
+            residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
+            consumed_at,
+            admin_id,
+        ))
+        updated = cur.rowcount > 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+    conn.close()
+    if not updated:
+        raise ValueError("No se pudo reiniciar el registro de administrador.")
+    return get_admin_by_id(admin_id)
+
+
+def reset_ally_registration_in_place(
+    ally_id: int,
+    business_name: str,
+    owner_name: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str,
+    document_number: str,
+):
+    _require_inactive_active_registration_reset("allies", ally_id, "Aliado")
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        previous_row = _fetch_registration_reset_row_for_update(cur, "allies", ally_id)
+        if not previous_row:
+            raise ValueError("Aliado no encontrado.")
+        if previous_row.get("status") != "INACTIVE":
+            raise ValueError("El registro de aliado debe estar INACTIVE para reiniciarse.")
+        if not previous_row.get("registration_reset_enabled_at") or previous_row.get("registration_reset_consumed_at"):
+            raise ValueError("El registro de aliado no tiene un reinicio autorizado activo.")
+
+        cur.execute(f"SELECT {now_sql} AS consumed_at")
+        consumed_at = _row_value(cur.fetchone(), "consumed_at", 0)
+        _insert_registration_reset_audit(
+            cur,
+            role_type="ALLY",
+            previous_row=previous_row,
+            reset_note=previous_row.get("registration_reset_note"),
+            authorized_by_admin_id=previous_row.get("registration_reset_by_admin_id"),
+            authorized_at=previous_row.get("registration_reset_enabled_at"),
+            consumed_at=consumed_at,
+        )
+
+        cur.execute(f"""
+            UPDATE allies
+            SET business_name = {P},
+                owner_name = {P},
+                address = {P},
+                city = {P},
+                barrio = {P},
+                phone = {P},
+                document_number = {P},
+                status = 'PENDING',
+                rejection_type = 0,
+                rejection_reason = NULL,
+                rejected_at = NULL,
+                registration_reset_enabled_at = NULL,
+                registration_reset_by_admin_id = NULL,
+                registration_reset_note = NULL,
+                registration_reset_consumed_at = {P}
+            WHERE id = {P}
+              AND (is_deleted IS NULL OR is_deleted = 0)
+        """, (
+            business_name,
+            owner_name,
+            address,
+            city,
+            barrio,
+            normalize_phone(phone),
+            normalize_document(document_number),
+            consumed_at,
+            ally_id,
+        ))
+        updated = cur.rowcount > 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+    conn.close()
+    if not updated:
+        raise ValueError("No se pudo reiniciar el registro de aliado.")
+    return get_ally_by_id(ally_id)
+
+
+def reset_courier_registration_in_place(
+    courier_id: int,
+    full_name: str,
+    id_number: str,
+    phone: str,
+    city: str,
+    barrio: str,
+    plate: str,
+    bike_type: str,
+    code: str,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
+):
+    _require_inactive_active_registration_reset("couriers", courier_id, "Repartidor")
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        previous_row = _fetch_registration_reset_row_for_update(cur, "couriers", courier_id)
+        if not previous_row:
+            raise ValueError("Repartidor no encontrado.")
+        if previous_row.get("status") != "INACTIVE":
+            raise ValueError("El registro de repartidor debe estar INACTIVE para reiniciarse.")
+        if not previous_row.get("registration_reset_enabled_at") or previous_row.get("registration_reset_consumed_at"):
+            raise ValueError("El registro de repartidor no tiene un reinicio autorizado activo.")
+
+        cur.execute(f"SELECT {now_sql} AS consumed_at")
+        consumed_at = _row_value(cur.fetchone(), "consumed_at", 0)
+        _insert_registration_reset_audit(
+            cur,
+            role_type="COURIER",
+            previous_row=previous_row,
+            reset_note=previous_row.get("registration_reset_note"),
+            authorized_by_admin_id=previous_row.get("registration_reset_by_admin_id"),
+            authorized_at=previous_row.get("registration_reset_enabled_at"),
+            consumed_at=consumed_at,
+        )
+
+        cur.execute(f"""
+            UPDATE couriers
+            SET full_name = {P},
+                id_number = {P},
+                phone = {P},
+                city = {P},
+                barrio = {P},
+                plate = {P},
+                bike_type = {P},
+                code = {P},
+                residence_address = {P},
+                residence_lat = {P},
+                residence_lng = {P},
+                cedula_front_file_id = {P},
+                cedula_back_file_id = {P},
+                selfie_file_id = {P},
+                status = 'PENDING',
+                rejection_type = 0,
+                rejection_reason = NULL,
+                rejected_at = NULL,
+                registration_reset_enabled_at = NULL,
+                registration_reset_by_admin_id = NULL,
+                registration_reset_note = NULL,
+                registration_reset_consumed_at = {P}
+            WHERE id = {P}
+              AND (is_deleted IS NULL OR is_deleted = 0)
+        """, (
+            full_name,
+            normalize_document(id_number),
+            normalize_phone(phone),
+            city,
+            barrio,
+            plate,
+            bike_type,
+            code,
+            residence_address,
+            residence_lat,
+            residence_lng,
+            cedula_front_file_id,
+            cedula_back_file_id,
+            selfie_file_id,
+            consumed_at,
+            courier_id,
+        ))
+        updated = cur.rowcount > 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+    conn.close()
+    if not updated:
+        raise ValueError("No se pudo reiniciar el registro de repartidor.")
+    return get_courier_by_id(courier_id)
 
 
 def get_local_admins_count():

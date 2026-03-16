@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS admins (
     rejection_type TEXT,
     rejection_reason TEXT,
     rejected_at TIMESTAMP,
+    registration_reset_enabled_at TIMESTAMP,
+    registration_reset_by_admin_id BIGINT,
+    registration_reset_note TEXT,
+    registration_reset_consumed_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
@@ -79,6 +83,10 @@ CREATE TABLE IF NOT EXISTS couriers (
     cedula_front_file_id TEXT,
     cedula_back_file_id TEXT,
     selfie_file_id TEXT,
+    registration_reset_enabled_at TIMESTAMP,
+    registration_reset_by_admin_id BIGINT,
+    registration_reset_note TEXT,
+    registration_reset_consumed_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
@@ -99,6 +107,10 @@ CREATE TABLE IF NOT EXISTS allies (
     rejection_type TEXT,
     rejection_reason TEXT,
     rejected_at TIMESTAMP,
+    registration_reset_enabled_at TIMESTAMP,
+    registration_reset_by_admin_id BIGINT,
+    registration_reset_note TEXT,
+    registration_reset_consumed_at TIMESTAMP,
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
@@ -186,6 +198,23 @@ CREATE TABLE IF NOT EXISTS status_audit_log (
     changed_by TEXT DEFAULT 'UNKNOWN',
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS registration_reset_audit (
+    id BIGSERIAL PRIMARY KEY,
+    role_type TEXT NOT NULL,
+    role_id BIGINT NOT NULL,
+    person_id BIGINT,
+    user_id BIGINT,
+    previous_status TEXT,
+    previous_payload_json TEXT NOT NULL,
+    reset_note TEXT,
+    authorized_by_admin_id BIGINT,
+    authorized_at TIMESTAMP,
+    consumed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
+    ON registration_reset_audit(role_type, role_id);
 
 -- ============================================================
 -- C) TABLAS DE CONFIGURACIÓN

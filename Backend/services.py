@@ -54,6 +54,21 @@ from db import (
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
     get_courier_rejection_type_by_id,
+    get_admin_reset_state_by_id,
+    get_ally_reset_state_by_id,
+    get_courier_reset_state_by_id,
+    enable_admin_registration_reset,
+    enable_ally_registration_reset,
+    enable_courier_registration_reset,
+    clear_admin_registration_reset,
+    clear_ally_registration_reset,
+    clear_courier_registration_reset,
+    admin_has_active_registration_reset,
+    ally_has_active_registration_reset,
+    courier_has_active_registration_reset,
+    reset_admin_registration_in_place,
+    reset_ally_registration_in_place,
+    reset_courier_registration_in_place,
     list_approved_admin_teams,
     list_courier_links_by_admin,
     list_ally_links_by_admin,
@@ -2269,6 +2284,168 @@ def es_admin_plataforma(telegram_id: int) -> bool:
         status = admin["status"] if "status" in admin.keys() else None
 
     return team_code == "PLATFORM" and status == "APPROVED"
+
+
+def _require_platform_admin_actor(actor_telegram_id: int):
+    if not es_admin_plataforma(actor_telegram_id):
+        raise PermissionError("Solo el Administrador de Plataforma puede ejecutar esta accion.")
+    actor_admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not actor_admin:
+        raise PermissionError("No se encontro el perfil de Administrador de Plataforma.")
+    return actor_admin
+
+
+def platform_enable_admin_registration_reset(actor_telegram_id: int, admin_id: int, note: str = None) -> bool:
+    actor_admin = _require_platform_admin_actor(actor_telegram_id)
+    target = get_admin_by_id(admin_id)
+    if not target:
+        raise ValueError("Administrador no encontrado.")
+    return enable_admin_registration_reset(admin_id, actor_admin["id"], note=note)
+
+
+def platform_enable_ally_registration_reset(actor_telegram_id: int, ally_id: int, note: str = None) -> bool:
+    actor_admin = _require_platform_admin_actor(actor_telegram_id)
+    target = get_ally_by_id(ally_id)
+    if not target:
+        raise ValueError("Aliado no encontrado.")
+    return enable_ally_registration_reset(ally_id, actor_admin["id"], note=note)
+
+
+def platform_enable_courier_registration_reset(actor_telegram_id: int, courier_id: int, note: str = None) -> bool:
+    actor_admin = _require_platform_admin_actor(actor_telegram_id)
+    target = get_courier_by_id(courier_id)
+    if not target:
+        raise ValueError("Repartidor no encontrado.")
+    return enable_courier_registration_reset(courier_id, actor_admin["id"], note=note)
+
+
+def platform_clear_admin_registration_reset(actor_telegram_id: int, admin_id: int) -> bool:
+    _require_platform_admin_actor(actor_telegram_id)
+    target = get_admin_by_id(admin_id)
+    if not target:
+        raise ValueError("Administrador no encontrado.")
+    return clear_admin_registration_reset(admin_id)
+
+
+def platform_clear_ally_registration_reset(actor_telegram_id: int, ally_id: int) -> bool:
+    _require_platform_admin_actor(actor_telegram_id)
+    target = get_ally_by_id(ally_id)
+    if not target:
+        raise ValueError("Aliado no encontrado.")
+    return clear_ally_registration_reset(ally_id)
+
+
+def platform_clear_courier_registration_reset(actor_telegram_id: int, courier_id: int) -> bool:
+    _require_platform_admin_actor(actor_telegram_id)
+    target = get_courier_by_id(courier_id)
+    if not target:
+        raise ValueError("Repartidor no encontrado.")
+    return clear_courier_registration_reset(courier_id)
+
+
+def can_admin_reregister_via_platform_reset(admin_id: int) -> bool:
+    state = get_admin_reset_state_by_id(admin_id)
+    return bool(state and state["status"] == "INACTIVE" and admin_has_active_registration_reset(admin_id))
+
+
+def can_ally_reregister_via_platform_reset(ally_id: int) -> bool:
+    state = get_ally_reset_state_by_id(ally_id)
+    return bool(state and state["status"] == "INACTIVE" and ally_has_active_registration_reset(ally_id))
+
+
+def can_courier_reregister_via_platform_reset(courier_id: int) -> bool:
+    state = get_courier_reset_state_by_id(courier_id)
+    return bool(state and state["status"] == "INACTIVE" and courier_has_active_registration_reset(courier_id))
+
+
+def reset_admin_registration_in_place_service(
+    admin_id: int,
+    full_name: str,
+    phone: str,
+    city: str,
+    barrio: str,
+    team_name: str,
+    document_number: str,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
+):
+    return reset_admin_registration_in_place(
+        admin_id,
+        full_name,
+        phone,
+        city,
+        barrio,
+        team_name,
+        document_number,
+        residence_address,
+        residence_lat,
+        residence_lng,
+        cedula_front_file_id,
+        cedula_back_file_id,
+        selfie_file_id,
+    )
+
+
+def reset_ally_registration_in_place_service(
+    ally_id: int,
+    business_name: str,
+    owner_name: str,
+    address: str,
+    city: str,
+    barrio: str,
+    phone: str,
+    document_number: str,
+):
+    return reset_ally_registration_in_place(
+        ally_id,
+        business_name,
+        owner_name,
+        address,
+        city,
+        barrio,
+        phone,
+        document_number,
+    )
+
+
+def reset_courier_registration_in_place_service(
+    courier_id: int,
+    full_name: str,
+    id_number: str,
+    phone: str,
+    city: str,
+    barrio: str,
+    plate: str,
+    bike_type: str,
+    code: str,
+    residence_address=None,
+    residence_lat=None,
+    residence_lng=None,
+    cedula_front_file_id=None,
+    cedula_back_file_id=None,
+    selfie_file_id=None,
+):
+    return reset_courier_registration_in_place(
+        courier_id,
+        full_name,
+        id_number,
+        phone,
+        city,
+        barrio,
+        plate,
+        bike_type,
+        code,
+        residence_address,
+        residence_lat,
+        residence_lng,
+        cedula_front_file_id,
+        cedula_back_file_id,
+        selfie_file_id,
+    )
 
 
 def _get_reference_reviewer(telegram_id: int):

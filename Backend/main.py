@@ -66,6 +66,21 @@ from services import (
     get_admin_rejection_type_by_id,
     get_ally_rejection_type_by_id,
     get_courier_rejection_type_by_id,
+    get_admin_reset_state_by_id,
+    get_ally_reset_state_by_id,
+    get_courier_reset_state_by_id,
+    can_admin_reregister_via_platform_reset,
+    can_ally_reregister_via_platform_reset,
+    can_courier_reregister_via_platform_reset,
+    platform_enable_admin_registration_reset,
+    platform_enable_ally_registration_reset,
+    platform_enable_courier_registration_reset,
+    platform_clear_admin_registration_reset,
+    platform_clear_ally_registration_reset,
+    platform_clear_courier_registration_reset,
+    reset_admin_registration_in_place_service,
+    reset_ally_registration_in_place_service,
+    reset_courier_registration_in_place_service,
     list_approved_admin_teams,
     list_courier_links_by_admin,
     list_ally_links_by_admin,
@@ -264,6 +279,26 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 COURIER_CHAT_ID = int(os.getenv("COURIER_CHAT_ID", "0"))
 RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
+
+def _registration_reset_status_label(reset_state):
+    if not reset_state:
+        return "No autorizado"
+    if reset_state.get("registration_reset_active"):
+        return "Autorizado activo"
+    if reset_state.get("registration_reset_consumed_at"):
+        return "Consumido"
+    return "No autorizado"
+
+
+def _append_registration_reset_button(keyboard, role_prefix: str, role_id: int, role_status: str, reset_state):
+    if role_status != "INACTIVE":
+        return
+    if reset_state and reset_state.get("registration_reset_active"):
+        keyboard.append([InlineKeyboardButton("Revocar reinicio", callback_data="{}_reset_clear_{}".format(role_prefix, role_id))])
+        return
+    if reset_state and reset_state.get("registration_reset_consumed_at"):
+        return
+    keyboard.append([InlineKeyboardButton("Autorizar reinicio", callback_data="{}_reset_enable_{}".format(role_prefix, role_id))])
 
 def _important_alert_job(context):
     data = context.job.context or {}
@@ -1850,10 +1885,18 @@ def soy_aliado(update, context):
             )
             return ConversationHandler.END
 
+        if status == "INACTIVE" and not can_ally_reregister_via_platform_reset(ally_id):
+            update.message.reply_text(
+                "Tu registro de aliado esta INACTIVE.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
         if status != "INACTIVE":
             update.message.reply_text(
                 f"No puedes iniciar un nuevo registro con estado {status}.\n"
-                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
@@ -2098,30 +2141,55 @@ def ally_confirm(update, context):
         return ALLY_UBICACION
 
     try:
-        ally_id = create_ally(
-            user_id=user_db_id,
-            business_name=business_name,
-            owner_name=owner_name,
-            address=address,
-            city=city,
-            barrio=barrio,
-            phone=phone,
-            document_number=ally_document,
-        )
+        previous_ally = get_ally_by_user_id(user_db_id)
+        if previous_ally and can_ally_reregister_via_platform_reset(previous_ally["id"]):
+            ally = reset_ally_registration_in_place_service(
+                ally_id=previous_ally["id"],
+                business_name=business_name,
+                owner_name=owner_name,
+                address=address,
+                city=city,
+                barrio=barrio,
+                phone=phone,
+                document_number=ally_document,
+            )
+            ally_id = ally["id"]
+        else:
+            ally_id = create_ally(
+                user_id=user_db_id,
+                business_name=business_name,
+                owner_name=owner_name,
+                address=address,
+                city=city,
+                barrio=barrio,
+                phone=phone,
+                document_number=ally_document,
+            )
 
         context.user_data["ally_id"] = ally_id
 
-        location_id = create_ally_location(
-            ally_id=ally_id,
-            label="Principal",
-            address=address,
-            city=city,
-            barrio=barrio,
-            phone=None,
-            is_default=True,
-            lat=ally_lat,
-            lng=ally_lng,
-        )
+        default_location = get_default_ally_location(ally_id)
+        if default_location:
+            update_ally_location(
+                default_location["id"],
+                address=address,
+                city=city,
+                barrio=barrio,
+                phone=None,
+            )
+            update_ally_location_coords(default_location["id"], ally_lat, ally_lng)
+        else:
+            create_ally_location(
+                ally_id=ally_id,
+                label="Principal",
+                address=address,
+                city=city,
+                barrio=barrio,
+                phone=None,
+                is_default=True,
+                lat=ally_lat,
+                lng=ally_lng,
+            )
 
         try:
             context.bot.send_message(
@@ -2364,10 +2432,18 @@ def soy_repartidor(update, context):
             )
             return ConversationHandler.END
 
+        if status == "INACTIVE" and not can_courier_reregister_via_platform_reset(courier_id):
+            update.message.reply_text(
+                "Tu registro de repartidor esta INACTIVE.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
         if status != "INACTIVE":
             update.message.reply_text(
                 f"No puedes iniciar un nuevo registro con estado {status}.\n"
-                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
@@ -2723,23 +2799,44 @@ def courier_confirm(update, context):
     code = f"R-{db_user['id']:04d}"
 
     try:
-        create_courier(
-            user_id=db_user["id"],
-            full_name=full_name,
-            id_number=id_number,
-            phone=phone,
-            city=city,
-            barrio=barrio,
-            plate=plate,
-            bike_type=bike_type,
-            code=code,
-            residence_address=residence_address,
-            residence_lat=residence_lat,
-            residence_lng=residence_lng,
-            cedula_front_file_id=cedula_front_file_id,
-            cedula_back_file_id=cedula_back_file_id,
-            selfie_file_id=selfie_file_id,
-        )
+        previous_courier = get_courier_by_user_id(db_user["id"])
+        if previous_courier and can_courier_reregister_via_platform_reset(previous_courier["id"]):
+            courier = reset_courier_registration_in_place_service(
+                courier_id=previous_courier["id"],
+                full_name=full_name,
+                id_number=id_number,
+                phone=phone,
+                city=city,
+                barrio=barrio,
+                plate=plate,
+                bike_type=bike_type,
+                code=code,
+                residence_address=residence_address,
+                residence_lat=residence_lat,
+                residence_lng=residence_lng,
+                cedula_front_file_id=cedula_front_file_id,
+                cedula_back_file_id=cedula_back_file_id,
+                selfie_file_id=selfie_file_id,
+            )
+        else:
+            create_courier(
+                user_id=db_user["id"],
+                full_name=full_name,
+                id_number=id_number,
+                phone=phone,
+                city=city,
+                barrio=barrio,
+                plate=plate,
+                bike_type=bike_type,
+                code=code,
+                residence_address=residence_address,
+                residence_lat=residence_lat,
+                residence_lng=residence_lng,
+                cedula_front_file_id=cedula_front_file_id,
+                cedula_back_file_id=cedula_back_file_id,
+                selfie_file_id=selfie_file_id,
+            )
+            courier = get_courier_by_user_id(db_user["id"])
     except ValueError as e:
         update.message.reply_text(
             "No se pudo completar el registro: {}\n\n"
@@ -7105,10 +7202,18 @@ def soy_admin(update, context):
             )
             return ConversationHandler.END
 
+        if status == "INACTIVE" and not can_admin_reregister_via_platform_reset(admin_id):
+            update.message.reply_text(
+                "Tu registro de administrador esta INACTIVE.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
         if status != "INACTIVE":
             update.message.reply_text(
                 f"No puedes iniciar un nuevo registro con estado {status}.\n"
-                "Solo se permite nuevo registro cuando el registro previo esta en INACTIVE.",
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
@@ -7370,21 +7475,41 @@ def admin_confirm(update, context):
     _debug_admin_registration_state(context, "admin_confirm_before_create", answer=answer)
 
     try:
-        admin_id, team_code = create_admin(
-            user_db_id,
-            full_name,
-            phone,
-            city,
-            barrio,
-            team_name,
-            document_number,
-            residence_address,
-            residence_lat,
-            residence_lng,
-            cedula_front_file_id,
-            cedula_back_file_id,
-            selfie_file_id,
-        )
+        previous_admin = get_admin_by_user_id(user_db_id)
+        if previous_admin and can_admin_reregister_via_platform_reset(previous_admin["id"]):
+            admin = reset_admin_registration_in_place_service(
+                admin_id=previous_admin["id"],
+                full_name=full_name,
+                phone=phone,
+                city=city,
+                barrio=barrio,
+                team_name=team_name,
+                document_number=document_number,
+                residence_address=residence_address,
+                residence_lat=residence_lat,
+                residence_lng=residence_lng,
+                cedula_front_file_id=cedula_front_file_id,
+                cedula_back_file_id=cedula_back_file_id,
+                selfie_file_id=selfie_file_id,
+            )
+            admin_id = admin["id"]
+            team_code = admin["team_code"]
+        else:
+            admin_id, team_code = create_admin(
+                user_db_id,
+                full_name,
+                phone,
+                city,
+                barrio,
+                team_name,
+                document_number,
+                residence_address,
+                residence_lat,
+                residence_lng,
+                cedula_front_file_id,
+                cedula_back_file_id,
+                selfie_file_id,
+            )
     except ValueError as e:
         _debug_admin_registration_state(context, "admin_confirm_value_error", error=str(e))
         update.message.reply_text(str(e))
@@ -7655,6 +7780,8 @@ def admin_menu_callback(update, context):
         num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
         perm = get_admin_reference_validator_permission(adm_id)
         perm_status = perm["status"] if perm else "INACTIVE"
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        reset_status = _registration_reset_status_label(reset_state)
 
         residence_address = admin_obj.get("residence_address")
         residence_lat = admin_obj.get("residence_lat")
@@ -7682,14 +7809,15 @@ def admin_menu_callback(update, context):
             "\n"
             "CONTADORES:\n"
             "Mensajeros vinculados: {}\n"
-            "Mensajeros con saldo >= 5000: {}"
+            "Mensajeros con saldo >= 5000: {}\n"
+            "Reinicio de registro: {}"
         ).format(
             adm_id, adm_full_name, adm_team_name, adm_team_code,
             adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
             residence_address or "No registrada",
             residence_location,
             maps_line,
-            num_couriers, num_couriers_balance
+            num_couriers, num_couriers_balance, reset_status
         )
         texto += "\nPermiso validar referencias: {}".format(perm_status)
 
@@ -7714,6 +7842,7 @@ def admin_menu_callback(update, context):
                     keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
             if adm_status == "INACTIVE":
                 keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+                _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
             # REJECTED: sin botones de accion (estado terminal)
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
@@ -7825,6 +7954,8 @@ def admin_menu_callback(update, context):
         num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
         perm = get_admin_reference_validator_permission(adm_id)
         perm_status = perm["status"] if perm else "INACTIVE"
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        reset_status = _registration_reset_status_label(reset_state)
 
         texto = (
             "ADMIN ID: {}\n"
@@ -7839,11 +7970,12 @@ def admin_menu_callback(update, context):
             "CONTADORES:\n"
             "Mensajeros vinculados: {}\n"
             "Mensajeros con saldo >= 5000: {}\n\n"
+            "Reinicio de registro: {}\n"
             "Estado actualizado a {}"
         ).format(
             adm_id, adm_full_name, adm_team_name, adm_team_code,
             adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
-            num_couriers, num_couriers_balance, nuevo_status
+            num_couriers, num_couriers_balance, reset_status, nuevo_status
         )
         texto += "\nPermiso validar referencias: {}".format(perm_status)
 
@@ -7862,11 +7994,85 @@ def admin_menu_callback(update, context):
                 keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
         if adm_status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+            _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
         # REJECTED: sin botones de accion (estado terminal)
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("admin_reset_"):
+        payload = data.replace("admin_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            adm_id = int(parts[1])
+        except Exception:
+            query.answer("Admin invalido", show_alert=True)
+            return
+
+        admin_obj = get_admin_by_id(adm_id)
+        if not admin_obj:
+            query.answer("Admin no encontrado", show_alert=True)
+            return
+        if admin_obj.get("team_code") == "PLATFORM":
+            query.answer("No aplica para Admin Plataforma", show_alert=True)
+            return
+
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        if action == "enable":
+            if admin_obj.get("status") != "INACTIVE":
+                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_admin_registration_reset(query.from_user.id, adm_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                    [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_admin_registration_reset(query.from_user.id, adm_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                    [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida", show_alert=True)
         return
 
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
@@ -17102,6 +17308,8 @@ def admin_config_callback(update, context):
         if not ally:
             query.edit_message_text("No se encontró el aliado.")
             return
+        reset_state = get_ally_reset_state_by_id(ally_id)
+        reset_status = _registration_reset_status_label(reset_state)
 
         default_loc = get_default_ally_location(ally_id)
         if default_loc:
@@ -17128,6 +17336,7 @@ def admin_config_callback(update, context):
             "Ciudad: {city}\n"
             "Barrio: {barrio}\n"
             "Estado: {status}\n"
+            "Reinicio de registro: {reset_status}\n"
             "Ubicación: {loc}\n"
             "{maps}"
         ).format(
@@ -17139,6 +17348,7 @@ def admin_config_callback(update, context):
             city=ally["city"],
             barrio=ally["barrio"],
             status=ally["status"],
+            reset_status=reset_status,
             loc=loc_text,
             maps=maps_text,
         )
@@ -17155,6 +17365,7 @@ def admin_config_callback(update, context):
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
         if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
+            _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
@@ -17184,6 +17395,8 @@ def admin_config_callback(update, context):
         if not courier:
             query.edit_message_text("No se encontró el repartidor.")
             return
+        reset_state = get_courier_reset_state_by_id(courier_id)
+        reset_status = _registration_reset_status_label(reset_state)
 
         texto = (
             "Detalle del repartidor:\n\n"
@@ -17195,7 +17408,8 @@ def admin_config_callback(update, context):
             "Barrio: {barrio}\n"
             "Placa: {plate}\n"
             "Tipo de moto: {bike_type}\n"
-            "Estado: {status}"
+            "Estado: {status}\n"
+            "Reinicio de registro: {reset_status}"
         ).format(
             id=courier["id"],
             full_name=courier["full_name"],
@@ -17206,6 +17420,7 @@ def admin_config_callback(update, context):
             plate=courier["plate"],
             bike_type=courier["bike_type"],
             status=courier["status"],
+            reset_status=reset_status,
         )
 
         status = courier["status"]
@@ -17220,6 +17435,7 @@ def admin_config_callback(update, context):
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
         if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
+            _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -17433,6 +17649,76 @@ def admin_config_callback(update, context):
         query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
+    if data.startswith("config_ally_reset_"):
+        payload = data.replace("config_ally_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            ally_id = int(parts[1])
+        except Exception:
+            query.answer("Aliado invalido", show_alert=True)
+            return
+
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.answer("Aliado no encontrado.", show_alert=True)
+            return
+        reset_state = get_ally_reset_state_by_id(ally_id)
+
+        if action == "enable":
+            if ally["status"] != "INACTIVE":
+                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_ally_registration_reset(query.from_user.id, ally_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_aliados")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_ally_registration_reset(query.from_user.id, ally_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_aliados")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida.", show_alert=True)
+        return
+
     if data.startswith("config_courier_disable_"):
         courier_id = int(data.split("_")[-1])
         update_courier_status_by_id(courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
@@ -17452,6 +17738,76 @@ def admin_config_callback(update, context):
         update_courier_status_by_id(courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_courier_reset_"):
+        payload = data.replace("config_courier_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            courier_id = int(parts[1])
+        except Exception:
+            query.answer("Repartidor invalido", show_alert=True)
+            return
+
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.answer("Repartidor no encontrado.", show_alert=True)
+            return
+        reset_state = get_courier_reset_state_by_id(courier_id)
+
+        if action == "enable":
+            if courier["status"] != "INACTIVE":
+                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_courier_registration_reset(query.from_user.id, courier_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_repartidores")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_courier_registration_reset(query.from_user.id, courier_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_repartidores")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida.", show_alert=True)
         return
 
     if data == "config_cerrar":
