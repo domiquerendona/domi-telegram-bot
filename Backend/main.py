@@ -470,6 +470,7 @@ def _render_platform_ally_detail(query, ally_id: int):
 
     reset_state = get_ally_reset_state_by_id(ally_id)
     reset_status = _registration_reset_status_label(reset_state)
+    admin_link = get_admin_link_for_ally(ally_id)
     default_loc = get_default_ally_location(ally_id)
     loc_lat = _row_value(default_loc, "lat") if default_loc else None
     loc_lng = _row_value(default_loc, "lng") if default_loc else None
@@ -497,6 +498,14 @@ def _render_platform_ally_detail(query, ally_id: int):
             "Modo: Incondicional"
         ).format(subsidio)
 
+    if admin_link:
+        team_name = _row_value(admin_link, "team_name", "-")
+        team_code = _row_value(admin_link, "team_code", "-")
+        link_status = _row_value(admin_link, "link_status", "-")
+        equipo_label = "{} ({}) - Vínculo: {}".format(team_name, team_code, link_status)
+    else:
+        equipo_label = "(sin equipo asignado)"
+
     texto = (
         "Detalle del aliado:\n\n"
         "ID: {id}\n"
@@ -507,6 +516,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         "Ciudad: {city}\n"
         "Barrio: {barrio}\n"
         "Estado: {status}\n"
+        "Equipo: {equipo}\n"
         "Reinicio de registro: {reset_status}\n"
         "{subsidio_label}\n"
         "Ubicación: {loc}\n"
@@ -520,6 +530,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         city=_row_value(ally, "city", "-"),
         barrio=_row_value(ally, "barrio", "-"),
         status=_row_value(ally, "status", "-"),
+        equipo=equipo_label,
         reset_status=reset_status,
         subsidio_label=subsidio_label,
         loc=loc_text,
@@ -550,6 +561,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         ),
         callback_data="config_ally_minpurchase_{}".format(ally_id)
     )])
+    keyboard.append([InlineKeyboardButton("Asignar/corregir equipo", callback_data="config_ally_assign_menu_{}".format(ally_id))])
     keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
     query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -18426,6 +18438,102 @@ def admin_config_callback(update, context):
         except Exception as e:
             print("[ERROR] config_ver_ally_{}: {}".format(data, e))
             query.answer("No pude abrir el detalle del aliado.", show_alert=True)
+        return
+
+    if data.startswith("config_ally_assign_menu_"):
+        ally_id = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        keyboard = []
+        admins = get_all_local_admins()
+        for admin_row in admins:
+            admin_id = _row_value(admin_row, "id")
+            team_name = _row_value(admin_row, "team_name", "-")
+            team_code = _row_value(admin_row, "team_code", "-")
+            keyboard.append([InlineKeyboardButton(
+                "{} ({})".format(team_name, team_code),
+                callback_data="config_ally_assign_pick_{}_{}".format(ally_id, admin_id)
+            )])
+
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            keyboard.append([InlineKeyboardButton(
+                "Plataforma (PLATFORM)",
+                callback_data="config_ally_assign_platform_{}".format(ally_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))])
+        query.edit_message_text(
+            "Selecciona el equipo que debe quedar vinculado a este aliado:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_ally_assign_platform_") or data.startswith("config_ally_assign_pick_"):
+        if data.startswith("config_ally_assign_platform_"):
+            ally_id = int(data.replace("config_ally_assign_platform_", ""))
+            platform_admin = get_platform_admin()
+            if not platform_admin:
+                query.edit_message_text("No existe un admin de plataforma disponible.")
+                return
+            target_admin_id = _row_value(platform_admin, "id")
+            target_team_name = _row_value(platform_admin, "team_name", "Plataforma")
+            target_team_code = _row_value(platform_admin, "team_code", "PLATFORM")
+        else:
+            parts = data.split("_")
+            if len(parts) != 6:
+                query.answer("Formato inválido.", show_alert=True)
+                return
+            ally_id = int(parts[4])
+            target_admin_id = int(parts[5])
+            admin_row = get_admin_by_id(target_admin_id)
+            if not admin_row:
+                query.edit_message_text("No se encontró el admin destino.")
+                return
+            target_team_name = _row_value(admin_row, "team_name", _row_value(admin_row, "full_name", "-"))
+            target_team_code = _row_value(admin_row, "team_code", "-")
+
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        ally_status = (_row_value(ally, "status", "") or "").upper()
+        if ally_status == "APPROVED":
+            link_status = "APPROVED"
+        elif ally_status == "PENDING":
+            link_status = "PENDING"
+        else:
+            link_status = "INACTIVE"
+
+        try:
+            upsert_admin_ally_link(target_admin_id, ally_id, link_status)
+            if link_status == "APPROVED":
+                deactivate_other_approved_admin_ally_links(ally_id, target_admin_id)
+        except Exception as e:
+            print("[ERROR] config_ally_assign_team ally_id={}: {}".format(ally_id, e))
+            query.edit_message_text("No se pudo actualizar el equipo del aliado.")
+            return
+
+        query.edit_message_text(
+            "Equipo actualizado.\n\n"
+            "Aliado ID: {}\n"
+            "Nuevo equipo: {} ({})\n"
+            "Estado del vínculo: {}\n\n"
+            "Puedes volver al detalle para revisar el resultado.".format(
+                ally_id,
+                target_team_name,
+                target_team_code,
+                link_status,
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                [InlineKeyboardButton("Volver a aliados", callback_data="config_gestion_aliados")],
+            ])
+        )
         return
 
         keyboard = []
