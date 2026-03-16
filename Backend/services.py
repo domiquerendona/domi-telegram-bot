@@ -2390,6 +2390,107 @@ def can_courier_reregister_via_platform_reset(courier_id: int) -> bool:
     return bool(state and state["status"] == "INACTIVE" and courier_has_active_registration_reset(courier_id))
 
 
+def _get_registration_owner_link(role_type: str, target_id: int):
+    role_type = (role_type or "").strip().upper()
+    if role_type == "ALLY":
+        return get_admin_link_for_ally(target_id)
+    if role_type == "COURIER":
+        return get_admin_link_for_courier(target_id)
+    raise ValueError("Rol no soportado.")
+
+
+def approve_role_registration(actor_telegram_id: int, role_type: str, target_id: int) -> Dict[str, Any]:
+    role_type = (role_type or "").strip().upper()
+    if role_type not in ("ALLY", "COURIER"):
+        return {"ok": False, "message": "Rol no soportado."}
+
+    actor_admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not actor_admin:
+        return {"ok": False, "message": "No se encontró tu perfil admin."}
+
+    actor_admin_id = actor_admin["id"]
+    actor_team_code = (actor_admin.get("team_code") or "").upper()
+    actor_status = (actor_admin.get("status") or "").upper()
+    is_platform_actor = actor_team_code == "PLATFORM"
+
+    if not is_platform_actor and actor_status != "APPROVED":
+        return {"ok": False, "message": "Tu cuenta de administrador no está APPROVED."}
+
+    if role_type == "ALLY":
+        target = get_ally_by_id(target_id)
+        update_status_fn = update_ally_status
+        upsert_link_fn = upsert_admin_ally_link
+        deactivate_other_links_fn = deactivate_other_approved_admin_ally_links
+    else:
+        target = get_courier_by_id(target_id)
+        update_status_fn = update_courier_status
+        upsert_link_fn = upsert_admin_courier_link
+        deactivate_other_links_fn = deactivate_other_approved_admin_courier_links
+
+    if not target:
+        return {"ok": False, "message": "Registro no encontrado."}
+
+    current_status = (target.get("status") or "").upper()
+    if current_status != "PENDING":
+        return {
+            "ok": False,
+            "message": f"El registro ya no está pendiente. Estado actual: {current_status or '-'}."
+        }
+
+    owner_link = _get_registration_owner_link(role_type, target_id)
+    selected_admin_id = owner_link["admin_id"] if owner_link else get_platform_admin_id()
+    selected_team_name = owner_link["team_name"] if owner_link else "PLATAFORMA"
+    selected_team_code = owner_link["team_code"] if owner_link else "PLATFORM"
+
+    if not selected_admin_id:
+        return {"ok": False, "message": "No se encontró el admin responsable del registro."}
+
+    if is_platform_actor:
+        if selected_admin_id != actor_admin_id:
+            return {
+                "ok": False,
+                "message": (
+                    "Este registro fue enviado al equipo {} ({}). "
+                    "La aprobación operativa debe hacerla ese admin."
+                ).format(selected_team_name or "Sin nombre", selected_team_code or "-"),
+            }
+    else:
+        if selected_admin_id != actor_admin_id:
+            return {
+                "ok": False,
+                "message": (
+                    "Este registro pertenece al equipo {} ({}). "
+                    "No puedes aprobarlo desde otro admin."
+                ).format(selected_team_name or "Sin nombre", selected_team_code or "-"),
+            }
+
+    try:
+        if role_type == "COURIER":
+            upsert_link_fn(selected_admin_id, target_id, "APPROVED", 1)
+        else:
+            upsert_link_fn(selected_admin_id, target_id, "APPROVED")
+        deactivate_other_links_fn(target_id, selected_admin_id)
+        update_status_fn(target_id, "APPROVED", changed_by=f"tg:{actor_telegram_id}")
+        bonus_granted = bool(credit_welcome_balance(role_type, target_id, selected_admin_id, 5000))
+    except Exception as e:
+        logger.exception("Error aprobando %s %s", role_type, target_id)
+        return {"ok": False, "message": f"Error aprobando registro: {e}"}
+
+    profile = get_ally_by_id(target_id) if role_type == "ALLY" else get_courier_by_id(target_id)
+    return {
+        "ok": True,
+        "message": "Registro aprobado correctamente.",
+        "role_type": role_type,
+        "target_id": target_id,
+        "profile": profile,
+        "bonus_granted": bonus_granted,
+        "responsible_admin_id": selected_admin_id,
+        "responsible_team_name": selected_team_name,
+        "responsible_team_code": selected_team_code,
+        "approved_by_platform": is_platform_actor,
+    }
+
+
 def reset_admin_registration_in_place_service(
     admin_id: int,
     full_name: str,

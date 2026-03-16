@@ -24,6 +24,7 @@ from services import (
     get_pricing_config,
     get_buy_pricing_config,
     calc_buy_products_surcharge,
+    approve_role_registration,
     quote_order_by_addresses,
     quote_order_by_coords,
     quote_order_from_inputs,
@@ -146,7 +147,6 @@ from services import (
     get_couriers_by_admin_and_status,
     update_courier_status,
     update_courier_status_by_id,
-    credit_welcome_balance,
     get_courier_approval_notification_chat_id,
     get_ally_approval_notification_chat_id,
     parse_team_selection_callback,
@@ -17763,31 +17763,20 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_courier_approve_"):
         courier_id = int(data.split("_")[-1])
-        try:
-            update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
-            deactivate_other_approved_admin_courier_links(courier_id, admin_id)
-            update_courier_status(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
-        except Exception as e:
-            print("[ERROR] update_admin_courier_status APPROVED:", e)
-            query.edit_message_text("Error aprobando repartidor. Revisa logs.")
+        result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+        if not result.get("ok"):
+            query.edit_message_text(result.get("message") or "Error aprobando repartidor.")
             return
-
-        bonus_granted = False
-        try:
-            bonus_granted = bool(credit_welcome_balance("COURIER", courier_id, admin_id, 5000))
-        except Exception as e:
-            print("[WARN] credit_welcome_balance (local courier approve):", e)
 
         try:
             courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
             if courier_telegram_id:
-                courier = get_courier_by_id(courier_id)
                 _send_role_welcome_message(
                     context,
                     "COURIER",
                     courier_telegram_id,
-                    profile=courier,
-                    bonus_granted=bonus_granted,
+                    profile=result.get("profile"),
+                    bonus_granted=bool(result.get("bonus_granted")),
                 )
         except Exception as e:
             print("[WARN] Error notificando repartidor (local approve):", e)
@@ -17928,30 +17917,20 @@ def admin_local_callback(update, context):
             return
 
         if data.startswith("local_ally_approve_"):
-            try:
-                upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
-                deactivate_other_approved_admin_ally_links(ally_id_val, admin_id)
-            except Exception as e:
-                print("[ERROR] local_ally_approve:", e)
-                query.edit_message_text("Error aprobando aliado. Revisa logs.")
+            result = approve_role_registration(update.effective_user.id, "ALLY", ally_id_val)
+            if not result.get("ok"):
+                query.edit_message_text(result.get("message") or "Error aprobando aliado.")
                 return
-
-            bonus_granted = False
-            try:
-                bonus_granted = bool(credit_welcome_balance("ALLY", ally_id_val, admin_id, 5000))
-            except Exception as e:
-                print("[WARN] credit_welcome_balance (local ally approve):", e)
 
             try:
                 ally_telegram_id = get_ally_approval_notification_chat_id(ally_id_val)
                 if ally_telegram_id:
-                    ally = get_ally_by_id(ally_id_val)
                     _send_role_welcome_message(
                         context,
                         "ALLY",
                         ally_telegram_id,
-                        profile=ally,
-                        bonus_granted=bonus_granted,
+                        profile=result.get("profile"),
+                        bonus_granted=bool(result.get("bonus_granted")),
                     )
             except Exception as e:
                 print("[WARN] Error notificando aliado (local approve):", e)
@@ -18215,35 +18194,23 @@ def ally_approval_callback(update, context):
 
     nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
 
-    try:
-        update_ally_status(ally_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
-    except Exception as e:
-        print(f"[ERROR] ally_approval_callback: {e}")
-        query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
-        return
+    bonus_granted = False
+    if nuevo_estado == "APPROVED":
+        result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
+        if not result.get("ok"):
+            query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
+            return
+        bonus_granted = bool(result.get("bonus_granted"))
+    else:
+        try:
+            update_ally_status(ally_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print(f"[ERROR] ally_approval_callback: {e}")
+            query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
+            return
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
-    if nuevo_estado == "APPROVED":
-        bonus_granted = False
-        try:
-            link = get_admin_link_for_ally(ally_id)
-            if link:
-                keep_admin_id = link["admin_id"]
-            else:
-                keep_admin_id = get_platform_admin_id()
-            upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
-            deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
-
-            try:
-                bonus_granted = bool(credit_welcome_balance("ALLY", ally_id, keep_admin_id, 5000))
-            except Exception as e:
-                print("[WARN] credit_welcome_balance (platform ally approve):", e)
-        except Exception as e:
-            print(f"[ERROR] asegurar vinculo APPROVED de ally {ally_id}: {e}")
-    else:
-        bonus_granted = False
-
-    ally = get_ally_by_id(ally_id)
+    ally = result.get("profile") if nuevo_estado == "APPROVED" else get_ally_by_id(ally_id)
     if not ally:
         query.edit_message_text("No se encontró el aliado después de actualizar.")
         return
@@ -18455,37 +18422,23 @@ def courier_approval_callback(update, context):
     nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
 
     # Actualizar estado global del courier
-    try:
-        update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
-    except Exception as e:
-        print(f"[ERROR] update_courier_status: {e}")
-        query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
-        return
+    bonus_granted = False
+    if nuevo_estado == "APPROVED":
+        result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+        if not result.get("ok"):
+            query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
+            return
+        bonus_granted = bool(result.get("bonus_granted"))
+    else:
+        try:
+            update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print(f"[ERROR] update_courier_status: {e}")
+            query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
+            return
     _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
 
-    if nuevo_estado == "APPROVED":
-        bonus_granted = False
-        try:
-            link = get_admin_link_for_courier(courier_id)
-            if link:
-                keep_admin_id = link["admin_id"]
-            else:
-                keep_admin_id = get_platform_admin_id()
-                create_admin_courier_link(keep_admin_id, courier_id)
-
-            upsert_admin_courier_link(keep_admin_id, courier_id, "APPROVED", 1)
-            deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
-
-            try:
-                bonus_granted = bool(credit_welcome_balance("COURIER", courier_id, keep_admin_id, 5000))
-            except Exception as e:
-                print("[WARN] credit_welcome_balance (platform courier approve):", e)
-        except Exception as e:
-            print(f"[ERROR] asegurar vínculo APPROVED de courier {courier_id}: {e}")
-    else:
-        bonus_granted = False
-
-    courier = get_courier_by_id(courier_id)
+    courier = result.get("profile") if nuevo_estado == "APPROVED" else get_courier_by_id(courier_id)
     if not courier:
         query.edit_message_text("No se encontró el repartidor después de actualizar.")
         return
@@ -18939,6 +18892,27 @@ def admin_config_callback(update, context):
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
         ally_before = get_ally_by_id(ally_id)
+        if ally_before and ally_before.get("status") == "PENDING":
+            result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
+            if not result.get("ok"):
+                query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
+                return
+            try:
+                ally = result.get("profile") or get_ally_by_id(ally_id)
+                ally_telegram_id = get_ally_approval_notification_chat_id(ally_id)
+                _send_role_welcome_message(
+                    context,
+                    "ALLY",
+                    ally_telegram_id,
+                    profile=ally,
+                    bonus_granted=bool(result.get("bonus_granted")),
+                    reactivated=False,
+                )
+            except Exception as e:
+                print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
+            kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+            query.edit_message_text("Aliado aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+            return
         was_reactivated = bool(ally_before and ally_before.get("status") in ("INACTIVE", "REJECTED"))
         update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         try:
@@ -19044,6 +19018,27 @@ def admin_config_callback(update, context):
     if data.startswith("config_courier_enable_"):
         courier_id = int(data.split("_")[-1])
         courier_before = get_courier_by_id(courier_id)
+        if courier_before and courier_before.get("status") == "PENDING":
+            result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+            if not result.get("ok"):
+                query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
+                return
+            try:
+                courier = result.get("profile") or get_courier_by_id(courier_id)
+                courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
+                _send_role_welcome_message(
+                    context,
+                    "COURIER",
+                    courier_telegram_id,
+                    profile=courier,
+                    bonus_granted=bool(result.get("bonus_granted")),
+                    reactivated=False,
+                )
+            except Exception as e:
+                print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
+            kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+            query.edit_message_text("Repartidor aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+            return
         was_reactivated = bool(courier_before and courier_before.get("status") in ("INACTIVE", "REJECTED"))
         update_courier_status_by_id(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         try:

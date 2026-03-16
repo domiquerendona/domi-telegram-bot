@@ -1498,6 +1498,20 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_to ON ledger(to_type, to_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ledger_ref ON ledger(ref_type, ref_id)")
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS welcome_bonus_grants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role_type TEXT NOT NULL,
+            role_id INTEGER NOT NULL,
+            granted_by_admin_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            ledger_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(role_type, role_id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_welcome_bonus_role ON welcome_bonus_grants(role_type, role_id)")
+
     # Tabla: accounting_weeks (cortes semanales)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS accounting_weeks (
@@ -1778,6 +1792,23 @@ def _init_db_postgres():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
         ON registration_reset_audit(role_type, role_id)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS welcome_bonus_grants (
+            id BIGSERIAL PRIMARY KEY,
+            role_type TEXT NOT NULL,
+            role_id BIGINT NOT NULL,
+            granted_by_admin_id BIGINT NOT NULL,
+            amount INTEGER NOT NULL,
+            ledger_id BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(role_type, role_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_welcome_bonus_role
+        ON welcome_bonus_grants(role_type, role_id)
     """)
 
     # orders
@@ -7932,6 +7963,21 @@ def credit_welcome_balance(user_type: str, target_id: int, admin_id: int, amount
         else:
             cur.execute("BEGIN")
 
+        grant_id = None
+        try:
+            grant_id = _insert_returning_id(
+                cur,
+                f"""
+                    INSERT INTO welcome_bonus_grants (
+                        role_type, role_id, granted_by_admin_id, amount
+                    ) VALUES ({P}, {P}, {P}, {P})
+                """,
+                (user_type, int(target_id), int(admin_id), int(amount)),
+            )
+        except _IntegrityError:
+            conn.rollback()
+            return False
+
         if user_type == "COURIER":
             cur.execute(
                 f"UPDATE admin_couriers SET balance = balance + {P}, updated_at = {now_sql} "
@@ -7949,20 +7995,26 @@ def credit_welcome_balance(user_type: str, target_id: int, admin_id: int, amount
             conn.rollback()
             return False
 
-        cur.execute(
+        ledger_id = _insert_returning_id(
+            cur,
             "INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note) "
             "VALUES (" + ", ".join([P] * 9) + ")",
             (
-                "RECHARGE",
+                "WELCOME_BONUS",
                 "PLATFORM",
                 0,
                 user_type,
                 int(target_id),
                 int(amount),
-                None,
-                None,
+                "WELCOME_BONUS",
+                int(grant_id),
                 "Bienvenida: recarga inicial de regalo",
             ),
+        )
+
+        cur.execute(
+            f"UPDATE welcome_bonus_grants SET ledger_id = {P} WHERE id = {P}",
+            (int(ledger_id), int(grant_id)),
         )
 
         conn.commit()
