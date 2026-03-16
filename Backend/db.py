@@ -4286,7 +4286,13 @@ def reset_ally_registration_in_place(
     phone: str,
     document_number: str,
 ):
-    _require_inactive_active_registration_reset("allies", ally_id, "Aliado")
+    state = _get_registration_reset_state("allies", ally_id)
+    if not state:
+        raise ValueError("Aliado no encontrado.")
+    if state["status"] not in ("INACTIVE", "REJECTED"):
+        raise ValueError("El registro de aliado debe estar INACTIVE o REJECTED para reiniciarse.")
+    if not state["registration_reset_active"]:
+        raise ValueError("El registro de aliado no tiene un reinicio autorizado activo.")
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -4294,8 +4300,8 @@ def reset_ally_registration_in_place(
         previous_row = _fetch_registration_reset_row_for_update(cur, "allies", ally_id)
         if not previous_row:
             raise ValueError("Aliado no encontrado.")
-        if previous_row.get("status") != "INACTIVE":
-            raise ValueError("El registro de aliado debe estar INACTIVE para reiniciarse.")
+        if previous_row.get("status") not in ("INACTIVE", "REJECTED"):
+            raise ValueError("El registro de aliado debe estar INACTIVE o REJECTED para reiniciarse.")
         if not previous_row.get("registration_reset_enabled_at") or previous_row.get("registration_reset_consumed_at"):
             raise ValueError("El registro de aliado no tiene un reinicio autorizado activo.")
 

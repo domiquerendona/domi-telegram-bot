@@ -2382,7 +2382,7 @@ def can_admin_reregister_via_platform_reset(admin_id: int) -> bool:
 
 def can_ally_reregister_via_platform_reset(ally_id: int) -> bool:
     state = get_ally_reset_state_by_id(ally_id)
-    return bool(state and state["status"] == "INACTIVE" and ally_has_active_registration_reset(ally_id))
+    return bool(state and state["status"] in ("INACTIVE", "REJECTED") and ally_has_active_registration_reset(ally_id))
 
 
 def can_courier_reregister_via_platform_reset(courier_id: int) -> bool:
@@ -2523,7 +2523,7 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
         try:
             ally_id = ally.get("id") if isinstance(ally, dict) else ally["id"]
             ally_can_reregister = bool(
-                ally_status == "INACTIVE" and ally_id and can_ally_reregister_via_platform_reset(ally_id)
+                ally_status in ("INACTIVE", "REJECTED") and ally_id and can_ally_reregister_via_platform_reset(ally_id)
             )
         except Exception:
             ally_can_reregister = False

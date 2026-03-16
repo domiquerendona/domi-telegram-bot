@@ -309,7 +309,7 @@ def _registration_reset_status_label(reset_state):
 
 
 def _append_registration_reset_button(keyboard, role_prefix: str, role_id: int, role_status: str, reset_state):
-    if role_status != "INACTIVE":
+    if role_status not in ("INACTIVE", "REJECTED"):
         return
     if reset_state and reset_state.get("registration_reset_active"):
         keyboard.append([InlineKeyboardButton("Revocar reinicio", callback_data="{}_reset_clear_{}".format(role_prefix, role_id))])
@@ -549,6 +549,8 @@ def _render_platform_ally_detail(query, ally_id: int):
         keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
     if status == "INACTIVE":
         keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
+        _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
+    if status == "REJECTED":
         _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
 
     keyboard.append([InlineKeyboardButton(
@@ -2144,15 +2146,15 @@ def soy_aliado(update, context):
             )
             return ConversationHandler.END
 
-        if status == "INACTIVE" and not can_ally_reregister_via_platform_reset(ally_id):
+        if status in ("INACTIVE", "REJECTED") and not can_ally_reregister_via_platform_reset(ally_id):
             update.message.reply_text(
-                "Tu registro de aliado esta INACTIVE.\n"
+                f"Tu registro de aliado esta {status}.\n"
                 "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
-        if status != "INACTIVE":
+        if status not in ("INACTIVE", "REJECTED"):
             update.message.reply_text(
                 f"No puedes iniciar un nuevo registro con estado {status}.\n"
                 "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
@@ -19014,8 +19016,8 @@ def admin_config_callback(update, context):
         reset_state = get_ally_reset_state_by_id(ally_id)
 
         if action == "enable":
-            if ally["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if ally["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
