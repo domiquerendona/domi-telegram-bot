@@ -1406,7 +1406,7 @@ def start(update, context):
     comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
 
-    if ally:
+    if ally and "/soy_aliado" not in missing_cmds:
         comandos.append("")
         comandos.append("🍕 Aliado:")
         comandos.append("• Toca [Mi aliado] en el menu para ver todas las opciones:")
@@ -1417,7 +1417,7 @@ def start(update, context):
         comandos.append("Aliado:")
         comandos.append("• /soy_aliado  - Registrarte como aliado")
 
-    if courier:
+    if courier and "/soy_repartidor" not in missing_cmds:
         comandos.append("")
         comandos.append("🚴 Repartidor:")
         if courier["status"] == "APPROVED":
@@ -1524,12 +1524,12 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=No
     keyboard = []
     # Fila de roles: mostrar botones de seccion segun roles del usuario
     role_row = []
-    if ally:
+    if ally and "/soy_aliado" not in missing_cmds:
         role_row.append('Mi aliado')
     courier_btn = _courier_main_button_label(courier)
-    if courier_btn:
+    if courier_btn and "/soy_repartidor" not in missing_cmds:
         role_row.append(courier_btn)
-    if admin_local:
+    if admin_local and "/soy_admin" not in missing_cmds:
         role_row.append('Mi admin')
     if is_platform_admin:
         role_row.append('Admin plataforma')

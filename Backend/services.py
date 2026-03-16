@@ -2513,14 +2513,52 @@ def _get_reference_reviewer(telegram_id: int):
 
 def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag=False):
     cmds = []
-    if not ally:
+    ally_status = None
+    ally_can_reregister = False
+    if ally:
+        try:
+            ally_status = ally.get("status", "PENDING") if isinstance(ally, dict) else ally["status"]
+        except Exception:
+            ally_status = "PENDING"
+        try:
+            ally_id = ally.get("id") if isinstance(ally, dict) else ally["id"]
+            ally_can_reregister = bool(
+                ally_status == "INACTIVE" and ally_id and can_ally_reregister_via_platform_reset(ally_id)
+            )
+        except Exception:
+            ally_can_reregister = False
+    if not ally or ally_can_reregister:
         cmds.append("/soy_aliado")
-    if not courier:
+
+    courier_status = None
+    courier_can_reregister = False
+    if courier:
+        try:
+            courier_status = courier.get("status", "PENDING") if isinstance(courier, dict) else courier["status"]
+        except Exception:
+            courier_status = "PENDING"
+        try:
+            courier_id = courier.get("id") if isinstance(courier, dict) else courier["id"]
+            courier_can_reregister = bool(
+                courier_status == "INACTIVE" and courier_id and can_courier_reregister_via_platform_reset(courier_id)
+            )
+        except Exception:
+            courier_can_reregister = False
+    if not courier or courier_can_reregister:
         cmds.append("/soy_repartidor")
+
     admin_status = None
+    admin_can_reregister = False
     if admin_local:
         admin_status = admin_local.get("status", "PENDING") if isinstance(admin_local, dict) else admin_local["status"]
-    if (not admin_local or admin_status == "INACTIVE") and not es_admin_plataforma_flag:
+        try:
+            admin_id = admin_local.get("id") if isinstance(admin_local, dict) else admin_local["id"]
+            admin_can_reregister = bool(
+                admin_status == "INACTIVE" and admin_id and can_admin_reregister_via_platform_reset(admin_id)
+            )
+        except Exception:
+            admin_can_reregister = False
+    if (not admin_local or admin_can_reregister) and not es_admin_plataforma_flag:
         cmds.append("/soy_admin")
     return cmds
 
