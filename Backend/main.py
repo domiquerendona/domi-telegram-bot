@@ -2277,13 +2277,18 @@ def ally_address(update, context):
 def ally_ubicacion_handler(update, context):
     """Maneja texto de ubicación del aliado (link o coords)."""
     texto = update.message.text.strip()
+    user = update.effective_user
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        db_user = ensure_user(user.id, user.username)
+    context.user_data["ally_registration_user_id"] = db_user["id"]
 
     coords = extract_lat_lng_from_text(texto)
     if coords:
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
         update.message.reply_text("Ubicacion guardada.")
-        return _show_ally_confirm(update, context)
+        return show_ally_team_selection(update, context, from_callback=False)
 
     # Geocoding: intentar como direccion escrita
     geo = resolve_location(texto)
@@ -2305,16 +2310,26 @@ def ally_ubicacion_handler(update, context):
 def ally_ubicacion_location_handler(update, context):
     """Maneja ubicación nativa de Telegram (PIN) para registro de aliado."""
     loc = update.message.location
+    user = update.effective_user
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        db_user = ensure_user(user.id, user.username)
+    context.user_data["ally_registration_user_id"] = db_user["id"]
     context.user_data["ally_lat"] = loc.latitude
     context.user_data["ally_lng"] = loc.longitude
     update.message.reply_text("Ubicacion guardada.")
-    return _show_ally_confirm(update, context)
+    return show_ally_team_selection(update, context, from_callback=False)
 
 
 def ally_geo_ubicacion_callback(update, context):
     """Maneja confirmacion de geocoding en el registro de aliado."""
     query = update.callback_query
     query.answer()
+    user = update.effective_user
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        db_user = ensure_user(user.id, user.username)
+    context.user_data["ally_registration_user_id"] = db_user["id"]
 
     if query.data == "ally_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
@@ -2327,7 +2342,7 @@ def ally_geo_ubicacion_callback(update, context):
         context.user_data["ally_lat"] = lat
         context.user_data["ally_lng"] = lng
         query.edit_message_text("Ubicacion confirmada.")
-        return _show_ally_confirm(update, context)
+        return show_ally_team_selection(update, context, from_callback=True)
     else:  # ally_geo_no
         return _geo_siguiente_o_gps(query, context, "ally_geo_si", "ally_geo_no", ALLY_UBICACION)
 
@@ -2347,6 +2362,13 @@ def _show_ally_confirm(update, context):
         ubicacion = f"{ally_lat}, {ally_lng}"
     else:
         ubicacion = "No disponible"
+    selected_team_name = context.user_data.get("ally_selected_team_name", "No seleccionado")
+    selected_team_code = context.user_data.get("ally_selected_team_code")
+    equipo = (
+        f"{selected_team_name} ({selected_team_code})"
+        if selected_team_code else
+        selected_team_name
+    )
 
     resumen = (
         "Verifica tus datos de aliado:\n\n"
@@ -2357,6 +2379,7 @@ def _show_ally_confirm(update, context):
         f"Ciudad: {city}\n"
         f"Barrio: {barrio}\n"
         f"Dirección: {address}\n"
+        f"Equipo: {equipo}\n"
         f"Ubicación: {ubicacion}\n\n"
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_aliado"
@@ -2442,9 +2465,8 @@ def _create_or_reset_ally_from_context(context, user_db_id: int):
 
 
 def ally_confirm(update, context):
-    """Confirma datos y pasa a selección de equipo antes de guardar en BD."""
+    """Confirma datos y guarda el registro del aliado en BD."""
     confirm_text = update.message.text.strip().upper()
-    user = update.effective_user
 
     if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
         update.message.reply_text(
@@ -2454,10 +2476,18 @@ def ally_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    db_user = get_user_by_telegram_id(user.id)
-    if not db_user:
-        db_user = ensure_user(user.id, user.username)
-    user_db_id = db_user["id"]
+    user_db_id = context.user_data.get("ally_registration_user_id")
+    selected_admin_id = context.user_data.get("ally_selected_admin_id")
+    selected_team_name = context.user_data.get("ally_selected_team_name")
+    selected_team_code = context.user_data.get("ally_selected_team_code")
+
+    if not user_db_id or not selected_team_name:
+        update.message.reply_text(
+            "Primero debes elegir un equipo para continuar.\n\n"
+            "Usa /soy_aliado para iniciar de nuevo."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     ally_lat = context.user_data.get("ally_lat")
     ally_lng = context.user_data.get("ally_lng")
@@ -2470,8 +2500,79 @@ def ally_confirm(update, context):
         _set_flow_step(context, "ally", ALLY_UBICACION)
         return ALLY_UBICACION
 
-    context.user_data["ally_registration_user_id"] = user_db_id
-    return show_ally_team_selection(update, context, from_callback=False)
+    try:
+        ally_data = _create_or_reset_ally_from_context(context, user_db_id)
+        ally_id = ally_data["ally_id"]
+        upsert_admin_ally_link(selected_admin_id, ally_id, status="PENDING")
+    except Exception as e:
+        print(f"[ERROR] ally_confirm: no se pudo crear el registro: {e}")
+        update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    admin_row = get_admin_by_id(selected_admin_id) if selected_admin_id else None
+    admin_telegram_id = admin_row.get("telegram_id") if admin_row else None
+
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de ALIADO pendiente:\n\n"
+                f"Negocio: {ally_data['business_name']}\n"
+                f"Dueño: {ally_data['owner_name']}\n"
+                f"Cédula: {ally_data['ally_document']}\n"
+                f"Teléfono: {ally_data['phone']}\n"
+                f"Ciudad: {ally_data['city']}\n"
+                f"Barrio: {ally_data['barrio']}\n"
+                f"Equipo elegido: {selected_team_name}"
+                f"{f' ({selected_team_code})' if selected_team_code else ''}\n\n"
+                "Usa /aliados_pendientes o /admin para revisarlo."
+            )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="ally_registration_{}".format(ally_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de aliado #{} sigue pendiente.\n"
+                "Revisa /aliados_pendientes o /admin."
+            ).format(ally_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
+    try:
+        if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de aliado para tu equipo.\n\n"
+                    "Negocio: {}\n"
+                    "Equipo: {} ({})\n\n"
+                    "Entra a /mi_admin para aprobar o rechazar."
+                ).format(ally_data["business_name"], selected_team_name, selected_team_code)
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_ally_pending_{}_{}".format(selected_admin_id, ally_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un aliado pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
+
+    update.message.reply_text(
+        "Listo. Tu solicitud fue enviada.\n"
+        f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
+        "Quedas en estado PENDING hasta aprobación."
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 def show_ally_team_selection(update_or_query, context, from_callback=False):
@@ -2545,7 +2646,6 @@ def ally_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    # 1) Si selecciona NONE → asignar a Admin de Plataforma
     if selected.upper() == "NONE":
         platform_admin = get_admin_by_team_code(PLATFORM_TEAM_CODE)
         if not platform_admin:
@@ -2556,54 +2656,11 @@ def ally_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        try:
-            platform_admin_id = platform_admin["id"]
-            ally_data = _create_or_reset_ally_from_context(context, user_db_id)
-            ally_id = ally_data["ally_id"]
-            upsert_admin_ally_link(platform_admin_id, ally_id, status="PENDING")
-            print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={platform_admin_id}, team=PLATFORM")
-        except Exception as e:
-            print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-            query.edit_message_text(
-                "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-            )
-            context.user_data.clear()
-            return ConversationHandler.END
-
-        try:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=(
-                    "Nuevo registro de ALIADO pendiente:\n\n"
-                    f"Negocio: {ally_data['business_name']}\n"
-                    f"Dueño: {ally_data['owner_name']}\n"
-                    f"Cédula: {ally_data['ally_document']}\n"
-                    f"Teléfono: {ally_data['phone']}\n"
-                    f"Ciudad: {ally_data['city']}\n"
-                    f"Barrio: {ally_data['barrio']}\n"
-                    "Equipo elegido: PLATAFORMA (PLATFORM)\n\n"
-                    "Usa /aliados_pendientes o /admin para revisarlo."
-                )
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="ally_registration_{}".format(ally_id),
-                chat_id=ADMIN_USER_ID,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "El registro de aliado #{} sigue pendiente.\n"
-                    "Revisa /aliados_pendientes o /admin."
-                ).format(ally_id),
-            )
-        except Exception as e:
-            print("[WARN] No se pudo notificar al admin plataforma:", e)
-
-        query.edit_message_text(
-            "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
+        context.user_data["ally_selected_admin_id"] = platform_admin["id"]
+        context.user_data["ally_selected_team_name"] = "PLATAFORMA"
+        context.user_data["ally_selected_team_code"] = PLATFORM_TEAM_CODE
+        query.edit_message_text("Equipo seleccionado: PLATAFORMA (PLATFORM).")
+        return _show_ally_confirm(update, context)
 
     # 2) Si selecciona un TEAM_CODE real
     admin_row = get_admin_by_team_code(selected)
@@ -2615,83 +2672,14 @@ def ally_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    try:
-        admin_id = admin_row["id"]
-        team_name = admin_row["team_name"]
-        team_code = admin_row["team_code"]
-        ally_data = _create_or_reset_ally_from_context(context, user_db_id)
-        ally_id = ally_data["ally_id"]
-        upsert_admin_ally_link(admin_id, ally_id, status="PENDING")
-        print(f"[DEBUG] ally_team_callback: vínculo creado ally_id={ally_id}, admin_id={admin_id}, team={team_code}")
-    except Exception as e:
-        print(f"[ERROR] ally_team_callback: upsert_admin_ally_link falló: {e}")
-        query.edit_message_text(
-            "Error técnico al vincular con el equipo. Intenta /soy_aliado de nuevo."
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    admin_telegram_id = admin_row.get("telegram_id")
-    business_name = ally_data["business_name"]
-    try:
-        context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de ALIADO pendiente:\n\n"
-                f"Negocio: {ally_data['business_name']}\n"
-                f"Dueño: {ally_data['owner_name']}\n"
-                f"Cédula: {ally_data['ally_document']}\n"
-                f"Teléfono: {ally_data['phone']}\n"
-                f"Ciudad: {ally_data['city']}\n"
-                f"Barrio: {ally_data['barrio']}\n"
-                f"Equipo elegido: {team_name} ({team_code})\n\n"
-                "Usa /aliados_pendientes o /admin para revisarlo."
-            )
-        )
-        _schedule_important_alerts(
-            context,
-            alert_key="ally_registration_{}".format(ally_id),
-            chat_id=ADMIN_USER_ID,
-            reminder_text=(
-                "Recordatorio importante:\n"
-                "El registro de aliado #{} sigue pendiente.\n"
-                "Revisa /aliados_pendientes o /admin."
-            ).format(ally_id),
-        )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
-
-    try:
-        if admin_telegram_id:
-            context.bot.send_message(
-                chat_id=admin_telegram_id,
-                text=(
-                    "Nueva solicitud de aliado para tu equipo.\n\n"
-                    "Negocio: {}\n"
-                    "Equipo: {} ({})\n\n"
-                    "Entra a /mi_admin para aprobar o rechazar."
-                ).format(business_name, team_name, team_code)
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="team_ally_pending_{}_{}".format(admin_id, ally_id),
-                chat_id=admin_telegram_id,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "Tienes un aliado pendiente de aprobar en tu equipo.\n"
-                    "Revisa /mi_admin."
-                ),
-            )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
-
+    context.user_data["ally_selected_admin_id"] = admin_row["id"]
+    context.user_data["ally_selected_team_name"] = admin_row["team_name"]
+    context.user_data["ally_selected_team_code"] = admin_row["team_code"]
     query.edit_message_text(
-        "Listo. Elegiste el equipo:\n"
-        f"{team_name} ({team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Equipo seleccionado:\n"
+        f"{admin_row['team_name']} ({admin_row['team_code']})"
     )
-    context.user_data.clear()
-    return ConversationHandler.END
+    return _show_ally_confirm(update, context)
 
 
 
@@ -2953,7 +2941,16 @@ def courier_selfie(update, context):
         )
         return COURIER_SELFIE
     context.user_data["selfie_file_id"] = update.message.photo[-1].file_id
+    user = update.effective_user
+    db_user = get_user_by_telegram_id(user.id)
+    if not db_user:
+        db_user = ensure_user(user.id, user.username)
+    context.user_data["courier_registration_user_id"] = db_user["id"]
 
+    return show_courier_team_selection(update, context)
+
+
+def _show_courier_confirm(update, context):
     full_name = context.user_data.get("full_name", "")
     id_number = context.user_data.get("id_number", "")
     phone = context.user_data.get("phone", "")
@@ -2964,10 +2961,17 @@ def courier_selfie(update, context):
     residence_address = context.user_data.get("residence_address", "") or "No registrada"
     residence_lat = context.user_data.get("residence_lat")
     residence_lng = context.user_data.get("residence_lng")
+    selected_team_name = context.user_data.get("courier_selected_team_name", "No seleccionado")
+    selected_team_code = context.user_data.get("courier_selected_team_code")
     if residence_lat is not None and residence_lng is not None:
         residence_location = "{}, {}".format(residence_lat, residence_lng)
     else:
         residence_location = "No disponible"
+    team_label = (
+        f"{selected_team_name} ({selected_team_code})"
+        if selected_team_code else
+        selected_team_name
+    )
 
     resumen = (
         "Fotos recibidas. Verifica tus datos de repartidor:\n\n"
@@ -2979,11 +2983,14 @@ def courier_selfie(update, context):
         f"Dirección residencia: {residence_address}\n"
         f"Ubicación residencia: {residence_location}\n"
         f"Placa: {plate}\n"
-        f"Tipo de moto: {bike_type}\n\n"
+        f"Tipo de moto: {bike_type}\n"
+        f"Equipo: {team_label}\n\n"
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_repartidor"
     )
-    update.message.reply_text(resumen)
+    message = update.message or (update.callback_query.message if update.callback_query else None)
+    if message:
+        message.reply_text(resumen)
     _set_flow_step(context, "courier", COURIER_CONFIRM)
     return COURIER_CONFIRM
 
@@ -3135,8 +3142,6 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
 
 def courier_confirm(update, context):
     confirm_text = update.message.text.strip().upper()
-    user = update.effective_user
-    db_user = get_user_by_telegram_id(user.id)
 
     if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
         update.message.reply_text(
@@ -3146,8 +3151,103 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    context.user_data["courier_registration_user_id"] = db_user["id"]
-    return show_courier_team_selection(update, context)
+    user_db_id = context.user_data.get("courier_registration_user_id")
+    selected_admin_id = context.user_data.get("courier_selected_admin_id")
+    selected_team_name = context.user_data.get("courier_selected_team_name")
+    selected_team_code = context.user_data.get("courier_selected_team_code")
+
+    if not user_db_id or not selected_team_name:
+        update.message.reply_text(
+            "Primero debes elegir un equipo para continuar.\n\n"
+            "Usa /soy_repartidor para iniciar de nuevo."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    try:
+        courier_data = _create_or_reset_courier_from_context(context, user_db_id)
+        courier_id = courier_data["courier_id"]
+        create_admin_courier_link(selected_admin_id, courier_id)
+    except Exception as e:
+        print(f"[ERROR] courier_confirm: no se pudo crear el registro: {e}")
+        update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    admin_row = get_admin_by_id(selected_admin_id) if selected_admin_id else None
+    admin_telegram_id = admin_row.get("telegram_id") if admin_row else None
+
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n"
+                "Equipo elegido: {} {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(
+                courier_data["full_name"],
+                courier_data["id_number"],
+                courier_data["phone"],
+                courier_data["city"],
+                courier_data["barrio"],
+                courier_data["plate"],
+                courier_data["bike_type"],
+                selected_team_name,
+                f"({selected_team_code})" if selected_team_code else "",
+            )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="courier_registration_{}".format(courier_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de repartidor #{} sigue pendiente.\n"
+                "Revisa /repartidores_pendientes o /admin."
+            ).format(courier_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
+    try:
+        if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de repartidor para tu equipo.\n\n"
+                    f"Repartidor ID: {courier_id}\n"
+                    f"Equipo: {selected_team_name}\n"
+                    f"Código: {selected_team_code}\n\n"
+                    "Entra a /mi_admin para aprobar o rechazar."
+                )
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_courier_pending_{}_{}".format(selected_admin_id, courier_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin local:", e)
+
+    update.message.reply_text(
+        "Listo. Tu solicitud fue enviada.\n"
+        f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
+        "Quedas en estado PENDING hasta aprobación."
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 def show_courier_team_selection(update, context):
@@ -3211,60 +3311,11 @@ def courier_team_callback(update, context):
             context.user_data.clear()
             return ConversationHandler.END
 
-        try:
-            platform_admin_id = platform_admin["id"]
-            courier_data = _create_or_reset_courier_from_context(context, user_db_id)
-            courier_id = courier_data["courier_id"]
-            create_admin_courier_link(platform_admin_id, courier_id)
-        except Exception as e:
-            print(f"[ERROR] courier_team_callback: create_admin_courier_link falló: {e}")
-            query.edit_message_text("Error técnico al vincular con el equipo. Intenta /soy_repartidor de nuevo.")
-            context.user_data.clear()
-            return ConversationHandler.END
-
-        try:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=(
-                    "Nuevo registro de REPARTIDOR pendiente:\n\n"
-                    "Nombre: {}\n"
-                    "Cedula: {}\n"
-                    "Telefono: {}\n"
-                    "Ciudad: {}\n"
-                    "Barrio: {}\n"
-                    "Placa: {}\n"
-                    "Tipo de moto: {}\n"
-                    "Equipo elegido: PLATAFORMA (PLATFORM)\n\n"
-                    "Usa /admin para revisarlo."
-                ).format(
-                    courier_data["full_name"],
-                    courier_data["id_number"],
-                    courier_data["phone"],
-                    courier_data["city"],
-                    courier_data["barrio"],
-                    courier_data["plate"],
-                    courier_data["bike_type"],
-                )
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="courier_registration_{}".format(courier_id),
-                chat_id=ADMIN_USER_ID,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "El registro de repartidor #{} sigue pendiente.\n"
-                    "Revisa /repartidores_pendientes o /admin."
-                ).format(courier_id),
-            )
-        except Exception as e:
-            print("[WARN] No se pudo notificar al admin plataforma:", e)
-
-        query.edit_message_text(
-            "Listo. Quedaste asignado por defecto al Admin de Plataforma.\n"
-            "Tu vínculo quedó en estado PENDING hasta aprobación."
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
+        context.user_data["courier_selected_admin_id"] = platform_admin["id"]
+        context.user_data["courier_selected_team_name"] = "PLATAFORMA"
+        context.user_data["courier_selected_team_code"] = PLATFORM_TEAM_CODE
+        query.edit_message_text("Equipo seleccionado: PLATAFORMA (PLATFORM).")
+        return _show_courier_confirm(update, context)
 
     admin_row = get_admin_by_team_code(selected)
     if not admin_row:
@@ -3275,90 +3326,14 @@ def courier_team_callback(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
-    try:
-        admin_id = admin_row["id"]
-        admin_team = admin_row["team_name"]
-        admin_team_code = admin_row["team_code"]
-        admin_telegram_id = admin_row["telegram_id"]
-        courier_data = _create_or_reset_courier_from_context(context, user_db_id)
-        courier_id = courier_data["courier_id"]
-        create_admin_courier_link(admin_id, courier_id)
-    except Exception as e:
-        print("[ERROR] create_admin_courier_link:", e)
-        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    try:
-        context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=(
-                "Nuevo registro de REPARTIDOR pendiente:\n\n"
-                "Nombre: {}\n"
-                "Cedula: {}\n"
-                "Telefono: {}\n"
-                "Ciudad: {}\n"
-                "Barrio: {}\n"
-                "Placa: {}\n"
-                "Tipo de moto: {}\n"
-                "Equipo elegido: {} ({})\n\n"
-                "Usa /admin para revisarlo."
-            ).format(
-                courier_data["full_name"],
-                courier_data["id_number"],
-                courier_data["phone"],
-                courier_data["city"],
-                courier_data["barrio"],
-                courier_data["plate"],
-                courier_data["bike_type"],
-                admin_team,
-                admin_team_code,
-            )
-        )
-        _schedule_important_alerts(
-            context,
-            alert_key="courier_registration_{}".format(courier_id),
-            chat_id=ADMIN_USER_ID,
-            reminder_text=(
-                "Recordatorio importante:\n"
-                "El registro de repartidor #{} sigue pendiente.\n"
-                "Revisa /repartidores_pendientes o /admin."
-            ).format(courier_id),
-        )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
-
-    try:
-        context.bot.send_message(
-            chat_id=admin_telegram_id,
-            text=(
-                "Nueva solicitud de repartidor para tu equipo.\n\n"
-                f"Repartidor ID: {courier_id}\n"
-                f"Equipo: {admin_team}\n"
-                f"Código: {admin_team_code}\n\n"
-                "Entra a /mi_admin para aprobar o rechazar."
-            )
-        )
-        _schedule_important_alerts(
-            context,
-            alert_key="team_courier_pending_{}_{}".format(admin_id, courier_id),
-            chat_id=admin_telegram_id,
-            reminder_text=(
-                "Recordatorio importante:\n"
-                "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
-                "Revisa /mi_admin."
-            ),
-        )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin local:", e)
-
+    context.user_data["courier_selected_admin_id"] = admin_row["id"]
+    context.user_data["courier_selected_team_name"] = admin_row["team_name"]
+    context.user_data["courier_selected_team_code"] = admin_row["team_code"]
     query.edit_message_text(
-        "Listo. Elegiste el equipo:\n"
-        f"{admin_team} ({admin_team_code})\n\n"
-        "Tu vínculo quedó en estado PENDING hasta aprobación."
+        "Equipo seleccionado:\n"
+        f"{admin_row['team_name']} ({admin_row['team_code']})"
     )
-    context.user_data.clear()
-    return ConversationHandler.END
+    return _show_courier_confirm(update, context)
 
 def nuevo_pedido_desde_cotizador(update, context):
     """Entry point de nuevo_pedido_conv cuando el aliado confirma pedido desde el cotizador."""
