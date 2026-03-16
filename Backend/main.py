@@ -2335,7 +2335,9 @@ def _show_ally_confirm(update, context):
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_aliado"
     )
-    update.message.reply_text(resumen)
+    message = update.message or (update.callback_query.message if update.callback_query else None)
+    if message:
+        message.reply_text(resumen)
     _set_flow_step(context, "ally", ALLY_CONFIRM)
     return ALLY_CONFIRM
 
