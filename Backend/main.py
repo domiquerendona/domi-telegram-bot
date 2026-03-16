@@ -2602,12 +2602,7 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
             admin_id = row["id"]
             team_name = row["team_name"]
             team_code = row["team_code"]
-            admin_status = row["status"]
-
-            # FASE 1: Mostrar estado si es PENDING
             label = f"{team_name} ({team_code})"
-            if admin_status == 'PENDING':
-                label += " [Pendiente]"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"ally_team_{team_code}")])
 
     # Opción Ninguno (default plataforma)
@@ -3269,11 +3264,7 @@ def show_courier_team_selection(update, context):
             admin_id = row["id"]
             team_name = row["team_name"]
             team_code = row["team_code"]
-            admin_status = row["status"]
-
             label = f"{team_name} ({team_code})"
-            if admin_status == 'PENDING':
-                label += " [Pendiente]"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"courier_team_{team_code}")])
 
     keyboard.append([InlineKeyboardButton("Ninguno (Admin de Plataforma)", callback_data="courier_team_NONE")])
