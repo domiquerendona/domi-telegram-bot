@@ -46,6 +46,7 @@ from services import (
     _get_reference_reviewer,
     _get_missing_role_commands,
     get_user_by_id,
+    resolve_admin_telegram_id,
     get_available_admin_teams,
     # Alertas de oferta
     get_offer_alerts_config,
@@ -2513,9 +2514,7 @@ def ally_confirm(update, context):
     admin_telegram_id = context.user_data.get("ally_selected_admin_telegram_id")
     if not admin_telegram_id and selected_admin_id:
         try:
-            admin_row = get_admin_by_id(selected_admin_id)
-            admin_user = get_user_by_id(admin_row["user_id"]) if admin_row and admin_row.get("user_id") else None
-            admin_telegram_id = admin_user["telegram_id"] if admin_user else None
+            admin_telegram_id = resolve_admin_telegram_id(selected_admin_id)
         except Exception as e:
             print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
 
@@ -3170,9 +3169,7 @@ def courier_confirm(update, context):
     admin_telegram_id = context.user_data.get("courier_selected_admin_telegram_id")
     if not admin_telegram_id and selected_admin_id:
         try:
-            admin_row = get_admin_by_id(selected_admin_id)
-            admin_user = get_user_by_id(admin_row["user_id"]) if admin_row and admin_row.get("user_id") else None
-            admin_telegram_id = admin_user["telegram_id"] if admin_user else None
+            admin_telegram_id = resolve_admin_telegram_id(selected_admin_id)
         except Exception as e:
             print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
 

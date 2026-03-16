@@ -2390,6 +2390,23 @@ def can_courier_reregister_via_platform_reset(courier_id: int) -> bool:
     return bool(state and state["status"] == "INACTIVE" and courier_has_active_registration_reset(courier_id))
 
 
+def resolve_admin_telegram_id(admin_id: int) -> Optional[int]:
+    admin_row = get_admin_by_id(admin_id)
+    if not admin_row:
+        return None
+
+    user_id = admin_row.get("user_id") if isinstance(admin_row, dict) else admin_row["user_id"]
+    if not user_id:
+        return None
+
+    admin_user = get_user_by_id(user_id)
+    if not admin_user:
+        return None
+
+    telegram_id = admin_user.get("telegram_id") if isinstance(admin_user, dict) else admin_user["telegram_id"]
+    return int(telegram_id) if telegram_id else None
+
+
 def _get_registration_owner_link(role_type: str, target_id: int):
     role_type = (role_type or "").strip().upper()
     if role_type == "ALLY":

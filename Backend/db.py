@@ -2323,10 +2323,12 @@ def get_available_admin_teams():
             a.team_code,
             a.status
         FROM admins a
+        JOIN users u ON u.id = a.user_id
         WHERE a.status = 'APPROVED'
           AND a.is_deleted = 0
           AND a.team_code IS NOT NULL
           AND TRIM(a.team_code) <> ''
+          AND u.telegram_id IS NOT NULL
         ORDER BY a.id ASC
     """)
     rows = cur.fetchall()
