@@ -367,6 +367,101 @@ def _resolve_important_alert(context, alert_key):
                 pass
 
 
+def _build_role_welcome_message(role: str, profile=None, bonus_granted: bool = False, reactivated: bool = False) -> str:
+    role = (role or "").strip().upper()
+    team_name = "-"
+    if isinstance(profile, dict):
+        team_name = profile.get("team_name") or "-"
+
+    if role == "ADMIN_LOCAL":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu cuenta de Administrador Local fue reactivada.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu cuenta de Administrador Local fue aprobada.\n\n"
+        )
+        return (
+            opening
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /mi_admin para revisar tu panel, estado operativo y pendientes.\n"
+            + "2. Usa /configurar_pagos para dejar tus datos de pago al dia.\n"
+            + "3. Usa /recargas_pendientes para gestionar solicitudes cuando ya estes operando.\n"
+            + "4. Tu equipo actual es '{}'. Antes de operar debes cumplir los requisitos: 5 aliados con saldo >= 5000, 10 repartidores con saldo >= 5000 y saldo master >= 60000.\n\n".format(team_name)
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    if role == "ALLY":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu negocio fue reactivado.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+        )
+        bonus_line = ""
+        if bonus_granted:
+            bonus_line = "Recibiste $5.000 de saldo de bienvenida para crear tu primer pedido.\n\n"
+        return (
+            opening
+            + bonus_line
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /menu y entra a [Mi aliado].\n"
+            + "2. Crea tu primer pedido con /nuevo_pedido.\n"
+            + "3. Usa /agenda para guardar clientes y direcciones frecuentes.\n"
+            + "4. Usa /recargar cuando necesites saldo adicional.\n\n"
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    if role == "COURIER":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu perfil de repartidor fue reactivado.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu registro de repartidor fue aprobado.\n\n"
+        )
+        bonus_line = ""
+        if bonus_granted:
+            bonus_line = "Recibiste $5.000 de saldo de bienvenida para empezar a recibir pedidos.\n\n"
+        return (
+            opening
+            + bonus_line
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /menu y entra a [Mi repartidor].\n"
+            + "2. Activa tu panel y comparte tu ubicacion en vivo cuando vayas a recibir ofertas.\n"
+            + "3. Revisa tus pedidos y tu saldo desde ese mismo menu.\n"
+            + "4. Usa /recargar cuando necesites saldo adicional.\n\n"
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    return "Bienvenido a Domiquerendona.\n\nUsa /menu para ver tus opciones."
+
+
+def _send_role_welcome_message(context, role: str, chat_id: int, profile=None, bonus_granted: bool = False, reactivated: bool = False):
+    if not chat_id:
+        return
+    context.bot.send_message(
+        chat_id=chat_id,
+        text=_build_role_welcome_message(
+            role,
+            profile=profile,
+            bonus_granted=bonus_granted,
+            reactivated=reactivated,
+        ),
+    )
+
+
+def _notify_admin_local_welcome(context, admin_id: int, reactivated: bool = False):
+    admin = get_admin_by_id(admin_id)
+    if not admin:
+        return
+    user_row = get_user_by_id(admin["user_id"])
+    if not user_row:
+        return
+    _send_role_welcome_message(
+        context,
+        "ADMIN_LOCAL",
+        user_row["telegram_id"],
+        profile=admin,
+        reactivated=reactivated,
+    )
+
+
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
@@ -8005,7 +8100,13 @@ def admin_menu_callback(update, context):
             return
 
         # Aplicar cambio
+        was_reactivated = bool(admin_obj.get("status") in ("INACTIVE", "REJECTED"))
         update_admin_status_by_id(adm_id, nuevo_status, changed_by=f"tg:{update.effective_user.id}")
+        if nuevo_status == "APPROVED":
+            try:
+                _notify_admin_local_welcome(context, adm_id, reactivated=was_reactivated)
+            except Exception as e:
+                print("[WARN] No se pudo notificar onboarding de admin local:", e)
         query.answer("Estado actualizado a {}".format(nuevo_status))
 
         # Recargar el detalle
@@ -8530,27 +8631,8 @@ def admin_menu_callback(update, context):
 
         update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
 
-        # Notificar al administrador aprobado (pero aclarando que NO puede operar aún)
         try:
-            admin = get_admin_by_id(admin_id)
-            admin_user_db_id = admin["user_id"]
-
-            u = get_user_by_id(admin_user_db_id)
-            if u:
-                admin_telegram_id = u["telegram_id"]
-
-                msg = (
-                    "✅ Tu cuenta de Administrador Local ha sido APROBADA.\n\n"
-                    "IMPORTANTE: La aprobación no significa que ya puedas operar.\n"
-                    "Para operar debes cumplir los requisitos.\n\n"
-                    "Requisitos para operar:\n"
-                    "1) Tener mínimo 5 aliados vinculados con saldo por vínculo >= 5000.\n"
-                    "2) Tener mínimo 10 repartidores vinculados con saldo por vínculo >= 5000.\n"
-                    "3) Mantener saldo master >= 60000 y cumplir las reglas de la plataforma.\n\n"
-                    "Cuando intentes usar funciones operativas, el sistema validará estos requisitos."
-                )
-                context.bot.send_message(chat_id=admin_telegram_id, text=msg)
-
+            _notify_admin_local_welcome(context, admin_id, reactivated=False)
         except Exception as e:
             print("[WARN] No se pudo notificar al admin aprobado:", e)
 
@@ -9378,12 +9460,19 @@ def admin_aprobar_rechazar_callback(update, context):
         return
 
     if accion == "aprobar":
+        admin_actual = get_admin_by_id(admin_id)
+        was_reactivated = bool(admin_actual and admin_actual.get("status") in ("INACTIVE", "REJECTED"))
         try:
             update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
             print("[ERROR] update_admin_status_by_id APPROVED:", e)
             query.edit_message_text("Error aprobando administrador. Revisa logs.")
             return
+
+        try:
+            _notify_admin_local_welcome(context, admin_id, reactivated=was_reactivated)
+        except Exception as e:
+            print("[WARN] No se pudo notificar onboarding de admin local:", e)
 
         _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
         query.edit_message_text("✅ Administrador aprobado (APPROVED).")
@@ -17430,23 +17519,22 @@ def admin_local_callback(update, context):
             query.edit_message_text("Error aprobando repartidor. Revisa logs.")
             return
 
+        bonus_granted = False
         try:
-            credit_welcome_balance("COURIER", courier_id, admin_id, 5000)
+            bonus_granted = bool(credit_welcome_balance("COURIER", courier_id, admin_id, 5000))
         except Exception as e:
             print("[WARN] credit_welcome_balance (local courier approve):", e)
 
         try:
             courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
             if courier_telegram_id:
-                context.bot.send_message(
-                    chat_id=courier_telegram_id,
-                    text=(
-                        "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
-                        "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
-                        "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
-                        "o no. Sin presión.\n\n"
-                        "Usa /menu para ver tus opciones."
-                    ),
+                courier = get_courier_by_id(courier_id)
+                _send_role_welcome_message(
+                    context,
+                    "COURIER",
+                    courier_telegram_id,
+                    profile=courier,
+                    bonus_granted=bonus_granted,
                 )
         except Exception as e:
             print("[WARN] Error notificando repartidor (local approve):", e)
@@ -17595,23 +17683,22 @@ def admin_local_callback(update, context):
                 query.edit_message_text("Error aprobando aliado. Revisa logs.")
                 return
 
+            bonus_granted = False
             try:
-                credit_welcome_balance("ALLY", ally_id_val, admin_id, 5000)
+                bonus_granted = bool(credit_welcome_balance("ALLY", ally_id_val, admin_id, 5000))
             except Exception as e:
                 print("[WARN] credit_welcome_balance (local ally approve):", e)
 
             try:
                 ally_telegram_id = get_ally_approval_notification_chat_id(ally_id_val)
                 if ally_telegram_id:
-                    context.bot.send_message(
-                        chat_id=ally_telegram_id,
-                        text=(
-                            "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
-                            "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
-                            "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
-                            "o no. Sin presión.\n\n"
-                            "Usa /menu para ver tus opciones."
-                        ),
+                    ally = get_ally_by_id(ally_id_val)
+                    _send_role_welcome_message(
+                        context,
+                        "ALLY",
+                        ally_telegram_id,
+                        profile=ally,
+                        bonus_granted=bonus_granted,
                     )
             except Exception as e:
                 print("[WARN] Error notificando aliado (local approve):", e)
@@ -17884,6 +17971,7 @@ def ally_approval_callback(update, context):
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
     if nuevo_estado == "APPROVED":
+        bonus_granted = False
         try:
             link = get_admin_link_for_ally(ally_id)
             if link:
@@ -17894,11 +17982,13 @@ def ally_approval_callback(update, context):
             deactivate_other_approved_admin_ally_links(ally_id, keep_admin_id)
 
             try:
-                credit_welcome_balance("ALLY", ally_id, keep_admin_id, 5000)
+                bonus_granted = bool(credit_welcome_balance("ALLY", ally_id, keep_admin_id, 5000))
             except Exception as e:
                 print("[WARN] credit_welcome_balance (platform ally approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vinculo APPROVED de ally {ally_id}: {e}")
+    else:
+        bonus_granted = False
 
     ally = get_ally_by_id(ally_id)
     if not ally:
@@ -17914,13 +18004,7 @@ def ally_approval_callback(update, context):
         ally_telegram_id = u["telegram_id"]
 
         if accion == "approve":
-            msg = (
-                "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
-                "Como regalo de bienvenida te cargamos $5.000 de saldo para que crees\n"
-                "tu primer pedido sin costo inicial. Cuando lo uses decides si recargas\n"
-                "o no. Sin presión.\n\n"
-                "Usa /menu para ver tus opciones."
-            )
+            msg = _build_role_welcome_message("ALLY", profile=ally, bonus_granted=bonus_granted, reactivated=False)
         else:
             msg = (
                 "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
@@ -18127,6 +18211,7 @@ def courier_approval_callback(update, context):
     _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
 
     if nuevo_estado == "APPROVED":
+        bonus_granted = False
         try:
             link = get_admin_link_for_courier(courier_id)
             if link:
@@ -18139,11 +18224,13 @@ def courier_approval_callback(update, context):
             deactivate_other_approved_admin_courier_links(courier_id, keep_admin_id)
 
             try:
-                credit_welcome_balance("COURIER", courier_id, keep_admin_id, 5000)
+                bonus_granted = bool(credit_welcome_balance("COURIER", courier_id, keep_admin_id, 5000))
             except Exception as e:
                 print("[WARN] credit_welcome_balance (platform courier approve):", e)
         except Exception as e:
             print(f"[ERROR] asegurar vínculo APPROVED de courier {courier_id}: {e}")
+    else:
+        bonus_granted = False
 
     courier = get_courier_by_id(courier_id)
     if not courier:
@@ -18160,13 +18247,7 @@ def courier_approval_callback(update, context):
         courier_telegram_id = u["telegram_id"]
 
         if accion == "approve":
-            msg = (
-                "Bienvenido a Domiquerendona. Tu registro fue aprobado.\n\n"
-                "Como regalo de bienvenida te cargamos $5.000 de saldo para que empieces\n"
-                "a recibir pedidos sin costo inicial. Cuando lo uses decides si recargas\n"
-                "o no. Sin presión.\n\n"
-                "Usa /menu para ver tus opciones."
-            )
+            msg = _build_role_welcome_message("COURIER", profile=courier, bonus_granted=bonus_granted, reactivated=False)
         else:
             msg = (
                 "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
@@ -18599,6 +18680,8 @@ def admin_config_callback(update, context):
 
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
+        ally_before = get_ally_by_id(ally_id)
+        was_reactivated = bool(ally_before and ally_before.get("status") in ("INACTIVE", "REJECTED"))
         update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         try:
             link = get_admin_link_for_ally(ally_id)
@@ -18606,6 +18689,12 @@ def admin_config_callback(update, context):
             upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
         except Exception as e:
             print(f"[ERROR] config_ally_enable_ upsert link: {e}")
+        try:
+            ally = get_ally_by_id(ally_id)
+            ally_telegram_id = get_ally_approval_notification_chat_id(ally_id)
+            _send_role_welcome_message(context, "ALLY", ally_telegram_id, profile=ally, reactivated=was_reactivated)
+        except Exception as e:
+            print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -18696,7 +18785,15 @@ def admin_config_callback(update, context):
 
     if data.startswith("config_courier_enable_"):
         courier_id = int(data.split("_")[-1])
+        courier_before = get_courier_by_id(courier_id)
+        was_reactivated = bool(courier_before and courier_before.get("status") in ("INACTIVE", "REJECTED"))
         update_courier_status_by_id(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            courier = get_courier_by_id(courier_id)
+            courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
+            _send_role_welcome_message(context, "COURIER", courier_telegram_id, profile=courier, reactivated=was_reactivated)
+        except Exception as e:
+            print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
