@@ -462,6 +462,99 @@ def _notify_admin_local_welcome(context, admin_id: int, reactivated: bool = Fals
     )
 
 
+def _render_platform_ally_detail(query, ally_id: int):
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        query.edit_message_text("No se encontró el aliado.")
+        return
+
+    reset_state = get_ally_reset_state_by_id(ally_id)
+    reset_status = _registration_reset_status_label(reset_state)
+    default_loc = get_default_ally_location(ally_id)
+    loc_lat = _row_value(default_loc, "lat") if default_loc else None
+    loc_lng = _row_value(default_loc, "lng") if default_loc else None
+
+    if loc_lat is not None and loc_lng is not None:
+        loc_text = "{}, {}".format(loc_lat, loc_lng)
+        maps_text = "Maps: https://www.google.com/maps?q={},{}\n".format(loc_lat, loc_lng)
+    else:
+        loc_text = "No disponible"
+        maps_text = ""
+
+    subsidio = int((_row_value(ally, "delivery_subsidy") or 0))
+    min_purchase = _row_value(ally, "min_purchase_for_subsidy")
+    if subsidio == 0:
+        subsidio_label = "Subsidio domicilio: No configurado"
+    elif min_purchase is not None:
+        subsidio_label = (
+            "Subsidio domicilio: ${:,} por pedido\n"
+            "Modo: Condicional\n"
+            "Compra minima: ${:,}"
+        ).format(subsidio, min_purchase)
+    else:
+        subsidio_label = (
+            "Subsidio domicilio: ${:,} por pedido\n"
+            "Modo: Incondicional"
+        ).format(subsidio)
+
+    texto = (
+        "Detalle del aliado:\n\n"
+        "ID: {id}\n"
+        "Negocio: {business_name}\n"
+        "Propietario: {owner_name}\n"
+        "Teléfono: {phone}\n"
+        "Dirección: {address}\n"
+        "Ciudad: {city}\n"
+        "Barrio: {barrio}\n"
+        "Estado: {status}\n"
+        "Reinicio de registro: {reset_status}\n"
+        "{subsidio_label}\n"
+        "Ubicación: {loc}\n"
+        "{maps}"
+    ).format(
+        id=_row_value(ally, "id", "-"),
+        business_name=_row_value(ally, "business_name", "-"),
+        owner_name=_row_value(ally, "owner_name", "-"),
+        phone=_row_value(ally, "phone", "-"),
+        address=_row_value(ally, "address", "-"),
+        city=_row_value(ally, "city", "-"),
+        barrio=_row_value(ally, "barrio", "-"),
+        status=_row_value(ally, "status", "-"),
+        reset_status=reset_status,
+        subsidio_label=subsidio_label,
+        loc=loc_text,
+        maps=maps_text,
+    )
+
+    status = _row_value(ally, "status")
+    keyboard = []
+
+    if status == "PENDING":
+        keyboard.append([
+            InlineKeyboardButton("✅ Aprobar", callback_data="config_ally_enable_{}".format(ally_id)),
+            InlineKeyboardButton("❌ Rechazar", callback_data="config_ally_reject_{}".format(ally_id)),
+        ])
+    if status == "APPROVED":
+        keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
+    if status == "INACTIVE":
+        keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
+        _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
+
+    keyboard.append([InlineKeyboardButton(
+        "Editar subsidio domicilio (${:,})".format(subsidio),
+        callback_data="config_ally_subsidy_{}".format(ally_id)
+    )])
+    keyboard.append([InlineKeyboardButton(
+        "Compra minima subsidio ({})".format(
+            "${:,}".format(min_purchase) if min_purchase is not None else "sin condicion"
+        ),
+        callback_data="config_ally_minpurchase_{}".format(ally_id)
+    )])
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
+
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
 
 
 def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
@@ -18327,103 +18420,12 @@ def admin_config_callback(update, context):
         return
 
     if data.startswith("config_ver_ally_"):
-        ally_id = int(data.split("_")[-1])
-        ally = get_ally_by_id(ally_id)
-        if not ally:
-            query.edit_message_text("No se encontró el aliado.")
-            return
-        reset_state = get_ally_reset_state_by_id(ally_id)
-        reset_status = _registration_reset_status_label(reset_state)
-
-        default_loc = get_default_ally_location(ally_id)
-        if default_loc:
-            loc_lat = default_loc.get("lat")
-            loc_lng = default_loc.get("lng")
-        else:
-            loc_lat = None
-            loc_lng = None
-
-        if loc_lat is not None and loc_lng is not None:
-            loc_text = "{}, {}".format(loc_lat, loc_lng)
-            maps_text = "Maps: https://www.google.com/maps?q={},{}\n".format(loc_lat, loc_lng)
-        else:
-            loc_text = "No disponible"
-            maps_text = ""
-
-        subsidio = int(ally["delivery_subsidy"] or 0)
         try:
-            min_purchase = ally["min_purchase_for_subsidy"]
-        except (KeyError, IndexError):
-            min_purchase = None
-        if subsidio == 0:
-            subsidio_label = "Subsidio domicilio: No configurado"
-        elif min_purchase is not None:
-            subsidio_label = (
-                "Subsidio domicilio: ${:,} por pedido\n"
-                "Modo: Condicional\n"
-                "Compra minima: ${:,}"
-            ).format(subsidio, min_purchase)
-        else:
-            subsidio_label = (
-                "Subsidio domicilio: ${:,} por pedido\n"
-                "Modo: Incondicional"
-            ).format(subsidio)
-        texto = (
-            "Detalle del aliado:\n\n"
-            "ID: {id}\n"
-            "Negocio: {business_name}\n"
-            "Propietario: {owner_name}\n"
-            "Teléfono: {phone}\n"
-            "Dirección: {address}\n"
-            "Ciudad: {city}\n"
-            "Barrio: {barrio}\n"
-            "Estado: {status}\n"
-            "Reinicio de registro: {reset_status}\n"
-            "{subsidio_label}\n"
-            "Ubicación: {loc}\n"
-            "{maps}"
-        ).format(
-            id=ally["id"],
-            business_name=ally["business_name"],
-            owner_name=ally["owner_name"],
-            phone=ally["phone"],
-            address=ally["address"],
-            city=ally["city"],
-            barrio=ally["barrio"],
-            status=ally["status"],
-            reset_status=reset_status,
-            subsidio_label=subsidio_label,
-            loc=loc_text,
-            maps=maps_text,
-        )
-
-        status = ally["status"]
-        keyboard = []
-
-        if status == "PENDING":
-            keyboard.append([
-                InlineKeyboardButton("✅ Aprobar", callback_data="config_ally_enable_{}".format(ally_id)),
-                InlineKeyboardButton("❌ Rechazar", callback_data="config_ally_reject_{}".format(ally_id)),
-            ])
-        if status == "APPROVED":
-            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
-        if status == "INACTIVE":
-            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
-            _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
-
-        keyboard.append([InlineKeyboardButton(
-            "Editar subsidio domicilio (${:,})".format(subsidio),
-            callback_data="config_ally_subsidy_{}".format(ally_id)
-        )])
-        keyboard.append([InlineKeyboardButton(
-            "Compra minima subsidio ({})".format(
-                "${:,}".format(min_purchase) if min_purchase is not None else "sin condicion"
-            ),
-            callback_data="config_ally_minpurchase_{}".format(ally_id)
-        )])
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
-
-        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+            ally_id = int(data.split("_")[-1])
+            _render_platform_ally_detail(query, ally_id)
+        except Exception as e:
+            print("[ERROR] config_ver_ally_{}: {}".format(data, e))
+            query.answer("No pude abrir el detalle del aliado.", show_alert=True)
         return
 
         keyboard = []
