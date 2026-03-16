@@ -2580,14 +2580,10 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
     Muestra lista de equipos (admins disponibles) y opción Ninguno.
     Si elige Ninguno, se asigna al Admin de Plataforma (TEAM_CODE de plataforma).
     """
+    message = update_or_query.message or (update_or_query.callback_query.message if update_or_query.callback_query else None)
     if not context.user_data.get("ally_registration_user_id"):
-        if from_callback:
-            context.bot.send_message(
-                chat_id=update_or_query.message.chat_id,
-                text="Error técnico: no encuentro tus datos del registro. Intenta /soy_aliado de nuevo."
-            )
-        else:
-            update_or_query.message.reply_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_aliado de nuevo.")
+        if message:
+            message.reply_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_aliado de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -2618,14 +2614,8 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
         "Si eliges Ninguno, quedas por defecto con el Admin de Plataforma y recargas con el."
     )
 
-    if from_callback:
-        context.bot.send_message(
-            chat_id=update_or_query.message.chat_id,
-            text=texto,
-            reply_markup=reply_markup
-        )
-    else:
-        update_or_query.message.reply_text(texto, reply_markup=reply_markup)
+    if message:
+        message.reply_text(texto, reply_markup=reply_markup)
 
     return ALLY_TEAM
 
