@@ -1906,7 +1906,7 @@ def menu_button_handler(update, context):
     elif text == "Mi admin":
         return mi_admin(update, context)
     elif text == "Admin plataforma":
-        return admin(update, context)
+        return admin_menu(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
