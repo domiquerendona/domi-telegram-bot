@@ -8107,6 +8107,9 @@ def admin_menu_callback(update, context):
         adm_document = admin_obj.get("document_number") or "-"
         adm_team_code = admin_obj.get("team_code") or "-"
         adm_status = admin_obj.get("status") or "-"
+        adm_user_id = admin_obj.get("user_id")
+        adm_user = get_user_by_id(adm_user_id) if adm_user_id else None
+        adm_telegram_id = adm_user.get("telegram_id") if adm_user else None
 
         # Tipo de admin
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
@@ -8137,6 +8140,8 @@ def admin_menu_callback(update, context):
             "Ciudad/Barrio: {} / {}\n"
             "Telefono: {}\n"
             "Documento: {}\n"
+            "User ID: {}\n"
+            "Telegram ID: {}\n"
             "Estado: {}\n"
             "Tipo: {}\n"
             "Dirección residencia: {}\n"
@@ -8149,7 +8154,10 @@ def admin_menu_callback(update, context):
             "Reinicio de registro: {}"
         ).format(
             adm_id, adm_full_name, adm_team_name, adm_team_code,
-            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            adm_city, adm_barrio, adm_phone, adm_document,
+            adm_user_id or "No enlazado",
+            adm_telegram_id or "No enlazado",
+            adm_status, tipo_admin,
             residence_address or "No registrada",
             residence_location,
             maps_line,
@@ -8290,6 +8298,9 @@ def admin_menu_callback(update, context):
         adm_document = admin_obj.get("document_number") or "-"
         adm_team_code = admin_obj.get("team_code") or "-"
         adm_status = admin_obj.get("status") or "-"
+        adm_user_id = admin_obj.get("user_id")
+        adm_user = get_user_by_id(adm_user_id) if adm_user_id else None
+        adm_telegram_id = adm_user.get("telegram_id") if adm_user else None
 
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
         num_couriers = count_admin_couriers(adm_id)
@@ -8307,6 +8318,8 @@ def admin_menu_callback(update, context):
             "Ciudad/Barrio: {} / {}\n"
             "Telefono: {}\n"
             "Documento: {}\n"
+            "User ID: {}\n"
+            "Telegram ID: {}\n"
             "Estado: {}\n"
             "Tipo: {}\n\n"
             "CONTADORES:\n"
@@ -8316,7 +8329,10 @@ def admin_menu_callback(update, context):
             "Estado actualizado a {}"
         ).format(
             adm_id, adm_full_name, adm_team_name, adm_team_code,
-            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            adm_city, adm_barrio, adm_phone, adm_document,
+            adm_user_id or "No enlazado",
+            adm_telegram_id or "No enlazado",
+            adm_status, tipo_admin,
             num_couriers, num_couriers_balance, reset_status, nuevo_status
         )
         texto += "\nPermiso validar referencias: {}".format(perm_status)
