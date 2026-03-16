@@ -2604,7 +2604,7 @@ def ally_confirm(update, context):
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     if selected_team_code != PLATFORM_TEAM_CODE:
-        _notify_local_admin_pending_registration(
+        local_notification_sent = _notify_local_admin_pending_registration(
             context,
             selected_admin_id,
             admin_telegram_id,
@@ -2621,6 +2621,26 @@ def ally_confirm(update, context):
                 "Revisa /mi_admin."
             ),
         )
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Debug registro aliado:\n"
+                    "ally_id: {}\n"
+                    "selected_admin_id: {}\n"
+                    "selected_team_code: {}\n"
+                    "admin_telegram_id: {}\n"
+                    "notificacion_local_enviada: {}"
+                ).format(
+                    ally_id,
+                    selected_admin_id,
+                    selected_team_code or "-",
+                    admin_telegram_id or "-",
+                    "SI" if local_notification_sent else "NO",
+                )
+            )
+        except Exception as e:
+            print("[WARN] No se pudo enviar debug de aliado a plataforma:", e)
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
@@ -3264,7 +3284,7 @@ def courier_confirm(update, context):
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
     if selected_team_code != PLATFORM_TEAM_CODE:
-        _notify_local_admin_pending_registration(
+        local_notification_sent = _notify_local_admin_pending_registration(
             context,
             selected_admin_id,
             admin_telegram_id,
@@ -3282,6 +3302,26 @@ def courier_confirm(update, context):
                 "Revisa /mi_admin."
             ),
         )
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Debug registro repartidor:\n"
+                    "courier_id: {}\n"
+                    "selected_admin_id: {}\n"
+                    "selected_team_code: {}\n"
+                    "admin_telegram_id: {}\n"
+                    "notificacion_local_enviada: {}"
+                ).format(
+                    courier_id,
+                    selected_admin_id,
+                    selected_team_code or "-",
+                    admin_telegram_id or "-",
+                    "SI" if local_notification_sent else "NO",
+                )
+            )
+        except Exception as e:
+            print("[WARN] No se pudo enviar debug de repartidor a plataforma:", e)
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
