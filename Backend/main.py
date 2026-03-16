@@ -1406,12 +1406,18 @@ def start(update, context):
     comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
 
-    if ally and "/soy_aliado" not in missing_cmds:
+    if ally and ally.get("status") == "APPROVED" and "/soy_aliado" not in missing_cmds:
         comandos.append("")
         comandos.append("🍕 Aliado:")
         comandos.append("• Toca [Mi aliado] en el menu para ver todas las opciones:")
         comandos.append("  Nuevo pedido, Mis pedidos, Clientes, Agenda,")
         comandos.append("  Cotizar envio, Recargar, Mi saldo")
+    elif ally:
+        ally_status = ally.get("status", "PENDING")
+        comandos.append("")
+        comandos.append("Aliado:")
+        comandos.append(f"• Tu perfil de aliado está {ally_status}.")
+        comandos.append("  Cuando esté APPROVED verás la sección [Mi aliado] en el menu.")
     else:
         comandos.append("")
         comandos.append("Aliado:")
@@ -1524,7 +1530,7 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=No
     keyboard = []
     # Fila de roles: mostrar botones de seccion segun roles del usuario
     role_row = []
-    if ally and "/soy_aliado" not in missing_cmds:
+    if ally and ally.get("status") == "APPROVED" and "/soy_aliado" not in missing_cmds:
         role_row.append('Mi aliado')
     courier_btn = _courier_main_button_label(courier)
     if courier_btn and "/soy_repartidor" not in missing_cmds:
@@ -1592,6 +1598,23 @@ def mi_aliado(update, context):
         return
     status = ally["status"]
     business_name = ally["business_name"]
+    if status != "APPROVED":
+        if status == "PENDING":
+            update.message.reply_text(
+                "Tu registro de aliado está PENDING.\n\n"
+                "Aún no puedes usar el panel de aliado hasta que sea aprobado por plataforma."
+            )
+        elif status == "INACTIVE":
+            update.message.reply_text(
+                "Tu perfil de aliado está INACTIVE.\n\n"
+                "Si ya tienes autorización para nuevo registro, usa /soy_aliado."
+            )
+        else:
+            update.message.reply_text(
+                f"Tu perfil de aliado está {status}.\n\n"
+                "Cuando esté APPROVED verás el panel de aliado."
+            )
+        return
     msg = (
         "🍕 GESTION DE ALIADO\n\n"
         f"Negocio: {business_name}\n"
