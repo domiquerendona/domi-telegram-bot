@@ -1371,7 +1371,7 @@ def start(update, context):
         update.message.reply_text(mensaje, reply_markup=reply_markup)
     else:
         # Mostrar menú principal con botones de secciones
-        reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local)
+        reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local, es_admin_plataforma_flag)
         update.message.reply_text(mensaje, reply_markup=reply_markup)
 
 
@@ -1414,7 +1414,7 @@ def _courier_main_button_label(courier):
     return "Mi repartidor · OFFLINE"
 
 
-def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=None):
+def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=None, is_platform_admin: bool = False):
     """Retorna el teclado principal para usuarios fuera de flujos."""
     keyboard = []
     # Fila de roles: mostrar botones de seccion segun roles del usuario
@@ -1426,6 +1426,8 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=No
         role_row.append(courier_btn)
     if admin_local:
         role_row.append('Mi admin')
+    if is_platform_admin:
+        role_row.append('Admin plataforma')
     if role_row:
         keyboard.append(role_row)
     keyboard.append(['Mi perfil', 'Ayuda'])
@@ -1872,7 +1874,7 @@ def show_main_menu(update, context, text="Menu principal. Selecciona una opcion:
     ally, courier, admin_local = _get_user_roles(update)
     es_admin_plataforma_flag = es_admin_plataforma(update.effective_user.id)
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
-    reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local)
+    reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local, es_admin_plataforma_flag)
     chat_id = _get_chat_id(update)
     if chat_id:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -1903,6 +1905,8 @@ def menu_button_handler(update, context):
         return mi_repartidor(update, context)
     elif text == "Mi admin":
         return mi_admin(update, context)
+    elif text == "Admin plataforma":
+        return admin(update, context)
     elif text == "Mi perfil":
         return mi_perfil(update, context)
     elif text == "Ayuda":
@@ -1914,6 +1918,7 @@ def menu_button_handler(update, context):
             "• Mi aliado - Gestion de tu negocio (pedidos, clientes, agenda, cotizar, recargar, saldo)\n"
             "• Mi repartidor - Gestion de repartidor (activar/pausar, pedidos, recargar, saldo)\n\n"
             "• Mi admin - Panel de administrador local (equipo, pendientes, recargas, configuraciones)\n\n"
+            "• Admin plataforma - Panel de administracion de plataforma\n\n"
             "Comandos disponibles:\n"
             "/nuevo_pedido - Crear un nuevo pedido\n"
             "/clientes - Gestionar clientes\n"
@@ -19796,7 +19801,7 @@ def main():
     # Handler para botones del menú principal (ReplyKeyboard)
     # -------------------------
     dp.add_handler(MessageHandler(
-        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Mis solicitudes|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
+        Filters.regex(r'^(Mi aliado|Mi repartidor.*|Mi admin|Admin plataforma|Mi perfil|Ayuda|Menu|Mis pedidos|Mis repartidores|Mi saldo aliado|Mis solicitudes|Activar repartidor|Desactivarme|Actualizar|Pedidos en curso|Mis pedidos repartidor|Mis ganancias|Mi saldo repartidor|Volver al menu)$'),
         menu_button_handler
     ))
 
