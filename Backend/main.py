@@ -464,6 +464,62 @@ def _notify_admin_local_welcome(context, admin_id: int, reactivated: bool = Fals
     )
 
 
+def _notify_local_admin_pending_registration(
+    context,
+    admin_id: int,
+    admin_telegram_id,
+    alert_key: str,
+    initial_text: str,
+    reminder_text: str,
+):
+    if not admin_telegram_id:
+        print("[WARN] No se pudo notificar al admin local {}: telegram_id vacío.".format(admin_id))
+        return False
+
+    try:
+        chat_id = int(admin_telegram_id)
+    except Exception:
+        print(
+            "[WARN] No se pudo notificar al admin local {}: telegram_id inválido {}.".format(
+                admin_id,
+                admin_telegram_id,
+            )
+        )
+        return False
+
+    try:
+        context.bot.send_message(chat_id=chat_id, text=initial_text)
+        _schedule_important_alerts(
+            context,
+            alert_key=alert_key,
+            chat_id=chat_id,
+            reminder_text=reminder_text,
+        )
+        return True
+    except Exception as e:
+        print(
+            "[WARN] No se pudo notificar al admin local {} en chat {}: {}".format(
+                admin_id,
+                chat_id,
+                e,
+            )
+        )
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Aviso técnico:\n"
+                    "Falló la notificación al admin local.\n"
+                    "Admin ID: {}\n"
+                    "Chat ID: {}\n"
+                    "Error: {}"
+                ).format(admin_id, chat_id, e)
+            )
+        except Exception:
+            pass
+        return False
+
+
 def _render_platform_ally_detail(query, ally_id: int):
     ally = get_ally_by_id(ally_id)
     if not ally:
@@ -2547,29 +2603,24 @@ def ally_confirm(update, context):
     except Exception as e:
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-    try:
-        if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
-            context.bot.send_message(
-                chat_id=admin_telegram_id,
-                text=(
-                    "Nueva solicitud de aliado para tu equipo.\n\n"
-                    "Negocio: {}\n"
-                    "Equipo: {} ({})\n\n"
-                    "Entra a /mi_admin para aprobar o rechazar."
-                ).format(ally_data["business_name"], selected_team_name, selected_team_code)
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="team_ally_pending_{}_{}".format(selected_admin_id, ally_id),
-                chat_id=admin_telegram_id,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "Tienes un aliado pendiente de aprobar en tu equipo.\n"
-                    "Revisa /mi_admin."
-                ),
-            )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
+    if selected_team_code != PLATFORM_TEAM_CODE:
+        _notify_local_admin_pending_registration(
+            context,
+            selected_admin_id,
+            admin_telegram_id,
+            alert_key="team_ally_pending_{}_{}".format(selected_admin_id, ally_id),
+            initial_text=(
+                "Nueva solicitud de aliado para tu equipo.\n\n"
+                "Negocio: {}\n"
+                "Equipo: {} ({})\n\n"
+                "Entra a /mi_admin para aprobar o rechazar."
+            ).format(ally_data["business_name"], selected_team_name, selected_team_code),
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "Tienes un aliado pendiente de aprobar en tu equipo.\n"
+                "Revisa /mi_admin."
+            ),
+        )
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
@@ -3212,30 +3263,25 @@ def courier_confirm(update, context):
     except Exception as e:
         print("[WARN] No se pudo notificar al admin plataforma:", e)
 
-    try:
-        if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
-            context.bot.send_message(
-                chat_id=admin_telegram_id,
-                text=(
-                    "Nueva solicitud de repartidor para tu equipo.\n\n"
-                    f"Repartidor ID: {courier_id}\n"
-                    f"Equipo: {selected_team_name}\n"
-                    f"Código: {selected_team_code}\n\n"
-                    "Entra a /mi_admin para aprobar o rechazar."
-                )
-            )
-            _schedule_important_alerts(
-                context,
-                alert_key="team_courier_pending_{}_{}".format(selected_admin_id, courier_id),
-                chat_id=admin_telegram_id,
-                reminder_text=(
-                    "Recordatorio importante:\n"
-                    "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
-                    "Revisa /mi_admin."
-                ),
-            )
-    except Exception as e:
-        print("[WARN] No se pudo notificar al admin local:", e)
+    if selected_team_code != PLATFORM_TEAM_CODE:
+        _notify_local_admin_pending_registration(
+            context,
+            selected_admin_id,
+            admin_telegram_id,
+            alert_key="team_courier_pending_{}_{}".format(selected_admin_id, courier_id),
+            initial_text=(
+                "Nueva solicitud de repartidor para tu equipo.\n\n"
+                f"Repartidor ID: {courier_id}\n"
+                f"Equipo: {selected_team_name}\n"
+                f"Código: {selected_team_code}\n\n"
+                "Entra a /mi_admin para aprobar o rechazar."
+            ),
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
+                "Revisa /mi_admin."
+            ),
+        )
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
