@@ -3218,6 +3218,14 @@ def _show_courier_confirm(update, context):
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_repartidor"
     )
     message = update.message or (update.callback_query.message if update.callback_query else None)
+    print(
+        "[DEBUG] _show_courier_confirm "
+        f"user_id={getattr(getattr(update, 'effective_user', None), 'id', None)} "
+        f"selected_admin_id={context.user_data.get('courier_selected_admin_id')} "
+        f"selected_team_code={selected_team_code} "
+        f"has_message={bool(message)}",
+        flush=True,
+    )
     if message:
         message.reply_text(resumen)
     _set_flow_step(context, "courier", COURIER_CONFIRM)
@@ -3509,6 +3517,17 @@ def courier_confirm(update, context):
 
     context.user_data.clear()
     return ConversationHandler.END
+
+
+def courier_confirm_dispatch(update, context):
+    print(
+        "[DEBUG] courier_confirm_dispatch "
+        f"user_id={getattr(getattr(update, 'effective_user', None), 'id', None)} "
+        f"text={getattr(getattr(update, 'message', None), 'text', None)!r} "
+        f"flow_step={context.user_data.get('courier_flow_step')}",
+        flush=True,
+    )
+    return courier_confirm(update, context)
 
 
 def show_courier_team_selection(update, context):
@@ -14318,7 +14337,7 @@ courier_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_selfie),
         ],
         COURIER_CONFIRM: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_confirm)
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_confirm_dispatch)
         ],
         COURIER_TEAM: [
             CallbackQueryHandler(courier_team_callback, pattern=r"^courier_team(?::|_)")
