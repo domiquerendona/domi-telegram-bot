@@ -98,7 +98,6 @@ from services import (
     get_ally_by_id,
     update_ally_status,
     update_ally_status_by_id,
-    get_all_allies,
     update_ally,
     delete_ally,
     create_admin,
@@ -151,7 +150,6 @@ from services import (
     get_courier_approval_notification_chat_id,
     get_ally_approval_notification_chat_id,
     parse_team_selection_callback,
-    get_all_couriers,
     update_courier,
     delete_courier,
     get_admin_link_for_courier,
@@ -625,6 +623,148 @@ def _render_platform_ally_detail(query, ally_id: int):
     keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
 
     query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def _build_platform_team_management_keyboard(callback_prefix: str):
+    teams = list_approved_admin_teams(include_platform=True)
+    keyboard = []
+    for team in teams:
+        admin_id = _row_value(team, "id")
+        team_name = _row_value(team, "team_name", "-")
+        team_code = _row_value(team, "team_code", "-")
+        label = "Plataforma (PLATFORM)" if team_code == "PLATFORM" else "{} ({})".format(team_name, team_code)
+        keyboard.append([InlineKeyboardButton(label, callback_data="{}_{}".format(callback_prefix, admin_id))])
+    return teams, keyboard
+
+
+def _show_platform_team_selector(query, role_label: str, callback_prefix: str):
+    teams, keyboard = _build_platform_team_management_keyboard(callback_prefix)
+    if not teams:
+        query.edit_message_text(
+            "No hay equipos aprobados disponibles en este momento.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_gestion_usuarios")]
+            ])
+        )
+        return
+
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_gestion_usuarios")])
+    query.edit_message_text(
+        "Selecciona el equipo para gestionar {}.".format(role_label),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+def _show_platform_allies_by_team(query, admin_id: int):
+    admin_row = get_admin_by_id(admin_id)
+    if not admin_row:
+        query.edit_message_text(
+            "No se encontró el equipo seleccionado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]
+            ])
+        )
+        return
+
+    team_name = _row_value(admin_row, "team_name", _row_value(admin_row, "full_name", "-"))
+    team_code = _row_value(admin_row, "team_code", "-")
+    ally_rows = []
+    ally_rows.extend(get_pending_allies_by_admin(admin_id) or [])
+    ally_rows.extend(get_allies_by_admin_and_status(admin_id, "APPROVED") or [])
+    ally_rows.extend(get_allies_by_admin_and_status(admin_id, "INACTIVE") or [])
+
+    if not ally_rows:
+        query.edit_message_text(
+            "El equipo {} ({}) no tiene aliados registrados.".format(team_name, team_code),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]
+            ])
+        )
+        return
+
+    keyboard = []
+    for ally_row in ally_rows:
+        ally_id = _row_value(ally_row, "ally_id", _row_value(ally_row, "id"))
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            continue
+        business_name = _row_value(ally, "business_name", _row_value(ally_row, "business_name", "-"))
+        status = _row_value(ally, "status", _row_value(ally_row, "status", "-"))
+        keyboard.append([InlineKeyboardButton(
+            "ID {} - {} ({})".format(ally_id, business_name, status),
+            callback_data="config_ver_ally_{}".format(ally_id)
+        )])
+
+    if not keyboard:
+        query.edit_message_text(
+            "No se pudieron cargar los aliados de este equipo.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]
+            ])
+        )
+        return
+
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
+    query.edit_message_text(
+        "Aliados del equipo {} ({}). Toca uno para ver detalle.".format(team_name, team_code),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+def _show_platform_couriers_by_team(query, admin_id: int):
+    admin_row = get_admin_by_id(admin_id)
+    if not admin_row:
+        query.edit_message_text(
+            "No se encontró el equipo seleccionado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]
+            ])
+        )
+        return
+
+    team_name = _row_value(admin_row, "team_name", _row_value(admin_row, "full_name", "-"))
+    team_code = _row_value(admin_row, "team_code", "-")
+    courier_rows = []
+    courier_rows.extend(get_pending_couriers_by_admin(admin_id) or [])
+    courier_rows.extend(get_couriers_by_admin_and_status(admin_id, "APPROVED") or [])
+    courier_rows.extend(get_couriers_by_admin_and_status(admin_id, "INACTIVE") or [])
+
+    if not courier_rows:
+        query.edit_message_text(
+            "El equipo {} ({}) no tiene repartidores registrados.".format(team_name, team_code),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]
+            ])
+        )
+        return
+
+    keyboard = []
+    for courier_row in courier_rows:
+        courier_id = _row_value(courier_row, "courier_id", _row_value(courier_row, "id"))
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            continue
+        full_name = _row_value(courier, "full_name", _row_value(courier_row, "full_name", "-"))
+        status = _row_value(courier, "status", _row_value(courier_row, "status", "-"))
+        keyboard.append([InlineKeyboardButton(
+            "ID {} - {} ({})".format(courier_id, full_name, status),
+            callback_data="config_ver_courier_{}".format(courier_id)
+        )])
+
+    if not keyboard:
+        query.edit_message_text(
+            "No se pudieron cargar los repartidores de este equipo.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]
+            ])
+        )
+        return
+
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
+    query.edit_message_text(
+        "Repartidores del equipo {} ({}). Toca uno para ver detalle.".format(team_name, team_code),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 
@@ -18632,26 +18772,16 @@ def admin_config_callback(update, context):
 
 
     if data == "config_gestion_aliados":
-        allies = get_all_allies()
-        if not allies:
-            query.edit_message_text("No hay aliados registrados en este momento.")
+        _show_platform_team_selector(query, "aliados", "config_gestion_aliados_team")
+        return
+
+    if data.startswith("config_gestion_aliados_team_"):
+        try:
+            admin_id = int(data.replace("config_gestion_aliados_team_", ""))
+        except ValueError:
+            query.answer("Equipo inválido.", show_alert=True)
             return
-
-        keyboard = []
-        for ally in allies:
-            ally_id = ally["id"]
-            business_name = ally["business_name"]
-            status = ally["status"]
-            keyboard.append([InlineKeyboardButton(
-                "ID {} - {} ({})".format(ally_id, business_name, status),
-                callback_data="config_ver_ally_{}".format(ally_id)
-            )])
-
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
-        query.edit_message_text(
-            "Aliados registrados. Toca uno para ver detalle.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        _show_platform_allies_by_team(query, admin_id)
         return
 
     if data.startswith("config_ver_ally_"):
@@ -18976,31 +19106,16 @@ def admin_config_callback(update, context):
         return
 
     if data == "config_gestion_repartidores":
-        couriers = get_all_couriers()
-        if not couriers:
-            query.edit_message_text(
-                "No hay repartidores registrados en este momento.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")]
-                ])
-            )
+        _show_platform_team_selector(query, "repartidores", "config_gestion_repartidores_team")
+        return
+
+    if data.startswith("config_gestion_repartidores_team_"):
+        try:
+            admin_id = int(data.replace("config_gestion_repartidores_team_", ""))
+        except ValueError:
+            query.answer("Equipo inválido.", show_alert=True)
             return
-
-        keyboard = []
-        for courier in couriers:
-            courier_id = courier["id"]
-            full_name = courier["full_name"]
-            status = courier["status"]
-            keyboard.append([InlineKeyboardButton(
-                "ID {} - {} ({})".format(courier_id, full_name, status),
-                callback_data="config_ver_courier_{}".format(courier_id)
-            )])
-
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
-        query.edit_message_text(
-            "Repartidores registrados. Toca uno para ver detalle.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        _show_platform_couriers_by_team(query, admin_id)
         return
 
     if data.startswith("config_ally_disable_"):
