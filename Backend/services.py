@@ -2387,7 +2387,7 @@ def can_ally_reregister_via_platform_reset(ally_id: int) -> bool:
 
 def can_courier_reregister_via_platform_reset(courier_id: int) -> bool:
     state = get_courier_reset_state_by_id(courier_id)
-    return bool(state and state["status"] == "INACTIVE" and courier_has_active_registration_reset(courier_id))
+    return bool(state and state["status"] in ("INACTIVE", "REJECTED") and courier_has_active_registration_reset(courier_id))
 
 
 def resolve_admin_telegram_id(admin_id: int) -> Optional[int]:
@@ -2658,7 +2658,7 @@ def _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_f
         try:
             courier_id = courier.get("id") if isinstance(courier, dict) else courier["id"]
             courier_can_reregister = bool(
-                courier_status == "INACTIVE" and courier_id and can_courier_reregister_via_platform_reset(courier_id)
+                courier_status in ("INACTIVE", "REJECTED") and courier_id and can_courier_reregister_via_platform_reset(courier_id)
             )
         except Exception:
             courier_can_reregister = False

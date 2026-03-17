@@ -2941,15 +2941,15 @@ def soy_repartidor(update, context):
             )
             return ConversationHandler.END
 
-        if status == "INACTIVE" and not can_courier_reregister_via_platform_reset(courier_id):
+        if status in ("INACTIVE", "REJECTED") and not can_courier_reregister_via_platform_reset(courier_id):
             update.message.reply_text(
-                "Tu registro de repartidor esta INACTIVE.\n"
+                "Tu registro de repartidor no tiene reinicio autorizado.\n"
                 "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
-        if status != "INACTIVE":
+        if status not in ("INACTIVE", "REJECTED"):
             update.message.reply_text(
                 f"No puedes iniciar un nuevo registro con estado {status}.\n"
                 "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
