@@ -518,6 +518,18 @@ def _notify_local_admin_pending_registration(
         return False
 
 
+def _build_registration_pending_message(team_name: str, team_code: str = None) -> str:
+    team_label = "{}{}".format(
+        team_name or "-",
+        " ({})".format(team_code) if team_code else "",
+    )
+    return (
+        "Listo. Tu registro quedó pendiente por revisar.\n"
+        "Equipo elegido: {}\n"
+        "Te avisaremos por este chat cuando sea aprobado o rechazado."
+    ).format(team_label)
+
+
 def _render_platform_ally_detail(query, ally_id: int):
     ally = get_ally_by_id(ally_id)
     if not ally:
@@ -2728,6 +2740,10 @@ def ally_confirm(update, context):
         except Exception as e:
             print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
 
+    update.message.reply_text(
+        _build_registration_pending_message(selected_team_name, selected_team_code)
+    )
+
     try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -2796,11 +2812,6 @@ def ally_confirm(update, context):
         except Exception as e:
             print("[WARN] No se pudo enviar debug de aliado a plataforma:", e)
 
-    update.message.reply_text(
-        "Listo. Tu solicitud fue enviada.\n"
-        f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
-        "Quedas en estado PENDING hasta aprobación."
-    )
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -3398,6 +3409,10 @@ def courier_confirm(update, context):
         except Exception as e:
             print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
 
+    update.message.reply_text(
+        _build_registration_pending_message(selected_team_name, selected_team_code)
+    )
+
     try:
         context.bot.send_message(
             chat_id=ADMIN_USER_ID,
@@ -3477,11 +3492,6 @@ def courier_confirm(update, context):
         except Exception as e:
             print("[WARN] No se pudo enviar debug de repartidor a plataforma:", e)
 
-    update.message.reply_text(
-        "Listo. Tu solicitud fue enviada.\n"
-        f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
-        "Quedas en estado PENDING hasta aprobación."
-    )
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -16130,6 +16140,16 @@ def mi_admin(update, context):
     status = admin_full.get("status") or "-"
     team_name = admin_full.get("team_name") or "-"
     team_code = admin_full.get("team_code") or "-"
+    pending_couriers_count = len(get_pending_couriers_by_admin(admin_id))
+    pending_allies_count = len(get_pending_allies_by_admin(admin_id))
+    pending_notice = ""
+    if pending_allies_count or pending_couriers_count:
+        pending_notice = (
+            "Aviso de pendientes:\n"
+            "• Aliados pendientes: {}\n"
+            "• Repartidores pendientes: {}\n"
+            "Revisa los botones de pendientes para gestionarlos.\n\n"
+        ).format(pending_allies_count, pending_couriers_count)
 
     header = (
         "Panel Administrador Local\n\n"
@@ -16139,6 +16159,9 @@ def mi_admin(update, context):
         f"Tu Telegram ID actual: {update.effective_user.id}\n"
         "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
     )
+
+    if pending_notice:
+        update.message.reply_text(pending_notice.strip())
 
     # Administrador de Plataforma: siempre operativo
     if team_code == "PLATFORM":
@@ -16207,7 +16230,7 @@ def mi_admin(update, context):
     ]
 
     update.message.reply_text(
-        header + estado_msg +
+        header + pending_notice + estado_msg +
         "Panel de administración habilitado.\n"
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
