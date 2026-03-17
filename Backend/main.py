@@ -19466,8 +19466,8 @@ def admin_config_callback(update, context):
         reset_state = get_courier_reset_state_by_id(courier_id)
 
         if action == "enable":
-            if courier["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if courier["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
