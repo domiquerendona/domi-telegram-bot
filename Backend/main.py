@@ -18927,20 +18927,99 @@ def admin_config_callback(update, context):
         )
         return
 
+    if data.startswith("config_courier_assign_menu_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+
         keyboard = []
-        for courier in couriers:
-            courier_id = courier["id"]
-            full_name = courier["full_name"]
-            status = courier["status"]
+        admins = get_all_local_admins()
+        for admin_row in admins:
+            admin_id = _row_value(admin_row, "id")
+            team_name = _row_value(admin_row, "team_name", "-")
+            team_code = _row_value(admin_row, "team_code", "-")
             keyboard.append([InlineKeyboardButton(
-                "ID {} - {} ({})".format(courier_id, full_name, status),
-                callback_data="config_ver_courier_{}".format(courier_id)
+                "{} ({})".format(team_name, team_code),
+                callback_data="config_courier_assign_pick_{}_{}".format(courier_id, admin_id)
             )])
 
-        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            keyboard.append([InlineKeyboardButton(
+                "Plataforma (PLATFORM)",
+                callback_data="config_courier_assign_platform_{}".format(courier_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))])
         query.edit_message_text(
-            "Repartidores registrados. Toca uno para ver detalle.",
+            "Selecciona el equipo que debe quedar vinculado a este repartidor:",
             reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_courier_assign_platform_") or data.startswith("config_courier_assign_pick_"):
+        if data.startswith("config_courier_assign_platform_"):
+            courier_id = int(data.replace("config_courier_assign_platform_", ""))
+            platform_admin = get_platform_admin()
+            if not platform_admin:
+                query.edit_message_text("No existe un admin de plataforma disponible.")
+                return
+            target_admin_id = _row_value(platform_admin, "id")
+            target_team_name = _row_value(platform_admin, "team_name", "Plataforma")
+            target_team_code = _row_value(platform_admin, "team_code", "PLATFORM")
+        else:
+            parts = data.split("_")
+            if len(parts) != 6:
+                query.answer("Formato inválido.", show_alert=True)
+                return
+            courier_id = int(parts[4])
+            target_admin_id = int(parts[5])
+            admin_row = get_admin_by_id(target_admin_id)
+            if not admin_row:
+                query.edit_message_text("No se encontró el admin destino.")
+                return
+            target_team_name = _row_value(admin_row, "team_name", _row_value(admin_row, "full_name", "-"))
+            target_team_code = _row_value(admin_row, "team_code", "-")
+
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+
+        courier_status = (_row_value(courier, "status", "") or "").upper()
+        if courier_status == "APPROVED":
+            link_status = "APPROVED"
+        elif courier_status == "PENDING":
+            link_status = "PENDING"
+        else:
+            link_status = "INACTIVE"
+
+        try:
+            upsert_admin_courier_link(target_admin_id, courier_id, link_status)
+            if link_status == "APPROVED":
+                deactivate_other_approved_admin_courier_links(courier_id, target_admin_id)
+        except Exception as e:
+            print("[ERROR] config_courier_assign_team courier_id={}: {}".format(courier_id, e))
+            query.edit_message_text("No se pudo actualizar el equipo del repartidor.")
+            return
+
+        query.edit_message_text(
+            "Equipo actualizado.\n\n"
+            "Repartidor ID: {}\n"
+            "Nuevo equipo: {} ({})\n"
+            "Estado del vínculo: {}\n\n"
+            "Puedes volver al detalle para revisar el resultado.".format(
+                courier_id,
+                target_team_name,
+                target_team_code,
+                link_status,
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))],
+                [InlineKeyboardButton("Volver a repartidores", callback_data="config_gestion_repartidores")],
+            ])
         )
         return
 
@@ -18952,6 +19031,24 @@ def admin_config_callback(update, context):
             return
         reset_state = get_courier_reset_state_by_id(courier_id)
         reset_status = _registration_reset_status_label(reset_state)
+        admin_link = get_admin_link_for_courier(courier_id)
+        residence_lat = _row_value(courier, "residence_lat")
+        residence_lng = _row_value(courier, "residence_lng")
+
+        if residence_lat is not None and residence_lng is not None:
+            residence_location = "{}, {}".format(residence_lat, residence_lng)
+            maps_text = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+        else:
+            residence_location = "No disponible"
+            maps_text = ""
+
+        if admin_link:
+            team_name = _row_value(admin_link, "team_name", "-")
+            team_code = _row_value(admin_link, "team_code", "-")
+            link_status = _row_value(admin_link, "link_status", "-")
+            equipo_label = "{} ({}) - Vínculo: {}".format(team_name, team_code, link_status)
+        else:
+            equipo_label = "(sin equipo asignado)"
 
         texto = (
             "Detalle del repartidor:\n\n"
@@ -18959,23 +19056,31 @@ def admin_config_callback(update, context):
             "Nombre: {full_name}\n"
             "Documento: {id_number}\n"
             "Teléfono: {phone}\n"
+            "Dirección residencia: {residence_address}\n"
             "Ciudad: {city}\n"
             "Barrio: {barrio}\n"
             "Placa: {plate}\n"
             "Tipo de moto: {bike_type}\n"
             "Estado: {status}\n"
-            "Reinicio de registro: {reset_status}"
+            "Equipo: {equipo}\n"
+            "Reinicio de registro: {reset_status}\n"
+            "Ubicación residencia: {residence_location}\n"
+            "{maps_text}"
         ).format(
             id=courier["id"],
             full_name=courier["full_name"],
             id_number=courier["id_number"],
             phone=courier["phone"],
+            residence_address=_row_value(courier, "residence_address", "No registrada"),
             city=courier["city"],
             barrio=courier["barrio"],
             plate=courier["plate"],
             bike_type=courier["bike_type"],
             status=courier["status"],
+            equipo=equipo_label,
             reset_status=reset_status,
+            residence_location=residence_location,
+            maps_text=maps_text,
         )
 
         status = courier["status"]
@@ -18991,7 +19096,10 @@ def admin_config_callback(update, context):
         if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
             _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
+        if status == "REJECTED":
+            _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
 
+        keyboard.append([InlineKeyboardButton("Asignar/corregir equipo", callback_data="config_courier_assign_menu_{}".format(courier_id))])
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
         return
