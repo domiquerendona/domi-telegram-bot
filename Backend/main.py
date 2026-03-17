@@ -295,6 +295,7 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 # Configurar en Railway como variable de entorno FORM_BASE_URL.
 # Ejemplo: https://form.domiquerendona.com
 FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
+PLATFORM_TEAM_CODE = "PLATFORM"
 
 
 def _registration_reset_status_label(reset_state):
