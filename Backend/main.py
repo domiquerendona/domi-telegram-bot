@@ -3371,6 +3371,14 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
 
 def courier_confirm(update, context):
     confirm_text = update.message.text.strip().upper()
+    print(
+        "[DEBUG] courier_confirm entered "
+        f"user_id={getattr(getattr(update, 'effective_user', None), 'id', None)} "
+        f"text={confirm_text!r} "
+        f"selected_admin_id={context.user_data.get('courier_selected_admin_id')} "
+        f"selected_team_code={context.user_data.get('courier_selected_team_code')}",
+        flush=True,
+    )
 
     if confirm_text not in ("SI", "SÍ", "SI.", "SÍ."):
         update.message.reply_text(
