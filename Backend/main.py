@@ -683,11 +683,18 @@ def _show_platform_allies_by_team(query, admin_id: int):
         return
 
     keyboard = []
+    seen_ally_ids = set()
     for ally_row in ally_rows:
         ally_id = _row_value(ally_row, "ally_id", _row_value(ally_row, "id"))
+        if ally_id in seen_ally_ids:
+            continue
+        current_link = get_admin_link_for_ally(ally_id)
+        if not current_link or _row_value(current_link, "admin_id") != admin_id:
+            continue
         ally = get_ally_by_id(ally_id)
         if not ally:
             continue
+        seen_ally_ids.add(ally_id)
         business_name = _row_value(ally, "business_name", _row_value(ally_row, "business_name", "-"))
         status = _row_value(ally, "status", _row_value(ally_row, "status", "-"))
         keyboard.append([InlineKeyboardButton(
@@ -739,11 +746,18 @@ def _show_platform_couriers_by_team(query, admin_id: int):
         return
 
     keyboard = []
+    seen_courier_ids = set()
     for courier_row in courier_rows:
         courier_id = _row_value(courier_row, "courier_id", _row_value(courier_row, "id"))
+        if courier_id in seen_courier_ids:
+            continue
+        current_link = get_admin_link_for_courier(courier_id)
+        if not current_link or _row_value(current_link, "admin_id") != admin_id:
+            continue
         courier = get_courier_by_id(courier_id)
         if not courier:
             continue
+        seen_courier_ids.add(courier_id)
         full_name = _row_value(courier, "full_name", _row_value(courier_row, "full_name", "-"))
         status = _row_value(courier, "status", _row_value(courier_row, "status", "-"))
         keyboard.append([InlineKeyboardButton(
