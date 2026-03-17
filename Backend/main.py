@@ -3398,7 +3398,13 @@ def courier_confirm(update, context):
         courier_id = courier_data["courier_id"]
         create_admin_courier_link(selected_admin_id, courier_id)
     except Exception as e:
-        print(f"[ERROR] courier_confirm: no se pudo crear el registro: {e}")
+        print(
+            "[ERROR] courier_confirm: no se pudo crear el registro "
+            f"user_db_id={user_db_id} selected_admin_id={selected_admin_id} "
+            f"selected_team_code={selected_team_code} error={e}",
+            flush=True,
+        )
+        print(traceback.format_exc(), flush=True)
         update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
