@@ -4654,26 +4654,38 @@ def create_admin_courier_link(admin_id: int, courier_id: int):
     if has_is_active:
         if DB_ENGINE == "postgres":
             cur.execute(f"""
-                INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql})
-                ON CONFLICT(admin_id, courier_id) DO NOTHING
+                INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at, updated_at)
+                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql}, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO UPDATE SET
+                    status='PENDING',
+                    is_active=0,
+                    updated_at={now_sql}
             """, (admin_id, courier_id))
         else:
             cur.execute(f"""
-                INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at)
-                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql})
+                INSERT INTO admin_couriers (admin_id, courier_id, status, is_active, balance, created_at, updated_at)
+                VALUES ({P}, {P}, 'PENDING', 0, 0, {now_sql}, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO UPDATE SET
+                    status='PENDING',
+                    is_active=0,
+                    updated_at={now_sql}
             """, (admin_id, courier_id))
     else:
         if DB_ENGINE == "postgres":
             cur.execute(f"""
-                INSERT INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
-                VALUES ({P}, {P}, 'PENDING', 0, {now_sql})
-                ON CONFLICT(admin_id, courier_id) DO NOTHING
+                INSERT INTO admin_couriers (admin_id, courier_id, status, balance, created_at, updated_at)
+                VALUES ({P}, {P}, 'PENDING', 0, {now_sql}, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO UPDATE SET
+                    status='PENDING',
+                    updated_at={now_sql}
             """, (admin_id, courier_id))
         else:
             cur.execute(f"""
-                INSERT OR IGNORE INTO admin_couriers (admin_id, courier_id, status, balance, created_at)
-                VALUES ({P}, {P}, 'PENDING', 0, {now_sql})
+                INSERT INTO admin_couriers (admin_id, courier_id, status, balance, created_at, updated_at)
+                VALUES ({P}, {P}, 'PENDING', 0, {now_sql}, {now_sql})
+                ON CONFLICT(admin_id, courier_id) DO UPDATE SET
+                    status='PENDING',
+                    updated_at={now_sql}
             """, (admin_id, courier_id))
     # Si el courier ya está APPROVED, sincronizar el nuevo vínculo inmediatamente
     cur.execute(f"SELECT status FROM couriers WHERE id = {P}", (courier_id,))
