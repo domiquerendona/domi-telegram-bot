@@ -4128,12 +4128,18 @@ def courier_has_active_registration_reset(courier_id: int) -> bool:
     return bool(state and state["registration_reset_active"])
 
 
-def _require_inactive_active_registration_reset(table: str, entity_id: int, entity_label: str):
+def _require_inactive_active_registration_reset(
+    table: str,
+    entity_id: int,
+    entity_label: str,
+    allowed_statuses=("INACTIVE",),
+):
     state = _get_registration_reset_state(table, entity_id)
     if not state:
         raise ValueError(f"{entity_label} no encontrado.")
-    if state["status"] != "INACTIVE":
-        raise ValueError(f"El registro de {entity_label.lower()} debe estar INACTIVE para reiniciarse.")
+    if state["status"] not in allowed_statuses:
+        allowed_text = " o ".join(allowed_statuses)
+        raise ValueError(f"El registro de {entity_label.lower()} debe estar {allowed_text} para reiniciarse.")
     if not state["registration_reset_active"]:
         raise ValueError(f"El registro de {entity_label.lower()} no tiene un reinicio autorizado activo.")
     return state
@@ -4409,7 +4415,12 @@ def reset_courier_registration_in_place(
     cedula_back_file_id=None,
     selfie_file_id=None,
 ):
-    _require_inactive_active_registration_reset("couriers", courier_id, "Repartidor")
+    _require_inactive_active_registration_reset(
+        "couriers",
+        courier_id,
+        "Repartidor",
+        allowed_statuses=("INACTIVE", "REJECTED"),
+    )
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
@@ -4417,8 +4428,8 @@ def reset_courier_registration_in_place(
         previous_row = _fetch_registration_reset_row_for_update(cur, "couriers", courier_id)
         if not previous_row:
             raise ValueError("Repartidor no encontrado.")
-        if previous_row.get("status") != "INACTIVE":
-            raise ValueError("El registro de repartidor debe estar INACTIVE para reiniciarse.")
+        if previous_row.get("status") not in ("INACTIVE", "REJECTED"):
+            raise ValueError("El registro de repartidor debe estar INACTIVE o REJECTED para reiniciarse.")
         if not previous_row.get("registration_reset_enabled_at") or previous_row.get("registration_reset_consumed_at"):
             raise ValueError("El registro de repartidor no tiene un reinicio autorizado activo.")
 
