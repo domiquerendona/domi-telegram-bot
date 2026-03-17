@@ -494,6 +494,14 @@ Ejecutar obligatoriamente:
 
 python -m py_compile Backend/main.py Backend/services.py Backend/db.py Backend/order_delivery.py Backend/profile_changes.py
 
+Si el cambio introduce una constante nueva usada por 2 o mÃ¡s handlers o flujos:
+- DEBE declararse explÃ­citamente en el bloque global de constantes del archivo, o exponerse desde services.py
+- PROHIBIDO usar nombres de constantes nuevos en handlers sin verificar primero con `rg` todos sus usos y su definiciÃ³n
+
+Si el cambio toca un flujo crÃ­tico (registro, aprobaciÃ³n, recargas, pagos, cotizador, pedidos):
+- NO basta con `py_compile`
+- DEBE verificarse el paso exacto afectado del flujo en `staging` o dejar una evidencia visible de diagnÃ³stico (mensaje debug, marcador de versiÃ³n o log verificable) antes de dar el cambio por resuelto
+
 Verificar imports huérfanos tras mover o eliminar funciones:
 Para cada nombre movido o eliminado, ejecutar:
 git grep "nombre_funcion" -- "*.py"
