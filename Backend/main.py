@@ -3,6 +3,7 @@ import hashlib
 import os
 import time
 import traceback
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -18723,8 +18724,7 @@ def admin_config_callback(update, context):
             )
             return
 
-        import datetime
-        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
         keyboard = []
         for c in online:
@@ -18734,7 +18734,7 @@ def admin_config_callback(update, context):
             if updated:
                 try:
                     if isinstance(updated, str):
-                        ts = datetime.datetime.fromisoformat(updated.replace("Z", ""))
+                        ts = datetime.fromisoformat(updated.replace("Z", ""))
                     else:
                         ts = updated
                     minutos = int((now - ts).total_seconds() / 60)

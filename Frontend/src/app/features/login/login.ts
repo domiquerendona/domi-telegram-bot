@@ -155,7 +155,7 @@ border-color:#4338ca;
 box-shadow:0 0 0 2px rgba(67,56,202,0.15);
 }
 
-button{
+button{ 
 width:100%;
 padding:14px;
 border:none;
