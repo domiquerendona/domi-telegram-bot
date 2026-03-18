@@ -1,4 +1,4 @@
-from telegram import ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Filters, ConversationHandler
 
 from services import (
@@ -9,6 +9,7 @@ from services import (
     es_admin_plataforma,
     _get_missing_role_commands,
     resolve_location,
+    resolve_location_next,
 )
 
 from handlers.states import (
@@ -400,3 +401,68 @@ def _cotizar_resolver_ubicacion(update, context):
     if not texto:
         return None
     return resolve_location(texto)
+
+
+def _mostrar_confirmacion_geocode(message, context, geo, original_text, cb_si, cb_no):
+    """Muestra el primer candidato de geocoding con pin, link de Maps y botones de confirmacion.
+    geo: dict con lat, lng, formatted_address, place_id.
+    original_text: texto original del usuario (para carga perezosa del siguiente candidato)."""
+    lat = geo["lat"]
+    lng = geo["lng"]
+    formatted_address = geo.get("formatted_address", "")
+    _pid = geo.get("place_id") or f"{lat},{lng}"
+    context.user_data["pending_geo_lat"] = lat
+    context.user_data["pending_geo_lng"] = lng
+    context.user_data["pending_geo_text"] = original_text
+    context.user_data["pending_geo_seen"] = [_pid]
+    message.reply_location(latitude=lat, longitude=lng)
+    maps_link = f"https://maps.google.com/?q={lat},{lng}"
+    keyboard = [[
+        InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+        InlineKeyboardButton("No, esta no es", callback_data=cb_no),
+    ]]
+    message.reply_text(
+        f"Encontre esta ubicacion:\n\n{formatted_address}\n\n"
+        f"Ver en mapa: {maps_link}\n\n"
+        "Es correcta?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _geo_siguiente_o_gps(query, context, cb_si, cb_no, estado):
+    """Busca el siguiente candidato de geocoding (carga perezosa) o pide GPS si no hay mas."""
+    original_text = context.user_data.get("pending_geo_text", "")
+    seen = context.user_data.get("pending_geo_seen", [])
+    next_geo = resolve_location_next(original_text, seen) if original_text else None
+    if next_geo:
+        _pid = next_geo.get("place_id") or f"{next_geo['lat']},{next_geo['lng']}"
+        seen.append(_pid)
+        context.user_data["pending_geo_seen"] = seen
+        context.user_data["pending_geo_lat"] = next_geo["lat"]
+        context.user_data["pending_geo_lng"] = next_geo["lng"]
+        lat = next_geo["lat"]
+        lng = next_geo["lng"]
+        maps_link = f"https://maps.google.com/?q={lat},{lng}"
+        keyboard = [[
+            InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
+            InlineKeyboardButton("No, esta no es", callback_data=cb_no),
+        ]]
+        query.edit_message_text("Buscando otra opcion...")
+        query.message.reply_location(latitude=lat, longitude=lng)
+        query.message.reply_text(
+            f"Otra opcion:\n\n{next_geo.get('formatted_address', '')}\n\n"
+            f"Ver en mapa: {maps_link}\n\nEs correcta?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        context.user_data.pop("pending_geo_lat", None)
+        context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        query.edit_message_text(
+            "No encontre mas opciones. Envia la ubicacion de otra forma:\n"
+            "- Un PIN de ubicacion de Telegram\n"
+            "- Un link de Google Maps con coordenadas\n"
+            "- Coordenadas directas (ej: 4.81,-75.69)"
+        )
+    return estado
