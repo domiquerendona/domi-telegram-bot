@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| (ninguna) | — | — | — |
+| claude | 2026-03-17 | Backend/handlers/, Backend/main.py | Modularización Fase 1: extraer states.py + common.py a handlers/ |
 
 ---
 
