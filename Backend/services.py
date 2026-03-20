@@ -729,18 +729,23 @@ def extract_lat_lng_from_text(text: str) -> Optional[Tuple[float, float]]:
     return None
 
 
-# ---------- DISTANCE MATRIX POR COORDENADAS ----------
+# ---------- DIRECTIONS API — RUTA MAS CORTA POR COORDENADAS ----------
 
 def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: float) -> Optional[float]:
     """
-    Calcula distancia en km entre dos puntos usando Google Distance Matrix API con coordenadas.
+    Calcula la distancia de la ruta mas corta en km entre dos puntos usando
+    Google Directions API con alternatives=true.
+
+    Solicita todas las rutas disponibles (ruta rapida + alternativas) y retorna
+    la distancia total de la ruta con menos kilometros, que es la base justa
+    para calcular el precio del domicilio.
 
     Args:
         lat1, lng1: Coordenadas de origen
         lat2, lng2: Coordenadas de destino
 
     Returns:
-        Distancia en km o None si falla
+        Distancia en km de la ruta mas corta, o None si falla
     """
     import os
     import requests
@@ -749,12 +754,13 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
     if not api_key:
         return None
 
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    url = "https://maps.googleapis.com/maps/api/directions/json"
     params = {
-        "origins": f"{lat1},{lng1}",
-        "destinations": f"{lat2},{lng2}",
+        "origin": f"{lat1},{lng1}",
+        "destination": f"{lat2},{lng2}",
+        "mode": "driving",
+        "alternatives": "true",
         "key": api_key,
-        "units": "metric",
         "language": "es",
     }
 
@@ -774,26 +780,29 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
             http_status=getattr(response, "status_code", None),
             provider_status=status,
             error_message=data.get("error_message"),
-            meta={"provider": "google_distance_matrix", "mode": "coords"},
+            meta={"provider": "google_directions_shortest", "mode": "coords"},
         )
         if not ok:
             return None
 
-        rows = data.get("rows", [])
-        if not rows:
+        routes = data.get("routes", [])
+        if not routes:
             return None
 
-        elements = rows[0].get("elements", [])
-        if not elements:
+        # Iterar todas las rutas y quedarse con la de menor distancia total
+        min_distance_km = None
+        for route in routes:
+            legs = route.get("legs", [])
+            total_meters = sum(leg.get("distance", {}).get("value", 0) for leg in legs)
+            if total_meters > 0:
+                route_km = total_meters / 1000.0
+                if min_distance_km is None or route_km < min_distance_km:
+                    min_distance_km = route_km
+
+        if min_distance_km is None:
             return None
 
-        element = elements[0]
-        if element.get("status") != "OK":
-            return None
-
-        distance_meters = element.get("distance", {}).get("value", 0)
-        distance_km = distance_meters / 1000.0
-        return round(distance_km, 2)
+        return round(min_distance_km, 2)
 
     except Exception:
         return None
@@ -1333,7 +1342,11 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
 
 def get_distance_from_api(origin: str, destination: str, city_hint: str = "Pereira, Colombia") -> Optional[float]:
     """
-    Calcula la distancia en km entre dos direcciones usando Google Distance Matrix API.
+    Calcula la distancia de la ruta mas corta en km entre dos direcciones usando
+    Google Directions API con alternatives=true.
+
+    Solicita todas las rutas disponibles y retorna la distancia total de la ruta
+    con menos kilometros, que es la base justa para calcular el precio del domicilio.
 
     Args:
         origin: Direccion de origen (pickup)
@@ -1341,7 +1354,7 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
         city_hint: Ciudad para mejorar precision (default: Pereira, Colombia)
 
     Returns:
-        Distancia en km o None si falla la API o no hay API key
+        Distancia en km de la ruta mas corta, o None si falla la API o no hay API key
     """
     import os
     import requests
@@ -1356,12 +1369,13 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
     if city_hint and city_hint.lower() not in destination.lower():
         destination = f"{destination}, {city_hint}"
 
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    url = "https://maps.googleapis.com/maps/api/directions/json"
     params = {
-        "origins": origin,
-        "destinations": destination,
+        "origin": origin,
+        "destination": destination,
+        "mode": "driving",
+        "alternatives": "true",
         "key": api_key,
-        "units": "metric",
         "language": "es",
     }
 
@@ -1381,26 +1395,29 @@ def get_distance_from_api(origin: str, destination: str, city_hint: str = "Perei
             http_status=getattr(response, "status_code", None),
             provider_status=status,
             error_message=data.get("error_message"),
-            meta={"provider": "google_distance_matrix", "mode": "text"},
+            meta={"provider": "google_directions_shortest", "mode": "text"},
         )
         if not ok:
             return None
 
-        rows = data.get("rows", [])
-        if not rows:
+        routes = data.get("routes", [])
+        if not routes:
             return None
 
-        elements = rows[0].get("elements", [])
-        if not elements:
+        # Iterar todas las rutas y quedarse con la de menor distancia total
+        min_distance_km = None
+        for route in routes:
+            legs = route.get("legs", [])
+            total_meters = sum(leg.get("distance", {}).get("value", 0) for leg in legs)
+            if total_meters > 0:
+                route_km = total_meters / 1000.0
+                if min_distance_km is None or route_km < min_distance_km:
+                    min_distance_km = route_km
+
+        if min_distance_km is None:
             return None
 
-        element = elements[0]
-        if element.get("status") != "OK":
-            return None
-
-        distance_meters = element.get("distance", {}).get("value", 0)
-        distance_km = distance_meters / 1000.0
-        return round(distance_km, 2)
+        return round(min_distance_km, 2)
 
     except Exception:
         return None
