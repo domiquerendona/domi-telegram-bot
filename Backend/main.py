@@ -428,6 +428,7 @@ from handlers.order import (
     pedido_valor_compra_handler, _ally_bandeja_precargar_pedido,
     _ally_bandeja_validar_entrada, _ally_bandeja_validar_ally_y_saldo,
     ally_bandeja_crear_pedido_entry, ally_bandeja_crear_y_guardar_entry,
+    pedido_incentivo_menu_callback, pedido_incentivo_existing_fixed_callback,
     nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv,
     admin_pedido_conv,
 )
@@ -456,6 +457,7 @@ from handlers.admin_panel import (
     admin_ver_pendiente,
     admin_aprobar_rechazar_callback,
     pendientes,
+    admin_config_callback,
 )
 from handlers.courier_panel import (
     _fmt_pesos,

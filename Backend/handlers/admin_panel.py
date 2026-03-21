@@ -1937,3 +1937,692 @@ def pendientes(update, context):
 
 
 
+
+
+def admin_config_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    query.answer()
+
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Administrador de Plataforma puede usar este menu.", show_alert=True)
+        return
+
+    # Tarifas (solo Admin Plataforma)
+    if data == "config_tarifas":
+        tarifas_start(update, context)
+        return
+
+    # Solicitudes de cambio (solo Admin Plataforma)
+    if data == "config_change_requests":
+        return admin_change_requests_list(update, context)
+
+    if data == "config_totales":
+        total_allies, total_couriers = get_totales_registros()
+        total_admins = get_local_admins_count()
+
+        texto = (
+            "Resumen de registros:\n\n"
+            "Aliados registrados: {}\n"
+            "Repartidores registrados: {}\n"
+            "Administradores locales registrados: {}"
+        ).format(total_allies, total_couriers, total_admins)
+
+        query.edit_message_text(texto)
+        return
+
+
+    if data == "config_gestion_aliados":
+        allies = get_all_allies()
+        if not allies:
+            query.edit_message_text("No hay aliados registrados en este momento.")
+            return
+
+        keyboard = []
+        for ally in allies:
+            ally_id = ally["id"]
+            business_name = ally["business_name"]
+            status = ally["status"]
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(ally_id, business_name, status),
+                callback_data="config_ver_ally_{}".format(ally_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Aliados registrados. Toca uno para ver detalle.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_ver_ally_"):
+        try:
+            ally_id = int(data.split("_")[-1])
+            _render_platform_ally_detail(query, ally_id)
+        except Exception as e:
+            print("[ERROR] config_ver_ally_{}: {}".format(data, e))
+            query.answer("No pude abrir el detalle del aliado.", show_alert=True)
+        return
+
+    if data.startswith("config_ally_assign_menu_"):
+        ally_id = int(data.split("_")[-1])
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        keyboard = []
+        admins = get_all_local_admins()
+        for admin_row in admins:
+            admin_id = _row_value(admin_row, "id")
+            team_name = _row_value(admin_row, "team_name", "-")
+            team_code = _row_value(admin_row, "team_code", "-")
+            keyboard.append([InlineKeyboardButton(
+                "{} ({})".format(team_name, team_code),
+                callback_data="config_ally_assign_pick_{}_{}".format(ally_id, admin_id)
+            )])
+
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            keyboard.append([InlineKeyboardButton(
+                "Plataforma (PLATFORM)",
+                callback_data="config_ally_assign_platform_{}".format(ally_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))])
+        query.edit_message_text(
+            "Selecciona el equipo que debe quedar vinculado a este aliado:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_ally_assign_platform_") or data.startswith("config_ally_assign_pick_"):
+        if data.startswith("config_ally_assign_platform_"):
+            ally_id = int(data.replace("config_ally_assign_platform_", ""))
+            platform_admin = get_platform_admin()
+            if not platform_admin:
+                query.edit_message_text("No existe un admin de plataforma disponible.")
+                return
+            target_admin_id = _row_value(platform_admin, "id")
+            target_team_name = _row_value(platform_admin, "team_name", "Plataforma")
+            target_team_code = _row_value(platform_admin, "team_code", "PLATFORM")
+        else:
+            parts = data.split("_")
+            if len(parts) != 6:
+                query.answer("Formato inválido.", show_alert=True)
+                return
+            ally_id = int(parts[4])
+            target_admin_id = int(parts[5])
+            admin_row = get_admin_by_id(target_admin_id)
+            if not admin_row:
+                query.edit_message_text("No se encontró el admin destino.")
+                return
+            target_team_name = _row_value(admin_row, "team_name", _row_value(admin_row, "full_name", "-"))
+            target_team_code = _row_value(admin_row, "team_code", "-")
+
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.edit_message_text("No se encontró el aliado.")
+            return
+
+        ally_status = (_row_value(ally, "status", "") or "").upper()
+        if ally_status == "APPROVED":
+            link_status = "APPROVED"
+        elif ally_status == "PENDING":
+            link_status = "PENDING"
+        else:
+            link_status = "INACTIVE"
+
+        try:
+            upsert_admin_ally_link(target_admin_id, ally_id, link_status)
+            if link_status == "APPROVED":
+                deactivate_other_approved_admin_ally_links(ally_id, target_admin_id)
+        except Exception as e:
+            print("[ERROR] config_ally_assign_team ally_id={}: {}".format(ally_id, e))
+            query.edit_message_text("No se pudo actualizar el equipo del aliado.")
+            return
+
+        query.edit_message_text(
+            "Equipo actualizado.\n\n"
+            "Aliado ID: {}\n"
+            "Nuevo equipo: {} ({})\n"
+            "Estado del vínculo: {}\n\n"
+            "Puedes volver al detalle para revisar el resultado.".format(
+                ally_id,
+                target_team_name,
+                target_team_code,
+                link_status,
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                [InlineKeyboardButton("Volver a aliados", callback_data="config_gestion_aliados")],
+            ])
+        )
+        return
+
+        keyboard = []
+        for courier in couriers:
+            courier_id = courier["id"]
+            full_name = courier["full_name"]
+            status = courier["status"]
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(courier_id, full_name, status),
+                callback_data="config_ver_courier_{}".format(courier_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Repartidores registrados. Toca uno para ver detalle.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_ver_courier_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.edit_message_text("No se encontró el repartidor.")
+            return
+        reset_state = get_courier_reset_state_by_id(courier_id)
+        reset_status = _registration_reset_status_label(reset_state)
+
+        texto = (
+            "Detalle del repartidor:\n\n"
+            "ID: {id}\n"
+            "Nombre: {full_name}\n"
+            "Documento: {id_number}\n"
+            "Teléfono: {phone}\n"
+            "Ciudad: {city}\n"
+            "Barrio: {barrio}\n"
+            "Placa: {plate}\n"
+            "Tipo de moto: {bike_type}\n"
+            "Estado: {status}\n"
+            "Reinicio de registro: {reset_status}"
+        ).format(
+            id=courier["id"],
+            full_name=courier["full_name"],
+            id_number=courier["id_number"],
+            phone=courier["phone"],
+            city=courier["city"],
+            barrio=courier["barrio"],
+            plate=courier["plate"],
+            bike_type=courier["bike_type"],
+            status=courier["status"],
+            reset_status=reset_status,
+        )
+
+        status = courier["status"]
+        keyboard = []
+
+        if status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="config_courier_enable_{}".format(courier_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="config_courier_reject_{}".format(courier_id)),
+            ])
+        if status == "APPROVED":
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
+        if status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
+            _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data == "config_couriers_online":
+        # Muestra todos los repartidores ONLINE en este momento (cualquier equipo)
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        online = get_all_online_couriers()
+        if not online:
+            query.edit_message_text(
+                "No hay repartidores con ubicacion en vivo activa en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")],
+                    [InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
+        keyboard = []
+        for c in online:
+            nombre = c["full_name"]
+            ciudad = c["admin_city"] or "?"
+            updated = c["live_location_updated_at"]
+            if updated:
+                try:
+                    if isinstance(updated, str):
+                        ts = datetime.datetime.fromisoformat(updated.replace("Z", ""))
+                    else:
+                        ts = updated
+                    minutos = int((now - ts).total_seconds() / 60)
+                    hace = "hace {} min".format(minutos) if minutos < 60 else "hace {}h".format(minutos // 60)
+                except Exception:
+                    hace = "?"
+            else:
+                hace = "?"
+            lineas.append("{} | {} | {}".format(nombre, ciudad, hace))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {}".format(nombre),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("Buscar cercanos a pedido", callback_data="config_couriers_cerca_pedido")])
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="admin_volver_panel")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "config_couriers_cerca_pedido":
+        # Muestra pedidos activos sin courier para que el admin elija uno
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        pedidos = get_active_orders_without_courier(limit=15)
+        if not pedidos:
+            query.edit_message_text(
+                "No hay pedidos activos sin repartidor asignado en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")],
+                ])
+            )
+            return
+
+        keyboard = []
+        for p in pedidos:
+            orden_id = p["id"]
+            ally = p["ally_name"] or "Aliado"
+            direccion = (p["pickup_address"] or "")[:30]
+            estado = p["status"]
+            keyboard.append([InlineKeyboardButton(
+                "#{} {} — {} ({})".format(orden_id, ally, direccion, estado),
+                callback_data="config_cercanos_pedido_{}".format(orden_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_online")])
+        query.edit_message_text(
+            "Pedidos sin repartidor. Selecciona uno para ver quienes estan mas cerca:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_cercanos_pedido_"):
+        # Muestra repartidores ONLINE ordenados por distancia al pickup del pedido
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede ver esto.", show_alert=True)
+            return
+        query.answer()
+        try:
+            order_id = int(data.split("_")[-1])
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        order = get_order_by_id(order_id)
+        if not order:
+            query.edit_message_text("Pedido no encontrado.")
+            return
+
+        pickup_lat = order["pickup_lat"]
+        pickup_lng = order["pickup_lng"]
+        if not pickup_lat or not pickup_lng:
+            query.edit_message_text(
+                "Este pedido no tiene coordenadas de recogida registradas.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        cercanos = get_online_couriers_sorted_by_distance(float(pickup_lat), float(pickup_lng))
+        if not cercanos:
+            query.edit_message_text(
+                "No hay repartidores online en este momento para comparar.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")],
+                ])
+            )
+            return
+
+        lineas = ["Repartidores mas cercanos al pedido #{}:\n".format(order_id)]
+        keyboard = []
+        for c in cercanos[:10]:
+            nombre = c["full_name"]
+            dist = c["distancia_km"]
+            ciudad = c["admin_city"] or "?"
+            if dist >= 9000:
+                dist_label = "sin GPS"
+            else:
+                dist_label = "{} km".format(dist)
+            lineas.append("{} — {} | {}".format(nombre, dist_label, ciudad))
+            tg_id = c["telegram_id"]
+            keyboard.append([InlineKeyboardButton(
+                "Contactar: {} ({})".format(nombre, dist_label),
+                url="tg://user?id={}".format(tg_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_couriers_cerca_pedido")])
+        query.edit_message_text(
+            "\n".join(lineas),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "config_gestion_repartidores":
+        couriers = get_all_couriers()
+        if not couriers:
+            query.edit_message_text(
+                "No hay repartidores registrados en este momento.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for courier in couriers:
+            courier_id = courier["id"]
+            full_name = courier["full_name"]
+            status = courier["status"]
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(courier_id, full_name, status),
+                callback_data="config_ver_courier_{}".format(courier_id)
+            )])
+
+        keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Repartidores registrados. Toca uno para ver detalle.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data.startswith("config_ally_disable_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            link = get_admin_link_for_ally(ally_id)
+            if link:
+                upsert_admin_ally_link(link["admin_id"], ally_id, "INACTIVE")
+        except Exception as e:
+            print(f"[ERROR] config_ally_disable_ upsert link: {e}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_ally_enable_"):
+        ally_id = int(data.split("_")[-1])
+        ally_before = get_ally_by_id(ally_id)
+        if ally_before and ally_before.get("status") == "PENDING":
+            result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
+            if not result.get("ok"):
+                query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
+                return
+            try:
+                ally = result.get("profile") or get_ally_by_id(ally_id)
+                ally_telegram_id = get_ally_approval_notification_chat_id(ally_id)
+                _send_role_welcome_message(
+                    context,
+                    "ALLY",
+                    ally_telegram_id,
+                    profile=ally,
+                    bonus_granted=bool(result.get("bonus_granted")),
+                    reactivated=False,
+                )
+            except Exception as e:
+                print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
+            kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+            query.edit_message_text("Aliado aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        was_reactivated = bool(ally_before and ally_before.get("status") in ("INACTIVE", "REJECTED"))
+        update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            link = get_admin_link_for_ally(ally_id)
+            keep_admin_id = link["admin_id"] if link else get_platform_admin_id()
+            upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
+        except Exception as e:
+            print(f"[ERROR] config_ally_enable_ upsert link: {e}")
+        try:
+            ally = get_ally_by_id(ally_id)
+            ally_telegram_id = get_ally_approval_notification_chat_id(ally_id)
+            _send_role_welcome_message(context, "ALLY", ally_telegram_id, profile=ally, reactivated=was_reactivated)
+        except Exception as e:
+            print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_ally_reject_"):
+        ally_id = int(data.split("_")[-1])
+        update_ally_status_by_id(ally_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
+        query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_ally_reset_"):
+        payload = data.replace("config_ally_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            ally_id = int(parts[1])
+        except Exception:
+            query.answer("Aliado invalido", show_alert=True)
+            return
+
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.answer("Aliado no encontrado.", show_alert=True)
+            return
+        reset_state = get_ally_reset_state_by_id(ally_id)
+
+        if action == "enable":
+            if ally["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_ally_registration_reset(query.from_user.id, ally_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_aliados")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_ally_registration_reset(query.from_user.id, ally_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al aliado", callback_data="config_ver_ally_{}".format(ally_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_aliados")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida.", show_alert=True)
+        return
+
+    if data.startswith("config_courier_disable_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_courier_enable_"):
+        courier_id = int(data.split("_")[-1])
+        courier_before = get_courier_by_id(courier_id)
+        if courier_before and courier_before.get("status") == "PENDING":
+            result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+            if not result.get("ok"):
+                query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
+                return
+            try:
+                courier = result.get("profile") or get_courier_by_id(courier_id)
+                courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
+                _send_role_welcome_message(
+                    context,
+                    "COURIER",
+                    courier_telegram_id,
+                    profile=courier,
+                    bonus_granted=bool(result.get("bonus_granted")),
+                    reactivated=False,
+                )
+            except Exception as e:
+                print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
+            kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+            query.edit_message_text("Repartidor aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        was_reactivated = bool(courier_before and courier_before.get("status") in ("INACTIVE", "REJECTED"))
+        update_courier_status_by_id(courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        try:
+            courier = get_courier_by_id(courier_id)
+            courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
+            _send_role_welcome_message(context, "COURIER", courier_telegram_id, profile=courier, reactivated=was_reactivated)
+        except Exception as e:
+            print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_courier_reject_"):
+        courier_id = int(data.split("_")[-1])
+        update_courier_status_by_id(courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
+        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
+        query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("config_courier_reset_"):
+        payload = data.replace("config_courier_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            courier_id = int(parts[1])
+        except Exception:
+            query.answer("Repartidor invalido", show_alert=True)
+            return
+
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            query.answer("Repartidor no encontrado.", show_alert=True)
+            return
+        reset_state = get_courier_reset_state_by_id(courier_id)
+
+        if action == "enable":
+            if courier["status"] != "INACTIVE":
+                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_courier_registration_reset(query.from_user.id, courier_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_repartidores")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_courier_registration_reset(query.from_user.id, courier_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al repartidor", callback_data="config_ver_courier_{}".format(courier_id))],
+                    [InlineKeyboardButton("Volver", callback_data="config_gestion_repartidores")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida.", show_alert=True)
+        return
+
+    if data == "config_cerrar":
+        query.edit_message_text("Menú de configuraciones cerrado.")
+        return
+
+    query.answer("Opción no reconocida.", show_alert=True)
+
+
+def config_ally_subsidy_start(update, context):
+    """Entry point del ConversationHandler para editar el subsidio de domicilio de un aliado."""
+    query = update.callback_query
+    query.answer()
+    if not user_has_platform_admin(query.from_user.id):
+        query.answer("Solo el Administrador de Plataforma puede editar el subsidio.", show_alert=True)
+        return ConversationHandler.END
+    ally_id = int(query.data.split("_")[-1])
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        query.edit_message_text("No se encontro el aliado.")
+        return ConversationHandler.END
+    subsidio_actual = int(ally["delivery_subsidy"] or 0)
+    context.user_data["config_subsidy_ally_id"] = ally_id
+    query.edit_message_text(
+        "Aliado: {}\n\nSubsidio actual: ${:,}\n\n"
+        "Envia el nuevo valor del subsidio (numero entero en COP, 0 para sin subsidio).\n"
+        "Usa /cancel para cancelar.".format(ally["business_name"], subsidio_actual)
+    )
+    return CONFIG_ALLY_SUBSIDY_VALOR
+
+

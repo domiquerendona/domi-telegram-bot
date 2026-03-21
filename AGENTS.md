@@ -1321,3 +1321,122 @@ Cuando el usuario pida "mostrar codigo para revision" o "codigo exacto para revi
 
 Razon: el usuario comparte estas revisiones con otras herramientas (como ChatGPT) que no
 distinguen colores de diff y se confunden si ven codigo viejo y nuevo mezclados.
+
+## Sección 18 — Reglas post-modularización: verificación de completitud
+
+### Contexto
+Durante el merge de la rama `luisa-web` (modularización de `main.py` en `handlers/`) se detectaron
+en producción 4 errores de arranque causados por funciones referenciadas en `main.py` que no
+existían en los módulos destino:
+
+| Función | Problema | Módulo correcto |
+|---|---|---|
+| `update_order_payment` | Import en main.py pero no exportada por services.py en Railway | Eliminado (no usado) |
+| `admin_pedido_tarifa_handler` | Importada desde handlers/order pero nunca definida | Eliminado (no usado) |
+| `pedido_incentivo_menu_callback` | Definida en handlers/order pero no incluida en el import de main.py | Agregado al import |
+| `pedido_incentivo_existing_fixed_callback` | Definida en handlers/order pero no incluida en el import de main.py | Agregado al import |
+| `admin_config_callback` | Función de ~400 líneas que no fue movida a ningún módulo durante la modularización | Restaurada en handlers/admin_panel.py |
+
+### Regla 18A — Checklist obligatorio antes de mergear una rama de modularización
+
+Antes de hacer merge de cualquier rama que mueva funciones entre archivos, ejecutar:
+```bash
+# 1. Verificar que todos los nombres importados en main.py existen en sus módulos
+python -c "
+import ast
+
+files = {
+    'handlers/admin_panel.py', 'handlers/ally_bandeja.py', 'handlers/common.py',
+    'handlers/config.py', 'handlers/courier_panel.py', 'handlers/customer_agenda.py',
+    'handlers/location_agenda.py', 'handlers/order.py', 'handlers/quotation.py',
+    'handlers/recharges.py', 'handlers/registration.py', 'handlers/route.py',
+    'handlers/states.py',
+}
+defined = {}
+for path in files:
+    with open(path, encoding='utf-8-sig') as f:
+        tree = ast.parse(f.read())
+    defined[path] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined[path].add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    defined[path].add(t.id)
+
+with open('main.py', encoding='utf-8-sig') as f:
+    tree = ast.parse(f.read())
+
+for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('handlers.'):
+        mod_file = node.module.replace('.', '/') + '.py'
+        for alias in node.names:
+            name = alias.name
+            if name == '*':
+                continue
+            if mod_file in defined and name not in defined[mod_file]:
+                print(f'FALTANTE: {name} importado desde {mod_file} pero no definido ahi')
+print('Verificacion completa')
+"
+
+# 2. Verificar que todos los callbacks en dp.add_handler están importados
+# (ver script completo en AGENTS.md Sección 18B)
+```
+
+### Regla 18B — Verificar callbacks en dp.add_handler
+```bash
+python -c "
+import ast
+
+with open('main.py', encoding='utf-8-sig') as f:
+    src = f.read()
+tree = ast.parse(src)
+defined = set()
+for node in ast.walk(tree):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        defined.add(node.name)
+    elif isinstance(node, ast.Import):
+        for a in node.names:
+            defined.add(a.asname or a.name)
+    elif isinstance(node, ast.ImportFrom):
+        for a in node.names:
+            defined.add(a.asname or a.name)
+    elif isinstance(node, ast.Assign):
+        for t in node.targets:
+            if isinstance(t, ast.Name):
+                defined.add(t.id)
+
+missing = []
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == 'add_handler':
+            for arg in node.args:
+                if isinstance(arg, ast.Call):
+                    inner = arg.func
+                    htype = inner.attr if isinstance(inner, ast.Attribute) else ''
+                    if htype in ('CallbackQueryHandler', 'CommandHandler', 'MessageHandler') and arg.args:
+                        cb = arg.args[0]
+                        if isinstance(cb, ast.Name) and cb.id not in defined:
+                            missing.append((htype, cb.id))
+
+for htype, name in sorted(set(missing)):
+    print(f'NO DEFINIDO [{htype}]: {name}')
+if not missing:
+    print('Todos los callbacks OK')
+"
+```
+
+### Regla 18C — Durante una modularización, al mover una función
+
+Antes de eliminarla de `main.py`, verificar con grep que fue correctamente copiada al módulo destino:
+```bash
+grep -n "def nombre_funcion" handlers/modulo_destino.py
+```
+Si no aparece → NO eliminar de main.py todavía.
+
+### Regla 18D — Al hacer merge de rama de modularización
+
+Ejecutar siempre el checklist 18A y 18B **antes del push a staging**. Un crash en producción
+por import faltante es evitable al 100% con estas verificaciones locales.
