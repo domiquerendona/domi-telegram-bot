@@ -134,6 +134,7 @@ from db import (
     assign_order_to_courier,
     get_order_by_id,
     add_order_incentive,
+    update_order_payment,
     get_orders_by_ally,
     get_orders_by_courier,
     get_courier_daily_earnings_history,

@@ -200,6 +200,54 @@ Este ciclo no introdujo refactors masivos, priorizando cambios pequeños, verifi
 
 
 
+## Línea de trabajo: confirmación profesional del medio de pago — 2026-03-19
+
+**Estado:** FASES 1 Y 2 IMPLEMENTADAS — 2026-03-19
+**Documento:** `docs/proteccion_repartidor_confirmacion_pago_2026-03-19.md`
+
+### Qué se abrió
+
+Se identificó y documentó un riesgo operativo real: los pedidos pueden salir al sistema
+sin que el aliado haya confirmado explícitamente el medio de pago del cliente.
+Cuando el cliente dice "efectivo" pero ya pagó por transferencia antes de la entrega,
+el repartidor queda expuesto a pérdida de dinero o fricción innecesaria.
+
+### Objetivo de la línea
+
+Eliminar la ambigüedad en el medio de pago antes del despacho.
+Proteger al repartidor de adelantar dinero por una suposición no confirmada.
+
+### Fase 1 implementada — 2026-03-19
+
+Pregunta de medio de pago reemplazada, tres estados
+(`CASH_CONFIRMED` / `TRANSFER_CONFIRMED` / `UNCONFIRMED`),
+migración de BD aplicada, oferta al courier actualizada.
+
+- `db.py`: migración idempotente agrega `payment_method`, `payment_confirmed_at`,
+  `payment_confirmed_by` a la tabla `orders`; firma e INSERT de `create_order` actualizados.
+- `main.py`: `mostrar_pregunta_base` muestra tres opciones de medio de pago;
+  `pedido_requiere_base_callback` maneja los tres estados; patrón del handler corregido;
+  ambas llamadas a `create_order` (flujo aliado y flujo admin) pasan los nuevos campos.
+- `order_delivery.py`: oferta al courier muestra el estado de pago confirmado
+  en lugar de la advertencia genérica de base.
+
+### Fase 2 implementada — 2026-03-19
+
+Flujo de cambio de medio de pago post-despacho desde la bandeja del aliado.
+
+- `db.py`: migración idempotente agrega `payment_changed_at`, `payment_changed_by`,
+  `payment_prev_method` a la tabla `orders`; función `update_order_payment` nueva.
+- `main.py`: botón "Cambiar medio de pago" en `_ally_bandeja_mostrar_pedido` (solo para
+  pedidos en `PUBLISHED`/`ACCEPTED`); `ally_cambio_pago_conv` (estados 966/967) con
+  selección de método, monto opcional y confirmación; `_notificar_courier_cambio_pago`
+  notifica al courier si el pedido ya fue aceptado.
+- `services.py`: `update_order_payment` re-exportada.
+
+### Pendiente
+
+- Fase 3: integración con formulario público `/form/:token`.
+
+
 ## Cierre C1 - Reinicio de registro por Plataforma
 
 Fecha de cierre: marzo 2026
