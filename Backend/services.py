@@ -134,6 +134,7 @@ from db import (
     assign_order_to_courier,
     get_order_by_id,
     add_order_incentive,
+    add_route_incentive,
     update_order_payment,
     get_orders_by_ally,
     get_orders_by_courier,
@@ -187,6 +188,7 @@ from db import (
     create_route,
     create_route_destination,
     get_route_by_id,
+    get_active_routes_by_ally,
     get_route_destinations,
     get_pending_route_stops,
     update_route_status,
@@ -2054,7 +2056,10 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
 
 def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     """
-    Liquida el additional_stops_fee de una ruta entregada sin incidencias canceladas.
+    Liquida el additional_stops_fee de una ruta entregada.
+    Si hubo cancelaciones parciales, cobra proporcional a las paradas realmente entregadas:
+      fee = (paradas_entregadas - 1) x tarifa_parada_adicional
+    Si solo se entrego 1 o 0 paradas, no hay additional_stops_fee aplicable.
     """
     route = get_route_by_id(route_id)
     if not route:
@@ -2062,13 +2067,16 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     if route.get("status") != "DELIVERED":
         return False, "La ruta no esta entregada."
 
-    amount = int(route.get("additional_stops_fee") or 0)
-    if amount <= 0:
-        return False, "La ruta no tiene additional_stops_fee para liquidar."
-
     destinations = get_route_destinations(route_id)
-    if any(str(stop.get("status", "")).startswith("CANCELLED") for stop in destinations):
-        return False, "La ruta tuvo incidencias/cancelaciones; no se liquida additional_stops_fee."
+    n_delivered = sum(1 for s in destinations if str(s.get("status", "")) == "DELIVERED")
+
+    if n_delivered <= 1:
+        return False, "La ruta no tiene additional_stops_fee para liquidar ({} parada(s) entregada(s)).".format(n_delivered)
+
+    # Proporcional: solo paradas efectivamente entregadas
+    config = get_pricing_config()
+    tarifa = int(config.get("tarifa_parada_adicional", 200))
+    amount = (n_delivered - 1) * tarifa
 
     platform_admin = get_platform_admin()
     if not platform_admin:

@@ -19,6 +19,7 @@ from handlers.states import (
     PEDIDO_GUARDAR_CLIENTE, PEDIDO_COMPRAS_CANTIDAD, PEDIDO_INCENTIVO_MONTO,
     PEDIDO_PICKUP_NUEVA_CIUDAD, PEDIDO_PICKUP_NUEVA_BARRIO, PEDIDO_VALOR_COMPRA,
     OFFER_SUGGEST_INC_MONTO,
+    ROUTE_SUGGEST_INC_MONTO,
     ADMIN_PEDIDO_PICKUP, ADMIN_PEDIDO_CUST_NAME, ADMIN_PEDIDO_CUST_PHONE,
     ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
     ADMIN_PEDIDO_SEL_CUST, ADMIN_PEDIDO_SEL_CUST_ADDR, ADMIN_PEDIDO_SAVE_PICKUP,
@@ -29,7 +30,7 @@ from handlers.common import (
     cancel_conversacion, cancel_por_texto, ensure_terms,
     show_main_menu, show_flow_menu, _fmt_pesos,
 )
-from order_delivery import publish_order_to_couriers, repost_order_to_couriers
+from order_delivery import publish_order_to_couriers, repost_order_to_couriers, repost_route_to_couriers
 from services import (
     ensure_user, get_user_by_telegram_id, get_ally_by_user_id,
     get_approved_admin_link_for_ally, get_admin_link_for_ally,
@@ -50,6 +51,7 @@ from services import (
     create_order, get_order_by_id, increment_pickup_usage,
     ally_get_order_for_incentive, ally_increment_order_incentive,
     admin_increment_order_incentive,
+    add_route_incentive, get_route_by_id,
     get_admin_by_telegram_id, get_admin_locations, get_admin_location_by_id,
     create_admin_location, increment_admin_location_usage,
     list_admin_customers, get_admin_customer_by_id,
@@ -2399,6 +2401,113 @@ def offer_suggest_inc_monto_handler(update, context):
     return ConversationHandler.END
 
 
+# ── Sugerencia de incentivo T+5 para RUTAS ──
+
+def route_suggest_inc_fixed_callback(update, context):
+    """Botones +1500/+2000/+3000 de la sugerencia T+5 para rutas."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # ruta_inc_{route_id}x{delta}
+    try:
+        parts = data.replace("ruta_inc_", "").split("x")
+        route_id = int(parts[0])
+        delta = int(parts[1])
+    except Exception:
+        query.edit_message_text("Error al procesar el incentivo.")
+        return
+
+    route = get_route_by_id(route_id)
+    if not route or route.get("status") not in ("PUBLISHED",):
+        query.edit_message_text("Esta ruta ya no permite agregar incentivo.")
+        return
+
+    if delta <= 0 or delta > 200000:
+        query.edit_message_text("Monto de incentivo no valido.")
+        return
+
+    add_route_incentive(route_id, delta)
+    repost_count = repost_route_to_couriers(route_id, context)
+
+    route = get_route_by_id(route_id)
+    total_fee = int(route.get("total_fee") or 0) if route else 0
+    incentive = int(route.get("additional_incentive") or 0) if route else delta
+
+    query.edit_message_text(
+        "Incentivo agregado: +${:,}\n"
+        "Incentivo acumulado: ${:,}\n"
+        "Tarifa total de la ruta: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, incentive, total_fee, repost_count
+        )
+    )
+
+
+def route_suggest_inc_otro_start(update, context):
+    """Boton 'Otro monto' de la sugerencia T+5 para rutas."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # ruta_inc_otro_{route_id}
+    try:
+        route_id = int(data.replace("ruta_inc_otro_", ""))
+    except Exception:
+        query.edit_message_text("Error al procesar la solicitud.")
+        return ConversationHandler.END
+
+    route = get_route_by_id(route_id)
+    if not route or route.get("status") not in ("PUBLISHED",):
+        query.edit_message_text("Esta ruta ya no permite agregar incentivo.")
+        return ConversationHandler.END
+
+    context.user_data["route_suggest_edit_route_id"] = route_id
+    query.edit_message_text("Ingresa el monto del incentivo que deseas agregar (en pesos COP, solo numeros):")
+    return ROUTE_SUGGEST_INC_MONTO
+
+
+def route_suggest_inc_monto_handler(update, context):
+    """Recibe monto libre de incentivo de la sugerencia T+5 para rutas."""
+    route_id = context.user_data.get("route_suggest_edit_route_id")
+    if not route_id:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return ROUTE_SUGGEST_INC_MONTO
+
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return ROUTE_SUGGEST_INC_MONTO
+
+    if delta <= 0:
+        update.message.reply_text("El incentivo debe ser mayor a 0.")
+        return ROUTE_SUGGEST_INC_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto (maximo $200,000).")
+        return ROUTE_SUGGEST_INC_MONTO
+
+    add_route_incentive(int(route_id), delta)
+    repost_count = repost_route_to_couriers(int(route_id), context)
+
+    context.user_data.pop("route_suggest_edit_route_id", None)
+
+    route = get_route_by_id(route_id)
+    total_fee = int(route.get("total_fee") or 0) if route else 0
+    incentive = int(route.get("additional_incentive") or 0) if route else delta
+
+    update.message.reply_text(
+        "Incentivo agregado: +${:,}\n"
+        "Incentivo acumulado: ${:,}\n"
+        "Tarifa total de la ruta: ${:,}\n"
+        "Re-ofertando a {} repartidores activos.".format(
+            delta, incentive, total_fee, repost_count
+        )
+    )
+    return ConversationHandler.END
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # PEDIDO ESPECIAL ADMIN
 # ─────────────────────────────────────────────────────────────────────────
@@ -4002,6 +4111,23 @@ offer_suggest_inc_conv = ConversationHandler(
         OFFER_SUGGEST_INC_MONTO: [
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, offer_suggest_inc_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+route_suggest_inc_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(route_suggest_inc_otro_start, pattern=r"^ruta_inc_otro_\d+$"),
+    ],
+    states={
+        ROUTE_SUGGEST_INC_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, route_suggest_inc_monto_handler),
         ],
     },
     fallbacks=[

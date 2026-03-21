@@ -410,6 +410,7 @@ from handlers.order import (
     pedido_incentivo_existing_monto_handler,
     offer_suggest_inc_fixed_callback, offer_suggest_inc_otro_start,
     offer_suggest_inc_monto_handler,
+    route_suggest_inc_fixed_callback,
     admin_nuevo_pedido_start, admin_pedido_pickup_callback,
     admin_pedido_nueva_dir_start, admin_pedido_pickup_text_handler,
     admin_pedido_geo_pickup_callback, admin_pedido_pickup_gps_handler,
@@ -430,6 +431,7 @@ from handlers.order import (
     ally_bandeja_crear_pedido_entry, ally_bandeja_crear_y_guardar_entry,
     pedido_incentivo_menu_callback, pedido_incentivo_existing_fixed_callback,
     nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv,
+    route_suggest_inc_conv,
     admin_pedido_conv,
 )
 from handlers.route import (
@@ -1728,9 +1730,19 @@ def courier_live_location_handler(update, context):
     if not message or not message.location:
         return
 
+    location = message.location
+    lat = location.latitude
+    lng = location.longitude
+
+    # Detectar si es live location (tiene live_period)
+    # Los pines estaticos se ignoran — pueden venir de flujos de conversacion
+    live_period = getattr(location, 'live_period', None)
+    if not live_period and not update.edited_message:
+        return
+
     telegram_id = update.effective_user.id
 
-    # Solo procesar si es repartidor aprobado y activo
+    # Solo procesar si es repartidor aprobado
     courier = get_courier_by_telegram_id(telegram_id)
     if not courier:
         return
@@ -1752,40 +1764,31 @@ def courier_live_location_handler(update, context):
                 pass
         return
 
-    location = message.location
-    lat = location.latitude
-    lng = location.longitude
+    # Es live location (nueva o update) -> actualizar y marcar ONLINE
+    if update.message and live_period:
+        update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
+    else:
+        update_courier_live_location(courier["id"], lat, lng)
 
-    # Detectar si es live location (tiene live_period)
-    live_period = getattr(location, 'live_period', None)
+    # Verificar llegada al punto de recogida si tiene pedido activo
+    try:
+        check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
+    except Exception as e:
+        print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
 
-    if live_period or update.edited_message:
-        # Es live location (nueva o update) -> actualizar y marcar ONLINE
-        if update.message and live_period:
-            update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
-        else:
-            update_courier_live_location(courier["id"], lat, lng)
-
-        # Verificar llegada al punto de recogida si tiene pedido activo
+    # Solo notificar la primera vez (cuando pasa a ONLINE visible)
+    was_online = (
+        _row_value(courier, "availability_status") == "APPROVED"
+        and int(_row_value(courier, "live_location_active", 0) or 0) == 1
+    )
+    if not was_online and update.message and live_period:
         try:
-            check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
-        except Exception as e:
-            print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
-
-        # Solo notificar la primera vez (cuando pasa a ONLINE visible)
-        was_online = (
-            _row_value(courier, "availability_status") == "APPROVED"
-            and int(_row_value(courier, "live_location_active", 0) or 0) == 1
-        )
-        if not was_online and update.message and live_period:
-            try:
-                context.bot.send_message(
-                    chat_id=telegram_id,
-                    text="Tu ubicacion en vivo esta activa. Estas ONLINE y recibiras ofertas cercanas."
-                )
-            except Exception:
-                pass
-    # Si es ubicacion estatica (pin sin live_period), no hacemos nada
+            context.bot.send_message(
+                chat_id=telegram_id,
+                text="Tu ubicacion en vivo esta activa. Estas ONLINE y recibiras ofertas cercanas."
+            )
+        except Exception:
+            pass
 
 
 def courier_live_location_expired_check(context):
@@ -2194,6 +2197,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(route_suggest_inc_fixed_callback, pattern=r"^ruta_inc_\d+x(1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(courier_earnings_callback, pattern=r"^courier_earn_"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
@@ -2211,7 +2215,8 @@ def main():
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
-    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (pedido)
+    dp.add_handler(route_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (ruta)
     dp.add_handler(ally_clientes_conv)     # Agenda de clientes del Aliado (entry: Mis clientes)
     dp.add_handler(CallbackQueryHandler(ally_bandeja_callback, pattern=r"^alybandeja_"))  # Bandeja solicitudes
     dp.add_handler(CallbackQueryHandler(ally_enlace_refresh_callback, pattern=r"^alyenlace_refresh$"))  # Refrescar Mi enlace
@@ -2245,7 +2250,7 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado

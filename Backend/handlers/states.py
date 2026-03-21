@@ -266,7 +266,8 @@ INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
 
-OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5
+OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5 (pedido)
+ROUTE_SUGGEST_INC_MONTO = 914  # Capturar monto libre en sugerencia T+5 (ruta)
 
 # Estados para pedido especial del Admin Local
 ADMIN_PEDIDO_PICKUP    = 908   # Seleccionar/crear dirección de recogida

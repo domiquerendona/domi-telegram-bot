@@ -39,6 +39,7 @@ from db import (
     get_courier_link_balance,
     # Rutas multi-parada
     get_route_by_id,
+    get_active_routes_by_ally,
     get_route_destinations,
     get_pending_route_stops,
     update_route_status,
@@ -71,7 +72,7 @@ from db import (
     resolve_support_request,
     cancel_route_stop,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive
 
 
 def _format_duration(seconds):
@@ -255,6 +256,12 @@ def _delivery_admin_alert_job(context):
 def _cancel_no_response_job(context, order_id):
     """Cancela el job de sugerencia de incentivo T+5 para un pedido."""
     for job in context.job_queue.get_jobs_by_name("offer_no_response_{}".format(order_id)):
+        job.schedule_removal()
+
+
+def _cancel_route_no_response_job(context, route_id):
+    """Cancela el job de sugerencia de incentivo T+5 para una ruta."""
+    for job in context.job_queue.get_jobs_by_name("route_no_response_{}".format(route_id)):
         job.schedule_removal()
 
 
@@ -510,6 +517,92 @@ def repost_order_to_couriers(order_id, context):
     )
     return count
 
+
+def _route_no_response_job(context):
+    """Job T+5: si la ruta sigue PUBLISHED, sugiere al aliado que agregue incentivo."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    if not route_id:
+        return
+
+    route = get_route_by_id(route_id)
+    if not route or route.get("status") != "PUBLISHED":
+        return
+
+    creator_chat_id = None
+    try:
+        ally_id = route.get("ally_id")
+        if ally_id:
+            ally = get_ally_by_id(int(ally_id))
+            if ally:
+                user = get_user_by_id(ally["user_id"])
+                if user:
+                    creator_chat_id = int(user["telegram_id"])
+    except Exception as e:
+        print("[T+5 ruta] Error obteniendo creador para ruta {}: {}".format(route_id, e))
+        return
+
+    if not creator_chat_id:
+        return
+
+    total_fee = int(route.get("total_fee") or 0)
+    incentive = int(route.get("additional_incentive") or 0)
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("+$1,500", callback_data="ruta_inc_{}x1500".format(route_id)),
+            InlineKeyboardButton("+$2,000", callback_data="ruta_inc_{}x2000".format(route_id)),
+            InlineKeyboardButton("+$3,000", callback_data="ruta_inc_{}x3000".format(route_id)),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data="ruta_inc_otro_{}".format(route_id))],
+    ])
+
+    msg = (
+        "Ruta #{} lleva 5 minutos sin ser aceptada.\n\n"
+        "Tarifa actual al repartidor: ${:,}".format(route_id, total_fee)
+    )
+    if incentive > 0:
+        msg += " (incluye incentivo de ${:,})".format(incentive)
+    msg += (
+        "\n\nEs posible que haya alta demanda. "
+        "Agrega un incentivo para agilizar la toma:"
+    )
+
+    try:
+        context.bot.send_message(
+            chat_id=creator_chat_id,
+            text=msg,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        print("[T+5 ruta] Error enviando sugerencia para ruta {}: {}".format(route_id, e))
+
+
+def repost_route_to_couriers(route_id, context):
+    """Re-oferta una ruta a todos los couriers con saldo (usado tras agregar incentivo).
+
+    Limpia la cola existente y relanza el ciclo de ofertas.
+    """
+    route = get_route_by_id(route_id)
+    if not route or route.get("status") != "PUBLISHED":
+        return 0
+
+    delete_route_offer_queue(route_id)
+    context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+
+    ally_id = route.get("ally_id")
+    admin_id_override = _row_value(route, "ally_admin_id_snapshot")
+    if admin_id_override:
+        admin_id_override = int(admin_id_override)
+
+    count = publish_route_to_couriers(
+        route_id=route_id,
+        ally_id=ally_id,
+        context=context,
+        admin_id_override=admin_id_override,
+    )
+    return count
 
 
 def _notify_recharge_needed_to_ally(context, ally_id):
@@ -887,7 +980,7 @@ def _try_restart_cycle(order_id, context):
 
 
 def _expire_order(order_id, cycle_info, context):
-    """Nadie acepto en 10 minutos. Si hay aliado, cobra $300 y notifica. Cancela el pedido."""
+    """Nadie acepto en 10 minutos. Cancela el pedido sin cobrar al aliado."""
     order = get_order_by_id(order_id)
     if not order or order["status"] != "PUBLISHED":
         return
@@ -906,28 +999,9 @@ def _expire_order(order_id, cycle_info, context):
     context.bot_data.get("offer_messages", {}).pop(order_id, None)
 
     ally_id = cycle_info["ally_id"]
-    admin_id = cycle_info["admin_id"]
 
-    # Pedidos de admin (ally_id=None) no tienen aliado que cobrar
+    # Notificar sin cobro: si nadie toma el servicio, no se cobra al aliado
     if ally_id is not None:
-        # Cobrar $300 al aliado como comisión por gestión
-        if admin_id is not None:
-            try:
-                fee_ok, fee_msg = apply_service_fee(
-                    target_type="ALLY",
-                    target_id=ally_id,
-                    admin_id=admin_id,
-                    ref_type="ORDER",
-                    ref_id=order_id,
-                )
-                if not fee_ok:
-                    print("[WARN] No se pudo cobrar fee de expiración al aliado: {}".format(fee_msg))
-            except Exception as e:
-                print("[WARN] Error al cobrar fee de expiración: {}".format(e))
-        else:
-            print("[WARN] Expiración pedido {}: aliado {} sin admin_id para cobrar fee".format(order_id, ally_id))
-
-        # Notificar al aliado
         try:
             ally = get_ally_by_id(ally_id)
             if ally:
@@ -936,12 +1010,12 @@ def _expire_order(order_id, cycle_info, context):
                     context.bot.send_message(
                         chat_id=ally_user["telegram_id"],
                         text=(
-                            "El pedido no fue aceptado por ningún repartidor y expiró automáticamente.\n"
-                            "Se aplicó el cargo de gestión de $300."
-                        ),
+                            "El pedido #{} no fue tomado por ningun repartidor y fue cancelado automaticamente.\n"
+                            "No se aplico ningun cargo."
+                        ).format(order_id),
                     )
         except Exception as e:
-            print("[WARN] No se pudo notificar expiración al aliado: {}".format(e))
+            print("[WARN] No se pudo notificar expiracion al aliado: {}".format(e))
     else:
         # Notificar al admin creador (pedido especial)
         try:
@@ -979,10 +1053,6 @@ def ally_active_orders(update, context):
     all_orders = get_orders_by_ally(ally["id"], limit=20)
     history_orders = [o for o in all_orders if o["status"] in ("DELIVERED", "CANCELLED")]
 
-    if not active_orders and not history_orders:
-        update.message.reply_text("No tienes pedidos registrados.")
-        return
-
     STATUS_LABELS = {
         "PENDING": "Pendiente",
         "PUBLISHED": "Buscando repartidor",
@@ -991,6 +1061,35 @@ def ally_active_orders(update, context):
         "DELIVERED": "Entregado",
         "CANCELLED": "Cancelado",
     }
+
+    active_routes = get_active_routes_by_ally(ally["id"])
+
+    if not active_orders and not active_routes and not history_orders:
+        update.message.reply_text("No tienes pedidos registrados.")
+        return
+
+    if active_routes:
+        update.message.reply_text("Rutas activas:")
+        for route in active_routes:
+            n_stops = len(get_route_destinations(route["id"]))
+            status_label = STATUS_LABELS.get(route.get("status"), route.get("status", ""))
+            text = "Ruta #{}\nEstado: {}\nParadas: {}".format(
+                route["id"],
+                status_label,
+                n_stops,
+            )
+            if route.get("status") in ("PUBLISHED", "ACCEPTED"):
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            "Cancelar ruta",
+                            callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
+                        )
+                    ],
+                ]
+                update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                update.message.reply_text(text)
 
     if active_orders:
         update.message.reply_text("Pedidos activos:")
@@ -1021,7 +1120,7 @@ def ally_active_orders(update, context):
                 update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 update.message.reply_text(text)
-    else:
+    elif not active_routes:
         update.message.reply_text("No tienes pedidos activos.")
 
     if history_orders:
@@ -2307,6 +2406,103 @@ def _handle_cancel_ally(update, context, order_id):
         _notify_courier_order_cancelled(context, order)
 
 
+def _handle_cancel_ally_route(update, context, route_id):
+    """Aliado cancela una ruta. Mismo comportamiento que cancelar un pedido individual."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route:
+        query.edit_message_text("Ruta no encontrada.")
+        return
+
+    if route.get("status") not in ("PUBLISHED", "ACCEPTED"):
+        query.edit_message_text(
+            "No se puede cancelar la ruta #{} en su estado actual.".format(route_id)
+        )
+        return
+
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != route.get("ally_id"):
+        query.edit_message_text("No tienes permiso para cancelar esta ruta.")
+        return
+
+    had_courier = route.get("status") == "ACCEPTED" and route.get("courier_id")
+    was_published = route.get("status") == "PUBLISHED"
+
+    created_at = _to_naive_utc(_parse_dt(route.get("created_at")))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    elapsed_seconds = 0
+    if created_at:
+        try:
+            elapsed_seconds = int(max(0, (now - created_at).total_seconds()))
+        except Exception:
+            elapsed_seconds = 0
+
+    # Cancelar jobs de oferta y sugerencia T+5
+    _cancel_route_no_response_job(context, route_id)
+    if was_published:
+        current = get_current_route_offer(route_id)
+        if current:
+            _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+            mark_route_offer_response(current["queue_id"], "CANCELLED")
+
+    # Política de cancelación: >60s activos → cobrar $300 al aliado
+    if elapsed_seconds > 60:
+        try:
+            admin_link = get_approved_admin_link_for_ally(int(ally["id"]))
+            admin_id = admin_link["admin_id"] if admin_link else None
+        except Exception:
+            admin_id = None
+
+        if admin_id is not None:
+            try:
+                fee_ok, fee_msg = apply_service_fee(
+                    target_type="ALLY",
+                    target_id=int(ally["id"]),
+                    admin_id=int(admin_id),
+                    ref_type="ROUTE",
+                    ref_id=route_id,
+                )
+                if not fee_ok:
+                    print("[WARN] No se pudo cobrar fee por cancelacion de ruta al aliado: {}".format(fee_msg))
+            except Exception as e:
+                print("[WARN] Error al cobrar fee por cancelacion de ruta: {}".format(e))
+        else:
+            print("[WARN] Cancelacion ruta {}: aliado {} sin admin_id para cobrar fee".format(route_id, ally["id"]))
+
+    cancel_route(route_id, "ALLY")
+    delete_route_offer_queue(route_id)
+
+    # Limpiar bot_data de oferta
+    context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+    context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+
+    if elapsed_seconds <= 60:
+        query.edit_message_text(
+            "Ruta cancelada.\n"
+            "No se aplico ningun cargo porque fue cancelada inmediatamente."
+        )
+    else:
+        query.edit_message_text(
+            "Ruta cancelada.\n"
+            "Se aplico el cargo de gestion de $300 por haber activado la red de repartidores."
+        )
+
+    if had_courier:
+        try:
+            courier = get_courier_by_id(route["courier_id"])
+            if courier:
+                courier_user = get_user_by_id(courier["user_id"])
+                if courier_user and courier_user.get("telegram_id"):
+                    context.bot.send_message(
+                        chat_id=courier_user["telegram_id"],
+                        text="La ruta #{} fue cancelada por el aliado.".format(route_id),
+                    )
+        except Exception as e:
+            print("[WARN] No se pudo notificar cancelacion de ruta al courier: {}".format(e))
+
+
 def _handle_pickup(update, context, order_id):
     """Confirma manualmente la llegada del courier una vez el GPS detecta cercania al pickup."""
     query = update.callback_query
@@ -3215,6 +3411,7 @@ def _try_restart_route_cycle(route_id, context):
 
 def _expire_route(route_id, cycle_info, context):
     """Nadie acepto la ruta en 7 minutos. Cancela la ruta."""
+    _cancel_route_no_response_job(context, route_id)
     cancel_route(route_id, "SYSTEM")
     delete_route_offer_queue(route_id)
 
@@ -3308,7 +3505,22 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     if not eligible:
         return 0
 
-    courier_ids = [c["courier_id"] for c in eligible]
+    # Filtrar couriers sin saldo suficiente para el fee de servicio ($300)
+    # El sistema no ofrece el servicio a couriers que no puedan pagarlo al finalizar
+    couriers_con_saldo = []
+    for c in eligible:
+        c_id = c["courier_id"]
+        c_admin_id = get_approved_admin_id_for_courier(c_id)
+        if not c_admin_id:
+            continue
+        fee_ok, _ = check_service_fee_available("COURIER", c_id, c_admin_id)
+        if fee_ok:
+            couriers_con_saldo.append(c_id)
+
+    if not couriers_con_saldo:
+        return 0
+
+    courier_ids = couriers_con_saldo
     create_route_offer_queue(route_id, courier_ids)
     update_route_status(route_id, "PUBLISHED", "published_at")
 
@@ -3320,6 +3532,16 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     }
 
     _send_next_route_offer(route_id, context)
+
+    # Programar sugerencia de incentivo T+5 si nadie acepta la ruta
+    _cancel_route_no_response_job(context, route_id)
+    context.job_queue.run_once(
+        _route_no_response_job,
+        OFFER_NO_RESPONSE_SECONDS,
+        context={"route_id": route_id},
+        name="route_no_response_{}".format(route_id),
+    )
+
     return len(courier_ids)
 
 
@@ -3411,12 +3633,22 @@ def _handle_route_accept(update, context, route_id):
         )
         return
 
-    _cancel_route_offer_jobs(context, route_id, current["queue_id"])
-    mark_route_offer_response(current["queue_id"], "ACCEPTED")
-
+    # Re-verificar saldo antes de asignar (puede haber cambiado desde la publicación)
     courier_id = courier["id"]
     courier_admin_link = get_approved_admin_link_for_courier(courier_id)
     courier_admin_id_snapshot = courier_admin_link["admin_id"] if courier_admin_link else None
+    if courier_admin_id_snapshot:
+        fee_ok, _ = check_service_fee_available("COURIER", courier_id, courier_admin_id_snapshot)
+        if not fee_ok:
+            query.edit_message_text(
+                "No puedes aceptar esta ruta porque no tienes saldo suficiente.\n"
+                "Solicita una recarga a tu administrador."
+            )
+            return
+
+    _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+    _cancel_route_no_response_job(context, route_id)
+    mark_route_offer_response(current["queue_id"], "ACCEPTED")
     assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot)
 
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
@@ -3569,6 +3801,32 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         _send_route_stop_to_courier(context, query.message.chat_id, route, next_stop)
     else:
         update_route_status(route_id, "DELIVERED", "delivered_at")
+        # Fee base al aliado: $300 (igual que pedido individual — $200 admin + $100 plataforma)
+        ally_id = route["ally_id"]
+        ally_admin_id = _row_value(route, "ally_admin_id_snapshot")
+        if not ally_admin_id:
+            ally_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+            ally_admin_id = ally_link["admin_id"] if ally_link else None
+        if ally_id and ally_admin_id:
+            ally_ok, ally_msg = apply_service_fee(
+                target_type="ALLY", target_id=ally_id,
+                admin_id=ally_admin_id, ref_type="ROUTE", ref_id=route_id,
+            )
+            if not ally_ok:
+                print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg))
+        # Fee base al repartidor: $300 (igual que pedido individual — $200 admin + $100 plataforma)
+        courier_id_route = route.get("courier_id")
+        courier_admin_id_route = _row_value(route, "courier_admin_id_snapshot")
+        if not courier_admin_id_route and courier_id_route:
+            courier_admin_id_route = get_approved_admin_id_for_courier(courier_id_route)
+        if courier_id_route and courier_admin_id_route:
+            courier_ok, courier_msg = apply_service_fee(
+                target_type="COURIER", target_id=courier_id_route,
+                admin_id=courier_admin_id_route, ref_type="ROUTE", ref_id=route_id,
+            )
+            if not courier_ok:
+                print("[WARN] No se pudo cobrar fee base al repartidor en ruta {}: {}".format(route_id, courier_msg))
+        # Fee adicional por paradas extra: $200 c/u (split 50/50 admin/plataforma)
         ok, msg = liquidate_route_additional_stops_fee(route_id)
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
             print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))
@@ -3607,9 +3865,34 @@ def _notify_ally_route_delivered(context, route):
         ally_user = get_user_by_id(ally["user_id"])
         if not ally_user or not ally_user.get("telegram_id"):
             return
+        route_id = route["id"]
+        # Calcular desglose de fees cobrados
+        stops = get_route_destinations(route_id)
+        n_delivered = sum(1 for s in stops if str(s.get("status", "")) == "DELIVERED")
+        n_cancelled = len(stops) - n_delivered
+        fee_base = 300
+        from services import get_pricing_config
+        config = get_pricing_config()
+        tarifa_parada = int(config.get("tarifa_parada_adicional", 200))
+        fee_adicional = max(0, (n_delivered - 1)) * tarifa_parada
+        fee_total = fee_base + fee_adicional
+        lines = [
+            "Ruta #{} completada.".format(route_id),
+            "",
+            "Cobros aplicados a tu saldo:",
+            "  Servicio base:        -${}".format(format(fee_base, ",")),
+        ]
+        if fee_adicional > 0:
+            lines.append("  Paradas adicionales:  -${}  ({} x ${})".format(
+                format(fee_adicional, ","), n_delivered - 1, format(tarifa_parada, ",")
+            ))
+        lines.append("  Total descontado:     -${}".format(format(fee_total, ",")))
+        if n_cancelled > 0:
+            lines.append("")
+            lines.append("{} parada(s) no se entregaron.".format(n_cancelled))
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
-            text="Tu ruta #{} fue completada. Todas las entregas fueron realizadas.".format(route["id"]),
+            text="\n".join(lines),
         )
     except Exception as e:
         print("[WARN] No se pudo notificar entrega de ruta al aliado: {}".format(e))
@@ -3701,6 +3984,10 @@ def handle_route_callback(update, context):
         if len(parts) == 2:
             return _handle_admin_route_pinissue_action(update, context, int(parts[0]), int(parts[1]), "cancel_ally")
 
+    if data.startswith("ruta_cancelar_aliado_"):
+        route_id = int(data.replace("ruta_cancelar_aliado_", ""))
+        return _handle_cancel_ally_route(update, context, route_id)
+
     return None
 
 
@@ -3720,6 +4007,16 @@ def _handle_route_release_menu(update, context, route_id):
     courier = get_courier_by_telegram_id(telegram_id)
     if not courier or courier["id"] != route.get("courier_id"):
         query.edit_message_text("No tienes permiso para liberar esta ruta.")
+        return
+
+    # Bloquear liberación si ya entrego alguna parada (ya recogió el producto)
+    stops = get_route_destinations(route_id)
+    n_delivered = sum(1 for s in stops if str(s.get("status", "")) == "DELIVERED")
+    if n_delivered > 0:
+        query.edit_message_text(
+            "Ya entregaste {} parada(s). No puedes liberar la ruta una vez que recogiste los productos.\n\n"
+            "Si tienes un problema, contacta a tu administrador.".format(n_delivered)
+        )
         return
 
     reason_labels = {
@@ -3809,11 +4106,23 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
         admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
+    # Cobrar $300 al courier por liberar la ruta (igual que cancelar un pedido)
+    courier_admin_id_release = _row_value(route, "courier_admin_id_snapshot")
+    if not courier_admin_id_release:
+        courier_admin_id_release = get_approved_admin_id_for_courier(courier["id"])
+    if courier_admin_id_release:
+        fee_ok, fee_msg = apply_service_fee(
+            target_type="COURIER", target_id=courier["id"],
+            admin_id=courier_admin_id_release, ref_type="ROUTE", ref_id=route_id,
+        )
+        if not fee_ok:
+            print("[WARN] No se pudo cobrar fee al courier por liberacion de ruta {}: {}".format(route_id, fee_msg))
+
     delete_route_offer_queue(route_id)
     release_route_from_courier(route_id)
 
     query.edit_message_text(
-        "Ruta #{} liberada.\nMotivo: {}\n\nSera ofrecida a otros repartidores.".format(
+        "Ruta #{} liberada.\nMotivo: {}\n\nSe cobro la tarifa de servicio ($300) por la liberacion.\nSera ofrecida a otros repartidores.".format(
             route_id,
             reason_label,
         )
@@ -3868,11 +4177,22 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
     )
-    eligible = [c for c in eligible if c["courier_id"] != courier["id"]]
-    if not eligible:
+    # Excluir al courier que liberó y a los sin saldo suficiente
+    couriers_re_oferta = []
+    for c in eligible:
+        c_id = c["courier_id"]
+        if c_id == courier["id"]:
+            continue
+        c_admin_id = get_approved_admin_id_for_courier(c_id)
+        if not c_admin_id:
+            continue
+        fee_ok, _ = check_service_fee_available("COURIER", c_id, c_admin_id)
+        if fee_ok:
+            couriers_re_oferta.append(c_id)
+    if not couriers_re_oferta:
         return
 
-    courier_ids = [c["courier_id"] for c in eligible]
+    courier_ids = couriers_re_oferta
     create_route_offer_queue(route_id, courier_ids)
     update_route_status(route_id, "PUBLISHED", "published_at")
 
@@ -4359,26 +4679,28 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
 
         # Aplicar fees segun culpable
         if action == "cancel_ally":
-            stops = get_route_destinations(route_id)
-            stop = next((s for s in stops if s["sequence"] == seq), None)
-            # Fee al aliado de la ruta
+            # Fee al aliado de la ruta (penalidad por su falla)
             ally_id = route["ally_id"]
             if ally_id:
                 ally_admin_link = get_approved_admin_link_for_ally(ally_id)
                 if ally_admin_link:
-                    apply_service_fee(
+                    pi_ally_ok, pi_ally_msg = apply_service_fee(
                         target_type="ALLY", target_id=ally_id,
                         admin_id=ally_admin_link["admin_id"],
                         ref_type="ROUTE", ref_id=route_id,
                     )
+                    if not pi_ally_ok:
+                        print("[WARN] No se pudo cobrar fee al aliado (cancel_ally) en ruta {}: {}".format(route_id, pi_ally_msg))
         # Siempre fee al courier en cancel_courier; en cancel_ally también
         courier_admin_id = get_approved_admin_id_for_courier(courier_id)
         if courier_admin_id:
-            apply_service_fee(
+            pi_courier_ok, pi_courier_msg = apply_service_fee(
                 target_type="COURIER", target_id=courier_id,
                 admin_id=courier_admin_id,
                 ref_type="ROUTE", ref_id=route_id,
             )
+            if not pi_courier_ok:
+                print("[WARN] No se pudo cobrar fee al repartidor (pin issue) en ruta {}: {}".format(route_id, pi_courier_msg))
 
         label = "falla del repartidor" if action == "cancel_courier" else "falla del aliado"
         query.edit_message_text(
@@ -4399,6 +4721,31 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
     else:
         # Todas las paradas resueltas (entregadas o canceladas)
         update_route_status(route_id, "DELIVERED", "delivered_at")
+        # Fee base al aliado: $300 (igual que pedido individual — $200 admin + $100 plataforma)
+        ally_id_route = route["ally_id"]
+        ally_admin_id_route = _row_value(route, "ally_admin_id_snapshot")
+        if not ally_admin_id_route:
+            ally_link_r = get_approved_admin_link_for_ally(ally_id_route) if ally_id_route else None
+            ally_admin_id_route = ally_link_r["admin_id"] if ally_link_r else None
+        if ally_id_route and ally_admin_id_route:
+            ally_ok_r, ally_msg_r = apply_service_fee(
+                target_type="ALLY", target_id=ally_id_route,
+                admin_id=ally_admin_id_route, ref_type="ROUTE", ref_id=route_id,
+            )
+            if not ally_ok_r:
+                print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg_r))
+        # Fee base al repartidor: $300 (igual que pedido individual — $200 admin + $100 plataforma)
+        courier_admin_id_r = _row_value(route, "courier_admin_id_snapshot")
+        if not courier_admin_id_r and courier_id:
+            courier_admin_id_r = get_approved_admin_id_for_courier(courier_id)
+        if courier_id and courier_admin_id_r:
+            courier_ok_r, courier_msg_r = apply_service_fee(
+                target_type="COURIER", target_id=courier_id,
+                admin_id=courier_admin_id_r, ref_type="ROUTE", ref_id=route_id,
+            )
+            if not courier_ok_r:
+                print("[WARN] No se pudo cobrar fee base al repartidor en ruta {}: {}".format(route_id, courier_msg_r))
+        # Fee adicional por paradas extra: $200 c/u (split 50/50 admin/plataforma)
         ok, msg = liquidate_route_additional_stops_fee(route_id)
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
             print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))

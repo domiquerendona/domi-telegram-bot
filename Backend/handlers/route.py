@@ -69,6 +69,7 @@ from services import (
     create_route,
     create_route_destination,
     get_approved_admin_link_for_ally,
+    get_ally_link_balance,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -841,6 +842,22 @@ def ruta_confirmacion_callback(update, context):
         return RUTA_CONFIRMACION
     link = get_approved_admin_link_for_ally(ally_id)
     admin_id_snapshot = link["admin_id"] if link else None
+    # Validar saldo suficiente para el fee completo de la ruta:
+    # $300 base (mismo que pedido individual) + $200 por cada parada adicional
+    n_paradas = len(paradas)
+    fee_total_aliado = 300 + 200 * (n_paradas - 1)
+    if admin_id_snapshot:
+        saldo_aliado = get_ally_link_balance(ally_id, admin_id_snapshot)
+        if saldo_aliado < fee_total_aliado:
+            query.edit_message_text(
+                "Saldo insuficiente para crear la ruta.\n"
+                "Necesitas: ${:,}\n"
+                "Tu saldo actual: ${:,}\n\n"
+                "Solicita una recarga a tu administrador.".format(fee_total_aliado, saldo_aliado)
+            )
+            context.user_data.clear()
+            show_main_menu(update, context)
+            return ConversationHandler.END
     try:
         route_id = create_route(
             ally_id=ally_id,

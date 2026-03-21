@@ -1283,6 +1283,15 @@ def init_db():
     except Exception:
         pass
 
+    # Migración: agregar additional_incentive a routes
+    try:
+        cur.execute("PRAGMA table_info(routes)")
+        route_cols = [col[1] for col in cur.fetchall()]
+        if 'additional_incentive' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN additional_incentive INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
     try:
         cur.execute("ALTER TABLE couriers ADD COLUMN available_cash INTEGER DEFAULT 0;")
     except Exception:
@@ -1635,6 +1644,7 @@ def init_db():
             total_distance_km REAL DEFAULT 0,
             distance_fee INTEGER DEFAULT 0,
             additional_stops_fee INTEGER DEFAULT 0,
+            additional_incentive INTEGER DEFAULT 0,
             total_fee INTEGER DEFAULT 0,
             instructions TEXT,
             canceled_by TEXT,
@@ -5301,6 +5311,23 @@ def add_order_incentive(order_id: int, delta: int):
         WHERE id = {P};
         """,
         (delta, delta, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_route_incentive(route_id: int, delta: int):
+    """Incrementa additional_incentive y total_fee de una ruta por delta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET additional_incentive = COALESCE(additional_incentive, 0) + {P},
+            total_fee = COALESCE(total_fee, 0) + {P}
+        WHERE id = {P};
+        """,
+        (delta, delta, route_id),
     )
     conn.commit()
     conn.close()
@@ -9162,6 +9189,19 @@ def get_route_by_id(route_id):
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_active_routes_by_ally(ally_id):
+    """Retorna rutas activas (PUBLISHED o ACCEPTED) del aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM routes WHERE ally_id = {P} AND status IN ('PUBLISHED', 'ACCEPTED') ORDER BY created_at DESC",
+        (ally_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_route_destinations(route_id):
