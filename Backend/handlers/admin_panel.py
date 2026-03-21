@@ -1,0 +1,1939 @@
+# =============================================================================
+# handlers/admin_panel.py — Panel de administración (Platform Admin + Local Admin)
+# Extraído de main.py
+# =============================================================================
+
+import os
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from handlers.common import (
+    _resolve_important_alert,
+    _row_value,
+    _schedule_important_alerts,
+    _send_role_welcome_message,
+    show_main_menu,
+)
+from services import (
+    count_admin_couriers,
+    count_admin_couriers_with_min_balance,
+    create_admin_courier_link,
+    es_admin_plataforma,
+    get_admin_balance,
+    get_admin_by_id,
+    get_admin_by_user_id,
+    get_admin_link_for_ally,
+    get_admin_reference_validator_permission,
+    get_admin_reset_state_by_id,
+    get_all_admins,
+    get_ally_by_id,
+    get_ally_reset_state_by_id,
+    get_courier_by_id,
+    get_default_ally_location,
+    get_pending_admins,
+    get_pending_allies,
+    get_pending_couriers,
+    get_pending_couriers_by_admin,
+    get_pending_reference_candidates,
+    get_platform_admin,
+    get_reference_candidate,
+    get_user_by_id,
+    get_user_by_telegram_id,
+    get_user_db_id_from_update,
+    list_ally_links_by_admin,
+    list_approved_admin_teams,
+    list_courier_links_by_admin,
+    platform_clear_admin_registration_reset,
+    platform_enable_admin_registration_reset,
+    review_reference_candidate,
+    set_admin_reference_validator_permission,
+    set_reference_candidate_coords,
+    update_admin_status_by_id,
+    user_has_platform_admin,
+    _get_reference_reviewer,
+)
+from order_delivery import admin_orders_panel
+from profile_changes import admin_change_requests_list
+
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+
+
+def _registration_reset_status_label(reset_state):
+    if not reset_state:
+        return "No autorizado"
+    if reset_state.get("registration_reset_active"):
+        return "Autorizado activo"
+    if reset_state.get("registration_reset_consumed_at"):
+        return "Consumido"
+    return "No autorizado"
+
+
+def _append_registration_reset_button(keyboard, role_prefix: str, role_id: int, role_status: str, reset_state):
+    if role_status not in ("INACTIVE", "REJECTED"):
+        return
+    if reset_state and reset_state.get("registration_reset_active"):
+        keyboard.append([InlineKeyboardButton("Revocar reinicio", callback_data="{}_reset_clear_{}".format(role_prefix, role_id))])
+        return
+    if reset_state and reset_state.get("registration_reset_consumed_at"):
+        if role_prefix != "config_ally":
+            return
+    keyboard.append([InlineKeyboardButton("Autorizar reinicio", callback_data="{}_reset_enable_{}".format(role_prefix, role_id))])
+
+
+def _notify_admin_local_welcome(context, admin_id: int, reactivated: bool = False):
+    admin = get_admin_by_id(admin_id)
+    if not admin:
+        return
+    user_row = get_user_by_id(admin["user_id"])
+    if not user_row:
+        return
+    _send_role_welcome_message(
+        context,
+        "ADMIN_LOCAL",
+        user_row["telegram_id"],
+        profile=admin,
+        reactivated=reactivated,
+    )
+
+
+def _render_platform_ally_detail(query, ally_id: int):
+    ally = get_ally_by_id(ally_id)
+    if not ally:
+        query.edit_message_text("No se encontró el aliado.")
+        return
+
+    reset_state = get_ally_reset_state_by_id(ally_id)
+    reset_status = _registration_reset_status_label(reset_state)
+    admin_link = get_admin_link_for_ally(ally_id)
+    default_loc = get_default_ally_location(ally_id)
+    loc_lat = _row_value(default_loc, "lat") if default_loc else None
+    loc_lng = _row_value(default_loc, "lng") if default_loc else None
+
+    if loc_lat is not None and loc_lng is not None:
+        loc_text = "{}, {}".format(loc_lat, loc_lng)
+        maps_text = "Maps: https://www.google.com/maps?q={},{}\n".format(loc_lat, loc_lng)
+    else:
+        loc_text = "No disponible"
+        maps_text = ""
+
+    subsidio = int((_row_value(ally, "delivery_subsidy") or 0))
+    min_purchase = _row_value(ally, "min_purchase_for_subsidy")
+    if subsidio == 0:
+        subsidio_label = "Subsidio domicilio: No configurado"
+    elif min_purchase is not None:
+        subsidio_label = (
+            "Subsidio domicilio: ${:,} por pedido\n"
+            "Modo: Condicional\n"
+            "Compra minima: ${:,}"
+        ).format(subsidio, min_purchase)
+    else:
+        subsidio_label = (
+            "Subsidio domicilio: ${:,} por pedido\n"
+            "Modo: Incondicional"
+        ).format(subsidio)
+
+    if admin_link:
+        team_name = _row_value(admin_link, "team_name", "-")
+        team_code = _row_value(admin_link, "team_code", "-")
+        link_status = _row_value(admin_link, "link_status", "-")
+        equipo_label = "{} ({}) - Vínculo: {}".format(team_name, team_code, link_status)
+    else:
+        equipo_label = "(sin equipo asignado)"
+
+    texto = (
+        "Detalle del aliado:\n\n"
+        "ID: {id}\n"
+        "Negocio: {business_name}\n"
+        "Propietario: {owner_name}\n"
+        "Teléfono: {phone}\n"
+        "Dirección: {address}\n"
+        "Ciudad: {city}\n"
+        "Barrio: {barrio}\n"
+        "Estado: {status}\n"
+        "Equipo: {equipo}\n"
+        "Reinicio de registro: {reset_status}\n"
+        "{subsidio_label}\n"
+        "Ubicación: {loc}\n"
+        "{maps}"
+    ).format(
+        id=_row_value(ally, "id", "-"),
+        business_name=_row_value(ally, "business_name", "-"),
+        owner_name=_row_value(ally, "owner_name", "-"),
+        phone=_row_value(ally, "phone", "-"),
+        address=_row_value(ally, "address", "-"),
+        city=_row_value(ally, "city", "-"),
+        barrio=_row_value(ally, "barrio", "-"),
+        status=_row_value(ally, "status", "-"),
+        equipo=equipo_label,
+        reset_status=reset_status,
+        subsidio_label=subsidio_label,
+        loc=loc_text,
+        maps=maps_text,
+    )
+
+    status = _row_value(ally, "status")
+    keyboard = []
+
+    if status == "PENDING":
+        keyboard.append([
+            InlineKeyboardButton("✅ Aprobar", callback_data="config_ally_enable_{}".format(ally_id)),
+            InlineKeyboardButton("❌ Rechazar", callback_data="config_ally_reject_{}".format(ally_id)),
+        ])
+    if status == "APPROVED":
+        keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_ally_disable_{}".format(ally_id))])
+    if status == "INACTIVE":
+        keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_ally_enable_{}".format(ally_id))])
+        _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
+    if status == "REJECTED":
+        _append_registration_reset_button(keyboard, "config_ally", ally_id, status, reset_state)
+
+    keyboard.append([InlineKeyboardButton(
+        "Editar subsidio domicilio (${:,})".format(subsidio),
+        callback_data="config_ally_subsidy_{}".format(ally_id)
+    )])
+    keyboard.append([InlineKeyboardButton(
+        "Compra minima subsidio ({})".format(
+            "${:,}".format(min_purchase) if min_purchase is not None else "sin condicion"
+        ),
+        callback_data="config_ally_minpurchase_{}".format(ally_id)
+    )])
+    keyboard.append([InlineKeyboardButton("Asignar/corregir equipo", callback_data="config_ally_assign_menu_{}".format(ally_id))])
+    keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
+
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+
+
+def _render_reference_candidates(query_or_update, offset: int = 0, edit: bool = False):
+    rows = get_pending_reference_candidates(offset=offset, limit=10)
+
+    if not rows:
+        text = "No hay referencias pendientes por validar."
+        keyboard = [[InlineKeyboardButton("Actualizar", callback_data="ref_list_0")]]
+    else:
+        text = "Referencias pendientes.\nToca una para revisar:"
+        keyboard = []
+        for row in rows:
+            snippet = (row["raw_text"] or "")[:35]
+            label = "#{} {} ({})".format(row["id"], snippet, row["seen_count"])
+            keyboard.append([InlineKeyboardButton(label, callback_data="ref_view_{}".format(row["id"]))])
+
+        nav = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton("Anterior", callback_data="ref_list_{}".format(max(0, offset - 10))))
+        if len(rows) == 10:
+            nav.append(InlineKeyboardButton("Siguiente", callback_data="ref_list_{}".format(offset + 10)))
+        if nav:
+            keyboard.append(nav)
+        keyboard.append([InlineKeyboardButton("Actualizar", callback_data="ref_list_{}".format(offset))])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if edit:
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        query_or_update.message.reply_text(text, reply_markup=reply_markup)
+
+
+def cmd_referencias(update, context):
+    reviewer = _get_reference_reviewer(update.effective_user.id)
+    if not reviewer["ok"]:
+        update.message.reply_text(reviewer["message"])
+        return
+    _render_reference_candidates(update, offset=0, edit=False)
+
+
+def reference_validation_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    reviewer = _get_reference_reviewer(query.from_user.id)
+    if not reviewer["ok"]:
+        query.answer(reviewer["message"], show_alert=True)
+        return
+
+    if data.startswith("ref_list_"):
+        query.answer()
+        try:
+            offset = int(data.replace("ref_list_", ""))
+        except Exception:
+            offset = 0
+        _render_reference_candidates(query, offset=max(0, offset), edit=True)
+        return
+
+    if data.startswith("ref_view_"):
+        query.answer()
+        try:
+            candidate_id = int(data.replace("ref_view_", ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        row = get_reference_candidate(candidate_id)
+        if not row:
+            query.edit_message_text(
+                "Referencia no encontrada.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="ref_list_0")]])
+            )
+            return
+
+        lat = row["suggested_lat"]
+        lng = row["suggested_lng"]
+        maps_line = ""
+        if lat is not None and lng is not None:
+            maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(lat, lng)
+            try:
+                context.bot.send_location(
+                    chat_id=query.message.chat_id,
+                    latitude=float(lat),
+                    longitude=float(lng),
+                )
+            except Exception:
+                pass
+
+        text = (
+            "Referencia #{}\n"
+            "Texto: {}\n"
+            "Normalizado: {}\n"
+            "Veces vista: {}\n"
+            "Fuente: {}\n"
+            "Coords sugeridas: {}, {}\n"
+            "{}"
+            "Estado: {}"
+        ).format(
+            row["id"],
+            row["raw_text"] or "-",
+            row["normalized_text"] or "-",
+            row["seen_count"] or 0,
+            row["source"] or "-",
+            lat if lat is not None else "-",
+            lng if lng is not None else "-",
+            maps_line,
+            row["status"] or "-",
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("Aprobar", callback_data="ref_approve_{}".format(row["id"])),
+                InlineKeyboardButton("Rechazar", callback_data="ref_reject_{}".format(row["id"])),
+            ],
+            [InlineKeyboardButton("Volver", callback_data="ref_list_0")],
+        ]
+        if lat is None or lng is None:
+            keyboard.insert(1, [InlineKeyboardButton("Asignar ubicacion", callback_data="ref_setloc_{}".format(row["id"]))])
+        query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("ref_setloc_"):
+        query.answer()
+        try:
+            candidate_id = int(data.replace("ref_setloc_", ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        row = get_reference_candidate(candidate_id)
+        if not row:
+            query.edit_message_text(
+                "Referencia no encontrada.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="ref_list_0")]])
+            )
+            return
+
+        context.user_data["ref_assign_candidate_id"] = candidate_id
+        query.edit_message_text(
+            "Envia un PIN de ubicacion de Telegram para esta referencia.\n\n"
+            "Referencia: {}\n"
+            "Luego te mostrare los botones para aprobar o rechazar.".format(row["raw_text"] or "-"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data="ref_view_{}".format(candidate_id))]])
+        )
+        return
+
+    if data.startswith("ref_approve_") or data.startswith("ref_reject_"):
+        query.answer()
+        approve = data.startswith("ref_approve_")
+        prefix = "ref_approve_" if approve else "ref_reject_"
+        try:
+            candidate_id = int(data.replace(prefix, ""))
+        except Exception:
+            query.answer("Referencia invalida.", show_alert=True)
+            return
+
+        new_status = "APPROVED" if approve else "REJECTED"
+        ok, msg = review_reference_candidate(
+            candidate_id,
+            new_status,
+            reviewed_by_admin_id=reviewer["admin_id"],
+            note="review_by_tg:{}".format(query.from_user.id),
+        )
+        keyboard = [[InlineKeyboardButton("Volver a pendientes", callback_data="ref_list_0")]]
+        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    query.answer("Opcion no reconocida.", show_alert=True)
+
+
+def reference_assign_location_handler(update, context):
+    """
+    Recibe un PIN de Telegram para completar coordenadas de una referencia candidata.
+    """
+    candidate_id = context.user_data.get("ref_assign_candidate_id")
+    if not candidate_id:
+        return
+
+    reviewer = _get_reference_reviewer(update.effective_user.id)
+    if not reviewer["ok"]:
+        update.message.reply_text(reviewer["message"])
+        context.user_data.pop("ref_assign_candidate_id", None)
+        return
+
+    if not update.message or not update.message.location:
+        update.message.reply_text("Envia un PIN de ubicacion de Telegram para continuar.")
+        return
+
+    row = get_reference_candidate(candidate_id)
+    if not row:
+        update.message.reply_text("Referencia no encontrada. Usa /referencias nuevamente.")
+        context.user_data.pop("ref_assign_candidate_id", None)
+        return
+
+    lat = update.message.location.latitude
+    lng = update.message.location.longitude
+    ok = set_reference_candidate_coords(candidate_id, lat, lng)
+    context.user_data.pop("ref_assign_candidate_id", None)
+
+    if not ok:
+        update.message.reply_text("No se pudo guardar la ubicacion. Intenta de nuevo con /referencias.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Aprobar", callback_data="ref_approve_{}".format(candidate_id)),
+            InlineKeyboardButton("Rechazar", callback_data="ref_reject_{}".format(candidate_id)),
+        ],
+        [InlineKeyboardButton("Ver referencia", callback_data="ref_view_{}".format(candidate_id))],
+        [InlineKeyboardButton("Volver a pendientes", callback_data="ref_list_0")],
+    ]
+    update.message.reply_text(
+        "Ubicacion guardada para la referencia.\n"
+        "Ahora puedes aprobarla o rechazarla.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def aliados_pendientes(update, context):
+    """Lista aliados PENDING solo para el Administrador de Plataforma."""
+    message = update.effective_message
+    telegram_id = update.effective_user.id
+
+    if telegram_id != ADMIN_USER_ID:
+        message.reply_text("Este comando es solo para el Administrador de Plataforma.")
+        return
+
+    try:
+        allies = get_pending_allies()
+    except Exception as e:
+        print(f"[ERROR] get_pending_allies(): {e}")
+        message.reply_text("⚠️ Error interno al consultar aliados pendientes.")
+        return
+
+    if not allies:
+        message.reply_text("No hay aliados pendientes por aprobar.")
+        return
+
+    for ally in allies:
+        ally_id = ally["id"]
+        business_name = ally["business_name"]
+        owner_name = ally["owner_name"]
+        address = ally["address"]
+        city = ally["city"]
+        barrio = ally["barrio"]
+        phone = ally["phone"]
+        status = ally["status"]
+
+        texto = (
+            "Aliado pendiente:\n"
+            "------------------------\n"
+            f"ID interno: {ally_id}\n"
+            f"Negocio: {business_name}\n"
+            f"Dueño: {owner_name}\n"
+            f"Teléfono: {phone}\n"
+            f"Dirección: {address}, {barrio}, {city}\n"
+            f"Estado: {status}\n"
+        )
+
+        keyboard = [[
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"ally_approve_{ally_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"ally_reject_{ally_id}"),
+        ]]
+
+        message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def repartidores_pendientes(update, context):
+    message = update.effective_message
+    user_db_id = get_user_db_id_from_update(update)
+
+    # Permisos: admin de plataforma o admin local
+    telegram_id = update.effective_user.id
+    es_admin_plataforma_flag = es_admin_plataforma(telegram_id)
+
+    admin_id = None
+
+    if not es_admin_plataforma_flag:
+        try:
+            user_db_id = get_user_db_id_from_update(update)
+            admin = get_admin_by_user_id(user_db_id)
+
+        except Exception:
+            admin = None
+
+        if not admin:
+            message.reply_text("No tienes permisos para ver repartidores pendientes.")
+            return
+
+        admin_id = admin["id"]
+        if not admin_id:
+            message.reply_text("No se pudo validar tu rol de administrador.")
+            return
+
+    # Obtener pendientes según rol
+    try:
+        if es_admin_plataforma_flag:
+            # Combinar: nuevos registros (couriers.status=PENDING) + solicitudes de union (admin_couriers.status=PENDING)
+            nuevos = list(get_pending_couriers())
+            join_requests = list(get_pending_couriers_by_admin(admin_id))
+            seen_ids = set()
+            pendientes = []
+            for c in nuevos + join_requests:
+                cid = c.get("courier_id") or c.get("id")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    pendientes.append(c)
+        else:
+            pendientes = get_pending_couriers_by_admin(admin_id)  # por equipo (tabla admin_couriers)
+    except Exception as e:
+        print(f"[ERROR] repartidores_pendientes: {e}")
+        message.reply_text("Error consultando repartidores pendientes. Revisa logs del servidor.")
+        return
+
+    if not pendientes:
+        message.reply_text("No hay repartidores pendientes por aprobar.")
+        return
+
+    for c in pendientes:
+        # Ideal: que ambas funciones de DB devuelvan (courier_id, full_name, phone, city, barrio)
+        courier_id = c.get("courier_id") or c.get("id")
+        full_name = c.get("full_name", "")
+        phone = c.get("phone", "")
+        city = c.get("city", "")
+        barrio = c.get("barrio", "")
+
+        if not courier_id:
+            continue
+
+        texto = (
+            "REPARTIDOR PENDIENTE\n"
+            f"ID: {courier_id}\n"
+            f"Nombre: {full_name}\n"
+            f"Teléfono: {phone}\n"
+            f"Ciudad: {city}\n"
+            f"Barrio: {barrio}"
+        )
+
+        if es_admin_plataforma_flag:
+            keyboard = [[
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"courier_approve_{courier_id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"courier_reject_{courier_id}")
+            ]]
+        else:
+            keyboard = [[
+                InlineKeyboardButton("✅ Aprobar", callback_data=f"local_courier_approve_{courier_id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"local_courier_reject_{courier_id}")
+            ], [
+                InlineKeyboardButton("⛔ Bloquear", callback_data=f"local_courier_block_{courier_id}")
+            ]]
+
+        message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        # Enviar fotos de verificación de identidad si están disponibles
+        courier_full = get_courier_by_id(courier_id)
+        if courier_full:
+            cedula_front = courier_full.get("cedula_front_file_id") if isinstance(courier_full, dict) else None
+            cedula_back = courier_full.get("cedula_back_file_id") if isinstance(courier_full, dict) else None
+            selfie = courier_full.get("selfie_file_id") if isinstance(courier_full, dict) else None
+            if cedula_front or cedula_back or selfie:
+                try:
+                    if cedula_front:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=cedula_front, caption="Cédula frente")
+                    if cedula_back:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=cedula_back, caption="Cédula reverso")
+                    if selfie:
+                        context.bot.send_photo(chat_id=message.chat_id, photo=selfie, caption="Selfie")
+                except Exception as e:
+                    print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
+
+        
+def admin_menu(update, context):
+    """Panel de Administración de Plataforma."""
+    user = update.effective_user
+    user_db_id = get_user_db_id_from_update(update)
+
+    # Solo el Admin de Plataforma aprobado puede usar este comando
+    if not user_has_platform_admin(user.id):
+        update.message.reply_text("Acceso restringido: tu Admin de Plataforma no esta APPROVED.")
+        return
+
+    texto = (
+        "Panel de Administración de Plataforma.\n"
+        "¿Qué deseas revisar?"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
+        [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
+        [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
+        [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+        [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
+        [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+        [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
+        [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
+    ]
+
+    update.message.reply_text(
+        texto,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def admin_menu_callback(update, context):
+    """Maneja los botones del Panel de Administración de Plataforma."""
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "admin_change_requests":
+        return admin_change_requests_list(update, context)
+
+    if data.startswith("admin_pedidos_local_"):
+        try:
+            admin_id = int(data.replace("admin_pedidos_local_", ""))
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        return admin_orders_panel(update, context, admin_id, is_platform=False)
+
+    # Gestión de usuarios (solo Admin Plataforma)
+    if data == "admin_gestion_usuarios":
+        if not user_has_platform_admin(user_id):
+            query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
+            return
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("👤 Aliados pendientes", callback_data="admin_aliados_pendientes")],
+            [InlineKeyboardButton("🚚 Repartidores pendientes", callback_data="admin_repartidores_pendientes")],
+            [InlineKeyboardButton("🧑‍💼 Gestionar administradores", callback_data="admin_administradores")],
+            [InlineKeyboardButton("Ver totales de registros", callback_data="config_totales")],
+            [InlineKeyboardButton("Gestionar aliados", callback_data="config_gestion_aliados")],
+            [InlineKeyboardButton("Gestionar repartidores", callback_data="config_gestion_repartidores")],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Gestión de usuarios. ¿Qué deseas hacer?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Configuraciones (Admin Plataforma ve todo; Admin local ve solo Configurar pagos)
+    if data == "admin_config":
+        query.answer()
+        is_platform = user_has_platform_admin(user_id)
+        keyboard = []
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("💰 Tarifas", callback_data="config_tarifas")])
+        keyboard.append([InlineKeyboardButton("💳 Configurar pagos", callback_data="config_pagos")])
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("Solicitudes de cambio", callback_data="config_change_requests")])
+        if is_platform:
+            keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_volver_panel")])
+        else:
+            keyboard.append([InlineKeyboardButton("Cerrar", callback_data="config_cerrar")])
+        query.edit_message_text(
+            "Configuraciones. ¿Qué deseas ajustar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Solo el Admin de Plataforma aprobado puede usar estos botones
+    if not user_has_platform_admin(user_id):
+        query.answer("Solo el Administrador de Plataforma puede usar este menú.", show_alert=True)
+        return
+
+    # Botón: Aliados pendientes (Plataforma)
+    if data == "admin_aliados_pendientes":
+        query.answer()
+        aliados_pendientes(update, context)
+        return
+
+    # Botón: Repartidores pendientes (Plataforma)
+    if data == "admin_repartidores_pendientes":
+        query.answer()
+        repartidores_pendientes(update, context)
+        return
+
+    if data == "admin_ref_candidates":
+        query.answer()
+        _render_reference_candidates(query, offset=0, edit=True)
+        return
+
+    # Botón: Gestionar administradores (submenú)
+    if data == "admin_administradores":
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("📋 Administradores registrados", callback_data="admin_admins_registrados")],
+            [InlineKeyboardButton("⏳ Administradores pendientes", callback_data="admin_admins_pendientes")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Gestión de administradores.\n¿Qué deseas hacer?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Submenú admins: pendientes
+    if data == "admin_admins_pendientes":
+        query.answer()
+        try:
+            admins_pendientes(update, context)
+        except Exception as e:
+            print("[ERROR] admins_pendientes:", e)
+            query.edit_message_text(
+                "Error mostrando administradores pendientes. Revisa logs.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+                ])
+            )
+        return
+
+    # Submenú admins: listar administradores registrados
+    if data == "admin_admins_registrados":
+        query.answer()
+        try:
+            admins = get_all_admins()
+
+            if not admins:
+                query.edit_message_text(
+                    "No hay administradores registrados en este momento.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+                    ])
+                )
+                return
+
+            keyboard = []
+            for a in admins:
+                adm_id = a['id']
+                full_name = a['full_name']
+                team_name = a['team_name'] or "-"
+                status = a['status']
+                keyboard.append([InlineKeyboardButton(
+                    "ID {} - {} | {} ({})".format(adm_id, full_name, team_name, status),
+                    callback_data="admin_ver_admin_{}".format(adm_id)
+                )])
+
+            keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
+            query.edit_message_text(
+                "Administradores registrados:\n\nToca un admin para ver detalles.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            print("[ERROR] admin_admins_registrados:", e)
+            query.edit_message_text(
+                "Error al cargar administradores. Revisa los logs.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")]
+                ])
+            )
+        return
+
+    # Ver detalle de un admin
+    if data.startswith("admin_ver_admin_"):
+        query.answer()
+        adm_id = int(data.replace("admin_ver_admin_", ""))
+        admin_obj = get_admin_by_id(adm_id)
+
+        if not admin_obj:
+            query.edit_message_text(
+                "Admin no encontrado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")]
+                ])
+            )
+            return
+
+        # Datos del admin objetivo
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_phone = admin_obj.get("phone") or "-"
+        adm_city = admin_obj.get("city") or "-"
+        adm_barrio = admin_obj.get("barrio") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_document = admin_obj.get("document_number") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
+
+        # Tipo de admin
+        tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
+
+        # Contadores
+        num_couriers = count_admin_couriers(adm_id)
+        num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+        perm = get_admin_reference_validator_permission(adm_id)
+        perm_status = perm["status"] if perm else "INACTIVE"
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        reset_status = _registration_reset_status_label(reset_state)
+
+        residence_address = admin_obj.get("residence_address")
+        residence_lat = admin_obj.get("residence_lat")
+        residence_lng = admin_obj.get("residence_lng")
+        if residence_lat is not None and residence_lng is not None:
+            residence_location = "{}, {}".format(residence_lat, residence_lng)
+            maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+        else:
+            residence_location = "No disponible"
+            maps_line = ""
+
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Telefono: {}\n"
+            "Documento: {}\n"
+            "Estado: {}\n"
+            "Tipo: {}\n"
+            "Dirección residencia: {}\n"
+            "Ubicación residencia: {}\n"
+            "{}\n"
+            "\n"
+            "CONTADORES:\n"
+            "Mensajeros vinculados: {}\n"
+            "Mensajeros con saldo >= 5000: {}\n"
+            "Reinicio de registro: {}"
+        ).format(
+            adm_id, adm_full_name, adm_team_name, adm_team_code,
+            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            residence_address or "No registrada",
+            residence_location,
+            maps_line,
+            num_couriers, num_couriers_balance, reset_status
+        )
+        texto += "\nPermiso validar referencias: {}".format(perm_status)
+
+        keyboard = []
+
+        # Verificar si el usuario actual es Admin Plataforma
+        es_plataforma = user_has_platform_admin(query.from_user.id)
+
+        # Solo Admin Plataforma puede cambiar status
+        # Y no puede modificar a otro admin PLATFORM (proteger)
+        if es_plataforma and adm_team_code != "PLATFORM":
+            if adm_status == "PENDING":
+                keyboard.append([
+                    InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                ])
+            if adm_status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+                if perm_status == "APPROVED":
+                    keyboard.append([InlineKeyboardButton("Quitar permiso validar referencias", callback_data="admin_refperm_{}_INACTIVE".format(adm_id))])
+                else:
+                    keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
+            if adm_status == "INACTIVE":
+                keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+                _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
+            # REJECTED: sin botones de accion (estado terminal)
+
+        keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Cambiar status de un admin (solo Admin Plataforma)
+    if data.startswith("admin_refperm_"):
+        payload = data.replace("admin_refperm_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+
+        try:
+            adm_id = int(parts[0])
+        except Exception:
+            query.answer("Admin invalido", show_alert=True)
+            return
+
+        new_status = parts[1]
+        if new_status not in ("APPROVED", "INACTIVE"):
+            query.answer("Estado no valido", show_alert=True)
+            return
+
+        target = get_admin_by_id(adm_id)
+        if not target:
+            query.answer("Admin no encontrado", show_alert=True)
+            return
+        if target["team_code"] == "PLATFORM":
+            query.answer("No aplica para Admin Plataforma", show_alert=True)
+            return
+        if new_status == "APPROVED" and target["status"] != "APPROVED":
+            query.answer("Solo admins locales APPROVED pueden recibir este permiso.", show_alert=True)
+            return
+
+        actor_user = get_user_by_telegram_id(query.from_user.id)
+        actor_admin = get_admin_by_user_id(actor_user["id"]) if actor_user else None
+        if not actor_admin:
+            query.answer("No se encontro tu perfil admin.", show_alert=True)
+            return
+
+        set_admin_reference_validator_permission(
+            adm_id,
+            new_status,
+            granted_by_admin_id=actor_admin["id"],
+        )
+        action_text = "otorgado" if new_status == "APPROVED" else "revocado"
+        query.edit_message_text(
+            "Permiso de validacion de referencias {} para admin {}.".format(action_text, adm_id),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+            ])
+        )
+        return
+
+    if data.startswith("admin_set_status_"):
+        # Formato: admin_set_status_{id}_{STATUS}
+        parts = data.replace("admin_set_status_", "").rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido")
+            return
+
+        adm_id = int(parts[0])
+        nuevo_status = parts[1]
+
+        # Validar que sea un status permitido
+        if nuevo_status not in ("APPROVED", "INACTIVE", "REJECTED"):
+            query.answer("Status no valido")
+            return
+
+        # Verificar permisos: el usuario actual debe ser Admin Plataforma aprobado
+        es_plataforma = user_has_platform_admin(query.from_user.id)
+
+        if not es_plataforma:
+            query.answer("Sin permisos para esta accion")
+            return
+
+        # Verificar que el admin objetivo no sea PLATFORM (proteger)
+        admin_obj = get_admin_by_id(adm_id)
+        if not admin_obj:
+            query.answer("Admin no encontrado")
+            return
+
+        if admin_obj.get("team_code") == "PLATFORM":
+            query.answer("No puedes modificar a un admin de plataforma")
+            return
+
+        # Aplicar cambio
+        was_reactivated = bool(admin_obj.get("status") in ("INACTIVE", "REJECTED"))
+        update_admin_status_by_id(adm_id, nuevo_status, changed_by=f"tg:{update.effective_user.id}")
+        if nuevo_status == "APPROVED":
+            try:
+                _notify_admin_local_welcome(context, adm_id, reactivated=was_reactivated)
+            except Exception as e:
+                print("[WARN] No se pudo notificar onboarding de admin local:", e)
+        query.answer("Estado actualizado a {}".format(nuevo_status))
+
+        # Recargar el detalle
+        admin_obj = get_admin_by_id(adm_id)
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_phone = admin_obj.get("phone") or "-"
+        adm_city = admin_obj.get("city") or "-"
+        adm_barrio = admin_obj.get("barrio") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_document = admin_obj.get("document_number") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
+
+        tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
+        num_couriers = count_admin_couriers(adm_id)
+        num_couriers_balance = count_admin_couriers_with_min_balance(adm_id, 5000)
+        perm = get_admin_reference_validator_permission(adm_id)
+        perm_status = perm["status"] if perm else "INACTIVE"
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        reset_status = _registration_reset_status_label(reset_state)
+
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Telefono: {}\n"
+            "Documento: {}\n"
+            "Estado: {}\n"
+            "Tipo: {}\n\n"
+            "CONTADORES:\n"
+            "Mensajeros vinculados: {}\n"
+            "Mensajeros con saldo >= 5000: {}\n\n"
+            "Reinicio de registro: {}\n"
+            "Estado actualizado a {}"
+        ).format(
+            adm_id, adm_full_name, adm_team_name, adm_team_code,
+            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
+            num_couriers, num_couriers_balance, reset_status, nuevo_status
+        )
+        texto += "\nPermiso validar referencias: {}".format(perm_status)
+
+        keyboard = []
+        # El admin objetivo no es PLATFORM, mostrar botones segun nuevo status
+        if adm_status == "PENDING":
+            keyboard.append([
+                InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+            ])
+        if adm_status == "APPROVED":
+            keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
+            if perm_status == "APPROVED":
+                keyboard.append([InlineKeyboardButton("Quitar permiso validar referencias", callback_data="admin_refperm_{}_INACTIVE".format(adm_id))])
+            else:
+                keyboard.append([InlineKeyboardButton("Dar permiso validar referencias", callback_data="admin_refperm_{}_APPROVED".format(adm_id))])
+        if adm_status == "INACTIVE":
+            keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
+            _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
+        # REJECTED: sin botones de accion (estado terminal)
+        keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
+
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("admin_reset_"):
+        payload = data.replace("admin_reset_", "")
+        parts = payload.rsplit("_", 1)
+        if len(parts) != 2:
+            query.answer("Formato invalido", show_alert=True)
+            return
+        action = parts[0]
+        try:
+            adm_id = int(parts[1])
+        except Exception:
+            query.answer("Admin invalido", show_alert=True)
+            return
+
+        admin_obj = get_admin_by_id(adm_id)
+        if not admin_obj:
+            query.answer("Admin no encontrado", show_alert=True)
+            return
+        if admin_obj.get("team_code") == "PLATFORM":
+            query.answer("No aplica para Admin Plataforma", show_alert=True)
+            return
+
+        reset_state = get_admin_reset_state_by_id(adm_id)
+        if action == "enable":
+            if admin_obj.get("status") != "INACTIVE":
+                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+                return
+            if reset_state and reset_state.get("registration_reset_active"):
+                query.answer("Este reinicio ya está autorizado.", show_alert=True)
+                return
+            try:
+                platform_enable_admin_registration_reset(query.from_user.id, adm_id, note="Autorizado por plataforma")
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro autorizado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                    [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        if action == "clear":
+            if not reset_state or not reset_state.get("registration_reset_active"):
+                if reset_state and reset_state.get("registration_reset_consumed_at"):
+                    query.answer("Este reinicio ya fue consumido.", show_alert=True)
+                else:
+                    query.answer("No hay un reinicio activo para revocar.", show_alert=True)
+                return
+            try:
+                platform_clear_admin_registration_reset(query.from_user.id, adm_id)
+            except PermissionError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            except ValueError as e:
+                query.answer(str(e), show_alert=True)
+                return
+            query.edit_message_text(
+                "Reinicio de registro revocado correctamente.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Volver al admin", callback_data="admin_ver_admin_{}".format(adm_id))],
+                    [InlineKeyboardButton("Volver al panel", callback_data="admin_volver_panel")],
+                ])
+            )
+            return
+
+        query.answer("Acción no reconocida", show_alert=True)
+        return
+
+    # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
+    if data == "admin_volver_panel":
+        query.answer()
+
+        texto = (
+            "Panel de Administración de Plataforma.\n"
+            "¿Qué deseas revisar?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
+            [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
+            [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
+            [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+            [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
+            [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
+            [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
+        ]
+
+        query.edit_message_text(
+            texto,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos (submenu principal)
+    if data == "admin_saldos":
+        query.answer()
+        keyboard = [
+            [InlineKeyboardButton("🚚 Repartidores", callback_data="admin_saldos_couriers")],
+            [InlineKeyboardButton("👤 Aliados", callback_data="admin_saldos_allies")],
+            [InlineKeyboardButton("🧑‍💼 Admins", callback_data="admin_saldos_admins_0")],
+            [InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Saldos de todos.\n¿Qué deseas revisar?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: equipos (repartidores)
+    if data == "admin_saldos_couriers":
+        query.answer()
+        teams = list_approved_admin_teams(include_platform=True)
+        if not teams:
+            query.edit_message_text(
+                "No hay equipos aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in teams:
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_team_couriers_{}_0".format(admin_id)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+        query.edit_message_text(
+            "Equipos aprobados (Repartidores).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: equipos (aliados)
+    if data == "admin_saldos_allies":
+        query.answer()
+        teams = list_approved_admin_teams(include_platform=True)
+        if not teams:
+            query.edit_message_text(
+                "No hay equipos aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in teams:
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_team_allies_{}_0".format(admin_id)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+        query.edit_message_text(
+            "Equipos aprobados (Aliados).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de admins con paginación
+    if data.startswith("admin_saldos_admins_"):
+        query.answer()
+        try:
+            offset = int(data.replace("admin_saldos_admins_", ""))
+        except Exception:
+            offset = 0
+        teams = list_approved_admin_teams(include_platform=True)
+        page = teams[offset:offset + 20]
+        if not page:
+            query.edit_message_text(
+                "No hay administradores aprobados disponibles.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for t in page:
+            admin_id = t["id"]
+            team_name = t["team_name"] or "-"
+            team_code = t["team_code"] or "-"
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, team_name, team_code),
+                callback_data="admin_saldos_member_admin_{}_{}".format(admin_id, offset)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_admins_{}".format(offset - 20)
+            )])
+        if len(page) == 20 and (offset + 20) < len(teams):
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_admins_{}".format(offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos")])
+
+        query.edit_message_text(
+            "Administradores aprobados (Saldos).",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de repartidores por admin con paginación
+    if data.startswith("admin_saldos_team_couriers_"):
+        query.answer()
+        parts = data.replace("admin_saldos_team_couriers_", "").split("_")
+        admin_id = int(parts[0]) if parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        links = list_courier_links_by_admin(admin_id, limit=20, offset=offset)
+
+        if not links:
+            query.edit_message_text(
+                "No hay repartidores vinculados a este admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_couriers")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for idx, r in enumerate(links):
+            courier_id = r["courier_id"]
+            courier_name = r["full_name"] or "-"
+            balance = r["balance"] or 0
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} | saldo {}".format(courier_id, courier_name, balance),
+                callback_data="admin_saldos_member_courier_{}_{}_{}".format(admin_id, offset, idx)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset - 20)
+            )])
+        if len(links) == 20:
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_couriers")])
+
+        query.edit_message_text(
+            "Repartidores vinculados (admin ID {}).".format(admin_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: lista de aliados por admin con paginación
+    if data.startswith("admin_saldos_team_allies_"):
+        query.answer()
+        parts = data.replace("admin_saldos_team_allies_", "").split("_")
+        admin_id = int(parts[0]) if parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        links = list_ally_links_by_admin(admin_id, limit=20, offset=offset)
+
+        if not links:
+            query.edit_message_text(
+                "No hay aliados vinculados a este admin.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_allies")]
+                ])
+            )
+            return
+
+        keyboard = []
+        for idx, r in enumerate(links):
+            ally_id = r["ally_id"]
+            business_name = r["business_name"] or "-"
+            balance = r["balance"] or 0
+            keyboard.append([InlineKeyboardButton(
+                "ID {} - {} | saldo {}".format(ally_id, business_name, balance),
+                callback_data="admin_saldos_member_ally_{}_{}_{}".format(admin_id, offset, idx)
+            )])
+
+        if offset > 0:
+            keyboard.append([InlineKeyboardButton(
+                "⬅️ Anterior", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset - 20)
+            )])
+        if len(links) == 20:
+            keyboard.append([InlineKeyboardButton(
+                "➡️ Siguiente", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset + 20)
+            )])
+        keyboard.append([InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_allies")])
+
+        query.edit_message_text(
+            "Aliados vinculados (admin ID {}).".format(admin_id),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Saldos de todos: detalle repartidor
+    if data.startswith("admin_saldos_member_courier_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_courier_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+        links = list_courier_links_by_admin(admin_id, limit=20, offset=offset)
+        if idx < 0 or idx >= len(links):
+            query.edit_message_text(
+                "No se pudo cargar el detalle del repartidor.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset))]
+                ])
+            )
+            return
+
+        r = links[idx]
+        courier_id = r["courier_id"]
+        courier_name = r["full_name"] or "-"
+        phone = r["phone"] or "-"
+        city = r["city"] or "-"
+        barrio = r["barrio"] or "-"
+        balance = r["balance"] or 0
+        texto = (
+            "Repartidor ID: {}\n"
+            "Nombre: {}\n"
+            "Telefono: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Saldo por vínculo: {}"
+        ).format(courier_id, courier_name, phone, city, barrio, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_couriers_{}_{}".format(admin_id, offset))],
+            [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_couriers")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Saldos de todos: detalle aliado
+    if data.startswith("admin_saldos_member_ally_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_ally_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+        links = list_ally_links_by_admin(admin_id, limit=20, offset=offset)
+        if idx < 0 or idx >= len(links):
+            query.edit_message_text(
+                "No se pudo cargar el detalle del aliado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset))]
+                ])
+            )
+            return
+
+        r = links[idx]
+        ally_id = r["ally_id"]
+        business_name = r["business_name"] or "-"
+        owner_name = r["owner_name"] or "-"
+        phone = r["phone"] or "-"
+        city = r["city"] or "-"
+        barrio = r["barrio"] or "-"
+        balance = r["balance"] or 0
+        texto = (
+            "Aliado ID: {}\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Saldo por vínculo: {}"
+        ).format(ally_id, business_name, owner_name, phone, city, barrio, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset))],
+            [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_allies")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Saldos de todos: detalle admin
+    if data.startswith("admin_saldos_member_admin_"):
+        query.answer()
+        parts = data.replace("admin_saldos_member_admin_", "").split("_")
+        admin_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+        offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        admin_obj = get_admin_by_id(admin_id)
+        if not admin_obj:
+            query.edit_message_text(
+                "Admin no encontrado.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_admins_{}".format(offset))]
+                ])
+            )
+            return
+
+        adm_full_name = admin_obj.get("full_name") or "-"
+        adm_team_name = admin_obj.get("team_name") or "-"
+        adm_team_code = admin_obj.get("team_code") or "-"
+        adm_status = admin_obj.get("status") or "-"
+        balance = get_admin_balance(admin_id)
+        texto = (
+            "ADMIN ID: {}\n"
+            "Nombre: {}\n"
+            "Equipo: {}\n"
+            "Team code: {}\n"
+            "Estado: {}\n"
+            "Saldo actual: {}"
+        ).format(admin_id, adm_full_name, adm_team_name, adm_team_code, adm_status, balance)
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_admins_{}".format(offset))],
+            [InlineKeyboardButton("⬅️ Volver a Saldos", callback_data="admin_saldos")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Botones aún no implementados (placeholders)
+    if data == "admin_pedidos":
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_user_id(user_db_id)
+        if admin:
+            admin_id = admin["id"]
+            return admin_orders_panel(update, context, admin_id, is_platform=True)
+        query.answer("No se encontro tu perfil de admin.", show_alert=True)
+        return
+
+
+    if data == "admin_finanzas":
+        query.answer()
+        admin = get_admin_by_user_id(get_user_db_id_from_update(update))
+        if not admin:
+            query.edit_message_text("No se encontro tu perfil de administrador.")
+            return
+        balance = get_admin_balance(admin["id"])
+        keyboard = [
+            [InlineKeyboardButton("Registrar ingreso externo", callback_data="ingreso_iniciar")],
+            [InlineKeyboardButton("Volver al Panel", callback_data="admin_volver_panel")],
+        ]
+        query.edit_message_text(
+            "Finanzas de Plataforma.\n\n"
+            "Saldo disponible: ${:,}\n\n"
+            "Registra cada pago recibido (efectivo, Nequi, transferencia) "
+            "antes de aprobar recargas.".format(balance),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    # Ver admin pendiente (detalle)
+    if data.startswith("admin_ver_pendiente_"):
+        query.answer()
+        admin_ver_pendiente(update, context)
+        return
+
+    # Aprobar admin local
+    if data.startswith("admin_aprobar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+
+        try:
+            _notify_admin_local_welcome(context, admin_id, reactivated=False)
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin aprobado:", e)
+
+        query.edit_message_text(
+            "✅ Administrador aprobado correctamente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
+    # Rechazar admin local
+    if data.startswith("admin_rechazar_"):
+        query.answer()
+        admin_id = int(data.split("_")[-1])
+
+        update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
+
+        query.edit_message_text(
+            "❌ Administrador rechazado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+            ])
+        )
+        return
+
+    # Por si llega algo raro
+    query.answer("Opción no reconocida.", show_alert=True)
+
+
+def volver_menu_global(update, context):
+    """Handler global para 'Cancelar' o 'Volver al menu' fuera de conversaciones."""
+    try:
+        context.user_data.clear()
+    except Exception:
+        pass
+    show_main_menu(update, context, "Menu principal. Selecciona una opcion:")
+
+
+# ----- COTIZADOR INTERNO -----
+
+def courier_pick_admin_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    query.answer()
+
+    user_db_id = context.user_data.get("courier_registration_user_id")
+
+    # Opción legacy: no elegir admin -> asignar por defecto a Plataforma
+    if data == "courier_pick_admin_none":
+        if not user_db_id:
+            query.edit_message_text(
+                "No encontré tus datos recientes para vincularte a un equipo.\n"
+                "Intenta /soy_repartidor de nuevo."
+            )
+            context.user_data.clear()
+            return
+
+        platform_admin = get_platform_admin()
+        if not platform_admin:
+            query.edit_message_text(
+                "No existe equipo de Plataforma para vincularte.\n"
+                "Contacta al administrador."
+            )
+            context.user_data.clear()
+            return
+
+        try:
+            platform_admin_id = platform_admin["id"]
+            courier_data = _create_or_reset_courier_from_context(context, user_db_id)
+            courier_id = courier_data["courier_id"]
+            create_admin_courier_link(platform_admin_id, courier_id)
+        except Exception as e:
+            print("[ERROR] create_admin_courier_link PLATFORM:", e)
+            query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+            context.user_data.clear()
+            return
+
+        try:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=(
+                    "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                    "Nombre: {}\n"
+                    "Cedula: {}\n"
+                    "Telefono: {}\n"
+                    "Ciudad: {}\n"
+                    "Barrio: {}\n"
+                    "Placa: {}\n"
+                    "Tipo de moto: {}\n"
+                    "Equipo elegido: PLATAFORMA (PLATFORM)\n\n"
+                    "Usa /admin para revisarlo."
+                ).format(
+                    courier_data["full_name"],
+                    courier_data["id_number"],
+                    courier_data["phone"],
+                    courier_data["city"],
+                    courier_data["barrio"],
+                    courier_data["plate"],
+                    courier_data["bike_type"],
+                )
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="courier_registration_{}".format(courier_id),
+                chat_id=ADMIN_USER_ID,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "El registro de repartidor #{} sigue pendiente.\n"
+                    "Revisa /repartidores_pendientes o /admin."
+                ).format(courier_id),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin plataforma:", e)
+
+        query.edit_message_text(
+            "Perfecto. Quedaste vinculado al equipo de Plataforma.\n"
+            "Tu vínculo quedó en estado PENDING hasta aprobación."
+        )
+        context.user_data.clear()
+        return
+
+    # Validación básica del callback
+    if not data.startswith("courier_pick_admin_"):
+        query.edit_message_text("Opción no reconocida.")
+        return
+
+    if not user_db_id:
+        query.edit_message_text(
+            "No encontré tus datos recientes para vincularte a un equipo.\n"
+            "Intenta /soy_repartidor de nuevo."
+        )
+        context.user_data.clear()
+        return
+
+    # Extraer admin_id
+    try:
+        admin_id = int(data.split("_")[-1])
+    except Exception:
+        query.edit_message_text("Error leyendo la opción seleccionada. Intenta de nuevo.")
+        return
+
+    # Crear vínculo PENDING en admin_couriers
+    try:
+        courier_data = _create_or_reset_courier_from_context(context, user_db_id)
+        courier_id = courier_data["courier_id"]
+        create_admin_courier_link(admin_id, courier_id)
+    except Exception as e:
+        print("[ERROR] create_admin_courier_link:", e)
+        query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
+        context.user_data.clear()
+        return
+
+    # Notificar a plataforma y al admin local (sin depender de get_user_by_id)
+    admin_telegram_id = None
+    admin_team_name = "Equipo"
+    admin_team_code = ""
+    try:
+        admin = get_admin_by_id(admin_id)
+
+        # Heurística:
+        # - si admin[1] parece un Telegram ID (muy grande), lo usamos como chat_id
+        # - si no, NO rompemos el flujo (solo omitimos notificación)
+        admin_user_field = admin.get("user_id") if isinstance(admin, dict) else admin["user_id"]
+
+        if admin_user_field is not None:
+            try:
+                admin_user_field_int = int(admin_user_field)
+                if admin_user_field_int > 100000000:  # típico telegram_id
+                    admin_telegram_id = admin_user_field_int
+            except Exception:
+                admin_telegram_id = None
+        if isinstance(admin, dict):
+            admin_team_name = admin.get("team_name") or admin_team_name
+            admin_team_code = admin.get("team_code") or admin_team_code
+
+    except Exception as e:
+        print("[WARN] No se pudo leer admin para notificación:", e)
+
+    try:
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=(
+                "Nuevo registro de REPARTIDOR pendiente:\n\n"
+                "Nombre: {}\n"
+                "Cedula: {}\n"
+                "Telefono: {}\n"
+                "Ciudad: {}\n"
+                "Barrio: {}\n"
+                "Placa: {}\n"
+                "Tipo de moto: {}\n"
+                "Equipo elegido: {} {}\n\n"
+                "Usa /admin para revisarlo."
+            ).format(
+                courier_data["full_name"],
+                courier_data["id_number"],
+                courier_data["phone"],
+                courier_data["city"],
+                courier_data["barrio"],
+                courier_data["plate"],
+                courier_data["bike_type"],
+                admin_team_name,
+                f"({admin_team_code})" if admin_team_code else "",
+            )
+        )
+        _schedule_important_alerts(
+            context,
+            alert_key="courier_registration_{}".format(courier_id),
+            chat_id=ADMIN_USER_ID,
+            reminder_text=(
+                "Recordatorio importante:\n"
+                "El registro de repartidor #{} sigue pendiente.\n"
+                "Revisa /repartidores_pendientes o /admin."
+            ).format(courier_id),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar al admin plataforma:", e)
+
+    if admin_telegram_id:
+        try:
+            context.bot.send_message(
+                chat_id=admin_telegram_id,
+                text=(
+                    "Nueva solicitud de repartidor para tu equipo.\n\n"
+                    f"Repartidor ID: {courier_id}\n\n"
+                    "Entra a /mi_admin para revisar pendientes."
+                )
+            )
+            _schedule_important_alerts(
+                context,
+                alert_key="team_courier_pending_{}_{}".format(admin_id, courier_id),
+                chat_id=admin_telegram_id,
+                reminder_text=(
+                    "Recordatorio importante:\n"
+                    "Tienes un repartidor pendiente de aprobar en tu equipo.\n"
+                    "Revisa /mi_admin."
+                ),
+            )
+        except Exception as e:
+            print("[WARN] No se pudo notificar al admin local:", e)
+
+    query.edit_message_text(
+        "Listo. Tu solicitud fue enviada. Quedas PENDIENTE de aprobación."
+    )
+    context.user_data.clear()
+
+
+def admins_pendientes(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    # Seguridad: solo Admin de Plataforma
+    if user_id != ADMIN_USER_ID:
+        query.answer("No tienes permisos para esto.", show_alert=True)
+        return
+
+    # Responder el callback para evitar “cargando…”
+    query.answer()
+
+    try:
+        admins = get_pending_admins()
+    except Exception as e:
+        print("[ERROR] get_pending_admins:", e)
+        query.edit_message_text(
+            "Error consultando administradores pendientes. Revisa logs.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")]
+            ])
+        )
+        return
+
+    if not admins:
+        query.edit_message_text(
+            "No hay administradores pendientes en este momento.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")]
+            ])
+        )
+        return
+
+    keyboard = []
+    for admin in admins:
+        admin_id = admin["id"]
+        full_name = admin["full_name"]
+        city = admin["city"]
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "ID {} - {} ({})".format(admin_id, full_name, city),
+                callback_data="admin_ver_pendiente_{}".format(admin_id)
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton("⬅ Volver al Panel", callback_data="admin_volver_panel")])
+
+    query.edit_message_text(
+        "Administradores pendientes de aprobación:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+
+def admin_ver_pendiente(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if user_id != ADMIN_USER_ID:
+        query.answer("No tienes permisos.", show_alert=True)
+        return
+
+    admin_id = int(query.data.split("_")[-1])
+    admin = get_admin_by_id(admin_id)
+
+    if not admin:
+        query.edit_message_text("Administrador no encontrado.")
+        return
+
+    residence_address = admin.get("residence_address")
+    residence_lat = admin.get("residence_lat")
+    residence_lng = admin.get("residence_lng")
+    if residence_lat is not None and residence_lng is not None:
+        residence_location = "{}, {}".format(residence_lat, residence_lng)
+        maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
+    else:
+        residence_location = "No disponible"
+        maps_line = ""
+
+    texto = (
+        "Administrador pendiente:\n\n"
+        f"ID: {admin['id']}\n"
+        f"Nombre: {admin['full_name']}\n"
+        f"Teléfono: {admin['phone']}\n"
+        f"Ciudad: {admin['city']}\n"
+        f"Barrio: {admin['barrio']}\n"
+        f"Equipo: {admin['team_name'] or '-'}\n"
+        f"Documento: {admin['document_number'] or '-'}\n"
+        f"Estado: {admin['status']}\n"
+        "Residencia: {}\n"
+        "Ubicación residencia: {}\n"
+        "{}"
+    ).format(
+        residence_address or "No registrada",
+        residence_location,
+        maps_line
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Aprobar", callback_data=f"admin_aprobar_{admin_id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_rechazar_{admin_id}")
+        ],
+        [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
+    ]
+
+    query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # Enviar fotos de verificación de identidad si están disponibles
+    cedula_front = admin.get("cedula_front_file_id")
+    cedula_back = admin.get("cedula_back_file_id")
+    selfie = admin.get("selfie_file_id")
+    if cedula_front or cedula_back or selfie:
+        try:
+            if cedula_front:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_front, caption="Cédula frente")
+            if cedula_back:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=cedula_back, caption="Cédula reverso")
+            if selfie:
+                context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
+        except Exception as e:
+            print(f"[WARN] No se pudieron enviar fotos del admin {admin_id}: {e}")
+
+def admin_aprobar_rechazar_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    query.answer()
+
+    # Solo Admin de Plataforma
+    if user_id != ADMIN_USER_ID:
+        query.answer("No tienes permisos.", show_alert=True)
+        return
+
+    partes = data.split("_")  # admin_aprobar_12
+    if len(partes) != 3:
+        query.answer("Datos inválidos.", show_alert=True)
+        return
+
+    _, accion, admin_id_str = partes
+
+    try:
+        admin_id = int(admin_id_str)
+    except ValueError:
+        query.answer("ID inválido.", show_alert=True)
+        return
+
+    if accion == "aprobar":
+        admin_actual = get_admin_by_id(admin_id)
+        was_reactivated = bool(admin_actual and admin_actual.get("status") in ("INACTIVE", "REJECTED"))
+        try:
+            update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] update_admin_status_by_id APPROVED:", e)
+            query.edit_message_text("Error aprobando administrador. Revisa logs.")
+            return
+
+        try:
+            _notify_admin_local_welcome(context, admin_id, reactivated=was_reactivated)
+        except Exception as e:
+            print("[WARN] No se pudo notificar onboarding de admin local:", e)
+
+        _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
+        query.edit_message_text("✅ Administrador aprobado (APPROVED).")
+        return
+
+    if accion == "rechazar":
+        try:
+            update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
+        except Exception as e:
+            print("[ERROR] update_admin_status_by_id REJECTED:", e)
+            query.edit_message_text("Error rechazando administrador. Revisa logs.")
+            return
+
+        _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
+        query.edit_message_text("❌ Administrador rechazado (REJECTED).")
+        return
+
+    query.answer("Acción no reconocida.", show_alert=True)
+
+
+def pendientes(update, context):
+    """Menú rápido para ver registros pendientes."""
+    user_db_id = get_user_db_id_from_update(update)
+
+    telegram_id = update.effective_user.id
+    es_admin_plataforma_flag = es_admin_plataforma(telegram_id)
+
+    if not es_admin_plataforma_flag:
+        try:
+            user_db_id = get_user_db_id_from_update(update)
+            admin = get_admin_by_user_id(user_db_id)
+
+        except Exception:
+            admin = None
+
+        if not admin:
+            update.message.reply_text("No tienes permisos para usar este comando.")
+            return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🟦 Aliados pendientes", callback_data="menu_aliados_pendientes"),
+            InlineKeyboardButton("🟧 Repartidores pendientes", callback_data="menu_repartidores_pendientes")
+        ]
+    ]
+
+    update.message.reply_text(
+        "Seleccione que desea revisar:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+

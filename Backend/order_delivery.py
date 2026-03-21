@@ -89,7 +89,7 @@ def _format_duration(seconds):
 def _get_order_durations(order, delivered_now=False):
     """
     Calcula duraciones de cada etapa del pedido.
-    delivered_now=True: usa datetime.utcnow() como delivered_at (recien marcado DELIVERED).
+    delivered_now=True: usa datetime.now(timezone.utc).replace(tzinfo=None) como delivered_at (recien marcado DELIVERED).
     Retorna dict con claves: llegada_aliado, entrega_cliente, tiempo_total (en segundos).
     Cada clave solo se incluye si ambos extremos del intervalo estan disponibles.
     """
