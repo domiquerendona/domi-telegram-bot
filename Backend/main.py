@@ -418,7 +418,7 @@ from handlers.order import (
     admin_pedido_addr_selected, admin_pedido_addr_nueva,
     admin_pedido_cust_phone_handler, admin_pedido_cust_addr_handler,
     admin_pedido_cust_gps_handler, admin_pedido_geo_callback,
-    admin_pedido_tarifa_handler, admin_pedido_instruc_handler,
+    admin_pedido_instruc_handler,
     admin_pedido_sin_instruc_callback, admin_pedido_inc_fijo_callback,
     admin_pedido_inc_otro_callback, admin_pedido_inc_monto_handler,
     admin_pedido_confirmar_callback, admin_pedido_cancelar_callback,
