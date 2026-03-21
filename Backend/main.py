@@ -47,6 +47,7 @@ from services import (
     _get_reference_reviewer,
     _get_missing_role_commands,
     get_user_by_id,
+    resolve_admin_telegram_id,
     get_available_admin_teams,
     # Alertas de oferta
     get_offer_alerts_config,
@@ -98,7 +99,6 @@ from services import (
     get_ally_by_id,
     update_ally_status,
     update_ally_status_by_id,
-    get_all_allies,
     update_ally,
     delete_ally,
     create_admin,
@@ -151,13 +151,13 @@ from services import (
     get_courier_approval_notification_chat_id,
     get_ally_approval_notification_chat_id,
     parse_team_selection_callback,
-    get_all_couriers,
     update_courier,
     delete_courier,
     get_admin_link_for_courier,
     get_admin_link_for_ally,
     get_courier_link_balance,
     create_order,
+    update_order_payment,
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
@@ -500,6 +500,7 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 # Configurar en Railway como variable de entorno FORM_BASE_URL.
 # Ejemplo: https://form.domiquerendona.com
 FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
+PLATFORM_TEAM_CODE = "PLATFORM"
 
 
 def start(update, context):

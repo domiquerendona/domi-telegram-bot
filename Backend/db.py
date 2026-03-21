@@ -1207,6 +1207,18 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN requires_cash INTEGER DEFAULT 0")
     if 'cash_required_amount' not in order_columns:
         cur.execute("ALTER TABLE orders ADD COLUMN cash_required_amount INTEGER DEFAULT 0")
+    if 'payment_method' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'UNCONFIRMED'")
+    if 'payment_confirmed_at' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_confirmed_at TEXT DEFAULT NULL")
+    if 'payment_confirmed_by' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_confirmed_by INTEGER DEFAULT NULL")
+    if 'payment_changed_at' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_changed_at TEXT DEFAULT NULL")
+    if 'payment_changed_by' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_changed_by INTEGER DEFAULT NULL")
+    if 'payment_prev_method' not in order_columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN payment_prev_method TEXT DEFAULT NULL")
 
     # Migración: agregar columna is_active si no existe
     cur.execute("PRAGMA table_info(terms_versions)")
@@ -5162,6 +5174,9 @@ def create_order(
     purchase_amount: int = None,
     delivery_subsidy_applied: int = 0,
     customer_delivery_fee: int = None,
+    payment_method: str = "UNCONFIRMED",
+    payment_confirmed_at: str = None,
+    payment_confirmed_by: int = None,
 ):
     """Crea un pedido en estado PENDING y devuelve su id.
 
@@ -5208,8 +5223,11 @@ def create_order(
             courier_admin_id_snapshot,
             purchase_amount,
             delivery_subsidy_applied,
-            customer_delivery_fee
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+            customer_delivery_fee,
+            payment_method,
+            payment_confirmed_at,
+            payment_confirmed_by
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -5242,6 +5260,9 @@ def create_order(
         purchase_amount,
         delivery_subsidy_applied if delivery_subsidy_applied is not None else 0,
         customer_delivery_fee,
+        payment_method,
+        payment_confirmed_at,
+        payment_confirmed_by,
     ))
     conn.commit()
     conn.close()
@@ -5283,6 +5304,37 @@ def add_order_incentive(order_id: int, delta: int):
     )
     conn.commit()
     conn.close()
+
+
+def update_order_payment(order_id, payment_method, cash_required_amount,
+                         changed_by, conn=None):
+    """Actualiza el medio de pago de un pedido existente."""
+    requires_cash = 1 if payment_method == "CASH_CONFIRMED" else 0
+    import datetime
+    changed_at = datetime.datetime.now().isoformat()
+
+    with get_connection(conn) as c:
+        c.execute("""
+            UPDATE orders
+            SET payment_method = ?,
+                payment_confirmed_at = ?,
+                payment_confirmed_by = ?,
+                payment_changed_at = ?,
+                payment_changed_by = ?,
+                payment_prev_method = payment_method,
+                requires_cash = ?,
+                cash_required_amount = ?
+            WHERE id = ?
+        """, (
+            payment_method,
+            changed_at,
+            changed_by,
+            changed_at,
+            changed_by,
+            requires_cash,
+            cash_required_amount,
+            order_id,
+        ))
 
 
 def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_snapshot: int = None):

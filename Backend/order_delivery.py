@@ -2610,9 +2610,17 @@ def _build_offer_text(
         text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
 
     cash_amount = order["cash_required_amount"] or 0
-    if order["requires_cash"] and cash_amount > 0:
-        text += "Base requerida: ${:,}\n".format(int(cash_amount))
-        text += "\nADVERTENCIA: Si no tienes base suficiente, NO tomes este servicio.\n"
+    payment_method = order.get("payment_method", "UNCONFIRMED")
+
+    if payment_method == "CASH_CONFIRMED":
+        text += "Pago: efectivo confirmado\n"
+        if cash_amount > 0:
+            text += "Base requerida: ${:,}\n".format(int(cash_amount))
+            text += "\nADVERTENCIA: Si no tienes base suficiente, NO tomes este servicio.\n"
+    elif payment_method == "TRANSFER_CONFIRMED":
+        text += "Pago: transferencia confirmada\n"
+    else:
+        text += "Pago: no confirmado (no debes adelantar dinero)\n"
 
     instructions = order["instructions"] or ""
     if instructions.strip():
