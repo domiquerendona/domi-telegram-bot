@@ -10,6 +10,11 @@ from services import (
     _get_missing_role_commands,
     resolve_location,
     resolve_location_next,
+    _get_important_alert_config,
+    get_active_terms_version,
+    has_accepted_terms,
+    save_terms_acceptance,
+    save_terms_session_ack,
 )
 
 from handlers.states import (
@@ -466,3 +471,199 @@ def _geo_siguiente_o_gps(query, context, cb_si, cb_no, estado):
             "- Coordenadas directas (ej: 4.81,-75.69)"
         )
     return estado
+
+
+def _important_alert_job(context):
+    data = context.job.context or {}
+    alert_key = data.get("alert_key")
+    if not alert_key:
+        return
+    if not context.bot_data.get("important_alert_open:{}".format(alert_key), False):
+        return
+    chat_id = data.get("chat_id")
+    text = data.get("text")
+    if not chat_id or not text:
+        return
+    reply_markup = data.get("reply_markup")
+    try:
+        context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    except Exception as e:
+        print("[WARN] No se pudo enviar recordatorio importante {}: {}".format(alert_key, e))
+
+
+def _schedule_important_alerts(context, alert_key, chat_id, reminder_text, reply_markup=None):
+    config = _get_important_alert_config()
+    if not config["enabled"]:
+        return
+    context.bot_data["important_alert_open:{}".format(alert_key)] = True
+    for idx, sec in enumerate(config["seconds"], start=1):
+        context.job_queue.run_once(
+            _important_alert_job,
+            when=sec,
+            context={
+                "alert_key": alert_key,
+                "chat_id": chat_id,
+                "text": reminder_text,
+                "reply_markup": reply_markup,
+            },
+            name="important_alert_{}_{}".format(alert_key, idx),
+        )
+
+
+def _resolve_important_alert(context, alert_key):
+    context.bot_data["important_alert_open:{}".format(alert_key)] = False
+    config = _get_important_alert_config()
+    for idx in range(1, len(config["seconds"]) + 1):
+        jobs = context.job_queue.get_jobs_by_name("important_alert_{}_{}".format(alert_key, idx))
+        for job in jobs:
+            try:
+                job.schedule_removal()
+            except Exception:
+                pass
+
+
+def _build_role_welcome_message(role: str, profile=None, bonus_granted: bool = False, reactivated: bool = False) -> str:
+    role = (role or "").strip().upper()
+    team_name = "-"
+    if isinstance(profile, dict):
+        team_name = profile.get("team_name") or "-"
+
+    if role == "ADMIN_LOCAL":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu cuenta de Administrador Local fue reactivada.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu cuenta de Administrador Local fue aprobada.\n\n"
+        )
+        return (
+            opening
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /mi_admin para revisar tu panel, estado operativo y pendientes.\n"
+            + "2. Usa /configurar_pagos para dejar tus datos de pago al dia.\n"
+            + "3. Usa /recargas_pendientes para gestionar solicitudes cuando ya estes operando.\n"
+            + "4. Tu equipo actual es '{}'. Antes de operar debes cumplir los requisitos: 5 aliados con saldo >= 5000, 10 repartidores con saldo >= 5000 y saldo master >= 60000.\n\n".format(team_name)
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    if role == "ALLY":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu negocio fue reactivado.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu negocio fue aprobado.\n\n"
+        )
+        bonus_line = ""
+        if bonus_granted:
+            bonus_line = "Recibiste $5.000 de saldo de bienvenida para crear tu primer pedido.\n\n"
+        return (
+            opening
+            + bonus_line
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /menu y entra a [Mi aliado].\n"
+            + "2. Crea tu primer pedido con /nuevo_pedido.\n"
+            + "3. Usa /agenda para guardar clientes y direcciones frecuentes.\n"
+            + "4. Usa /recargar cuando necesites saldo adicional.\n\n"
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    if role == "COURIER":
+        opening = (
+            "Bienvenido a Domiquerendona. Tu perfil de repartidor fue reactivado.\n\n"
+            if reactivated else
+            "Bienvenido a Domiquerendona. Tu registro de repartidor fue aprobado.\n\n"
+        )
+        bonus_line = ""
+        if bonus_granted:
+            bonus_line = "Recibiste $5.000 de saldo de bienvenida para empezar a recibir pedidos.\n\n"
+        return (
+            opening
+            + bonus_line
+            + "Primeros pasos para operar:\n"
+            + "1. Usa /menu y entra a [Mi repartidor].\n"
+            + "2. Activa tu panel y comparte tu ubicacion en vivo cuando vayas a recibir ofertas.\n"
+            + "3. Revisa tus pedidos y tu saldo desde ese mismo menu.\n"
+            + "4. Usa /recargar cuando necesites saldo adicional.\n\n"
+            + "Usa /menu para ver todas tus opciones."
+        )
+
+    return "Bienvenido a Domiquerendona.\n\nUsa /menu para ver tus opciones."
+
+
+def _send_role_welcome_message(context, role: str, chat_id: int, profile=None, bonus_granted: bool = False, reactivated: bool = False):
+    if not chat_id:
+        return
+    context.bot.send_message(
+        chat_id=chat_id,
+        text=_build_role_welcome_message(
+            role,
+            profile=profile,
+            bonus_granted=bonus_granted,
+            reactivated=reactivated,
+        ),
+    )
+
+
+# ---------- UTILIDADES MONETARIAS ----------
+
+def _fmt_pesos(amount: int) -> str:
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        amount = 0
+    return f"${amount:,}".replace(",", ".")
+
+
+# ---------- TÉRMINOS Y CONDICIONES ----------
+
+def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
+    print(
+        f"[DEBUG][terms][ensure] role={role} telegram_id={telegram_id} via_callback={bool(getattr(update, 'callback_query', None))}",
+        flush=True,
+    )
+    tv = get_active_terms_version(role)
+    if not tv:
+        print(f"[DEBUG][terms][ensure] no_terms_config role={role}", flush=True)
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
+        )
+        return False
+
+    version, url, sha256 = tv
+    print(f"[DEBUG][terms][ensure] version={version!r} url={url!r}", flush=True)
+
+    accepted = has_accepted_terms(telegram_id, role, version, sha256)
+    print(f"[DEBUG][terms][ensure] already_accepted={accepted}", flush=True)
+    if accepted:
+        try:
+            save_terms_session_ack(telegram_id, role, version)
+        except Exception as e:
+            print("[WARN] save_terms_session_ack:", e)
+        return True
+
+    text = (
+        "Antes de continuar debes aceptar los Términos y Condiciones de Domiquerendona.\n\n"
+        "Rol: {}\n"
+        "Versión: {}\n\n"
+        "Lee el documento y confirma tu aceptación para continuar."
+    ).format(role, version)
+
+    valid_terms_url = isinstance(url, str) and url.strip().lower().startswith(("http://", "https://"))
+    keyboard = []
+    if valid_terms_url:
+        keyboard.append([InlineKeyboardButton("Leer términos", url=url)])
+    else:
+        print(f"[WARN][terms] URL invalida para role={role}, version={version}: {url!r}", flush=True)
+    keyboard.append(
+        [
+            InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
+            InlineKeyboardButton("No acepto", callback_data="terms_decline_{}".format(role)),
+        ]
+    )
+
+    if update.callback_query:
+        print("[DEBUG][terms][ensure] prompt_sent_via=callback_edit", flush=True)
+        update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        print("[DEBUG][terms][ensure] prompt_sent_via=send_message", flush=True)
+        context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return False
