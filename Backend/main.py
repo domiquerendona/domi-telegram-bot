@@ -156,6 +156,7 @@ from services import (
     get_admin_link_for_ally,
     get_courier_link_balance,
     create_order,
+    update_order_payment,
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
@@ -1172,6 +1173,11 @@ _OPTIONS_HINT = (
 # Nota: se usa para evitar que ese texto sea consumido como input normal en estados con texto.
 CANCELAR_VOLVER_MENU_REGEX = r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'
 CANCELAR_VOLVER_MENU_FILTER = Filters.regex(CANCELAR_VOLVER_MENU_REGEX)
+
+# Patrón para callbacks de "Cancelar" inline en todos los flujos.
+# Usado en fallbacks de ConversationHandlers para que botones inline de cancelar
+# siempre terminen la conversación correctamente.
+CANCEL_CALLBACK_PATTERN = r"^(cancel|pedido_cancelar|admin_pedido_cancelar|ruta_cancelar|recargar_cancel|ingreso_cancelar|cambiopago_cancelar|ally_locs_del_cancel|agenda_pickup_del_cancel)$"
 
 
 def _handle_phone_input(update, context, storage_key, current_state, next_state, flow, next_prompt):
@@ -4303,15 +4309,16 @@ def pedido_compras_cantidad_handler(update, context):
 
 
 def mostrar_pregunta_base(query_or_update, context, edit=False):
-    """Muestra pregunta de si requiere base."""
+    """Muestra pregunta sobre el medio de pago del cliente."""
     keyboard = [
-        [InlineKeyboardButton("Si, requiere base", callback_data="pedido_base_si")],
-        [InlineKeyboardButton("No requiere base", callback_data="pedido_base_no")],
+        [InlineKeyboardButton("Efectivo confirmado", callback_data="pedido_pago_efectivo")],
+        [InlineKeyboardButton("Transferencia confirmada", callback_data="pedido_pago_transferencia")],
+        [InlineKeyboardButton("Pago no confirmado", callback_data="pedido_pago_sin_confirmar")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     texto = (
-        "BASE REQUERIDA\n\n"
-        "El repartidor debe pagar/adelantar dinero al recoger el pedido?"
+        "MEDIO DE PAGO\n\n"
+        "Como pagara el cliente?"
     )
 
     if edit and hasattr(query_or_update, 'edit_message_text'):
@@ -4325,18 +4332,21 @@ def mostrar_pregunta_base(query_or_update, context, edit=False):
 
 
 def pedido_requiere_base_callback(update, context):
-    """Maneja la respuesta de si requiere base."""
+    """Maneja la seleccion del medio de pago del cliente."""
     query = update.callback_query
     query.answer()
     data = query.data
 
-    if data == "pedido_base_no":
+    import datetime
+
+    if data == "pedido_pago_transferencia":
+        context.user_data["payment_method"] = "TRANSFER_CONFIRMED"
         context.user_data["requires_cash"] = False
         context.user_data["cash_required_amount"] = 0
-        # Calcular cotizacion y mostrar confirmacion
         return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
-    elif data == "pedido_base_si":
+    elif data == "pedido_pago_efectivo":
+        context.user_data["payment_method"] = "CASH_CONFIRMED"
         context.user_data["requires_cash"] = True
         # Mostrar opciones de monto
         keyboard = [
@@ -4352,11 +4362,27 @@ def pedido_requiere_base_callback(update, context):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         query.edit_message_text(
-            "VALOR DE BASE\n\n"
-            "Cuanto debe adelantar el repartidor?",
+            "VALOR DEL PEDIDO\n\n"
+            "Cuanto debe adelantar el repartidor al recoger?",
             reply_markup=reply_markup
         )
         return PEDIDO_VALOR_BASE
+
+    elif data == "pedido_pago_sin_confirmar":
+        context.user_data["payment_method"] = "UNCONFIRMED"
+        context.user_data["requires_cash"] = False
+        context.user_data["cash_required_amount"] = 0
+        query.edit_message_text(
+            "PAGO NO CONFIRMADO\n\n"
+            "El pedido se registrara sin confirmacion de pago.\n"
+            "El repartidor NO adelantara dinero del pedido.\n"
+            "Si el cliente paga en efectivo al recibir, debes coordinar "
+            "directamente con el repartidor al momento de la entrega."
+        )
+        # Pausa breve para que el aliado lea el aviso antes de continuar
+        import time
+        time.sleep(2)
+        return calcular_cotizacion_y_confirmar(query, context, edit=False)
 
     return PEDIDO_REQUIERE_BASE
 
@@ -7142,6 +7168,9 @@ def admin_pedido_confirmar_callback(update, context):
             instructions=instruc,
             requires_cash=False,
             cash_required_amount=0,
+            payment_method=context.user_data.get("payment_method", "UNCONFIRMED"),
+            payment_confirmed_at=datetime.datetime.now().isoformat() if context.user_data.get("payment_method", "UNCONFIRMED") != "UNCONFIRMED" else None,
+            payment_confirmed_by=update.effective_user.id if context.user_data.get("payment_method", "UNCONFIRMED") != "UNCONFIRMED" else None,
             pickup_lat=pickup_lat,
             pickup_lng=pickup_lng,
             dropoff_lat=dropoff_lat,
@@ -7408,6 +7437,9 @@ def pedido_confirmacion_callback(update, context):
                 purchase_amount=context.user_data.get("pedido_purchase_amount"),
                 delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
                 customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
+                payment_method=context.user_data.get("payment_method", "UNCONFIRMED"),
+                payment_confirmed_at=datetime.datetime.now().isoformat() if context.user_data.get("payment_method", "UNCONFIRMED") != "UNCONFIRMED" else None,
+                payment_confirmed_by=update.effective_user.id if context.user_data.get("payment_method", "UNCONFIRMED") != "UNCONFIRMED" else None,
             )
             context.user_data["order_id"] = order_id
 
@@ -12464,6 +12496,15 @@ def _ally_bandeja_mostrar_pedido(query, ally_id, order_id):
         "Repartidor: {}".format(courier_name),
         "Tarifa courier: ${:,}".format(int(order["total_fee"] or 0)),
     ]
+    _PAYMENT_METHOD_LABELS = {
+        "CASH_CONFIRMED": "Efectivo confirmado",
+        "TRANSFER_CONFIRMED": "Transferencia confirmada",
+        "UNCONFIRMED": "No confirmado",
+    }
+    payment_label = _PAYMENT_METHOD_LABELS.get(
+        order.get("payment_method", "UNCONFIRMED"), "No confirmado"
+    )
+    lines.append("Medio de pago: {}".format(payment_label))
     try:
         purchase_amount = order["purchase_amount"]
         if purchase_amount is not None:
@@ -12482,12 +12523,210 @@ def _ally_bandeja_mostrar_pedido(query, ally_id, order_id):
     if order["instructions"]:
         lines.append("Instrucciones: {}".format(order["instructions"]))
 
+    buttons = []
+    if order["status"] in ("PUBLISHED", "ACCEPTED"):
+        buttons.append([InlineKeyboardButton(
+            "Cambiar medio de pago",
+            callback_data="alybandeja_cambiopago_{}".format(order["id"])
+        )])
+    buttons.append([InlineKeyboardButton(
+        "Volver a procesadas", callback_data="alybandeja_volver_procesadas"
+    )])
+
     query.edit_message_text(
         "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Volver a procesadas", callback_data="alybandeja_volver_procesadas")]
-        ])
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+
+# --- Cambio de medio de pago post-creacion ---
+
+ALLY_CAMBIO_PAGO_METODO = 966
+ALLY_CAMBIO_PAGO_MONTO  = 967
+
+def ally_cambio_pago_start(update, context):
+    """Inicia el flujo de cambio de medio de pago desde la bandeja."""
+    query = update.callback_query
+    query.answer()
+    order_id = int(query.data.split("_")[-1])
+    order = get_order_by_id(order_id)
+    if not order or order["status"] not in ("PUBLISHED", "ACCEPTED"):
+        query.edit_message_text("Este pedido no puede modificarse.")
+        return ConversationHandler.END
+    context.user_data["cambio_pago_order_id"] = order_id
+    _PAYMENT_METHOD_LABELS = {
+        "CASH_CONFIRMED": "Efectivo confirmado",
+        "TRANSFER_CONFIRMED": "Transferencia confirmada",
+        "UNCONFIRMED": "No confirmado",
+    }
+    actual = _PAYMENT_METHOD_LABELS.get(order.get("payment_method", "UNCONFIRMED"), "No confirmado")
+    keyboard = [
+        [InlineKeyboardButton("Efectivo confirmado", callback_data="cambiopago_efectivo")],
+        [InlineKeyboardButton("Transferencia confirmada", callback_data="cambiopago_transferencia")],
+        [InlineKeyboardButton("Pago no confirmado", callback_data="cambiopago_sin_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="cambiopago_cancelar")],
+    ]
+    query.edit_message_text(
+        "CAMBIAR MEDIO DE PAGO\n\n"
+        "Pedido #{}\n"
+        "Medio actual: {}\n\n"
+        "Selecciona el nuevo medio de pago:".format(order_id, actual),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ALLY_CAMBIO_PAGO_METODO
+
+
+def ally_cambio_pago_metodo_callback(update, context):
+    """Maneja la seleccion del nuevo medio de pago."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    order_id = context.user_data.get("cambio_pago_order_id")
+
+    if data == "cambiopago_cancelar":
+        query.edit_message_text("Cambio cancelado.")
+        return ConversationHandler.END
+
+    if data == "cambiopago_transferencia":
+        _aplicar_cambio_pago(query, context, order_id, "TRANSFER_CONFIRMED", 0)
+        return ConversationHandler.END
+
+    if data == "cambiopago_sin_confirmar":
+        _aplicar_cambio_pago(query, context, order_id, "UNCONFIRMED", 0)
+        return ConversationHandler.END
+
+    if data == "cambiopago_efectivo":
+        context.user_data["cambio_pago_method"] = "CASH_CONFIRMED"
+        keyboard = [
+            [
+                InlineKeyboardButton("$5.000", callback_data="cambiopago_monto_5000"),
+                InlineKeyboardButton("$10.000", callback_data="cambiopago_monto_10000"),
+            ],
+            [
+                InlineKeyboardButton("$20.000", callback_data="cambiopago_monto_20000"),
+                InlineKeyboardButton("$50.000", callback_data="cambiopago_monto_50000"),
+            ],
+            [InlineKeyboardButton("Otro valor", callback_data="cambiopago_monto_otro")],
+        ]
+        query.edit_message_text(
+            "VALOR DEL PEDIDO\n\n"
+            "Cuanto debe adelantar el repartidor al recoger?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CAMBIO_PAGO_MONTO
+
+    return ALLY_CAMBIO_PAGO_METODO
+
+
+def ally_cambio_pago_monto_callback(update, context):
+    """Maneja la seleccion del monto cuando el nuevo metodo es efectivo."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    order_id = context.user_data.get("cambio_pago_order_id")
+
+    valores_map = {
+        "cambiopago_monto_5000": 5000,
+        "cambiopago_monto_10000": 10000,
+        "cambiopago_monto_20000": 20000,
+        "cambiopago_monto_50000": 50000,
+    }
+
+    if data in valores_map:
+        _aplicar_cambio_pago(query, context, order_id, "CASH_CONFIRMED", valores_map[data])
+        return ConversationHandler.END
+
+    if data == "cambiopago_monto_otro":
+        query.edit_message_text("Escribe el valor (solo numeros):")
+        return ALLY_CAMBIO_PAGO_MONTO
+
+    return ALLY_CAMBIO_PAGO_MONTO
+
+
+def ally_cambio_pago_monto_texto(update, context):
+    """Maneja el valor de monto ingresado por texto."""
+    texto = update.message.text.strip().replace(".", "").replace(",", "")
+    order_id = context.user_data.get("cambio_pago_order_id")
+    try:
+        valor = int(texto)
+        if valor <= 0:
+            raise ValueError
+        _aplicar_cambio_pago_msg(update, context, order_id, "CASH_CONFIRMED", valor)
+        return ConversationHandler.END
+    except ValueError:
+        update.message.reply_text("Valor invalido. Escribe solo numeros (ej: 15000):")
+        return ALLY_CAMBIO_PAGO_MONTO
+
+
+def _aplicar_cambio_pago(query, context, order_id, payment_method, cash_amount):
+    """Aplica el cambio de pago y notifica. Version para callback_query."""
+    changed_by = query.from_user.id
+    update_order_payment(order_id, payment_method, cash_amount, changed_by)
+    _notificar_courier_cambio_pago(order_id, payment_method, cash_amount)
+    _PAYMENT_METHOD_LABELS = {
+        "CASH_CONFIRMED": "Efectivo confirmado",
+        "TRANSFER_CONFIRMED": "Transferencia confirmada",
+        "UNCONFIRMED": "No confirmado",
+    }
+    label = _PAYMENT_METHOD_LABELS.get(payment_method, payment_method)
+    query.edit_message_text(
+        "Medio de pago actualizado a: {}\n"
+        "Pedido #{}".format(label, order_id)
+    )
+
+
+def _aplicar_cambio_pago_msg(update, context, order_id, payment_method, cash_amount):
+    """Aplica el cambio de pago y notifica. Version para message."""
+    changed_by = update.effective_user.id
+    update_order_payment(order_id, payment_method, cash_amount, changed_by)
+    _notificar_courier_cambio_pago(order_id, payment_method, cash_amount)
+    _PAYMENT_METHOD_LABELS = {
+        "CASH_CONFIRMED": "Efectivo confirmado",
+        "TRANSFER_CONFIRMED": "Transferencia confirmada",
+        "UNCONFIRMED": "No confirmado",
+    }
+    label = _PAYMENT_METHOD_LABELS.get(payment_method, payment_method)
+    update.message.reply_text(
+        "Medio de pago actualizado a: {}\n"
+        "Pedido #{}".format(label, order_id)
+    )
+
+
+def _notificar_courier_cambio_pago(order_id, payment_method, cash_amount):
+    """Notifica al courier si el pedido ya tiene courier asignado (ACCEPTED)."""
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED" or not order["courier_id"]:
+        return
+    courier = get_courier_by_id(order["courier_id"])
+    if not courier or not courier.get("telegram_id"):
+        return
+    if payment_method == "TRANSFER_CONFIRMED":
+        msg = (
+            "CAMBIO DE MEDIO DE PAGO\n\n"
+            "Pedido #{}\n"
+            "El cliente ya pago por transferencia a la tienda.\n"
+            "Coordina con el aliado para resolver cualquier adelanto."
+        ).format(order_id)
+    elif payment_method == "CASH_CONFIRMED":
+        msg = (
+            "CAMBIO DE MEDIO DE PAGO\n\n"
+            "Pedido #{}\n"
+            "El cliente pagara en efectivo al recibir.\n"
+            "Debes cobrar: ${:,}".format(order_id, int(cash_amount))
+        )
+    else:
+        msg = (
+            "CAMBIO DE MEDIO DE PAGO\n\n"
+            "Pedido #{}\n"
+            "El medio de pago quedo sin confirmar.\n"
+            "No debes adelantar dinero del pedido."
+        ).format(order_id)
+    try:
+        from telegram import Bot
+        bot = Bot(token=BOT_TOKEN)
+        bot.send_message(chat_id=courier["telegram_id"], text=msg)
+    except Exception:
+        pass
 
 
 def ally_bandeja_callback(update, context):
@@ -14188,6 +14427,7 @@ agenda_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -14259,6 +14499,7 @@ clientes_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -14285,6 +14526,7 @@ ally_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         CommandHandler("menu", menu),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
@@ -14345,6 +14587,7 @@ courier_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         CommandHandler("menu", menu),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
@@ -15270,6 +15513,7 @@ nueva_ruta_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15409,7 +15653,7 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_compra_handler),
         ],
         PEDIDO_REQUIERE_BASE: [
-            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$")
+            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_pago_(efectivo|transferencia|sin_confirmar)$")
         ],
         PEDIDO_VALOR_BASE: [
             CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
@@ -15433,6 +15677,7 @@ nuevo_pedido_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15451,6 +15696,28 @@ pedido_incentivo_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+ally_cambio_pago_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(ally_cambio_pago_start, pattern=r"^alybandeja_cambiopago_\d+$"),
+    ],
+    states={
+        ALLY_CAMBIO_PAGO_METODO: [
+            CallbackQueryHandler(ally_cambio_pago_metodo_callback, pattern=r"^cambiopago_(efectivo|transferencia|sin_confirmar|cancelar)$"),
+        ],
+        ALLY_CAMBIO_PAGO_MONTO: [
+            CallbackQueryHandler(ally_cambio_pago_monto_callback, pattern=r"^cambiopago_monto_(5000|10000|20000|50000|otro)$"),
+            MessageHandler(Filters.text & ~Filters.command, ally_cambio_pago_monto_texto),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15525,6 +15792,7 @@ admin_clientes_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15599,6 +15867,7 @@ ally_clientes_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15627,6 +15896,7 @@ admin_dirs_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15645,6 +15915,7 @@ offer_suggest_inc_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15702,6 +15973,7 @@ admin_pedido_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -15732,6 +16004,7 @@ ally_locs_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(
             Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'),
             cancel_por_texto
@@ -15773,6 +16046,7 @@ cotizar_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
@@ -16132,6 +16406,7 @@ tarifas_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
@@ -16146,6 +16421,7 @@ config_alertas_oferta_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
     allow_reentry=True,
@@ -19693,6 +19969,7 @@ config_ally_minpurchase_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
@@ -19707,6 +19984,7 @@ config_ally_subsidy_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
+        CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
@@ -20302,6 +20580,7 @@ def main():
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
+    dp.add_handler(ally_cambio_pago_conv)  # Cambio de medio de pago post-creacion (aliado)
     dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
     dp.add_handler(ally_clientes_conv)     # Agenda de clientes del Aliado (entry: Mis clientes)
     dp.add_handler(CallbackQueryHandler(ally_bandeja_callback, pattern=r"^alybandeja_"))  # Bandeja solicitudes
@@ -20367,6 +20646,7 @@ def main():
         fallbacks=[
             CommandHandler("recargar", cmd_recargar),
             CommandHandler("cancel", cancel_conversacion),
+            CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
         allow_reentry=True,
@@ -20389,6 +20669,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
+            CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
     )
@@ -20408,6 +20689,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
+            CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
         ],
         allow_reentry=True,
@@ -20452,6 +20734,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("cancel", cancel_conversacion),
+            CallbackQueryHandler(cancel_conversacion, pattern=CANCEL_CALLBACK_PATTERN),
             CommandHandler("menu", menu),
             MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
