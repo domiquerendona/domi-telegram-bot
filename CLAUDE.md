@@ -38,7 +38,7 @@ domi-telegram-bot/
 ├── .gitignore                    # Ignora __pycache__, .env, *.db, etc.
 │
 ├── Backend/                      # Lógica del bot y API
-│   ├── main.py                   # Arranque del bot Telegram, wiring, UI (~5 427 líneas tras modularización)
+│   ├── main.py                   # Wiring, UI global, arranque del bot (~2 324 líneas — modularización completa 2026-03-20)
 │   ├── web_app.py                # Bootstrap FastAPI (app, routers, CORS, /)
 │   ├── services.py               # Lógica de negocio + re-exports de db.py
 │   ├── db.py                     # Acceso exclusivo a base de datos
@@ -52,7 +52,7 @@ domi-telegram-bot/
 │   ├── DEPLOY.md                 # Guía de separación DEV/PROD
 │   ├── TESTING.md                # Documento histórico de testing (fase antigua)
 │   │
-│   ├── handlers/                 # Paquete de ConversationHandlers extraídos de main.py
+│   ├── handlers/                 # Paquete de ConversationHandlers extraídos de main.py (modularización completa)
 │   │   ├── __init__.py
 │   │   ├── states.py             # Constantes de estado para todos los ConversationHandlers
 │   │   ├── common.py             # Helpers compartidos: cancel_conversacion, ensure_terms, _fmt_pesos, _geo_siguiente_o_gps, etc.
@@ -60,10 +60,13 @@ domi-telegram-bot/
 │   │   ├── quotation.py          # cotizar_conv (flujo de cotización de envío)
 │   │   ├── location_agenda.py    # admin_dirs_conv, ally_locs_conv (gestión de ubicaciones)
 │   │   ├── customer_agenda.py    # clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
-│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, admin_cedula handlers
+│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers
 │   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, cmd_saldo, admin_local_callback, ally_approval_callback
 │   │   ├── order.py              # nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv (~99 funciones)
-│   │   └── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
+│   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
+│   │   ├── admin_panel.py        # admin_menu, admin_menu_callback, aliados_pendientes, repartidores_pendientes, admins_pendientes, admin_ver_pendiente, admin_aprobar_rechazar_callback, pendientes, volver_menu_global, courier_pick_admin_callback, reference validation helpers
+│   │   ├── ally_bandeja.py       # ally_bandeja_solicitudes, ally_mi_enlace, ally_enlace_refresh_callback, _ally_bandeja_mostrar_*, ally_bandeja_callback
+│   │   └── courier_panel.py      # courier_earnings_start, courier_earnings_callback, _courier_earnings_group_by_date, _courier_earnings_buttons
 │   │
 │   ├── migrations/
 │   │   └── postgres_schema.sql   # Schema completo para PostgreSQL
@@ -191,10 +194,13 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `quotation.py` | `cotizar_conv` (flujo de cotización de envío del aliado) |
 | `location_agenda.py` | `admin_dirs_conv` (mis ubicaciones admin), `ally_locs_conv` (mis ubicaciones aliado) |
 | `customer_agenda.py` | `clientes_conv`, `agenda_conv`, `admin_clientes_conv`, `ally_clientes_conv` |
-| `registration.py` | `soy_aliado` / `ally_conv`, `soy_repartidor` / `courier_conv`, handlers de cédula admin |
+| `registration.py` | `ally_conv` (soy_aliado), `courier_conv` (soy_repartidor), `admin_conv` (soy_admin), handlers de cédula/selfie |
 | `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
 | `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
 | `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada (~32 funciones) |
+| `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
+| `ally_bandeja.py` | `ally_bandeja_solicitudes`, `ally_mi_enlace`, `ally_enlace_refresh_callback`, `_ally_bandeja_mostrar_*`, `ally_bandeja_callback` |
+| `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, helpers internos de ganancias |
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
@@ -444,7 +450,7 @@ En PROD: si `DATABASE_URL` no está presente, el sistema debe lanzar error fatal
 cd Backend/
 
 # Verificar que el código compila antes de hacer push
-python3 -m py_compile main.py db.py order_delivery.py profile_changes.py services.py handlers/states.py handlers/common.py handlers/config.py handlers/quotation.py handlers/location_agenda.py handlers/customer_agenda.py handlers/registration.py handlers/recharges.py handlers/order.py handlers/route.py
+python3 -m py_compile main.py db.py order_delivery.py profile_changes.py services.py handlers/states.py handlers/common.py handlers/config.py handlers/quotation.py handlers/location_agenda.py handlers/customer_agenda.py handlers/registration.py handlers/recharges.py handlers/order.py handlers/route.py handlers/admin_panel.py handlers/ally_bandeja.py handlers/courier_panel.py
 
 # Instalar dependencias si se necesita inspeccionar algo localmente
 pip install -r requirements.txt
