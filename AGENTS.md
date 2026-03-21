@@ -1438,5 +1438,65 @@ Si no aparece → NO eliminar de main.py todavía.
 
 ### Regla 18D — Al hacer merge de rama de modularización
 
-Ejecutar siempre el checklist 18A y 18B **antes del push a staging**. Un crash en producción
+Ejecutar siempre el checklist 18A, 18B y 18E **antes del push a staging**. Un crash en producción
 por import faltante es evitable al 100% con estas verificaciones locales.
+
+### Regla 18E — Verificar imports internos de cada handler (NameErrors en ejecucion)
+
+**Contexto:** `py_compile` solo detecta errores de sintaxis. Los NameErrors por funciones
+llamadas dentro de un handler sin estar importadas solo explotan cuando esa rama de código
+se ejecuta. Detectados en 2026-03-20: 21 faltantes en `admin_panel.py`, 1 en `recharges.py`.
+
+**PROHIBIDO** hacer push a staging tras mover codigo a handlers/ sin ejecutar este script:
+
+```bash
+cd Backend/
+python3 << 'PYEOF'
+import re, os
+
+base = os.getcwd()
+
+def get_imported(src):
+    names = set()
+    for block in re.findall(r'from\s+\S+\s+import\s+\(([^)]+)\)', src, re.DOTALL):
+        for n in re.findall(r'\b([A-Za-z_]\w*)\b', block): names.add(n)
+    for line in re.findall(r'^from\s+\S+\s+import\s+([^(\n]+)', src, re.M):
+        if '(' not in line:
+            for n in re.findall(r'\b([A-Za-z_]\w*)\b', line): names.add(n)
+    return names
+
+# Construir inventario de services.py
+with open(base+'/services.py', 'r', encoding='utf-8') as f: svc = f.read()
+svc_available = set(re.findall(r'^def (\w+)', svc, re.M))
+for block in re.findall(r'from db import \((.*?)\)', svc, re.DOTALL):
+    for name in re.findall(r'\b([a-z_][a-z0-9_]+)\b', block):
+        svc_available.add(name)
+
+found_issues = False
+for hname in ['admin_panel','ally_bandeja','config','courier_panel','customer_agenda',
+              'location_agenda','order','quotation','recharges','registration','route']:
+    path = base+f'/handlers/{hname}.py'
+    with open(path, 'r', encoding='utf-8') as f: src = f.read()
+    imported = get_imported(src)
+    defined = set(re.findall(r'^(?:def|class)\s+(\w+)', src, re.M))
+    known = imported | defined
+    missing = sorted([n for n in svc_available
+                      if n not in known and re.search(r'\b'+re.escape(n)+r'\s*\(', src)])
+    if missing:
+        found_issues = True
+        print(f'FALTANTE en {hname}.py: {missing}')
+
+if not found_issues:
+    print('OK — todos los handlers tienen sus imports de services completos')
+PYEOF
+```
+
+**Qué verifica:** para cada handler, busca funciones de `services.py` (y sus re-exports de `db.py`)
+que son llamadas en el cuerpo pero no están en el bloque `from services import (...)`.
+
+**Falsos positivos conocidos:** palabras como `py`, `no`, `parada` (provienen de comentarios
+en el bloque re-exports de services.py). Ignorarlos — no son funciones reales.
+
+**Causa raiz del error:** al extraer una funcion de main.py a un handler, se copia el cuerpo
+pero no se revisan sistematicamente todas las dependencias. La solucion es ejecutar este script
+antes de cada push, no despues.

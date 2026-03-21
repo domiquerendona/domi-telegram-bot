@@ -31,6 +31,7 @@ from handlers.states import (
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
+    _build_role_welcome_message,
     _resolve_important_alert,
     _schedule_important_alerts,
     _send_role_welcome_message,
