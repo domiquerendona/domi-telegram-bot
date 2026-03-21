@@ -38,7 +38,7 @@ domi-telegram-bot/
 ├── .gitignore                    # Ignora __pycache__, .env, *.db, etc.
 │
 ├── Backend/                      # Lógica del bot y API
-│   ├── main.py                   # Arranque del bot Telegram, handlers, wiring, UI
+│   ├── main.py                   # Arranque del bot Telegram, wiring, UI (~5 427 líneas tras modularización)
 │   ├── web_app.py                # Bootstrap FastAPI (app, routers, CORS, /)
 │   ├── services.py               # Lógica de negocio + re-exports de db.py
 │   ├── db.py                     # Acceso exclusivo a base de datos
@@ -51,6 +51,19 @@ domi-telegram-bot/
 │   ├── .env.example              # Plantilla de variables de entorno
 │   ├── DEPLOY.md                 # Guía de separación DEV/PROD
 │   ├── TESTING.md                # Documento histórico de testing (fase antigua)
+│   │
+│   ├── handlers/                 # Paquete de ConversationHandlers extraídos de main.py
+│   │   ├── __init__.py
+│   │   ├── states.py             # Constantes de estado para todos los ConversationHandlers
+│   │   ├── common.py             # Helpers compartidos: cancel_conversacion, ensure_terms, _fmt_pesos, _geo_siguiente_o_gps, etc.
+│   │   ├── config.py             # tarifas_conv, config_alertas_oferta_conv, config_ally_subsidy_conv, config_ally_minpurchase_conv
+│   │   ├── quotation.py          # cotizar_conv (flujo de cotización de envío)
+│   │   ├── location_agenda.py    # admin_dirs_conv, ally_locs_conv (gestión de ubicaciones)
+│   │   ├── customer_agenda.py    # clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
+│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, admin_cedula handlers
+│   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, cmd_saldo, admin_local_callback, ally_approval_callback
+│   │   ├── order.py              # nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv (~99 funciones)
+│   │   └── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
 │   │
 │   ├── migrations/
 │   │   └── postgres_schema.sql   # Schema completo para PostgreSQL
@@ -131,13 +144,15 @@ domi-telegram-bot/
 La regla más importante del proyecto es la separación estricta en tres capas:
 
 ```
-main.py  ──importa──►  services.py  ──importa──►  db.py
-    │                       │                        │
-    │  (handlers, wiring,   │  (lógica de negocio,  │  (SQL, queries,
-    │   UI, estado de flujo) │   re-exports de db)   │   conexiones)
-    │                       │                        │
-    └── order_delivery.py ──┘                        │
-    └── profile_changes.py ─────────────────────────►┘
+handlers/*  ──importa──►  main.py  ──importa──►  services.py  ──importa──►  db.py
+    │                        │                       │                        │
+    │  (ConversationHandlers, │  (wiring, UI, start,  │  (lógica de negocio,  │  (SQL, queries,
+    │   flujos de pedido,     │   menu, arranque)     │   re-exports de db)   │   conexiones)
+    │   rutas, recargas,      │                       │                        │
+    │   registro, config)     └── order_delivery.py ──┘                        │
+    │                         └── profile_changes.py ─────────────────────────►┘
+    │
+    └── (importan desde services.py y order_delivery.py, nunca desde main.py)
 ```
 
 ### `db.py` — Capa de Datos
@@ -154,7 +169,8 @@ main.py  ──importa──►  services.py  ──importa──►  db.py
 - El patrón obligatorio de re-export está documentado en `AGENTS.md`.
 
 ### `main.py` — Orquestador
-- Solo contiene: registro de handlers, funciones handler (validar → llamar services → retornar estado), helpers de UI, gestión de estado de flujo, constantes de UI.
+- Contiene: wiring (registro de handlers), `start`, `menu`, handlers de UI global, arranque del bot, `main()`.
+- Los ConversationHandlers están en `handlers/` — `main.py` los importa y los registra con `dp.add_handler()`.
 - Las restricciones obligatorias sobre qué puede y qué no puede vivir en `main.py` están en `AGENTS.md`.
 - **Excepciones permitidas** en `main.py` (solo estas 3):
   ```python
@@ -162,6 +178,23 @@ main.py  ──importa──►  services.py  ──importa──►  db.py
   from db import force_platform_admin
   from db import ensure_pricing_defaults
   ```
+
+### `handlers/` — Paquete de ConversationHandlers
+
+Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funciones y ConversationHandlers por dominio. Regla: **ningún módulo en `handlers/` importa desde `main.py`**.
+
+| Módulo | Contenido |
+|--------|-----------|
+| `states.py` | Todas las constantes de estado (enteros) de todos los ConversationHandlers |
+| `common.py` | Helpers compartidos sin dependencia de `main.py`: `cancel_conversacion`, `cancel_por_texto`, `ensure_terms`, `show_main_menu`, `show_flow_menu`, `_fmt_pesos`, `_geo_siguiente_o_gps`, `_mostrar_confirmacion_geocode`, `_handle_text_field_input`, `_handle_phone_input`, `_OPTIONS_HINT`, `CANCELAR_VOLVER_MENU_FILTER` |
+| `config.py` | `tarifas_conv`, `config_alertas_oferta_conv`, `config_ally_subsidy_conv`, `config_ally_minpurchase_conv` |
+| `quotation.py` | `cotizar_conv` (flujo de cotización de envío del aliado) |
+| `location_agenda.py` | `admin_dirs_conv` (mis ubicaciones admin), `ally_locs_conv` (mis ubicaciones aliado) |
+| `customer_agenda.py` | `clientes_conv`, `agenda_conv`, `admin_clientes_conv`, `ally_clientes_conv` |
+| `registration.py` | `soy_aliado` / `ally_conv`, `soy_repartidor` / `courier_conv`, handlers de cédula admin |
+| `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
+| `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
+| `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada (~32 funciones) |
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
@@ -411,7 +444,7 @@ En PROD: si `DATABASE_URL` no está presente, el sistema debe lanzar error fatal
 cd Backend/
 
 # Verificar que el código compila antes de hacer push
-python -m py_compile main.py services.py db.py order_delivery.py profile_changes.py
+python3 -m py_compile main.py db.py order_delivery.py profile_changes.py services.py handlers/states.py handlers/common.py handlers/config.py handlers/quotation.py handlers/location_agenda.py handlers/customer_agenda.py handlers/registration.py handlers/recharges.py handlers/order.py handlers/route.py
 
 # Instalar dependencias si se necesita inspeccionar algo localmente
 pip install -r requirements.txt
