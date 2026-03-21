@@ -10,7 +10,6 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| claude | 2026-03-17 | Backend/handlers/, Backend/main.py | Modularización Fases 2-3: config.py + quotation.py + location_agenda.py extraídos |
 
 ---
 
@@ -18,6 +17,10 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-03-20 | claude | Backend/handlers/order.py, Backend/main.py | Modularización Fase 2h: order.py extraído (nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv + ~99 funciones) — main.py 10 343 → 6 386 líneas | COMPLETADO |
+| 2026-03-18 | claude | Backend/handlers/recharges.py, Backend/main.py | Modularización Fase 2g: recharges.py extraído (cmd_saldo, recargar_conv, configurar_pagos_conv, ingreso_conv, admin_local_callback, ally_approval_callback) — main.py 12 562 → 10 343 líneas | COMPLETADO |
+| 2026-03-18 | claude | Backend/handlers/registration.py, Backend/main.py | Modularización Fase 2f: registration.py extraído (soy_aliado, ally_*, soy_repartidor, courier_*, admin_cedula_front/back/selfie) — main.py 13 741 → 12 562 líneas | COMPLETADO |
+| 2026-03-18 | claude | Backend/handlers/customer_agenda.py, Backend/handlers/common.py, Backend/main.py | Modularización Fase 2e: customer_agenda.py extraído (clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv) | COMPLETADO |
 | 2026-03-17 | claude | Backend/main.py, Backend/order_delivery.py, CLAUDE.md | Limpieza datetime.utcnow() deprecado: lazy import → top-level en main.py; docstring order_delivery.py actualizado | COMPLETADO |
 | 2026-03-13 | claude | Backend/db.py, Backend/services.py, Backend/web_app.py, Backend/requirements.txt, Backend/web/api/auth.py, Backend/web/api/admin.py, Backend/web/api/users.py, Backend/web/auth/dependencies.py, Backend/web/users/repository.py, Backend/web/schemas/user.py, Frontend/src/app/core/services/auth.service.ts, Frontend/src/app/core/guards/role.guard.ts, Frontend/src/app/core/guards/auth.guard.ts, Frontend/src/app/features/login/login.ts, Frontend/src/app/app.routes.ts, Frontend/src/app/layout/components/sidebar/sidebar.ts, Frontend/src/app/features/superadmin/administradores/administradores.ts, CLAUDE.md | Multi-usuario real panel web: tabla web_users + bcrypt, ADMIN_LOCAL scoping, AuthService + RoleGuard Angular, gestión usuarios panel | COMPLETADO |
 | 2026-03-12 | claude | Backend/web/users/roles.py, Backend/web/auth/guards.py, Backend/web/auth/dependencies.py, Backend/web/api/admin.py | RBAC fino panel web: Permission enum, ROLE_PERMISSIONS, has_permission(), require_permission() factory — endpoints /reject y /settings/pricing exclusivos PLATFORM_ADMIN | COMPLETADO |
