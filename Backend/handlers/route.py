@@ -66,6 +66,7 @@ from services import (
     expand_short_url,
     calcular_precio_ruta,
     calcular_distancia_ruta_smart,
+    optimizar_orden_paradas,
     create_route,
     create_route_destination,
     get_approved_admin_link_for_ally,
@@ -227,17 +228,34 @@ def _ruta_mostrar_mas_paradas(update_or_query, context):
 
 
 def _ruta_mostrar_confirmacion(update_or_query, context):
-    """Muestra el resumen de la ruta con precio desglosado."""
+    """Muestra el resumen de la ruta con precio desglosado y orden optimizado."""
     paradas = context.user_data.get("ruta_paradas", [])
-    total_km = context.user_data.get("ruta_distancia_km", 0)
     pickup_address = context.user_data.get("ruta_pickup_address", "No definida")
+    pickup_lat = context.user_data.get("ruta_pickup_lat")
+    pickup_lng = context.user_data.get("ruta_pickup_lng")
+
+    # Optimizar orden de paradas (TSP Haversine, sin costo de API)
+    paradas_opt, distancia_opt, fue_optimizado = optimizar_orden_paradas(
+        pickup_lat, pickup_lng, paradas
+    )
+    if fue_optimizado:
+        context.user_data["ruta_paradas"] = paradas_opt
+        paradas = paradas_opt
+
+    # Usar distancia calculada en el flujo (smart/haversine) o la del TSP como fallback
+    total_km = context.user_data.get("ruta_distancia_km") or distancia_opt or 0
+
     precio_info = calcular_precio_ruta(total_km, len(paradas))
     distance_fee = precio_info["distance_fee"]
     additional_fee = precio_info["additional_stops_fee"]
     total_fee = precio_info["total_fee"]
     stop_fee = precio_info.get("tarifa_parada_adicional", 0)
     context.user_data["ruta_precio"] = precio_info
-    text = "RUTA DE ENTREGA\n\nRecoge en: {}\n\n".format(pickup_address)
+
+    text = "RUTA DE ENTREGA\n"
+    if fue_optimizado:
+        text += "(Orden optimizado para menor distancia)\n"
+    text += "\nRecoge en: {}\n\n".format(pickup_address)
     for i, p in enumerate(paradas, 1):
         text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
             i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion"

@@ -1284,6 +1284,84 @@ def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
     return round(total, 2)
 
 
+def optimizar_orden_paradas(pickup_lat, pickup_lng, paradas):
+    """
+    Reordena las paradas de una ruta para minimizar la distancia total recorrida
+    usando Haversine como métrica (sin costo de API).
+
+    Estrategia:
+    - n <= 10: fuerza bruta exacta (evalúa todas las permutaciones)
+    - n > 10:  Nearest Neighbor heurístico (ir siempre a la parada más cercana)
+
+    Solo aplica si todas las paradas tienen lat/lng. Si alguna carece de GPS,
+    retorna las paradas en el orden original sin modificar.
+
+    Args:
+        pickup_lat, pickup_lng: coordenadas del punto de recogida (fijo, no se reordena)
+        paradas: lista de dicts con campos 'lat', 'lng' y datos del cliente
+
+    Returns:
+        (paradas_ordenadas, distancia_km, fue_optimizado)
+        - paradas_ordenadas: lista reordenada (o la original si no hay GPS)
+        - distancia_km: distancia total de la ruta optimizada (Haversine)
+        - fue_optimizado: True si se aplicó TSP, False si se devolvió sin cambios
+    """
+    from itertools import permutations as _perms
+
+    n = len(paradas)
+
+    # Sin paradas o solo una: nada que optimizar
+    if n <= 1:
+        dist = calcular_distancia_ruta(pickup_lat, pickup_lng, paradas) or 0.0
+        return paradas, dist, False
+
+    # Verificar que todas las paradas tienen coordenadas
+    for p in paradas:
+        if not p.get("lat") or not p.get("lng"):
+            dist = calcular_distancia_ruta(pickup_lat, pickup_lng, paradas) or 0.0
+            return paradas, dist, False
+
+    def _ruta_distancia(orden):
+        """Calcula distancia total de pickup -> paradas en el orden dado."""
+        total = 0.0
+        prev_lat, prev_lng = float(pickup_lat), float(pickup_lng)
+        for idx in orden:
+            p_lat = float(paradas[idx]["lat"])
+            p_lng = float(paradas[idx]["lng"])
+            total += haversine_km(prev_lat, prev_lng, p_lat, p_lng)
+            prev_lat, prev_lng = p_lat, p_lng
+        return total
+
+    if n <= 10:
+        # Fuerza bruta exacta
+        best_order = list(range(n))
+        best_dist = _ruta_distancia(best_order)
+        for perm in _perms(range(n)):
+            d = _ruta_distancia(perm)
+            if d < best_dist:
+                best_dist = d
+                best_order = list(perm)
+    else:
+        # Nearest Neighbor heurístico
+        remaining = list(range(n))
+        best_order = []
+        cur_lat, cur_lng = float(pickup_lat), float(pickup_lng)
+        while remaining:
+            nearest = min(
+                remaining,
+                key=lambda i: haversine_km(cur_lat, cur_lng, float(paradas[i]["lat"]), float(paradas[i]["lng"]))
+            )
+            best_order.append(nearest)
+            remaining.remove(nearest)
+            cur_lat = float(paradas[nearest]["lat"])
+            cur_lng = float(paradas[nearest]["lng"])
+        best_dist = _ruta_distancia(best_order)
+
+    paradas_ordenadas = [paradas[i] for i in best_order]
+    fue_optimizado = best_order != list(range(n))
+    return paradas_ordenadas, round(best_dist, 2), fue_optimizado
+
+
 def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
     """
     Calcula la distancia total de la ruta segmento a segmento usando la misma
