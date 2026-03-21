@@ -987,10 +987,10 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 
 **Cancelación del aliado**
 
-≤60 segundos desde creación → cancelación sin costo  
->60 segundos desde creación → cobro de $300  
-Expiración automática → cobro de $300  
-Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+Cancelación manual (en cualquier momento) → sin costo
+Expiración automática (nadie tomó el servicio en 10 min) → sin costo
+Pedidos creados por administrador (ally_id = None) → sin costo
+**El fee $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
 
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 

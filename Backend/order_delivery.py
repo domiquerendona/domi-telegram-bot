@@ -2329,16 +2329,6 @@ def _handle_cancel_ally(update, context, order_id):
     had_courier = order["status"] == "ACCEPTED" and order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
 
-    # Política de cancelación del aliado (desde created_at)
-    created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    elapsed_seconds = 0
-    if created_at:
-        try:
-            elapsed_seconds = int(max(0, (now - created_at).total_seconds()))
-        except Exception:
-            elapsed_seconds = 0
-
     # Cancelar jobs de arrival si estaba en estado ACCEPTED
     _cancel_arrival_jobs(context, order_id)
     _cancel_delivery_reminder_jobs(context, order_id)
@@ -2355,30 +2345,6 @@ def _handle_cancel_ally(update, context, order_id):
             for job in jobs:
                 job.schedule_removal()
 
-    if order["ally_id"] is not None and elapsed_seconds > 60:
-        admin_id = None
-        try:
-            admin_link = get_approved_admin_link_for_ally(int(order["ally_id"]))
-            admin_id = admin_link["admin_id"] if admin_link else None
-        except Exception:
-            admin_id = None
-
-        if admin_id is not None:
-            try:
-                fee_ok, fee_msg = apply_service_fee(
-                    target_type="ALLY",
-                    target_id=int(order["ally_id"]),
-                    admin_id=int(admin_id),
-                    ref_type="ORDER",
-                    ref_id=order_id,
-                )
-                if not fee_ok:
-                    print("[WARN] No se pudo cobrar fee por cancelación al aliado: {}".format(fee_msg))
-            except Exception as e:
-                print("[WARN] Error al cobrar fee por cancelación: {}".format(e))
-        else:
-            print("[WARN] Cancelación pedido {}: aliado {} sin admin_id para cobrar fee".format(order_id, order["ally_id"]))
-
     cancel_order(order_id, "ALLY")
     delete_offer_queue(order_id)
 
@@ -2386,21 +2352,7 @@ def _handle_cancel_ally(update, context, order_id):
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
     context.bot_data.get("offer_messages", {}).pop(order_id, None)
 
-    if order["ally_id"] is None:
-        query.edit_message_text(
-            "Pedido cancelado.\n"
-            "No se aplicó ningún cargo porque fue cancelado inmediatamente."
-        )
-    elif elapsed_seconds <= 60:
-        query.edit_message_text(
-            "Pedido cancelado.\n"
-            "No se aplicó ningún cargo porque fue cancelado inmediatamente."
-        )
-    else:
-        query.edit_message_text(
-            "Pedido cancelado.\n"
-            "Se aplicó el cargo de gestión de $300 por haber activado la red de repartidores."
-        )
+    query.edit_message_text("Pedido cancelado. No se aplico ningun cargo.")
 
     if had_courier:
         _notify_courier_order_cancelled(context, order)
@@ -2430,15 +2382,6 @@ def _handle_cancel_ally_route(update, context, route_id):
     had_courier = route.get("status") == "ACCEPTED" and route.get("courier_id")
     was_published = route.get("status") == "PUBLISHED"
 
-    created_at = _to_naive_utc(_parse_dt(route.get("created_at")))
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    elapsed_seconds = 0
-    if created_at:
-        try:
-            elapsed_seconds = int(max(0, (now - created_at).total_seconds()))
-        except Exception:
-            elapsed_seconds = 0
-
     # Cancelar jobs de oferta y sugerencia T+5
     _cancel_route_no_response_job(context, route_id)
     if was_published:
@@ -2447,30 +2390,6 @@ def _handle_cancel_ally_route(update, context, route_id):
             _cancel_route_offer_jobs(context, route_id, current["queue_id"])
             mark_route_offer_response(current["queue_id"], "CANCELLED")
 
-    # Política de cancelación: >60s activos → cobrar $300 al aliado
-    if elapsed_seconds > 60:
-        try:
-            admin_link = get_approved_admin_link_for_ally(int(ally["id"]))
-            admin_id = admin_link["admin_id"] if admin_link else None
-        except Exception:
-            admin_id = None
-
-        if admin_id is not None:
-            try:
-                fee_ok, fee_msg = apply_service_fee(
-                    target_type="ALLY",
-                    target_id=int(ally["id"]),
-                    admin_id=int(admin_id),
-                    ref_type="ROUTE",
-                    ref_id=route_id,
-                )
-                if not fee_ok:
-                    print("[WARN] No se pudo cobrar fee por cancelacion de ruta al aliado: {}".format(fee_msg))
-            except Exception as e:
-                print("[WARN] Error al cobrar fee por cancelacion de ruta: {}".format(e))
-        else:
-            print("[WARN] Cancelacion ruta {}: aliado {} sin admin_id para cobrar fee".format(route_id, ally["id"]))
-
     cancel_route(route_id, "ALLY")
     delete_route_offer_queue(route_id)
 
@@ -2478,16 +2397,7 @@ def _handle_cancel_ally_route(update, context, route_id):
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
     context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
 
-    if elapsed_seconds <= 60:
-        query.edit_message_text(
-            "Ruta cancelada.\n"
-            "No se aplico ningun cargo porque fue cancelada inmediatamente."
-        )
-    else:
-        query.edit_message_text(
-            "Ruta cancelada.\n"
-            "Se aplico el cargo de gestion de $300 por haber activado la red de repartidores."
-        )
+    query.edit_message_text("Ruta cancelada. No se aplico ningun cargo.")
 
     if had_courier:
         try:
