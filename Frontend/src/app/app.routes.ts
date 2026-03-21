@@ -38,7 +38,7 @@ export const routes: Routes = [
   // Ruta raíz: cuando el usuario entra a la URL base "/"
   {
     path: '',                   // Ruta vacía
-    redirectTo: 'superadmin',   // Redirige automáticamente a "/superadmin"
+    redirectTo: 'login',   // Redirige automáticamente a "/superadmin"
     pathMatch: 'full'           // Debe coincidir exactamente con la ruta vacía
   },
 
