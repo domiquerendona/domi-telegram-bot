@@ -17,6 +17,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-03-20 | claude | Backend/handlers/route.py, Backend/main.py | Modularización Fase 2i: route.py extraído (nueva_ruta_conv + 32 funciones) — main.py 6 386 → 5 427 líneas | COMPLETADO |
 | 2026-03-20 | claude | Backend/handlers/order.py, Backend/main.py | Modularización Fase 2h: order.py extraído (nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv + ~99 funciones) — main.py 10 343 → 6 386 líneas | COMPLETADO |
 | 2026-03-18 | claude | Backend/handlers/recharges.py, Backend/main.py | Modularización Fase 2g: recharges.py extraído (cmd_saldo, recargar_conv, configurar_pagos_conv, ingreso_conv, admin_local_callback, ally_approval_callback) — main.py 12 562 → 10 343 líneas | COMPLETADO |
 | 2026-03-18 | claude | Backend/handlers/registration.py, Backend/main.py | Modularización Fase 2f: registration.py extraído (soy_aliado, ally_*, soy_repartidor, courier_*, admin_cedula_front/back/selfie) — main.py 13 741 → 12 562 líneas | COMPLETADO |
