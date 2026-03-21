@@ -1,4 +1,4 @@
-﻿import os
+import os
 import hashlib
 import os
 import time
@@ -157,7 +157,6 @@ from services import (
     get_admin_link_for_ally,
     get_courier_link_balance,
     create_order,
-    update_order_payment,
     set_order_status,
     assign_order_to_courier,
     get_order_by_id,
