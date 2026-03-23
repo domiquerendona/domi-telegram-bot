@@ -256,15 +256,21 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
     context.user_data["ruta_precio"] = precio_info
 
+    distancia_estimada = context.user_data.get("ruta_distancia_estimada", False)
+
     text = "RUTA DE ENTREGA\n"
     if fue_optimizado:
         text += "(Orden optimizado para menor distancia)\n"
+    if distancia_estimada:
+        text += "(Distancia aproximada — sin datos de carretera exactos)\n"
     text += "\nRecoge en: {}\n\n".format(pickup_address)
     for i, p in enumerate(paradas, 1):
         text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
             i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion"
         )
-    text += "\nDistancia total: {:.1f} km\n".format(total_km)
+    text += "\nDistancia total: {:.1f} km{}\n".format(
+        total_km, " (aprox)" if distancia_estimada else ""
+    )
     text += "Precio base (distancia): ${:,}\n".format(distance_fee)
     if additional_fee > 0:
         text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(paradas) - 1, stop_fee, additional_fee)
@@ -810,6 +816,7 @@ def ruta_mas_paradas_callback(update, context):
             dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
             if dist_result and dist_result["total_km"] > 0:
                 context.user_data["ruta_distancia_km"] = dist_result["total_km"]
+                context.user_data["ruta_distancia_estimada"] = dist_result.get("estimada", False)
                 return _ruta_mostrar_confirmacion(query, context)
         query.edit_message_text(
             "DISTANCIA DE LA RUTA\n\n"

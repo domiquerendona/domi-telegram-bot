@@ -829,31 +829,17 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
 
-    # --- CAPA 1: Haversine (primera opcion, gratis) ---
-    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
-    local_result = {
-        "distance_km": haversine_dist,
-        "source": "haversine",
-        "used_api": False,
-    }
-
-    # --- CAPA 2: Cache ---
+    # --- CAPA 1: Cache (solo valores reales de API, no Haversine) ---
     cached = get_distance_cache(origin_key, destination_key, mode="coords")
-    if cached and cached.get("distance_km") is not None:
+    if cached and cached.get("distance_km") is not None and cached.get("provider") != "haversine":
         return {
             "distance_km": float(cached["distance_km"]),
             "source": f"cache({cached.get('provider', 'unknown')})",
             "used_api": False,
         }
 
-    # Si no hay cache, guardamos resultado local para siguientes consultas.
-    upsert_distance_cache(origin_key, destination_key, mode="coords",
-                          distance_km=haversine_dist, provider="haversine")
-
-    # --- CAPA 3: Google API (solo si hay cuota) ---
-    # En cotizacion por coords casi nunca es necesario, pero se mantiene como ultimo recurso
-    # cuando no hay un valor local util.
-    if haversine_dist <= 0 and can_call_google_today() and GOOGLE_MAPS_API_KEY:
+    # --- CAPA 2: Google API ---
+    if can_call_google_today() and GOOGLE_MAPS_API_KEY:
         google_dist = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
         if google_dist is not None:
             upsert_distance_cache(origin_key, destination_key, mode="coords",
@@ -864,8 +850,13 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
                 "used_api": True,
             }
 
-    # Fusible/fallback: continuar con estimacion local.
-    return local_result
+    # --- CAPA 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego) ---
+    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+    return {
+        "distance_km": haversine_dist,
+        "source": "haversine",
+        "used_api": False,
+    }
 
 
 def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
@@ -1544,6 +1535,7 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
 
     total_km = 0.0
     used_api = False
+    used_haversine = False
 
     for i in range(len(puntos) - 1):
         lat1, lng1 = puntos[i]
@@ -1552,9 +1544,9 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
         origin_key = _coords_cache_key(lat1, lng1)
         dest_key = _coords_cache_key(lat2, lng2)
 
-        # Capa 1: Cache
+        # Capa 1: Cache (solo valores reales de API, no Haversine)
         cached = get_distance_cache(origin_key, dest_key, mode="coords")
-        if cached and cached.get("distance_km") is not None:
+        if cached and cached.get("distance_km") is not None and cached.get("provider") != "haversine":
             total_km += float(cached["distance_km"])
             continue
 
@@ -1567,17 +1559,17 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
                                       distance_km=seg_km, provider="google_distance_matrix")
                 used_api = True
 
-        # Capa 3: Haversine fallback
+        # Capa 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego)
         if seg_km is None:
             seg_km = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
-            upsert_distance_cache(origin_key, dest_key, mode="coords",
-                                  distance_km=seg_km, provider="haversine")
+            used_haversine = True
 
         total_km += seg_km
 
     return {
         "total_km": round(total_km, 2),
         "used_api": used_api,
+        "estimada": used_haversine,  # True si algun segmento uso Haversine en vez de API real
     }
 
 
