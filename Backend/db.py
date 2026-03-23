@@ -504,6 +504,22 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS geocoding_text_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text_key TEXT NOT NULL UNIQUE,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            formatted_address TEXT,
+            place_id TEXT,
+            source TEXT,
+            hit_count INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_geocoding_text_cache_key ON geocoding_text_cache(text_key)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS status_audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_type TEXT NOT NULL,
@@ -3320,6 +3336,7 @@ def ensure_pricing_defaults():
     Solo inserta si no existen (idempotente).
     """
     defaults = {
+        # Tarifas de distancia (pago al courier)
         "pricing_precio_0_2km": "5000",
         "pricing_precio_2_3km": "6000",
         "pricing_tier1_max_km": "1.5",
@@ -3328,7 +3345,15 @@ def ensure_pricing_defaults():
         "pricing_km_extra_normal": "1200",
         "pricing_umbral_km_largo": "10.0",
         "pricing_km_extra_largo": "1000",
-        "pricing_tarifa_parada_adicional": "200",
+        "pricing_tarifa_parada_adicional": "4000",
+        # Fees de servicio (cobro al saldo del miembro por entrega)
+        # Invariante: fee_admin_share + fee_platform_share == fee_service_total
+        "fee_service_total": "300",
+        "fee_admin_share": "200",
+        "fee_platform_share": "100",
+        # Comision adicional al aliado: % sobre tarifa de domicilio, va 100% a plataforma
+        # 0 = desactivado (default). Activar subiendo a 3 (= 3%) cuando el modelo lo requiera.
+        "fee_ally_commission_pct": "0",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
@@ -3339,9 +3364,10 @@ def ensure_pricing_defaults():
         base_distance = get_setting("pricing_base_distance_km")
         if base_distance in (None, "", "3", "3.0", "2", "2.0", "2.5"):
             set_setting("pricing_base_distance_km", tier2_value)
+    # Migración: corregir DBs existentes que tenían 200 (fee de servicio, no pago al courier)
     stop_fee = get_setting("pricing_tarifa_parada_adicional")
-    if stop_fee in (None, "", "4000"):
-        set_setting("pricing_tarifa_parada_adicional", "200")
+    if stop_fee in (None, "", "200"):
+        set_setting("pricing_tarifa_parada_adicional", "4000")
 
 
 # ---------- WEB USERS (PANEL WEB MULTIUSUARIO) ----------
@@ -7621,6 +7647,72 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
           provider = COALESCE(excluded.provider, map_distance_cache.provider),
           updated_at = {now_sql}
     """, (origin_key, destination_key, mode, distance_km, provider))
+    conn.commit()
+    conn.close()
+
+
+# ---------- GEOCODING TEXT CACHE ----------
+
+def get_geocoding_text_cache(text_key: str):
+    """
+    Busca coordenadas cacheadas para un texto normalizado de dirección.
+    Retorna dict con lat/lng/formatted_address/place_id/source o None si no hay hit.
+    También incrementa hit_count para poder auditar qué entradas se usan más.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT lat, lng, formatted_address, place_id, source
+        FROM geocoding_text_cache
+        WHERE text_key = {P}
+        LIMIT 1
+    """, (text_key,))
+    row = cur.fetchone()
+    if row:
+        now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+        try:
+            cur.execute(f"""
+                UPDATE geocoding_text_cache
+                SET hit_count = hit_count + 1, updated_at = {now_sql}
+                WHERE text_key = {P}
+            """, (text_key,))
+            conn.commit()
+        except Exception:
+            pass
+    conn.close()
+    if not row:
+        return None
+    return {
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "formatted_address": row["formatted_address"],
+        "place_id": row["place_id"],
+        "source": row["source"],
+    }
+
+
+def upsert_geocoding_text_cache(text_key: str, lat: float, lng: float,
+                                formatted_address: str = None, place_id: str = None,
+                                source: str = None):
+    """
+    Inserta o actualiza la entrada de caché para un texto de dirección.
+    Idempotente: si ya existe, actualiza lat/lng y metadata.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        INSERT INTO geocoding_text_cache
+            (text_key, lat, lng, formatted_address, place_id, source, hit_count, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 1, {now_sql}, {now_sql})
+        ON CONFLICT(text_key) DO UPDATE SET
+            lat = excluded.lat,
+            lng = excluded.lng,
+            formatted_address = COALESCE(excluded.formatted_address, geocoding_text_cache.formatted_address),
+            place_id = COALESCE(excluded.place_id, geocoding_text_cache.place_id),
+            source = COALESCE(excluded.source, geocoding_text_cache.source),
+            updated_at = {now_sql}
+    """, (text_key, lat, lng, formatted_address, place_id, source))
     conn.commit()
     conn.close()
 

@@ -65,6 +65,7 @@ from services import (
     extract_lat_lng_from_text,
     expand_short_url,
     calcular_precio_ruta,
+    calcular_precio_ruta_inteligente,
     calcular_distancia_ruta_smart,
     optimizar_orden_paradas,
     create_route,
@@ -245,11 +246,14 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     # Usar distancia calculada en el flujo (smart/haversine) o la del TSP como fallback
     total_km = context.user_data.get("ruta_distancia_km") or distancia_opt or 0
 
-    precio_info = calcular_precio_ruta(total_km, len(paradas))
+    precio_info = calcular_precio_ruta_inteligente(
+        total_km, paradas, pickup_lat=pickup_lat, pickup_lng=pickup_lng
+    )
     distance_fee = precio_info["distance_fee"]
     additional_fee = precio_info["additional_stops_fee"]
     total_fee = precio_info["total_fee"]
     stop_fee = precio_info.get("tarifa_parada_adicional", 0)
+    mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
     context.user_data["ruta_precio"] = precio_info
 
     text = "RUTA DE ENTREGA\n"
@@ -265,6 +269,8 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     if additional_fee > 0:
         text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(paradas) - 1, stop_fee, additional_fee)
     text += "TOTAL: ${:,}".format(total_fee)
+    if mensaje_ahorro:
+        text += "\n{}".format(mensaje_ahorro)
     keyboard = [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],

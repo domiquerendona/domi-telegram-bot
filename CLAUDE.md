@@ -1735,5 +1735,75 @@ Pendiente puntual: no consume aún el campo `subsidy_conditional` del response d
 
 ---
 
-*Última actualización: 2026-03-16*
+## Precios de Rutas Multi-parada: Algoritmo Inteligente (IMPLEMENTADO 2026-03-22)
+
+### Estructura dual de fees en rutas
+
+Las rutas tienen DOS estructuras de costo completamente independientes:
+
+| Fee | Quién paga | Monto | Propósito |
+|-----|-----------|-------|-----------|
+| **Tarifa al courier** (`total_fee`) | Aliado → Courier | `distance_fee + (n-1) × $4.000` | Pago por el trabajo de entrega |
+| **Fee de servicio** (saldo del aliado) | Aliado → Plataforma | `$300 + (n-1) × $200` | Comisión de plataforma, igual que pedidos individuales |
+
+**IMPORTANTE:** `pricing_tarifa_parada_adicional = $4.000` (pago al courier). El `$200` de la tabla settings es el fee de servicio al saldo del aliado — manejado por `liquidate_route_additional_stops_fee()` — y **nunca interviene en `calcular_precio_ruta`**.
+
+### Algoritmo de 3 casos
+
+`calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat, pickup_lng)` en `services.py` garantiza que el aliado siempre perciba ahorro respecto a pedidos individuales, sin perjudicar al courier.
+
+```
+precio_individual_total = sum(calcular_precio_distancia(pickup→parada[i]) para cada parada)
+precio_ruta_natural = calcular_precio_ruta(total_km, n).total_fee
+ahorro_natural = precio_individual_total - precio_ruta_natural
+porcentaje_ahorro = ahorro_natural / precio_individual_total
+
+Caso 1 — ahorro natural ≤ 20%:
+  precio_final = precio_ruta_natural  (sin ajuste)
+  mensaje: "Ahorras $X vs pedidos individuales"
+
+Caso 2 — ahorro natural > 20%:
+  descuento_max = precio_individual_total × 20%
+  precio_final = precio_individual_total - descuento_max
+  → El courier recibe más; el aliado igualmente ahorra 20%
+
+Caso 3 — ruta MÁS cara que pedidos individuales:
+  precio_parada_min = precio individual de la parada más económica
+  descuento_minimo = precio_parada_min × 20%
+  precio_final = precio_individual_total - descuento_minimo
+  → El aliado siempre ahorra algo, aunque la ruta sea cara
+```
+
+El `precio_final` se redondea al múltiplo de $100 más cercano.
+
+### Cálculo de precios individuales
+
+- **Con GPS en todas las paradas**: `haversine_road_km(pickup, parada[i])` por cada parada — precio exacto.
+- **Sin GPS completo** (fallback): `total_km / n` como distancia promedio por parada — estimación conservadora.
+
+### Optimización TSP (sin costo de API)
+
+Antes de calcular precios, `optimizar_orden_paradas()` reordena las paradas para minimizar distancia total usando Haversine puro:
+- n ≤ 10 paradas: fuerza bruta exacta (todas las permutaciones)
+- n > 10 paradas: algoritmo Nearest Neighbor heurístico
+
+Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
+
+### Funciones clave
+
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat, pickup_lng)` | `services.py` | Algoritmo de 3 casos |
+| `calcular_precio_ruta(total_km, num_stops, config)` | `services.py` | Precio natural (base para el algoritmo) |
+| `optimizar_orden_paradas(pickup_lat, pickup_lng, paradas)` | `services.py` | TSP Haversine |
+| `_ruta_mostrar_confirmacion(update_or_query, context)` | `handlers/route.py` | Usa `calcular_precio_ruta_inteligente` y muestra ahorro |
+| `liquidate_route_additional_stops_fee(route_id, admin_id)` | `db.py` | Fee de servicio al saldo del aliado ($200×paradas) |
+
+### Fecha de implementación
+
+2026-03-22
+
+---
+
+*Última actualización: 2026-03-22*
 

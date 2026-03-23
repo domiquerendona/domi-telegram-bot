@@ -12,6 +12,7 @@ from db import (
     get_api_usage_today, record_api_usage_event,
     get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
+    get_geocoding_text_cache, upsert_geocoding_text_cache,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
@@ -275,7 +276,7 @@ import re
 import os
 
 # Límite diario de llamadas a Google (configurable)
-GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
+GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
 
@@ -1046,7 +1047,41 @@ def get_pricing_config():
         "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
         "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
         "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
-        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "200"), 200),
+        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "4000"), 4000),
+    }
+
+
+def get_fee_config() -> dict:
+    """
+    Carga la configuración de fees de servicio desde BD.
+
+    El fee de servicio se cobra al saldo del miembro (courier o aliado) por cada entrega.
+    Invariante: fee_admin_share + fee_platform_share == fee_service_total.
+
+    Si los valores en BD no satisfacen el invariante, se usan los defaults seguros.
+
+    fee_ally_commission_pct: comision adicional al ALIADO sobre tarifa de domicilio.
+    Va 100% a plataforma. 0 = desactivado (default).
+
+    Returns:
+        dict con: fee_service_total, fee_admin_share, fee_platform_share, fee_ally_commission_pct
+    """
+    total = _to_int(get_setting("fee_service_total", "300"), 300)
+    admin_share = _to_int(get_setting("fee_admin_share", "200"), 200)
+    platform_share = _to_int(get_setting("fee_platform_share", "100"), 100)
+
+    # Guardar coherencia: si la suma no cuadra, recalcular platform_share
+    if admin_share + platform_share != total:
+        platform_share = max(0, total - admin_share)
+
+    # Comision adicional al aliado (% sobre tarifa del domicilio al courier)
+    commission_pct = _to_int(get_setting("fee_ally_commission_pct", "0"), 0)
+
+    return {
+        "fee_service_total": total,
+        "fee_admin_share": admin_share,
+        "fee_platform_share": platform_share,
+        "fee_ally_commission_pct": commission_pct,
     }
 
 
@@ -1260,6 +1295,127 @@ def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict 
         "total_fee": distance_fee + additional_fee,
         "total_distance_km": total_distance_km,
         "num_stops": num_stops,
+    }
+
+
+def calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat=None, pickup_lng=None, config=None):
+    """
+    Calcula el precio final de una ruta garantizando que el aliado siempre perciba ahorro
+    respecto a contratar cada entrega como pedido individual.
+
+    Implementa 3 casos basados en el ahorro natural:
+
+    Caso 1 - Ahorro natural <= 20%:
+        El precio natural de la ruta ya genera un ahorro razonable.
+        → precio_final = precio_ruta_natural (sin ajuste)
+        → El courier recibe lo que dicta la tarifa de ruta.
+
+    Caso 2 - Ahorro natural > 20%:
+        El precio natural es tan bajo que el courier saldría perjudicado.
+        Se recorta el descuento al 20% máximo del total individual.
+        → precio_final = precio_individual_total - (20% de precio_individual_total)
+        → El aliado ahorra exactamente el 20%.
+
+    Caso 3 - Ruta más cara que pedidos individuales:
+        La ruta naturalmente sale más cara (e.g., paradas muy dispersas con alta tarifa/parada).
+        Se garantiza ahorro mínimo del 20% sobre la parada más económica.
+        → precio_final = precio_individual_total - (20% del precio de la parada más barata)
+
+    Nota: tarifa_parada_adicional en config = $4.000 (pago al courier por parada adicional).
+    El fee de servicio al saldo del aliado ($200 por parada adicional) es ortogonal y no
+    interviene aquí — se maneja en liquidate_route_additional_stops_fee().
+
+    Args:
+        total_km:    Distancia total de la ruta (suma de segmentos)
+        paradas:     Lista de stops, cada uno con 'lat'/'lng' si hay GPS
+        pickup_lat:  Latitud del punto de recogida (para precios individuales)
+        pickup_lng:  Longitud del punto de recogida
+        config:      Dict de tarifas. Si None, carga desde BD.
+
+    Returns:
+        dict con: total_fee, precio_individual_total, precio_ruta_natural, ahorro_mostrado,
+                  caso, mensaje_ahorro, distance_fee, additional_stops_fee,
+                  tarifa_parada_adicional, total_distance_km, num_stops, precios_individuales
+    """
+    if config is None:
+        config = get_pricing_config()
+
+    n = len(paradas)
+    base = calcular_precio_ruta(total_km, n, config)
+    precio_ruta_natural = base["total_fee"]
+    tarifa_parada = base["tarifa_parada_adicional"]
+
+    # Precio total si cada parada fuera un pedido individual desde el pickup
+    todos_con_gps = (
+        pickup_lat is not None and pickup_lng is not None
+        and all(p.get("lat") and p.get("lng") for p in paradas)
+    )
+    precios_individuales = []
+    if todos_con_gps:
+        for p in paradas:
+            km_ind = haversine_road_km(float(pickup_lat), float(pickup_lng), float(p["lat"]), float(p["lng"]))
+            precios_individuales.append(calcular_precio_distancia(km_ind, config))
+    else:
+        # Sin GPS completo: estimar distancia individual como total_km / n (fallback conservador)
+        km_promedio = total_km / max(n, 1)
+        for _ in paradas:
+            precios_individuales.append(calcular_precio_distancia(km_promedio, config))
+
+    precio_individual_total = sum(precios_individuales)
+
+    if precio_individual_total <= 0:
+        # Fallback de seguridad: retornar precio natural sin comparación
+        return {
+            **base,
+            "precio_individual_total": 0,
+            "precio_ruta_natural": precio_ruta_natural,
+            "ahorro_mostrado": 0,
+            "caso": 1,
+            "mensaje_ahorro": "",
+            "precios_individuales": precios_individuales,
+        }
+
+    ahorro_natural = precio_individual_total - precio_ruta_natural
+    porcentaje_ahorro = ahorro_natural / precio_individual_total
+
+    if precio_ruta_natural < precio_individual_total:
+        if porcentaje_ahorro <= 0.20:
+            # Caso 1: ahorro natural razonable — no ajustar
+            precio_final = precio_ruta_natural
+            caso = 1
+        else:
+            # Caso 2: ahorro excesivo — cap al 20% para proteger al courier
+            descuento_max = int(precio_individual_total * 0.20)
+            precio_final = precio_individual_total - descuento_max
+            caso = 2
+    else:
+        # Caso 3: ruta más cara — garantizar descuento mínimo del 20% de la parada más barata
+        precio_parada_min = min(precios_individuales)
+        descuento_minimo = int(precio_parada_min * 0.20)
+        precio_final = precio_individual_total - descuento_minimo
+        caso = 3
+
+    # Redondear al múltiplo de 100 más cercano (precio más limpio)
+    precio_final = int(round(precio_final / 100.0) * 100)
+    ahorro_mostrado = precio_individual_total - precio_final
+    mensaje_ahorro = (
+        "Ahorras ${:,} vs pedidos individuales".format(ahorro_mostrado)
+        if ahorro_mostrado > 0 else ""
+    )
+
+    return {
+        "distance_fee": base["distance_fee"],
+        "additional_stops_fee": base["additional_stops_fee"],
+        "tarifa_parada_adicional": tarifa_parada,
+        "total_fee": precio_final,
+        "total_distance_km": total_km,
+        "num_stops": n,
+        "precio_individual_total": precio_individual_total,
+        "precio_ruta_natural": precio_ruta_natural,
+        "ahorro_mostrado": ahorro_mostrado,
+        "caso": caso,
+        "mensaje_ahorro": mensaje_ahorro,
+        "precios_individuales": precios_individuales,
     }
 
 
@@ -1673,22 +1829,37 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     if local_ref:
         return local_ref
 
-    # 5. Geocoding por texto (ultimo recurso, cuesta API)
+    # 5. Caché de geocoding por texto (gratis, antes de llamar a la API)
     normalized_text = _normalize_reference_key(text)
+    if not is_url_like:
+        try:
+            cached = get_geocoding_text_cache(normalized_text)
+            if cached:
+                return {
+                    "lat": cached["lat"],
+                    "lng": cached["lng"],
+                    "method": "geocode_cache",
+                    "formatted_address": cached.get("formatted_address", ""),
+                    "place_id": cached.get("place_id"),
+                }
+        except Exception:
+            pass
+
+    # 6. Geocoding por texto (ultimo recurso, cuesta API)
     try:
         quota_ok = can_call_google_today()
     except Exception:
         quota_ok = False
 
     if quota_ok and not is_url_like:
-        # Cascada de consultas: texto original + sufijos de ciudad
-        # Para en el primer resultado valido (economia de cuota).
-        # Para mas candidatos usa resolve_location_next().
+        # Cascada de consultas: texto original + sufijo ciudad principal.
+        # Limitado a 2 variantes para economizar cuota (max 4 calls vs 8 anteriores).
+        # Si el texto original ya incluye ciudad, la segunda variante es redundante
+        # pero inofensiva — el break por resultado válido la salta de todas formas.
+        # Para más candidatos el usuario puede usar resolve_location_next().
         _queries = [
             text,
             f"{text}, Pereira, Risaralda, Colombia",
-            f"{text}, Dosquebradas, Risaralda, Colombia",
-            f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
         ]
         for _q in _queries:
             geo = google_geocode_forward(_q)
@@ -1700,6 +1871,15 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                             normalized_text=normalized_text,
                             suggested_lat=geo["lat"],
                             suggested_lng=geo["lng"],
+                            source="geocode",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        upsert_geocoding_text_cache(
+                            normalized_text, geo["lat"], geo["lng"],
+                            formatted_address=geo.get("formatted_address"),
+                            place_id=geo.get("place_id"),
                             source="geocode",
                         )
                     except Exception:
@@ -1728,6 +1908,15 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                             normalized_text=normalized_text,
                             suggested_lat=places["lat"],
                             suggested_lng=places["lng"],
+                            source="textsearch",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        upsert_geocoding_text_cache(
+                            normalized_text, places["lat"], places["lng"],
+                            formatted_address=places.get("formatted_address"),
+                            place_id=places.get("place_id"),
                             source="textsearch",
                         )
                     except Exception:
@@ -1773,14 +1962,21 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
     _queries = [
         text,
         f"{text}, Pereira, Risaralda, Colombia",
-        f"{text}, Dosquebradas, Risaralda, Colombia",
-        f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
     ]
     for _q in _queries:
         geo = google_geocode_forward(_q)
         if geo and geo.get("lat") and geo.get("lng"):
             if _is_allowed_city(geo.get("formatted_address", "")):
                 _pid = geo.get("place_id") or f"{geo['lat']},{geo['lng']}"
+                try:
+                    upsert_geocoding_text_cache(
+                        _normalize_reference_key(text), geo["lat"], geo["lng"],
+                        formatted_address=geo.get("formatted_address"),
+                        place_id=geo.get("place_id"),
+                        source="geocode",
+                    )
+                except Exception:
+                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": geo["lat"],
@@ -1800,6 +1996,15 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
         if places and places.get("lat") and places.get("lng"):
             if _is_allowed_city(places.get("formatted_address", "")):
                 _pid = places.get("place_id") or f"{places['lat']},{places['lng']}"
+                try:
+                    upsert_geocoding_text_cache(
+                        _normalize_reference_key(text), places["lat"], places["lng"],
+                        formatted_address=places.get("formatted_address"),
+                        place_id=places.get("place_id"),
+                        source="textsearch",
+                    )
+                except Exception:
+                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": places["lat"],
@@ -2059,24 +2264,40 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
 
 
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
-                      ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
+                      ref_type: str = None, ref_id: int = None,
+                      total_fee: int = None) -> Tuple[bool, str]:
     """
-    Cobra tarifa de $300 por servicio al courier/aliado y distribuye el ingreso.
+    Cobra tarifa de servicio al courier/aliado y distribuye el ingreso.
     Distribucion:
-    - Si admin es PLATFORM: $300 van a plataforma.
-    - Si admin es local: $200 al admin del miembro, $100 a plataforma.
+    - Si admin es PLATFORM: fee_service_total va a plataforma.
+    - Si admin es local: fee_admin_share al admin del miembro, fee_platform_share a plataforma.
+    Los montos se leen desde BD (settings: fee_service_total, fee_admin_share, fee_platform_share).
     El admin no paga comision; recibe ingresos por cada servicio de su equipo.
+
+    total_fee: tarifa de domicilio pagada al courier (solo relevante para ALLY).
+        Si target_type=="ALLY", total_fee>0 y fee_ally_commission_pct>0,
+        se cobra una comision adicional al aliado sobre esa tarifa, que va 100% a plataforma.
+
     Retorna: (success, message)
     """
-    fee = 300
-    admin_share = 200
-    platform_share = 100
+    fee_cfg = get_fee_config()
+    fee = fee_cfg["fee_service_total"]
+    admin_share = fee_cfg["fee_admin_share"]
+    platform_share = fee_cfg["fee_platform_share"]
+    commission_pct = fee_cfg["fee_ally_commission_pct"]
 
     platform_admin = get_platform_admin()
     if not platform_admin:
         return False, "Plataforma no configurada."
     platform_id = platform_admin["id"]
     is_platform = (admin_id == platform_id)
+
+    # Calcular comision adicional al aliado (0 si commission_pct==0 o total_fee no aplica)
+    ally_commission = 0
+    if target_type == "ALLY" and total_fee and commission_pct > 0:
+        ally_commission = int(round(total_fee * commission_pct / 100))
+
+    total_debit = fee + ally_commission
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -2085,13 +2306,13 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     else:
         return False, "Tipo de destino desconocido: {}".format(target_type)
 
-    if balance < fee:
-        return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, fee)
+    if balance < total_debit:
+        return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, total_debit)
 
     if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, -fee)
     elif target_type == "ALLY":
-        update_ally_link_balance(target_id, admin_id, -fee)
+        update_ally_link_balance(target_id, admin_id, -total_debit)
 
     if is_platform:
         # Plataforma gana los $300 completos
@@ -2129,7 +2350,24 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
             from_id=target_id,
         )
 
-    return True, "Tarifa de ${:,} aplicada.".format(fee)
+    # Comision adicional al aliado (va 100% a plataforma, separada del fee normal)
+    if ally_commission > 0:
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=ally_commission,
+            kind="PLATFORM_FEE",
+            note="Comision {}% sobre tarifa domicilio (ALLY id={}, tarifa=${:,})".format(
+                commission_pct, target_id, total_fee),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+
+    msg = "Tarifa de ${:,} aplicada.".format(fee)
+    if ally_commission > 0:
+        msg += " Comision adicional ${:,}.".format(ally_commission)
+    return True, msg
 
 
 def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
@@ -2152,9 +2390,11 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
         return False, "La ruta no tiene additional_stops_fee para liquidar ({} parada(s) entregada(s)).".format(n_delivered)
 
     # Proporcional: solo paradas efectivamente entregadas
-    config = get_pricing_config()
-    tarifa = int(config.get("tarifa_parada_adicional", 200))
-    amount = (n_delivered - 1) * tarifa
+    # IMPORTANTE: tarifa_parada_adicional ($4.000) es el pago al COURIER, no este fee.
+    # Este fee es la comisión de SERVICIO cobrada al saldo del aliado: $200 por parada adicional.
+    # Son dos conceptos distintos — este valor NO se lee del config de precios del courier.
+    TARIFA_PARADA_SERVICIO = 200
+    amount = (n_delivered - 1) * TARIFA_PARADA_SERVICIO
 
     platform_admin = get_platform_admin()
     if not platform_admin:
@@ -2178,12 +2418,13 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
     """
-    Verifica si el miembro tiene saldo suficiente para cobrar el fee ($300), sin cobrar.
+    Verifica si el miembro tiene saldo suficiente para cubrir el fee de servicio, sin cobrar.
+    El fee requerido se lee desde BD (fee_service_total, default $300).
     El admin no paga comision (recibe ingresos), por lo que no se valida su saldo aqui.
     Retorna: (can_operate, error_code)
     error_code: 'OK' o 'MEMBER_SIN_SALDO'
     """
-    fee = 300
+    fee = get_fee_config()["fee_service_total"]
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -2201,10 +2442,10 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
 def can_courier_activate(courier_id: int) -> Tuple[bool, str]:
     """
     Verifica si el repartidor tiene saldo operativo suficiente para activarse.
-    Requiere al menos $300 en admin_couriers.balance (fee minimo por servicio).
+    Requiere al menos fee_service_total en admin_couriers.balance (leído desde BD).
     Retorna (puede_activarse, mensaje_error).
     """
-    MIN_BALANCE = 300
+    MIN_BALANCE = get_fee_config()["fee_service_total"]
     admin_id = get_approved_admin_id_for_courier(courier_id)
     if admin_id is None:
         return False, "No tienes un administrador aprobado. Contacta a tu admin."
@@ -3020,6 +3261,7 @@ def resolve_support_request_from_admin_panel(support_id: int, action: str, admin
                 admin_id=ally_admin_link["admin_id"],
                 ref_type="ORDER",
                 ref_id=order_id,
+                total_fee=order["total_fee"],
             )
         courier_admin_id = get_approved_admin_id_for_courier(courier_id)
         if courier_admin_id:

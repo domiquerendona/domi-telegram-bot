@@ -190,6 +190,20 @@ CREATE TABLE IF NOT EXISTS map_distance_cache (
     UNIQUE(origin_key, destination_key, mode)
 );
 
+CREATE TABLE IF NOT EXISTS geocoding_text_cache (
+    id BIGSERIAL PRIMARY KEY,
+    text_key TEXT NOT NULL UNIQUE,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    formatted_address TEXT,
+    place_id TEXT,
+    source TEXT,
+    hit_count INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_geocoding_text_cache_key ON geocoding_text_cache(text_key);
+
 CREATE TABLE IF NOT EXISTS status_audit_log (
     id BIGSERIAL PRIMARY KEY,
     entity_type TEXT NOT NULL,

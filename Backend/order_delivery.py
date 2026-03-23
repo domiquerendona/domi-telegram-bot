@@ -2550,6 +2550,7 @@ def _handle_delivered(update, context, order_id):
             admin_id=ally_admin_id,
             ref_type="ORDER",
             ref_id=order_id,
+            total_fee=order["total_fee"],
         )
         if ally_ok:
             fee_ally_ok = True
@@ -3721,6 +3722,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
             ally_ok, ally_msg = apply_service_fee(
                 target_type="ALLY", target_id=ally_id,
                 admin_id=ally_admin_id, ref_type="ROUTE", ref_id=route_id,
+                total_fee=route["total_fee"],
             )
             if not ally_ok:
                 print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg))
@@ -4387,6 +4389,7 @@ def _do_deliver_order(context, order, courier_id):
         apply_service_fee(
             target_type="ALLY", target_id=ally_id, admin_id=ally_admin_id,
             ref_type="ORDER", ref_id=order_id,
+            total_fee=order["total_fee"],
         )
     if courier_admin_id:
         apply_service_fee(
@@ -4641,6 +4644,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
             ally_ok_r, ally_msg_r = apply_service_fee(
                 target_type="ALLY", target_id=ally_id_route,
                 admin_id=ally_admin_id_route, ref_type="ROUTE", ref_id=route_id,
+                total_fee=route["total_fee"],
             )
             if not ally_ok_r:
                 print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg_r))

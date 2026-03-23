@@ -2110,6 +2110,15 @@ def solequipo_ally_sel_callback(update, context):
 
 
 def main():
+    # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
+    # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
+    # Desactivar: eliminar la variable o ponerla en "false".
+    if os.getenv("PAUSE_BOT_DEV", "").lower() in ("1", "true", "yes"):
+        print("[PAUSED] PAUSE_BOT_DEV activo. Bot en modo sleep. "
+              "Elimina o pon 'false' en PAUSE_BOT_DEV para reactivar.")
+        while True:
+            time.sleep(60)
+
     init_db()
     force_platform_admin(ADMIN_USER_ID)
     ensure_pricing_defaults()
