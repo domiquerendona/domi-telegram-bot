@@ -326,7 +326,6 @@ from handlers.customer_agenda import (
     admin_clientes_conv,
     ally_clientes_conv,
     agenda_conv,
-    clientes_conv,
 )
 from handlers.recharges import (
     recargar_conv,
@@ -2293,7 +2292,6 @@ def main():
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega
-    dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(ally_locs_conv)     # Mis ubicaciones (aliado)
     dp.add_handler(cotizar_conv)       # /cotizar

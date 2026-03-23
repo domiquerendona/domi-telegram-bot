@@ -472,8 +472,8 @@ def clientes_nuevo_nombre(update, context):
 def clientes_nuevo_telefono(update, context):
     """Recibe telefono del nuevo cliente."""
     context.user_data["new_customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
-    return CLIENTES_NUEVO_NOTAS
+    update.message.reply_text("Escribe la direccion de entrega del cliente:")
+    return CLIENTES_NUEVO_DIRECCION_TEXT
 
 
 def clientes_nuevo_notas(update, context):
@@ -515,14 +515,40 @@ def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_n
     return loc
 
 
-def clientes_nuevo_direccion_text(update, context):
-    """Recibe direccion y guarda el nuevo cliente."""
-    address_text = update.message.text.strip()
+def _clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
+    """Crea cliente + direccion 'Principal' directamente. Limpia claves temporales."""
     ally_id = context.user_data.get("active_ally_id")
     name = context.user_data.get("new_customer_name")
     phone = context.user_data.get("new_customer_phone")
-    notes = context.user_data.get("new_customer_notes")
-    label = context.user_data.get("new_address_label")
+    try:
+        customer_id = create_ally_customer(ally_id, name, phone, None)
+        create_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
+        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")]]
+        text = "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}".format(name, phone, address_text)
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            msg_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        err_text = "Error al guardar cliente: {}".format(str(e))
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(err_text)
+        else:
+            msg_or_query.edit_message_text(err_text)
+    for key in [
+        "new_customer_name", "new_customer_phone",
+        "clientes_geo_mode", "clientes_geo_address_input", "clientes_geo_formatted",
+        "clientes_pending_mode", "clientes_pending_address_text",
+        "clientes_pending_lat", "clientes_pending_lng",
+        "clientes_pending_city", "clientes_pending_barrio", "clientes_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return CLIENTES_MENU
+
+
+def clientes_nuevo_direccion_text(update, context):
+    """Recibe direccion y guarda el nuevo cliente."""
+    address_text = update.message.text.strip()
 
     resolved = _clientes_resolver_direccion_para_agenda(
         update, context, address_text, "cust_geo_si", "cust_geo_no", CLIENTES_NUEVO_DIRECCION_TEXT
@@ -537,12 +563,7 @@ def clientes_nuevo_direccion_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    context.user_data["clientes_pending_mode"] = "nuevo_cliente"
-    context.user_data["clientes_pending_address_text"] = address_to_save
-    context.user_data["clientes_pending_lat"] = lat
-    context.user_data["clientes_pending_lng"] = lng
-    update.message.reply_text("Escribe la ciudad de la direccion:")
-    return CLIENTES_DIR_CIUDAD
+    return _clientes_guardar_nuevo(update.message, context, address_to_save, lat, lng)
 
 
 def clientes_buscar(update, context):
@@ -706,6 +727,12 @@ def clientes_geo_callback(update, context):
             except Exception as e:
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return clientes_mostrar_menu(update, context, edit_message=False)
+
+        if mode == "nuevo_cliente":
+            original_text = context.user_data.get("clientes_geo_address_input", "")
+            context.user_data.pop("clientes_geo_mode", None)
+            context.user_data.pop("clientes_geo_address_input", None)
+            return _clientes_guardar_nuevo(query, context, original_text, lat, lng)
 
         original_text = context.user_data.get("clientes_geo_address_input", "")
         context.user_data["clientes_pending_mode"] = mode
@@ -1374,6 +1401,37 @@ def admin_clientes_ver_callback(update, context):
     return ADMIN_CUST_VER
 
 
+def _admin_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
+    """Crea cliente + direccion 'Principal' directamente. Limpia claves temporales."""
+    admin_id = context.user_data.get("acust_admin_id")
+    name = context.user_data.get("acust_new_customer_name")
+    phone = context.user_data.get("acust_new_customer_phone")
+    try:
+        customer_id = create_admin_customer(admin_id, name, phone, None)
+        create_admin_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
+        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")]]
+        text = "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}".format(name, phone, address_text)
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            msg_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        err_text = "Error al guardar cliente: {}".format(str(e))
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(err_text)
+        else:
+            msg_or_query.edit_message_text(err_text)
+    for key in [
+        "acust_new_customer_name", "acust_new_customer_phone",
+        "acust_geo_mode", "acust_geo_address_input", "acust_geo_formatted",
+        "acust_pending_mode", "acust_pending_address_text",
+        "acust_pending_lat", "acust_pending_lng",
+        "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return ADMIN_CUST_MENU
+
+
 def admin_clientes_nuevo_nombre(update, context):
     """Recibe nombre del nuevo cliente del admin."""
     context.user_data["acust_new_customer_name"] = update.message.text.strip()
@@ -1384,8 +1442,8 @@ def admin_clientes_nuevo_nombre(update, context):
 def admin_clientes_nuevo_telefono(update, context):
     """Recibe telefono del nuevo cliente del admin."""
     context.user_data["acust_new_customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
-    return ADMIN_CUST_NUEVO_NOTAS
+    update.message.reply_text("Escribe la direccion de entrega del cliente:")
+    return ADMIN_CUST_NUEVO_DIR_TEXT
 
 
 def admin_clientes_nuevo_notas(update, context):
@@ -1444,12 +1502,7 @@ def admin_clientes_nuevo_dir_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    context.user_data["acust_pending_mode"] = "nuevo_cliente"
-    context.user_data["acust_pending_address_text"] = address_to_save
-    context.user_data["acust_pending_lat"] = lat
-    context.user_data["acust_pending_lng"] = lng
-    update.message.reply_text("Escribe la ciudad de la direccion:")
-    return ADMIN_CUST_DIR_CIUDAD
+    return _admin_clientes_guardar_nuevo(update.message, context, address_to_save, lat, lng)
 
 
 def admin_clientes_buscar(update, context):
@@ -1611,6 +1664,12 @@ def admin_clientes_geo_callback(update, context):
             except Exception as e:
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return _admin_clientes_mostrar_menu(update, context, edit_message=False)
+
+        if mode == "nuevo_cliente":
+            original_text = context.user_data.get("acust_geo_address_input", "")
+            context.user_data.pop("acust_geo_mode", None)
+            context.user_data.pop("acust_geo_address_input", None)
+            return _admin_clientes_guardar_nuevo(query, context, original_text, lat, lng)
 
         original_text = context.user_data.get("acust_geo_address_input", "")
         context.user_data["acust_pending_mode"] = mode
@@ -2222,6 +2281,37 @@ def ally_clientes_ver_callback(update, context):
     return ALLY_CUST_VER
 
 
+def _ally_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
+    """Crea cliente + direccion 'Principal' directamente. Limpia claves temporales."""
+    ally_id = context.user_data.get("allycust_ally_id")
+    name = context.user_data.get("allycust_new_customer_name")
+    phone = context.user_data.get("allycust_new_customer_phone")
+    try:
+        customer_id = create_ally_customer(ally_id, name, phone, None)
+        create_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
+        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")]]
+        text = "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}".format(name, phone, address_text)
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            msg_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        err_text = "Error al guardar cliente: {}".format(str(e))
+        if hasattr(msg_or_query, 'reply_text'):
+            msg_or_query.reply_text(err_text)
+        else:
+            msg_or_query.edit_message_text(err_text)
+    for key in [
+        "allycust_new_customer_name", "allycust_new_customer_phone",
+        "allycust_geo_mode", "allycust_geo_address_input", "allycust_geo_formatted",
+        "allycust_pending_mode", "allycust_pending_address_text",
+        "allycust_pending_lat", "allycust_pending_lng",
+        "allycust_pending_city", "allycust_pending_barrio", "allycust_pending_notes",
+    ]:
+        context.user_data.pop(key, None)
+    return ALLY_CUST_MENU
+
+
 def ally_clientes_nuevo_nombre(update, context):
     context.user_data["allycust_new_customer_name"] = update.message.text.strip()
     update.message.reply_text("Escribe el telefono del cliente:")
@@ -2230,8 +2320,8 @@ def ally_clientes_nuevo_nombre(update, context):
 
 def ally_clientes_nuevo_telefono(update, context):
     context.user_data["allycust_new_customer_phone"] = update.message.text.strip()
-    update.message.reply_text("Escribe notas del cliente (o 'ninguna' si no hay):")
-    return ALLY_CUST_NUEVO_NOTAS
+    update.message.reply_text("Escribe la direccion de entrega del cliente:")
+    return ALLY_CUST_NUEVO_DIR_TEXT
 
 
 def ally_clientes_nuevo_notas(update, context):
@@ -2286,12 +2376,7 @@ def ally_clientes_nuevo_dir_text(update, context):
     lat = resolved.get("lat")
     lng = resolved.get("lng")
     address_to_save = resolved.get("formatted_address") or address_text
-    context.user_data["allycust_pending_mode"] = "nuevo_cliente"
-    context.user_data["allycust_pending_address_text"] = address_to_save
-    context.user_data["allycust_pending_lat"] = lat
-    context.user_data["allycust_pending_lng"] = lng
-    update.message.reply_text("Escribe la ciudad de la direccion:")
-    return ALLY_CUST_DIR_CIUDAD
+    return _ally_clientes_guardar_nuevo(update.message, context, address_to_save, lat, lng)
 
 
 def ally_clientes_buscar(update, context):
@@ -2432,6 +2517,12 @@ def ally_clientes_geo_callback(update, context):
             except Exception as e:
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return _ally_clientes_mostrar_menu(update, context, edit_message=False)
+
+        if mode == "nuevo_cliente":
+            original_text = context.user_data.get("allycust_geo_address_input", "")
+            context.user_data.pop("allycust_geo_mode", None)
+            context.user_data.pop("allycust_geo_address_input", None)
+            return _ally_clientes_guardar_nuevo(query, context, original_text, lat, lng)
 
         original_text = context.user_data.get("allycust_geo_address_input", "")
         context.user_data["allycust_pending_mode"] = mode
@@ -3098,12 +3189,6 @@ agenda_conv = ConversationHandler(
         CLIENTES_NUEVO_TELEFONO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
         ],
-        CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
-        ],
-        CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
-        ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_text)
@@ -3158,7 +3243,7 @@ agenda_conv = ConversationHandler(
     allow_reentry=True,
 )
 
-# ConversationHandler para /clientes
+# ConversationHandler para /clientes — entrada unificada, redirige a ally_clientes_conv via ally_clientes_cmd
 clientes_conv = ConversationHandler(
     entry_points=[
         CommandHandler("clientes", clientes_cmd),
@@ -3173,12 +3258,6 @@ clientes_conv = ConversationHandler(
         ],
         CLIENTES_NUEVO_TELEFONO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_telefono)
-        ],
-        CLIENTES_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_notas)
-        ],
-        CLIENTES_NUEVO_DIRECCION_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_direccion_label)
         ],
         CLIENTES_NUEVO_DIRECCION_TEXT: [
             CallbackQueryHandler(clientes_geo_callback, pattern=r"^cust_geo_(si|no)$"),
@@ -3241,12 +3320,6 @@ admin_clientes_conv = ConversationHandler(
         ADMIN_CUST_NUEVO_TELEFONO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_telefono)
         ],
-        ADMIN_CUST_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_notas)
-        ],
-        ADMIN_CUST_NUEVO_DIR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_label)
-        ],
         ADMIN_CUST_NUEVO_DIR_TEXT: [
             CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_dir_text)
@@ -3303,6 +3376,8 @@ admin_clientes_conv = ConversationHandler(
 ally_clientes_conv = ConversationHandler(
     entry_points=[
         MessageHandler(Filters.regex(r'^Mis clientes$'), ally_clientes_cmd),
+        MessageHandler(Filters.regex(r'^Clientes$'), ally_clientes_cmd),
+        CommandHandler("clientes", ally_clientes_cmd),
     ],
     states={
         ALLY_CUST_MENU: [
@@ -3313,12 +3388,6 @@ ally_clientes_conv = ConversationHandler(
         ],
         ALLY_CUST_NUEVO_TEL: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_telefono)
-        ],
-        ALLY_CUST_NUEVO_NOTAS: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_notas)
-        ],
-        ALLY_CUST_NUEVO_DIR_LABEL: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_dir_label)
         ],
         ALLY_CUST_NUEVO_DIR_TEXT: [
             CallbackQueryHandler(ally_clientes_geo_callback, pattern=r"^allycust_geo_(si|no)$"),
