@@ -279,6 +279,9 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `settings` | Configuración del sistema (clave-valor) |
 | `profile_change_requests` | Solicitudes de cambio de perfil |
 | `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
+| `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
+| `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
+| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. |
 
 ---
 
@@ -431,6 +434,7 @@ Archivo de referencia: `Backend/.env.example`
 | `DATABASE_URL` | URL de conexión PostgreSQL | DEV y PROD (Railway) |
 | `WEB_ADMIN_USER` | Username del admin inicial del panel web | Opcional (default: `admin`) |
 | `WEB_ADMIN_PASSWORD` | Contraseña del admin inicial del panel web | Opcional (default: `changeme`) |
+| `PAUSE_BOT_DEV` | Si es `1`, `true` o `yes`: el bot entra en bucle infinito de sleep sin procesar mensajes. Útil para pausar Railway DEV sin detener el servicio (evita cobro de llamadas Google Maps en periodos de no uso). Solo aplica en DEV; PROD nunca debe tener esta variable. | DEV (opcional) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
 
@@ -830,12 +834,23 @@ La plataforma opera como una **red cooperativa**: cualquier repartidor activo (d
 - `get_eligible_couriers_for_order` en `db.py` NO filtra por `admin_id`. Retorna todos los repartidores con `admin_couriers.status = 'APPROVED'` y `couriers.status = 'APPROVED'`.
 - El parámetro `admin_id` existe pero es opcional (`admin_id=None`) y se ignora en la query.
 
-**Modelo de comisiones (simétrico):**
-- Aliado crea pedido → fee $300 al aliado al entregar (o al expirar sin courier) → $200 al admin del aliado, $100 a Plataforma.
-- Courier entrega pedido → fee $300 al courier → $200 al admin del courier, $100 a Plataforma.
-- Cada admin gana $200 por cada servicio de sus propios miembros, sin importar con quién interactúan.
-- Si el admin es Plataforma: gana los $300 completos (no hay split).
-- Pedidos creados por admin (admin_pedido): **el admin creador no paga fee**; solo paga el courier que entrega ($200 su admin, $100 a Plataforma).
+**Modelo de comisiones (simétrico, configurable desde BD — IMPLEMENTADO 2026-03-22):**
+
+Los valores de fee están almacenados en la tabla `settings` y se leen con `get_fee_config()` en `services.py`:
+
+| Clave settings | Valor por defecto | Descripción |
+|----------------|-------------------|-------------|
+| `fee_service_total` | 300 | Fee total cobrado al miembro por servicio (aliado o courier) |
+| `fee_admin_share` | 200 | Parte que va al admin del miembro |
+| `fee_platform_share` | 100 | Parte que va a Plataforma |
+| `fee_ally_commission_pct` | 0 | Comisión adicional % sobre `total_fee` cobrada al aliado (ver sección de comisión) |
+
+- Aliado entrega pedido → fee `fee_service_total` al aliado → `fee_admin_share` al admin del aliado, `fee_platform_share` a Plataforma.
+- Courier entrega pedido → fee `fee_service_total` al courier → `fee_admin_share` al admin del courier, `fee_platform_share` a Plataforma.
+- Cada admin gana `fee_admin_share` por cada servicio de sus propios miembros, sin importar con quién interactúan.
+- **Si el admin es Plataforma gestionando su propio equipo**: el ledger registra `fee_admin_share` como `FEE_INCOME` (ganancia personal de Luis Felipe) y `fee_platform_share` como `PLATFORM_FEE` (ganancia de la sociedad, split 50/50 con inversora). Antes del fix 2026-03-22 todo se registraba como `FEE_INCOME`.
+- Pedidos creados por admin (admin_pedido): **el admin creador no paga fee**; solo paga el courier que entrega (`fee_admin_share` a su admin, `fee_platform_share` a Plataforma).
+- Si el aliado tiene suscripción activa (`check_ally_active_subscription`): **no se cobra fee al aliado** en ninguna entrega. El courier sigue pagando su fee normal.
 
 **Flujo técnico post-implementación:**
 ```
@@ -1178,9 +1193,24 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 - Privacidad: **PROHIBIDO** guardar direcciones/coords o cualquier PII en `api_usage_events.meta_json`. Solo metadata no sensible (status, provider, mode).
 - Helper de consulta rápida: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
 
+### Límite diario y eficiencia de queries (ACTUALIZADO 2026-03-22)
+
+- `GOOGLE_LOOKUP_DAILY_LIMIT` en `services.py`: **150** (era 50 antes del 2026-03-22).
+- `resolve_location()` y `resolve_location_next()` usan **2 queries** por ciclo (era 4). Se eliminaron `google_place_details` y `google_places_text_search` del pipeline primario; ahora usa solo `google_geocode_forward` + `get_distance_from_api`.
+
+### Caché de Geocodificación por Texto (IMPLEMENTADO 2026-03-22)
+
+Antes de llamar a la API en `resolve_location` / `resolve_location_next`, `services.py` consulta `geocoding_text_cache` usando el texto normalizado como clave. Si hay hit, retorna el resultado cacheado sin consumir cuota. Al obtener resultado de la API, lo persiste en la caché.
+
+- **Normalización**: texto en minúsculas, sin espacios extra, sin tildes.
+- **Tabla**: `geocoding_text_cache` (ver sección Tablas Principales).
+- **Funciones**: `get_geocoding_text_cache(text_key)` / `upsert_geocoding_text_cache(text_key, lat, lng, display_name, city, barrio)` en `db.py`, re-exportadas en `services.py`.
+- **Impacto esperado**: elimina ~60–70% de llamadas repetidas en zonas geográficas activas.
+
 ### Regla de Caché
 - Distancias entre pares de coordenadas **deben cachearse** en base de datos.
 - **PROHIBIDO** recalcular una distancia ya cacheada para la misma consulta.
+- Textos de geocodificación **deben consultarse en `geocoding_text_cache`** antes de llamar a la API. **PROHIBIDO** llamar a la API para una dirección textual ya cacheada.
 
 ### Regla de Geocodificación
 - Coordenadas (lat/lng) se capturan vía Telegram (ubicación GPS). La API solo se usa para geocodificación inversa o búsqueda de direcciones escritas.
@@ -1735,6 +1765,87 @@ Pendiente puntual: no consume aún el campo `subsidy_conditional` del response d
 
 ---
 
+## Suscripciones Mensuales de Aliados (IMPLEMENTADO 2026-03-22)
+
+Sistema de suscripción mensual que permite a un aliado pagar una cuota fija y quedar exento del fee por servicio ($300) en todas sus entregas durante ese mes.
+
+### Modelo económico
+
+- El admin configura libremente el precio de la suscripción para cada aliado.
+- La plataforma retiene un piso fijo (`subscription_platform_share`, default $20.000/mes).
+- El admin se queda con el margen: `precio − platform_share`.
+- El aliado paga con saldo del bot. Si no tiene saldo suficiente → suscripción rechazada.
+- Un aliado suscrito no paga fee por servicio en ninguna entrega (el courier sigue pagando el suyo).
+
+### Tablas y columnas
+
+| Elemento | Descripción |
+|----------|-------------|
+| `admin_allies.subscription_price` | Precio mensual configurado por el admin para este aliado. NULL = sin precio configurado |
+| `ally_subscriptions` | Registro histórico de suscripciones (ver Tablas Principales) |
+| `settings.subscription_platform_share` | Piso mínimo de plataforma por suscripción (default: 20000) |
+
+### Ledger kinds usados
+
+| Kind | Significado |
+|------|-------------|
+| `SUBSCRIPTION_PLATFORM_SHARE` | Parte de la suscripción que va a plataforma |
+| `SUBSCRIPTION_ADMIN_SHARE` | Margen del admin por la suscripción |
+
+### Flujo del admin (`config_subs_conv` — `handlers/config.py`)
+
+Entry point: callback `config_subs_{ally_id}` (desde detalle del aliado en panel admin)
+
+1. Admin ve precio actual configurado (si existe) y puede ingresar uno nuevo.
+2. Se valida que el precio sea mayor que `subscription_platform_share` (el admin debe tener margen positivo).
+3. `set_ally_subscription_price(ally_id, admin_id, precio)` persiste en `admin_allies.subscription_price`.
+4. Confirmación con desglose: "Aliado paga $X — Plataforma recibe $20.000 — Tú recibes $Y".
+
+Estados: `CONFIG_SUBS_PRECIO = 994`
+
+### Flujo del aliado (`ally_suscripcion_conv` — `handlers/recharges.py`)
+
+Entry point: botón "Mi suscripcion" en menú del aliado → callback `ally_mi_suscripcion`
+
+1. Si no hay precio configurado → informar al aliado que contacte al admin.
+2. Si hay precio configurado → mostrar desglose + saldo actual + botón Confirmar / Cancelar.
+3. Si aliado confirma (`ALLY_SUBS_CONFIRMAR = 995`): `pay_ally_subscription(ally_id, admin_id, precio)`.
+   - Descuenta saldo del aliado (`admin_allies.balance -= precio`)
+   - Inserta en `ally_subscriptions` con `expires_at = NOW() + 30 días`
+   - Ledger: `SUBSCRIPTION_PLATFORM_SHARE` + `SUBSCRIPTION_ADMIN_SHARE`
+4. Confirma activación con fecha de vencimiento.
+
+### Funciones clave
+
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `set_ally_subscription_price(ally_id, admin_id, price)` | `db.py` | Guarda precio en `admin_allies.subscription_price` |
+| `get_ally_subscription_price(ally_id, admin_id)` | `db.py` | Retorna precio configurado o None |
+| `create_ally_subscription(ally_id, admin_id, price, platform_share, admin_share)` | `db.py` | Crea registro en `ally_subscriptions`, retorna id |
+| `get_active_ally_subscription(ally_id)` | `db.py` | Retorna suscripción activa o None |
+| `expire_old_ally_subscriptions()` | `db.py` | Marca como EXPIRED las suscripciones vencidas (llamado en boot) |
+| `get_ally_subscription_info(ally_id)` | `db.py` | Info completa de suscripción (precio + estado + vencimiento) |
+| `check_ally_active_subscription(ally_id)` | `services.py` | Retorna bool — True si hay suscripción activa |
+| `pay_ally_subscription(ally_id, admin_id, price)` | `services.py` | Ejecuta el pago y crea el registro |
+| `get_subscription_summary_for_ally(ally_id, admin_id)` | `services.py` | Resumen para mostrar al aliado |
+
+Todas re-exportadas en `services.py`. `expire_old_ally_subscriptions` se llama en arranque de `main.py`.
+
+---
+
+## Comisión del Aliado (IMPLEMENTADO 2026-03-22)
+
+Comisión adicional opcional sobre la tarifa de domicilio (`total_fee`) cobrada al aliado en cada entrega. Separada del fee de servicio estándar ($300).
+
+- **Controlada por**: `settings.fee_ally_commission_pct` (entero = porcentaje, default `0`).
+- **Activación**: cambiar en BD `fee_ally_commission_pct = 3` (o el % deseado). Default 0 = sin comisión.
+- **Cálculo**: `comision = round(total_fee * pct / 100)`; se descuenta de `admin_allies.balance` del aliado.
+- **Ledger**: registrado como `FEE_INCOME` en el ledger del admin del aliado.
+- **Exención**: si el aliado tiene suscripción activa, no se cobra esta comisión (junto con el fee estándar).
+- **Implementación**: `apply_service_fee(member_type="ALLY", ..., total_fee=order["total_fee"])` en `services.py`. El parámetro `total_fee` solo tiene efecto cuando `fee_ally_commission_pct > 0`.
+
+---
+
 ## Precios de Rutas Multi-parada: Algoritmo Inteligente (IMPLEMENTADO 2026-03-22)
 
 ### Estructura dual de fees en rutas
@@ -1805,5 +1916,5 @@ Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
 
 ---
 
-*Última actualización: 2026-03-22*
+*Última actualización: 2026-03-23*
 
