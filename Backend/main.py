@@ -695,6 +695,21 @@ def menu(update, context):
     return start(update, context)
 
 
+def stale_callback_handler(update, context):
+    """Catch-all para callbacks huerfanos (bot reiniciado, sesion expirada).
+    Se registra al final de todos los handlers para capturar cualquier callback
+    que ningun otro handler haya procesado."""
+    query = update.callback_query
+    query.answer()
+    chat_id = query.message.chat_id if query.message else None
+    if chat_id:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Esta accion ya no esta disponible (el bot se reinicio). Usa el menu para continuar."
+        )
+        show_main_menu(update, context)
+
+
 def mi_aliado(update, context):
     """Muestra el submenu de gestion de aliado."""
     user_db_id = get_user_db_id_from_update(update)
@@ -2323,6 +2338,9 @@ def main():
         Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'),
         volver_menu_global
     ))
+
+    # Catch-all para callbacks huerfanos (bot reiniciado, sesion expirada)
+    dp.add_handler(CallbackQueryHandler(stale_callback_handler))
 
     # -------------------------
     # Notificación de arranque al Administrador de Plataforma (opcional)
