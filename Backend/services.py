@@ -38,6 +38,7 @@ from db import (
     get_order_status_by_id,
     cancel_order,
     get_admin_by_telegram_id,
+    get_ally_by_telegram_id,
     get_user_by_telegram_id,
     get_admin_by_user_id,
     can_admin_validate_references,
