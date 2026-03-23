@@ -2315,12 +2315,26 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
         update_ally_link_balance(target_id, admin_id, -total_debit)
 
     if is_platform:
-        # Plataforma gana los $300 completos
+        # Platform admin gestionando su propio equipo:
+        # Se aplica el mismo split que un admin local, pero ambas partes van a la misma cuenta.
+        # Esto permite distinguir en el ledger:
+        #   FEE_INCOME   → ganancia personal del platform admin como admin de su equipo (no se divide)
+        #   PLATFORM_FEE → ganancia de plataforma (para dividir con socios/inversores)
         update_admin_balance_with_ledger(
             admin_id=platform_id,
-            delta=fee,
+            delta=admin_share,
             kind="FEE_INCOME",
-            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            note="Ingreso admin por servicio de equipo propio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=platform_share,
+            kind="PLATFORM_FEE",
+            note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
             ref_type=ref_type,
             ref_id=ref_id,
             from_type=target_type,
