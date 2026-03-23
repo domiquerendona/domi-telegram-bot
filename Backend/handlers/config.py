@@ -575,3 +575,87 @@ config_ally_subsidy_conv = ConversationHandler(
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
     ],
 )
+
+# ---------------------------------------------------------------------------
+# config_subs_conv — Admin configura precio de suscripcion para un aliado
+# Entry: callback config_subs_{ally_id}
+# ---------------------------------------------------------------------------
+
+from handlers.states import CONFIG_SUBS_PRECIO
+from services import (
+    get_setting,
+    set_ally_subscription_price,
+    get_ally_subscription_price,
+    get_ally_link_balance,
+)
+
+
+def config_subs_start(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data  # config_subs_{ally_id}
+    ally_id = int(data.split("_")[-1])
+    context.user_data["subs_ally_id"] = ally_id
+
+    platform_share = int(get_setting("subscription_platform_share") or 20000)
+    current = get_ally_subscription_price(
+        context.user_data.get("admin_db_id") or 0, ally_id
+    )
+    current_txt = "${:,}".format(current) if current else "No configurado"
+
+    query.edit_message_text(
+        "CONFIGURAR SUSCRIPCION MENSUAL\n\n"
+        "Aliado id: {}\n"
+        "Precio actual: {}\n"
+        "Piso de plataforma: ${:,}\n\n"
+        "El aliado pagara el precio que configures. De ese total, ${:,} "
+        "van a plataforma y el resto es tu ganancia mensual por este aliado.\n\n"
+        "Ingresa el nuevo precio mensual (en pesos, solo numeros):\n"
+        "Minimo: ${:,}".format(ally_id, current_txt, platform_share, platform_share, platform_share + 1),
+    )
+    return CONFIG_SUBS_PRECIO
+
+
+def config_subs_precio(update, context):
+    text = update.message.text.strip().replace(".", "").replace(",", "").replace("$", "")
+    if not text.isdigit():
+        update.message.reply_text("Ingresa solo numeros. Ejemplo: 80000")
+        return CONFIG_SUBS_PRECIO
+
+    price = int(text)
+    platform_share = int(get_setting("subscription_platform_share") or 20000)
+    if price <= platform_share:
+        update.message.reply_text(
+            "El precio debe ser mayor a ${:,} (piso de plataforma). Intenta de nuevo.".format(platform_share)
+        )
+        return CONFIG_SUBS_PRECIO
+
+    admin_id = context.user_data.get("admin_db_id") or 0
+    ally_id = context.user_data.get("subs_ally_id")
+    admin_share = price - platform_share
+
+    set_ally_subscription_price(admin_id, ally_id, price)
+
+    update.message.reply_text(
+        "Precio configurado: ${:,}/mes\n"
+        "Tu ganancia: ${:,}/mes\n"
+        "Plataforma: ${:,}/mes\n\n"
+        "El aliado podra renovar su suscripcion desde su menu.".format(
+            price, admin_share, platform_share
+        )
+    )
+    return ConversationHandler.END
+
+
+config_subs_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(config_subs_start, pattern=r"^config_subs_\d+$")],
+    states={
+        CONFIG_SUBS_PRECIO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, config_subs_precio)
+        ]
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+)

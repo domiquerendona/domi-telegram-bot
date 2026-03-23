@@ -259,6 +259,7 @@ from services import (
     update_ally_min_purchase_for_subsidy,
     count_ally_form_requests_by_status,
     compute_ally_subsidy,
+    expire_old_ally_subscriptions,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
@@ -311,6 +312,7 @@ from handlers.config import (
     config_alertas_oferta_conv,
     config_ally_subsidy_conv,
     config_ally_minpurchase_conv,
+    config_subs_conv,
     tarifas_edit_callback,
 )
 from handlers.quotation import cotizar_conv
@@ -340,6 +342,7 @@ from handlers.recharges import (
     local_recargas_pending_callback,
     admin_local_callback,
     ally_approval_callback,
+    ally_suscripcion_conv,
 )
 from handlers.registration import (
     soy_aliado,
@@ -1149,6 +1152,14 @@ def menu_button_handler(update, context):
         return ally_bandeja_solicitudes(update, context)
     elif text == "Mi enlace de pedidos":
         return ally_mi_enlace(update, context)
+    elif text == "Mi suscripcion":
+        update.message.reply_text(
+            "Cargando tu suscripcion...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Ver mi suscripcion", callback_data="ally_mi_suscripcion")
+            ]])
+        )
+        return
 
     # --- Botones del submenú Repartidor ---
     elif text == "Activar repartidor":
@@ -2123,6 +2134,7 @@ def main():
     force_platform_admin(ADMIN_USER_ID)
     ensure_pricing_defaults()
     sync_all_courier_link_statuses()
+    expire_old_ally_subscriptions()
 
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
@@ -2182,6 +2194,8 @@ def main():
     # Configuraciones (botones config_*)
     dp.add_handler(config_ally_subsidy_conv)      # debe ir ANTES del handler general config_*
     dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
+    dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
+    dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 

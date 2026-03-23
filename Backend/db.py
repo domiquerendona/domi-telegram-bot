@@ -683,6 +683,12 @@ def init_db():
     if "selfie_file_id" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN selfie_file_id TEXT")
 
+    # admin_allies: subscription_price (precio mensual configurado por el admin para este aliado)
+    cur.execute("PRAGMA table_info(admin_allies)")
+    admin_allies_cols = [r[1] for r in cur.fetchall()]
+    if "subscription_price" not in admin_allies_cols:
+        cur.execute("ALTER TABLE admin_allies ADD COLUMN subscription_price INTEGER DEFAULT NULL")
+
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
     # ============================================================
@@ -934,6 +940,25 @@ def init_db():
             FOREIGN KEY (ally_id) REFERENCES allies(id)
         );
     """)
+
+    # Tabla: ally_subscriptions (suscripciones mensuales de aliados)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            price INTEGER NOT NULL,
+            platform_share INTEGER NOT NULL,
+            admin_share INTEGER NOT NULL,
+            starts_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            status TEXT DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_subscriptions_ally ON ally_subscriptions(ally_id, status)")
 
     # Tabla: admin_couriers (relación admin-repartidor)
     cur.execute("""
@@ -3354,6 +3379,10 @@ def ensure_pricing_defaults():
         # Comision adicional al aliado: % sobre tarifa de domicilio, va 100% a plataforma
         # 0 = desactivado (default). Activar subiendo a 3 (= 3%) cuando el modelo lo requiera.
         "fee_ally_commission_pct": "0",
+        # Suscripciones mensuales de aliados
+        # Piso minimo que la plataforma recibe por cada suscripcion, independiente del precio total.
+        # El admin retiene: precio_total - subscription_platform_share
+        "subscription_platform_share": "20000",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
@@ -9857,3 +9886,125 @@ def count_ally_form_requests_by_status(ally_id: int) -> dict:
     rows = cur.fetchall()
     conn.close()
     return {_row_value(r, 'status'): int(_row_value(r, 'cnt')) for r in rows}
+
+# ============================================================
+# SUSCRIPCIONES MENSUALES DE ALIADOS
+# ============================================================
+
+def set_ally_subscription_price(admin_id: int, ally_id: int, price: int):
+    """Configura el precio mensual de suscripcion para un aliado gestionado por este admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE admin_allies SET subscription_price = {P}, updated_at = {now_sql}"
+        f" WHERE admin_id = {P} AND ally_id = {P}",
+        (price, admin_id, ally_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ally_subscription_price(admin_id: int, ally_id: int):
+    """Retorna el precio de suscripcion configurado para este aliado, o None si no tiene."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT subscription_price FROM admin_allies WHERE admin_id = {P} AND ally_id = {P}",
+        (admin_id, ally_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_value(row, "subscription_price")
+
+
+def create_ally_subscription(ally_id: int, admin_id: int, price: int,
+                              platform_share: int, admin_share: int):
+    """
+    Crea un nuevo ciclo de suscripcion de 30 dias para el aliado.
+    Retorna el id generado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        starts_sql = "NOW()"
+        expires_sql = "NOW() + INTERVAL '30 days'"
+        cur.execute(
+            f"INSERT INTO ally_subscriptions"
+            f" (ally_id, admin_id, price, platform_share, admin_share, starts_at, expires_at, status)"
+            f" VALUES ({P}, {P}, {P}, {P}, {P}, {starts_sql}, {expires_sql}, 'ACTIVE')"
+            f" RETURNING id",
+            (ally_id, admin_id, price, platform_share, admin_share),
+        )
+        row = cur.fetchone()
+        new_id = _row_value(row, "id")
+    else:
+        cur.execute(
+            f"INSERT INTO ally_subscriptions"
+            f" (ally_id, admin_id, price, platform_share, admin_share,"
+            f"  starts_at, expires_at, status)"
+            f" VALUES ({P}, {P}, {P}, {P}, {P},"
+            f"  datetime('now'), datetime('now', '+30 days'), 'ACTIVE')",
+            (ally_id, admin_id, price, platform_share, admin_share),
+        )
+        new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def get_active_ally_subscription(ally_id: int):
+    """
+    Retorna la suscripcion ACTIVE del aliado si existe y no ha expirado, o None.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"SELECT * FROM ally_subscriptions"
+        f" WHERE ally_id = {P} AND status = 'ACTIVE' AND expires_at > {now_sql}"
+        f" ORDER BY expires_at DESC LIMIT 1",
+        (ally_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def expire_old_ally_subscriptions():
+    """
+    Marca como EXPIRED las suscripciones ACTIVE cuya expires_at ya paso.
+    Llamar al arranque del bot (en main()).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE ally_subscriptions SET status = 'EXPIRED'"
+        f" WHERE status = 'ACTIVE' AND expires_at <= {now_sql}",
+    )
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    if changed:
+        print(f"[SUBS] {changed} suscripcion(es) marcadas como EXPIRED.")
+    return changed
+
+
+def get_ally_subscription_info(ally_id: int):
+    """
+    Retorna la suscripcion mas reciente del aliado (activa o no), o None.
+    Util para mostrar estado en el bot.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM ally_subscriptions WHERE ally_id = {P}"
+        f" ORDER BY created_at DESC LIMIT 1",
+        (ally_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None

@@ -13,6 +13,9 @@ from db import (
     get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
     get_geocoding_text_cache, upsert_geocoding_text_cache,
+    set_ally_subscription_price, get_ally_subscription_price,
+    create_ally_subscription, get_active_ally_subscription,
+    expire_old_ally_subscriptions, get_ally_subscription_info,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
@@ -3268,7 +3271,7 @@ def resolve_support_request_from_admin_panel(support_id: int, action: str, admin
     if action == "fin":
         ally_id = order["ally_id"]
         ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
-        if ally_admin_link:
+        if ally_admin_link and not check_ally_active_subscription(ally_id):
             apply_service_fee(
                 target_type="ALLY",
                 target_id=ally_id,
@@ -3414,3 +3417,135 @@ def courier_is_operational(courier) -> bool:
     if not courier:
         return False
     return _row_value(courier, "availability_status", 20) == "APPROVED"
+
+
+# ============================================================
+# SUSCRIPCIONES MENSUALES DE ALIADOS
+# ============================================================
+
+def check_ally_active_subscription(ally_id: int) -> bool:
+    """Retorna True si el aliado tiene suscripcion activa y vigente."""
+    sub = get_active_ally_subscription(ally_id)
+    return sub is not None
+
+
+def pay_ally_subscription(ally_id: int, admin_id: int) -> tuple:
+    """
+    Procesa el pago de una suscripcion mensual para un aliado.
+
+    Flujo:
+    - Verifica que admin tenga precio configurado para este aliado
+    - Verifica que el aliado tenga saldo suficiente (admin_allies.balance)
+    - Debita el precio total del saldo del aliado
+    - Acredita platform_share al admin de plataforma (kind=SUBSCRIPTION_PLATFORM_SHARE)
+    - Acredita admin_share al admin del aliado (kind=SUBSCRIPTION_ADMIN_SHARE)
+    - Crea registro en ally_subscriptions
+
+    Retorna: (success: bool, message: str)
+    """
+    price = get_ally_subscription_price(admin_id, ally_id)
+    if not price:
+        return False, "Este aliado no tiene precio de suscripcion configurado. Contacta a tu administrador."
+
+    platform_share = _to_int(get_setting("subscription_platform_share", "20000"), 20000)
+    if price < platform_share:
+        return False, "El precio configurado (${{:,}}) es menor al minimo de plataforma (${{:,}}).".format(
+            price, platform_share)
+
+    admin_share = price - platform_share
+
+    # Verificar saldo del aliado
+    balance = get_ally_link_balance(ally_id, admin_id)
+    if balance < price:
+        return False, "Saldo insuficiente. Tienes ${:,} y la suscripcion cuesta ${:,}.".format(
+            balance, price)
+
+    platform_admin = get_platform_admin()
+    if not platform_admin:
+        return False, "Plataforma no configurada."
+    platform_id = platform_admin["id"]
+
+    # Debitar del saldo del aliado
+    update_ally_link_balance(ally_id, admin_id, -price)
+
+    # Acreditar platform_share a plataforma
+    update_admin_balance_with_ledger(
+        admin_id=platform_id,
+        delta=platform_share,
+        kind="SUBSCRIPTION_PLATFORM_SHARE",
+        note="Suscripcion mensual aliado id={} via admin id={}".format(ally_id, admin_id),
+        ref_type="ALLY",
+        ref_id=ally_id,
+        from_type="ALLY",
+        from_id=ally_id,
+    )
+
+    # Acreditar admin_share al admin del aliado (puede ser el mismo que plataforma)
+    if admin_share > 0:
+        update_admin_balance_with_ledger(
+            admin_id=admin_id,
+            delta=admin_share,
+            kind="SUBSCRIPTION_ADMIN_SHARE",
+            note="Corte suscripcion mensual aliado id={}".format(ally_id),
+            ref_type="ALLY",
+            ref_id=ally_id,
+            from_type="ALLY",
+            from_id=ally_id,
+        )
+
+    # Crear registro de suscripcion
+    create_ally_subscription(
+        ally_id=ally_id,
+        admin_id=admin_id,
+        price=price,
+        platform_share=platform_share,
+        admin_share=admin_share,
+    )
+
+    return True, "Suscripcion activada por 30 dias. Total: ${:,}.".format(price)
+
+
+def get_subscription_summary_for_ally(ally_id: int, admin_id: int) -> dict:
+    """
+    Retorna resumen de suscripcion para mostrar al aliado en el bot.
+    {
+      'has_subscription': bool,
+      'price': int or None,
+      'expires_at': str or None,
+      'days_left': int or None,
+      'balance': int,
+      'can_renew': bool,
+    }
+    """
+    sub = get_active_ally_subscription(ally_id)
+    price = get_ally_subscription_price(admin_id, ally_id)
+    balance = get_ally_link_balance(ally_id, admin_id)
+
+    if sub:
+        expires_str = str(_row_value(sub, "expires_at", ""))
+        # Calcular dias restantes
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(expires_str[:19])
+            now = _dt.now()
+            days_left = max(0, (exp - now).days)
+        except Exception:
+            days_left = None
+
+        return {
+            "has_subscription": True,
+            "price": _row_value(sub, "price"),
+            "expires_at": expires_str,
+            "days_left": days_left,
+            "balance": balance,
+            "can_renew": price is not None and balance >= price,
+        }
+
+    return {
+        "has_subscription": False,
+        "price": price,
+        "expires_at": None,
+        "days_left": None,
+        "balance": balance,
+        "can_renew": price is not None and balance >= price,
+    }

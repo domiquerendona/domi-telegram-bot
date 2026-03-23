@@ -16,6 +16,7 @@ from telegram.ext import (
 )
 
 from handlers.states import (
+    ALLY_SUBS_CONFIRMAR,
     INGRESO_METODO,
     INGRESO_MONTO,
     INGRESO_NOTA,
@@ -2315,6 +2316,123 @@ ingreso_conv = ConversationHandler(
         INGRESO_MONTO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_monto_handler)],
         INGRESO_METODO: [CallbackQueryHandler(ingreso_metodo_callback, pattern=r"^ingreso_")],
         INGRESO_NOTA: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ingreso_nota_handler)],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+    ],
+    allow_reentry=True,
+)
+
+
+# ---------------------------------------------------------------------------
+# ally_suscripcion_conv — Aliado ve estado y renueva su suscripcion
+# Entry: callback ally_mi_suscripcion
+# ---------------------------------------------------------------------------
+
+from services import (
+    get_ally_by_telegram_id,
+    get_approved_admin_link_for_ally,
+    get_subscription_summary_for_ally,
+    pay_ally_subscription,
+)
+
+
+def ally_suscripcion_start(update, context):
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    ally = get_ally_by_telegram_id(telegram_id)
+    if not ally:
+        query.edit_message_text("No tienes perfil de aliado.")
+        return ConversationHandler.END
+
+    ally_id = ally["id"]
+    link = get_approved_admin_link_for_ally(ally_id)
+    if not link:
+        query.edit_message_text("No tienes un administrador asignado.")
+        return ConversationHandler.END
+
+    admin_id = link["admin_id"]
+    context.user_data["subs_ally_id"] = ally_id
+    context.user_data["subs_admin_id"] = admin_id
+
+    info = get_subscription_summary_for_ally(ally_id, admin_id)
+
+    if info["has_subscription"]:
+        days = info["days_left"]
+        days_txt = "{} dias".format(days) if days is not None else "activa"
+        text = (
+            "MI SUSCRIPCION\n\n"
+            "Estado: ACTIVA\n"
+            "Tiempo restante: {}\n"
+            "Precio: ${:,}/mes\n\n"
+            "Con suscripcion activa no se te cobran fees por pedido entregado.\n\n"
+            "Puedes renovar antes de que expire para no perder continuidad.".format(
+                days_txt, info["price"] or 0
+            )
+        )
+    else:
+        if info["price"]:
+            text = (
+                "MI SUSCRIPCION\n\n"
+                "Estado: SIN SUSCRIPCION ACTIVA\n"
+                "Precio configurado: ${:,}/mes\n"
+                "Tu saldo actual: ${:,}\n\n"
+                "Sin suscripcion se te cobra ${} por cada pedido entregado.\n\n"
+                "Con suscripcion: sin cobros por pedido durante 30 dias.".format(
+                    info["price"], info["balance"], "fee normal"
+                )
+            )
+        else:
+            query.edit_message_text(
+                "MI SUSCRIPCION\n\n"
+                "Tu administrador aun no ha configurado el precio de suscripcion. "
+                "Contactalo para solicitarlo."
+            )
+            return ConversationHandler.END
+
+    buttons = []
+    if info["can_renew"]:
+        buttons.append([InlineKeyboardButton(
+            "Renovar por ${:,}".format(info["price"]), callback_data="ally_subs_renovar"
+        )])
+    else:
+        if info["price"] and not info["has_subscription"]:
+            buttons.append([InlineKeyboardButton(
+                "Saldo insuficiente (necesitas ${:,})".format(info["price"]), callback_data="ally_subs_noop"
+            )])
+
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
+    query.edit_message_text(text, reply_markup=markup)
+    return ALLY_SUBS_CONFIRMAR
+
+
+def ally_subs_renovar_callback(update, context):
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "ally_subs_noop":
+        query.edit_message_text("Recarga tu saldo para poder renovar la suscripcion.")
+        return ConversationHandler.END
+
+    ally_id = context.user_data.get("subs_ally_id")
+    admin_id = context.user_data.get("subs_admin_id")
+    if not ally_id or not admin_id:
+        query.edit_message_text("Error: sesion expirada. Intenta de nuevo.")
+        return ConversationHandler.END
+
+    ok, msg = pay_ally_subscription(ally_id, admin_id)
+    query.edit_message_text(msg)
+    return ConversationHandler.END
+
+
+ally_suscripcion_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(ally_suscripcion_start, pattern=r"^ally_mi_suscripcion$")],
+    states={
+        ALLY_SUBS_CONFIRMAR: [
+            CallbackQueryHandler(ally_subs_renovar_callback, pattern=r"^ally_subs_(renovar|noop)$")
+        ]
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),

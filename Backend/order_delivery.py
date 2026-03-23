@@ -72,7 +72,7 @@ from db import (
     resolve_support_request,
     cancel_route_stop,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription
 
 
 def _format_duration(seconds):
@@ -2543,7 +2543,7 @@ def _handle_delivered(update, context, order_id):
     fee_ally_ok = False
     fee_courier_ok = False
 
-    if ally_admin_id:
+    if ally_admin_id and not check_ally_active_subscription(ally_id):
         ally_ok, ally_msg = apply_service_fee(
             target_type="ALLY",
             target_id=ally_id,
@@ -2556,6 +2556,8 @@ def _handle_delivered(update, context, order_id):
             fee_ally_ok = True
         else:
             print("[WARN] No se pudo cobrar fee al aliado: {}".format(ally_msg))
+    elif ally_admin_id:
+        fee_ally_ok = True  # suscripcion activa — sin cobro
 
     if courier_admin_id:
         courier_ok, courier_msg = apply_service_fee(
@@ -3718,7 +3720,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         if not ally_admin_id:
             ally_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
             ally_admin_id = ally_link["admin_id"] if ally_link else None
-        if ally_id and ally_admin_id:
+        if ally_id and ally_admin_id and not check_ally_active_subscription(ally_id):
             ally_ok, ally_msg = apply_service_fee(
                 target_type="ALLY", target_id=ally_id,
                 admin_id=ally_admin_id, ref_type="ROUTE", ref_id=route_id,
@@ -4385,7 +4387,7 @@ def _do_deliver_order(context, order, courier_id):
     if courier_admin_id is None:
         courier_admin_id = get_approved_admin_id_for_courier(courier_id)
 
-    if ally_admin_id:
+    if ally_admin_id and not check_ally_active_subscription(ally_id):
         apply_service_fee(
             target_type="ALLY", target_id=ally_id, admin_id=ally_admin_id,
             ref_type="ORDER", ref_id=order_id,
@@ -4640,7 +4642,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
         if not ally_admin_id_route:
             ally_link_r = get_approved_admin_link_for_ally(ally_id_route) if ally_id_route else None
             ally_admin_id_route = ally_link_r["admin_id"] if ally_link_r else None
-        if ally_id_route and ally_admin_id_route:
+        if ally_id_route and ally_admin_id_route and not check_ally_active_subscription(ally_id_route):
             ally_ok_r, ally_msg_r = apply_service_fee(
                 target_type="ALLY", target_id=ally_id_route,
                 admin_id=ally_admin_id_route, ref_type="ROUTE", ref_id=route_id,

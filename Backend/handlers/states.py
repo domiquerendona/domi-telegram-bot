@@ -349,3 +349,9 @@ CONFIG_ALLY_MIN_PURCHASE_VALOR = 993  # Capturar nuevo mínimo de compra para su
 ADMIN_PEDIDO_SEL_CUST      = 917
 ADMIN_PEDIDO_SEL_CUST_ADDR = 918
 ADMIN_PEDIDO_SAVE_PICKUP   = 919   # Preguntar si guardar nueva direccion de recogida
+
+# =========================
+# Suscripciones mensuales
+# =========================
+CONFIG_SUBS_PRECIO  = 994   # Admin ingresa precio de suscripcion para su aliado
+ALLY_SUBS_CONFIRMAR = 995   # Aliado confirma renovacion de suscripcion

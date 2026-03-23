@@ -271,10 +271,25 @@ CREATE TABLE IF NOT EXISTS admin_allies (
     status TEXT DEFAULT 'PENDING',
     balance INTEGER DEFAULT 0 CHECK(balance >= 0),
     is_active INTEGER DEFAULT 1,
+    subscription_price INTEGER DEFAULT NULL,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(admin_id, ally_id)
 );
+
+CREATE TABLE IF NOT EXISTS ally_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    ally_id BIGINT NOT NULL,
+    admin_id BIGINT NOT NULL,
+    price INTEGER NOT NULL,
+    platform_share INTEGER NOT NULL,
+    admin_share INTEGER NOT NULL,
+    starts_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    status TEXT DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ally_subscriptions_ally ON ally_subscriptions(ally_id, status);
 
 CREATE TABLE IF NOT EXISTS admin_couriers (
     id BIGSERIAL PRIMARY KEY,
