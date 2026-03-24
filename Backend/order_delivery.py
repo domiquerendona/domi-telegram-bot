@@ -42,6 +42,7 @@ from db import (
     get_active_routes_by_ally,
     get_route_destinations,
     get_pending_route_stops,
+    reorder_route_destinations,
     update_route_status,
     assign_route_to_courier,
     release_route_from_courier,
@@ -873,28 +874,6 @@ def _send_next_offer(order_id, context):
         mark_offer_response(next_offer["queue_id"], "EXPIRED")
         _send_next_offer(order_id, context)
         return
-
-    # Enviar mapas (recogida + entrega)
-    try:
-        if pickup_lat is not None and pickup_lng is not None:
-            context.bot.send_location(
-                chat_id=next_offer["telegram_id"],
-                latitude=float(pickup_lat),
-                longitude=float(pickup_lng),
-            )
-    except Exception:
-        pass
-
-    try:
-        dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
-        if dropoff_lat is not None and dropoff_lng is not None:
-            context.bot.send_location(
-                chat_id=next_offer["telegram_id"],
-                latitude=float(dropoff_lat),
-                longitude=float(dropoff_lng),
-            )
-    except Exception:
-        pass
 
     # Programar timeout de 30 segundos
     context.job_queue.run_once(
@@ -3244,25 +3223,45 @@ def _route_offer_reply_markup(route_id):
 
 def _build_route_offer_text(route, destinations):
     """Construye el texto de oferta de ruta para el courier."""
-    pickup_address = route.get("pickup_address") or "No disponible"
     total_km = float(route.get("total_distance_km") or 0)
     total_fee = int(route.get("total_fee") or 0)
+    additional_incentive = int(route.get("additional_incentive") or 0)
 
-    text = "RUTA DISPONIBLE\n\nRuta #{}\nRecoge en: {}\n\n".format(route["id"], pickup_address)
+    # Barrio/ciudad de recogida
+    pickup_city = route.get("pickup_city") or ""
+    pickup_barrio = route.get("pickup_barrio") or ""
+    if not pickup_city and not pickup_barrio:
+        pickup_area = route.get("pickup_address") or "No disponible"
+    elif pickup_barrio and pickup_city:
+        pickup_area = "{}, {}".format(pickup_barrio, pickup_city)
+    else:
+        pickup_area = pickup_barrio or pickup_city
+
+    text = "RUTA DISPONIBLE\n\nRuta #{}\nRecogida: {}\n\n".format(route["id"], pickup_area)
+    text += "{} paradas:\n".format(len(destinations))
 
     for dest in destinations:
-        text += "Parada {}: {} - {}\n".format(
-            dest["sequence"],
-            dest.get("customer_name") or "Sin nombre",
-            dest.get("customer_address") or "Sin direccion",
-        )
+        barrio = dest.get("customer_barrio") or ""
+        city = dest.get("customer_city") or ""
+        if barrio and city:
+            area = "{}, {}".format(barrio, city)
+        elif barrio or city:
+            area = barrio or city
+        else:
+            area = dest.get("customer_address") or "Sin direccion"
+        text += "  Parada {}: {}\n".format(dest["sequence"], area)
 
     text += "\nDistancia total: {:.1f} km\n".format(total_km)
-    text += "Pago: ${:,}\n".format(total_fee)
 
-    instructions = route.get("instructions") or ""
-    if instructions.strip():
-        text += "\nInstrucciones: {}\n".format(instructions.strip())
+    if additional_incentive > 0:
+        base_fee = max(0, total_fee - additional_incentive)
+        text += "Pago base: ${:,}\n".format(base_fee)
+        text += "Incentivo adicional: ${:,}\n".format(additional_incentive)
+        text += "Pago total: ${:,}\n".format(total_fee)
+    else:
+        text += "Pago: ${:,}\n".format(total_fee)
+
+    text += "\nAviso: una vez aceptada tienes 15 min para llegar a la recogida.\n"
 
     return text
 
@@ -3569,42 +3568,134 @@ def _handle_route_accept(update, context, route_id):
 
     route = get_route_by_id(route_id)
     destinations = get_route_destinations(route_id)
-    total_stops = len(destinations)
+
+    _notify_ally_route_accepted(context, route, courier.get("full_name") or "Repartidor")
+
+    # Mostrar pantalla de reordenamiento antes de salir a recoger
+    _show_route_reorder(query, context, route_id, destinations)
+
+
+def _show_route_reorder(msg_or_query, context, route_id, destinations):
+    """Muestra la lista de paradas con botones para reordenar."""
+    text = "Ruta #{} aceptada.\n\nOrden actual de paradas:\n".format(route_id)
+    for d in destinations:
+        barrio = d.get("customer_barrio") or d.get("customer_address") or "Sin info"
+        text += "  {}. {}\n".format(d["sequence"], barrio)
+    text += "\nPuedes cambiar el orden segun tu conveniencia o confirmar el orden actual."
+
+    keyboard = []
+    for i, d in enumerate(destinations):
+        row = []
+        if i > 0:
+            row.append(InlineKeyboardButton(
+                "↑ Parada {}".format(d["sequence"]),
+                callback_data="ruta_orden_up_{}_{}".format(route_id, d["id"])
+            ))
+        if i < len(destinations) - 1:
+            row.append(InlineKeyboardButton(
+                "↓ Parada {}".format(d["sequence"]),
+                callback_data="ruta_orden_dn_{}_{}".format(route_id, d["id"])
+            ))
+        if row:
+            keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(
+        "Confirmar orden e ir a recoger",
+        callback_data="ruta_orden_ok_{}".format(route_id)
+    )])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    if hasattr(msg_or_query, "edit_message_text"):
+        msg_or_query.edit_message_text(text, reply_markup=markup)
+    else:
+        msg_or_query.message.reply_text(text, reply_markup=markup)
+
+
+def _handle_route_reorder(update, context, data):
+    """Maneja botones ↑/↓ y confirmacion de orden de paradas."""
+    query = update.callback_query
+
+    if data.startswith("ruta_orden_ok_"):
+        route_id = int(data.replace("ruta_orden_ok_", ""))
+        _show_route_pickup_navigation(query, context, route_id)
+        return
+
+    if data.startswith("ruta_orden_up_") or data.startswith("ruta_orden_dn_"):
+        up = data.startswith("ruta_orden_up_")
+        parts = data.replace("ruta_orden_up_", "").replace("ruta_orden_dn_", "").split("_")
+        try:
+            route_id = int(parts[0])
+            dest_id = int(parts[1])
+        except (ValueError, IndexError):
+            return
+        destinations = get_route_destinations(route_id)
+        ids = [d["id"] for d in destinations]
+        try:
+            idx = ids.index(dest_id)
+        except ValueError:
+            return
+        swap = idx - 1 if up else idx + 1
+        if 0 <= swap < len(ids):
+            ids[idx], ids[swap] = ids[swap], ids[idx]
+            reorder_route_destinations(route_id, ids)
+        destinations = get_route_destinations(route_id)
+        _show_route_reorder(query, context, route_id, destinations)
+
+
+def _show_route_pickup_navigation(msg_or_query, context, route_id):
+    """Muestra navegacion al punto de recogida con boton 'Confirmar recogida'."""
+    route = get_route_by_id(route_id)
+    if not route:
+        return
     pickup_address = route.get("pickup_address") or "No disponible"
     pickup_lat = route.get("pickup_lat")
     pickup_lng = route.get("pickup_lng")
 
     keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
-    keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
+    keyboard.append([InlineKeyboardButton(
+        "Confirmar recogida en tienda",
+        callback_data="ruta_pickup_confirm_{}".format(route_id)
+    )])
+    keyboard.append([InlineKeyboardButton(
+        "Liberar ruta", callback_data="ruta_liberar_{}".format(route_id)
+    )])
 
-    query.edit_message_text(
-        "Ruta #{} aceptada.\n\n"
-        "Recoge en: {}\n"
-        "Total de paradas: {}\n\n"
-        "Dirigete al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
-        "Si no puedes completar la ruta, presiona \"Liberar ruta\".\n"
-        "Recibes los detalles de cada parada a medida que avanzas.".format(
-            route_id,
-            pickup_address,
-            total_stops,
-        ),
-        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
-    )
+    text = (
+        "Ve a recoger los productos.\n\n"
+        "Recogida: {}\n\n"
+        "Cuando estes en la tienda y tengas los productos, presiona 'Confirmar recogida en tienda'.\n"
+        "En ese momento recibiras los detalles de la primera parada."
+    ).format(pickup_address)
+
+    if hasattr(msg_or_query, "edit_message_text"):
+        msg_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        msg_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     if pickup_lat is not None and pickup_lng is not None:
         try:
-            context.bot.send_location(
-                chat_id=query.message.chat_id,
-                latitude=float(pickup_lat),
-                longitude=float(pickup_lng),
-            )
+            chat_id = (msg_or_query.message.chat_id
+                       if hasattr(msg_or_query, "message") else msg_or_query.chat_id)
+            context.bot.send_location(chat_id=chat_id,
+                                      latitude=float(pickup_lat),
+                                      longitude=float(pickup_lng))
         except Exception:
             pass
 
-    if destinations:
-        _send_route_stop_to_courier(context, query.message.chat_id, route, destinations[0])
 
-    _notify_ally_route_accepted(context, route, courier.get("full_name") or "Repartidor")
+def _handle_route_pickup_confirm(update, context, route_id):
+    """Courier confirma que recogió los productos. Revela primera parada."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta activa.")
+        return
+    destinations = get_route_destinations(route_id)
+    pending = [d for d in destinations if d.get("status") == "PENDING"]
+    if not pending:
+        query.edit_message_text("No hay paradas pendientes en esta ruta.")
+        return
+    query.edit_message_text("Recogida confirmada. Aqui van los detalles de tu primera parada:")
+    _send_route_stop_to_courier(context, query.message.chat_id, route, pending[0])
 
 
 def _handle_route_reject(update, context, route_id):
@@ -3829,6 +3920,13 @@ def handle_route_callback(update, context):
     if data.startswith("ruta_rechazar_"):
         route_id = int(data.replace("ruta_rechazar_", ""))
         return _handle_route_reject(update, context, route_id)
+
+    if data.startswith("ruta_orden_"):
+        return _handle_route_reorder(update, context, data)
+
+    if data.startswith("ruta_pickup_confirm_"):
+        route_id = int(data.replace("ruta_pickup_confirm_", ""))
+        return _handle_route_pickup_confirm(update, context, route_id)
 
     if data.startswith("ruta_ocupado_"):
         route_id = int(data.replace("ruta_ocupado_", ""))

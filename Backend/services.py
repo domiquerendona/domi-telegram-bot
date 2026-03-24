@@ -196,6 +196,7 @@ from db import (
     get_active_routes_by_ally,
     get_route_destinations,
     get_pending_route_stops,
+    reorder_route_destinations,
     update_route_status,
     assign_route_to_courier,
     deliver_route_stop,

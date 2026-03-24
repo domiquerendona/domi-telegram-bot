@@ -9344,6 +9344,22 @@ def get_route_destinations(route_id):
     return [dict(r) for r in rows]
 
 
+def reorder_route_destinations(route_id, ordered_ids):
+    """Reasigna sequence 1..N a las paradas segun la lista ordered_ids.
+
+    ordered_ids: lista de destination.id en el nuevo orden deseado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    for new_seq, dest_id in enumerate(ordered_ids, 1):
+        cur.execute(
+            f"UPDATE route_destinations SET sequence = {P} WHERE id = {P} AND route_id = {P}",
+            (new_seq, dest_id, route_id),
+        )
+    conn.commit()
+    conn.close()
+
+
 def get_pending_route_stops(route_id):
     """Lista las paradas PENDING de la ruta, ordenadas por sequence."""
     conn = get_connection()
