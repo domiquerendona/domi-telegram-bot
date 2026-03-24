@@ -9264,8 +9264,8 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
         raise ValueError("La recogida de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
-    return _insert_returning_id(
-        cur, conn,
+    route_id = _insert_returning_id(
+        cur,
         f"""
         INSERT INTO routes (
             ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
@@ -9277,6 +9277,9 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
          total_distance_km, distance_fee, additional_stops_fee, total_fee,
          instructions, ally_admin_id_snapshot),
     )
+    conn.commit()
+    conn.close()
+    return route_id
 
 
 def create_route_destination(route_id, sequence, customer_name, customer_phone,
