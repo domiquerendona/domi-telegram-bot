@@ -4291,10 +4291,11 @@ def _notify_ally_route_delivered(context, route):
         n_delivered = sum(1 for s in stops if str(s.get("status", "")) == "DELIVERED")
         n_cancelled = len(stops) - n_delivered
         fee_base = 300
-        from services import get_pricing_config
-        config = get_pricing_config()
-        tarifa_parada = int(config.get("tarifa_parada_adicional", 200))
-        fee_adicional = max(0, (n_delivered - 1)) * tarifa_parada
+        # $200 por parada adicional = tarifa de SERVICIO cobrada al saldo del aliado.
+        # NO confundir con tarifa_parada_adicional ($4.000) que es el pago al courier,
+        # acordado fuera de la plataforma y nunca descontado de saldos internos.
+        FEE_PARADA_SERVICIO = 200
+        fee_adicional = max(0, (n_delivered - 1)) * FEE_PARADA_SERVICIO
         fee_total = fee_base + fee_adicional
         lines = [
             "Ruta #{} completada.".format(route_id),
@@ -4304,7 +4305,7 @@ def _notify_ally_route_delivered(context, route):
         ]
         if fee_adicional > 0:
             lines.append("  Paradas adicionales:  -${}  ({} x ${})".format(
-                format(fee_adicional, ","), n_delivered - 1, format(tarifa_parada, ",")
+                format(fee_adicional, ","), n_delivered - 1, format(FEE_PARADA_SERVICIO, ",")
             ))
         lines.append("  Total descontado:     -${}".format(format(fee_total, ",")))
         if n_cancelled > 0:

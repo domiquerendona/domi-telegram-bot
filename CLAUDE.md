@@ -1958,12 +1958,14 @@ Comisión adicional opcional sobre la tarifa de domicilio (`total_fee`) cobrada 
 
 Las rutas tienen DOS estructuras de costo completamente independientes:
 
-| Fee | Quién paga | Monto | Propósito |
-|-----|-----------|-------|-----------|
-| **Tarifa al courier** (`total_fee`) | Aliado → Courier | `distance_fee + (n-1) × $4.000` | Pago por el trabajo de entrega |
-| **Fee de servicio** (saldo del aliado) | Aliado → Plataforma | `$300 + (n-1) × $200` | Comisión de plataforma, igual que pedidos individuales |
+| Fee | Quién paga | Monto | Medio de pago | Propósito |
+|-----|-----------|-------|---------------|-----------|
+| **Tarifa al courier** (`total_fee`) | Aliado → Courier | `distance_fee + (n-1) × $4.000` | **Fuera de la plataforma** (efectivo/transferencia directa) | Retribución al courier por el trabajo de entrega |
+| **Fee de servicio** (`saldo del aliado`) | Aliado → Plataforma | `$300 + (n-1) × $200` | **Dentro de la plataforma** (descuento de `admin_allies.balance`) | Comisión operativa de plataforma |
 
-**IMPORTANTE:** `pricing_tarifa_parada_adicional = $4.000` (pago al courier). El `$200` de la tabla settings es el fee de servicio al saldo del aliado — manejado por `liquidate_route_additional_stops_fee()` — y **nunca interviene en `calcular_precio_ruta`**.
+**Regla crítica:** La tarifa al courier (`total_fee`, `tarifa_parada_adicional = $4.000`) **NUNCA se descuenta de los saldos internos** del aliado, repartidor ni admin. Es un acuerdo externo entre aliado y courier. Solo se descuenta de saldos el fee de servicio ($300 base + $200 por parada adicional).
+
+**IMPORTANTE:** `pricing_tarifa_parada_adicional = $4.000` (pago externo al courier). El `$200` por parada es el fee de servicio interno — manejado por `liquidate_route_additional_stops_fee()` en `services.py` — y **NUNCA deben confundirse**. El valor correcto para notificaciones de cobro al aliado es siempre $200, no el valor del config de tarifas al courier.
 
 ### Algoritmo de 3 casos
 
