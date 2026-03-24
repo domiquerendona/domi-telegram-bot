@@ -261,7 +261,7 @@ from services import (
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
     init_db,
     force_platform_admin,
@@ -2239,6 +2239,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
+    dp.add_handler(CallbackQueryHandler(ally_orders_history_callback, pattern=r"^allyhist_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
     dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))

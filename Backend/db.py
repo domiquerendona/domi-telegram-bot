@@ -5463,6 +5463,42 @@ def get_orders_by_ally(ally_id: int, limit: int = 50):
     return rows
 
 
+def get_ally_orders_between(ally_id: int, start_s: str, end_s: str):
+    """Pedidos de un aliado (DELIVERED o CANCELLED) creados entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM orders
+        WHERE ally_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (ally_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_ally_routes_between(ally_id: int, start_s: str, end_s: str):
+    """Rutas de un aliado (DELIVERED o CANCELLED) creadas entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM routes
+        WHERE ally_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (ally_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_orders_by_courier(courier_id: int, limit: int = 50):
     """Devuelve los últimos pedidos de un repartidor."""
     conn = get_connection()
@@ -8658,6 +8694,11 @@ def get_courier_earnings_by_date(courier_id: int, date_key: str):
 
     start_s = dt.strftime("%Y-%m-%d 00:00:00")
     end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    return _get_courier_earnings_between(courier_id, start_s, end_s)
+
+
+def get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
+    """Ganancias del repartidor en un rango de timestamps arbitrario."""
     return _get_courier_earnings_between(courier_id, start_s, end_s)
 
 

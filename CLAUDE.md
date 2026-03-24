@@ -66,7 +66,7 @@ domi-telegram-bot/
 │   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
 │   │   ├── admin_panel.py        # admin_menu, admin_menu_callback, aliados_pendientes, repartidores_pendientes, admins_pendientes, admin_ver_pendiente, admin_aprobar_rechazar_callback, pendientes, volver_menu_global, courier_pick_admin_callback, reference validation helpers
 │   │   ├── ally_bandeja.py       # ally_bandeja_solicitudes, ally_mi_enlace, ally_enlace_refresh_callback, _ally_bandeja_mostrar_*, ally_bandeja_callback
-│   │   └── courier_panel.py      # courier_earnings_start, courier_earnings_callback, _courier_earnings_group_by_date, _courier_earnings_buttons
+│   │   └── courier_panel.py      # courier_earnings_start, courier_earnings_callback, _courier_period_keyboard, _courier_period_range, _courier_period_summary_text, _courier_period_grouped_text, _courier_earnings_group_by_date
 │   │
 │   ├── migrations/
 │   │   └── postgres_schema.sql   # Schema completo para PostgreSQL
@@ -200,7 +200,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada. Al registrar parada "cliente nuevo": sin campos ciudad/barrio/notas; al confirmar dirección pregunta si guardar en agenda (`ruta_guardar_cust_si/no`). |
 | `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
 | `ally_bandeja.py` | `ally_bandeja_solicitudes`, `ally_mi_enlace`, `ally_enlace_refresh_callback`, `_ally_bandeja_mostrar_*`, `ally_bandeja_callback` |
-| `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, helpers internos de ganancias |
+| `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, `_courier_period_keyboard`, `_courier_period_range`, helpers internos de ganancias por periodo |
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
@@ -347,6 +347,8 @@ Separador operativo actual: guion bajo (`_`).
 | `ruta_arrival_enroute_` | Courier ruta responde "Sigo en camino" en T+15. Incluye: `ruta_arrival_enroute_{route_id}` |
 | `ruta_arrival_release_` | Courier ruta decide liberar desde T+15 por no poder llegar. Incluye: `ruta_arrival_release_{route_id}` |
 | `ruta_guardar_cust_` | Al finalizar el registro de una parada nueva en ruta, pregunta si guardar el cliente en agenda. Incluye: `ruta_guardar_cust_si` / `ruta_guardar_cust_no` |
+| `allyhist_` | Historial de pedidos del aliado filtrado por periodo. Incluye: `allyhist_periodo_{hoy\|ayer\|semana\|mes}` (seleccionar periodo), `allyhist_dia_{YYYYMMDD}_{period}` (ver detalle de un dia con volver al periodo padre). Handler: `ally_orders_history_callback` en `order_delivery.py`. |
+| `courier_earn_periodo_` | Selector de periodo en "Mis ganancias" del repartidor. Incluye: `courier_earn_periodo_{hoy\|ayer\|semana\|mes}`. Para Hoy/Ayer: lista plana. Para semana/mes: agrupado por dia con botones `courier_earn_{YYYYMMDD}_{period}`. Handler: `courier_earnings_callback` en `handlers/courier_panel.py`. |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
 
@@ -1052,8 +1054,14 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 - `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
 - `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
 - `reorder_route_destinations(route_id, ordered_ids)` — actualiza `sequence` 1..N de paradas según el orden elegido por el courier
+- `get_ally_orders_between(ally_id, start_s, end_s)` — pedidos DELIVERED/CANCELLED del aliado creados en el rango de timestamps
+- `get_ally_routes_between(ally_id, start_s, end_s)` — rutas DELIVERED/CANCELLED del aliado creadas en el rango de timestamps
+- `get_courier_earnings_between(courier_id, start_s, end_s)` — ganancias del repartidor en un rango arbitrario de timestamps (wrapper público de `_get_courier_earnings_between`)
 
 Re-exportadas en `services.py`.
+
+**Funciones nuevas en `services.py` (2026-03-24 — historial por periodo):**
+- `courier_get_earnings_by_period(telegram_id, start_s, end_s)` — retorna ganancias del courier para un rango de timestamps; usado por el selector de periodos de `courier_panel.py`.
 
 ### bot_data keys relacionados
 

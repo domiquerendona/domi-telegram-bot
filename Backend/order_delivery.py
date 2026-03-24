@@ -22,6 +22,8 @@ from db import (
     get_next_pending_offer,
     get_order_by_id,
     get_orders_by_ally,
+    get_ally_orders_between,
+    get_ally_routes_between,
     get_orders_by_admin_team,
     get_setting,
     get_user_by_telegram_id,
@@ -56,7 +58,7 @@ from db import (
     delete_route_offer_queue,
     reset_route_offer_queue,
 )
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from db import (
     add_courier_rating,
     block_courier_for_ally,
@@ -1015,8 +1017,164 @@ def _expire_order(order_id, cycle_info, context):
             print("[WARN] No se pudo notificar expiración al admin creador: {}".format(e))
 
 
+_DIAS_ES = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
+_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def _fmt_pesos_ally(amount):
+    """Formatea entero COP como $X.XXX."""
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        amount = 0
+    return "${}".format("{:,}".format(amount).replace(",", "."))
+
+
+def _fmt_date_es(date_key):
+    """Convierte YYYY-MM-DD a 'Lun 24 mar'."""
+    try:
+        dt = datetime.strptime(date_key, "%Y-%m-%d")
+        return "{} {} {}".format(_DIAS_ES[dt.weekday()], dt.day, _MESES_ES[dt.month - 1])
+    except Exception:
+        return date_key
+
+
+def _ally_period_range(period):
+    """Retorna (start_s, end_s, label) para el periodo dado (hoy/ayer/semana/mes)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "hoy":
+        start, end, label = today, today + timedelta(days=1), "Hoy"
+    elif period == "ayer":
+        start, end, label = today - timedelta(days=1), today, "Ayer"
+    elif period == "semana":
+        start = today - timedelta(days=today.weekday())
+        end = today + timedelta(days=1)
+        label = "Esta semana"
+    elif period == "mes":
+        start = today.replace(day=1)
+        end = today + timedelta(days=1)
+        label = "Este mes"
+    else:
+        return None, None, "Periodo desconocido"
+    return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), label
+
+
+def _ally_history_period_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Hoy", callback_data="allyhist_periodo_hoy"),
+            InlineKeyboardButton("Ayer", callback_data="allyhist_periodo_ayer"),
+        ],
+        [
+            InlineKeyboardButton("Esta semana", callback_data="allyhist_periodo_semana"),
+            InlineKeyboardButton("Este mes", callback_data="allyhist_periodo_mes"),
+        ],
+    ])
+
+
+def _ally_history_flat_text(orders, routes, label):
+    """Genera un bloque de texto con todos los pedidos/rutas del periodo (para Hoy/Ayer)."""
+    delivered_orders = [o for o in orders if _row_value(o, "status", "") == "DELIVERED"]
+    cancelled_orders = [o for o in orders if _row_value(o, "status", "") == "CANCELLED"]
+    delivered_routes = [r for r in routes if r.get("status") == "DELIVERED"]
+    cancelled_routes = [r for r in routes if r.get("status") == "CANCELLED"]
+
+    total = len(orders) + len(routes)
+    total_delivered = len(delivered_orders) + len(delivered_routes)
+    total_cancelled = len(cancelled_orders) + len(cancelled_routes)
+    total_pesos = sum(int(_row_value(o, "total_fee", 0) or 0) for o in delivered_orders)
+    total_pesos += sum(int(r.get("total_fee") or 0) for r in delivered_routes)
+
+    STATUS_LABELS = {"DELIVERED": "Entregado", "CANCELLED": "Cancelado"}
+    lines = [
+        "Historial — {} ({} pedidos)".format(label, total),
+        "Entregados: {} | Cancelados: {}".format(total_delivered, total_cancelled),
+        "Total domicilios entregados: {}".format(_fmt_pesos_ally(total_pesos)),
+        "",
+    ]
+
+    all_items = []
+    for o in orders:
+        created = str(_row_value(o, "created_at", "") or "")
+        hour = created[11:16] if len(created) >= 16 else "--:--"
+        status = _row_value(o, "status", "") or ""
+        fee = int(_row_value(o, "total_fee", 0) or 0)
+        name = _row_value(o, "customer_name", "N/A") or "N/A"
+        all_items.append((created, "#{} {} — {} — {} — {}".format(
+            _row_value(o, "id", "?"),
+            hour,
+            name,
+            _fmt_pesos_ally(fee),
+            STATUS_LABELS.get(status, status),
+        )))
+    for r in routes:
+        created = str(r.get("created_at") or "")
+        hour = created[11:16] if len(created) >= 16 else "--:--"
+        status = r.get("status") or ""
+        fee = int(r.get("total_fee") or 0)
+        all_items.append((created, "Ruta #{} {} — {} — {}".format(
+            r.get("id"), hour, _fmt_pesos_ally(fee), STATUS_LABELS.get(status, status),
+        )))
+
+    all_items.sort(key=lambda x: x[0], reverse=True)
+    for _, line in all_items:
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _ally_history_grouped_text(orders, routes, label):
+    """
+    Genera texto agrupado por dia para Esta semana / Este mes.
+    Retorna (text, lista_de_date_keys_en_orden_desc).
+    """
+    days = {}
+    for o in orders:
+        created = str(_row_value(o, "created_at", "") or "")
+        dk = created[:10] if len(created) >= 10 else "-"
+        d = days.setdefault(dk, {"total": 0, "delivered": 0, "cancelled": 0, "pesos": 0})
+        d["total"] += 1
+        if _row_value(o, "status", "") == "DELIVERED":
+            d["delivered"] += 1
+            d["pesos"] += int(_row_value(o, "total_fee", 0) or 0)
+        else:
+            d["cancelled"] += 1
+    for r in routes:
+        created = str(r.get("created_at") or "")
+        dk = created[:10] if len(created) >= 10 else "-"
+        d = days.setdefault(dk, {"total": 0, "delivered": 0, "cancelled": 0, "pesos": 0})
+        d["total"] += 1
+        if r.get("status") == "DELIVERED":
+            d["delivered"] += 1
+            d["pesos"] += int(r.get("total_fee") or 0)
+        else:
+            d["cancelled"] += 1
+
+    grand_total = sum(d["total"] for d in days.values())
+    grand_delivered = sum(d["delivered"] for d in days.values())
+    grand_cancelled = sum(d["cancelled"] for d in days.values())
+    grand_pesos = sum(d["pesos"] for d in days.values())
+
+    lines = [
+        "Historial — {} ({} pedidos)".format(label, grand_total),
+        "Entregados: {} | Cancelados: {}".format(grand_delivered, grand_cancelled),
+        "Total domicilios entregados: {}".format(_fmt_pesos_ally(grand_pesos)),
+        "",
+        "Toca un dia para ver el detalle:",
+    ]
+    sorted_keys = sorted(days.keys(), reverse=True)
+    for dk in sorted_keys:
+        d = days[dk]
+        lines.append("{} — {} pedidos — {}".format(
+            _fmt_date_es(dk), d["total"], _fmt_pesos_ally(d["pesos"])
+        ))
+
+    return "\n".join(lines), sorted_keys
+
+
 def ally_active_orders(update, context):
-    """Muestra pedidos activos e historial reciente del aliado."""
+    """Muestra pedidos activos del aliado y selector de periodo para historial."""
     telegram_id = update.effective_user.id
     user = get_user_by_telegram_id(telegram_id)
     if not user:
@@ -1029,8 +1187,7 @@ def ally_active_orders(update, context):
         return
 
     active_orders = get_active_orders_by_ally(ally["id"])
-    all_orders = get_orders_by_ally(ally["id"], limit=20)
-    history_orders = [o for o in all_orders if o["status"] in ("DELIVERED", "CANCELLED")]
+    active_routes = get_active_routes_by_ally(ally["id"])
 
     STATUS_LABELS = {
         "PENDING": "Pendiente",
@@ -1041,31 +1198,19 @@ def ally_active_orders(update, context):
         "CANCELLED": "Cancelado",
     }
 
-    active_routes = get_active_routes_by_ally(ally["id"])
-
-    if not active_orders and not active_routes and not history_orders:
-        update.message.reply_text("No tienes pedidos registrados.")
-        return
-
     if active_routes:
         update.message.reply_text("Rutas activas:")
         for route in active_routes:
             n_stops = len(get_route_destinations(route["id"]))
             status_label = STATUS_LABELS.get(route.get("status"), route.get("status", ""))
             text = "Ruta #{}\nEstado: {}\nParadas: {}".format(
-                route["id"],
-                status_label,
-                n_stops,
+                route["id"], status_label, n_stops
             )
             if route.get("status") in ("PUBLISHED", "ACCEPTED"):
-                keyboard = [
-                    [
-                        InlineKeyboardButton(
-                            "Cancelar ruta",
-                            callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
-                        )
-                    ],
-                ]
+                keyboard = [[InlineKeyboardButton(
+                    "Cancelar ruta",
+                    callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
+                )]]
                 update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 update.message.reply_text(text)
@@ -1080,82 +1225,125 @@ def ally_active_orders(update, context):
                 order["customer_name"] or "N/A",
                 order["customer_address"] or "N/A",
             )
-
             if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
                 keyboard = [
-                    [
-                        InlineKeyboardButton(
-                            "Aumentar incentivo",
-                            callback_data="pedido_inc_menu_{}".format(order["id"]),
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "Cancelar pedido",
-                            callback_data="order_cancel_{}".format(order["id"]),
-                        )
-                    ],
+                    [InlineKeyboardButton(
+                        "Aumentar incentivo",
+                        callback_data="pedido_inc_menu_{}".format(order["id"]),
+                    )],
+                    [InlineKeyboardButton(
+                        "Cancelar pedido",
+                        callback_data="order_cancel_{}".format(order["id"]),
+                    )],
                 ]
                 update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 update.message.reply_text(text)
     elif not active_routes:
-        update.message.reply_text("No tienes pedidos activos.")
+        update.message.reply_text("No tienes pedidos activos en este momento.")
 
-    if history_orders:
-        update.message.reply_text("Historial reciente (entregados/cancelados):")
-        for order in history_orders[:10]:
-            status_label = STATUS_LABELS.get(order["status"], order["status"])
+    # Selector de periodo para historial
+    update.message.reply_text(
+        "Historial de pedidos\nSelecciona un periodo:",
+        reply_markup=_ally_history_period_keyboard(),
+    )
 
-            courier_name = "Sin asignar"
-            courier_id = order["courier_id"] if "courier_id" in order.keys() else None
-            if courier_id:
-                courier_row = get_courier_by_id(courier_id)
-                if courier_row and courier_row["full_name"]:
-                    courier_name = courier_row["full_name"]
 
-            ally_admin_snapshot_id = order["ally_admin_id_snapshot"] if "ally_admin_id_snapshot" in order.keys() else None
-            courier_admin_snapshot_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+def ally_orders_history_callback(update, context):
+    """Callback para navegacion del historial de pedidos del aliado por periodo.
+    Patrones: allyhist_periodo_{period} | allyhist_dia_{YYYYMMDD}_{period}
+    """
+    query = update.callback_query
+    query.answer()
+    data = query.data or ""
+    telegram_id = update.effective_user.id
 
-            ally_admin_label = str(ally_admin_snapshot_id) if ally_admin_snapshot_id else "N/A"
-            if ally_admin_snapshot_id:
-                admin_row = get_admin_by_id(int(ally_admin_snapshot_id))
-                if admin_row and admin_row["full_name"]:
-                    ally_admin_label = "{} ({})".format(ally_admin_label, admin_row["full_name"])
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        query.edit_message_text("No tienes perfil de aliado.")
+        return
 
-            courier_admin_label = str(courier_admin_snapshot_id) if courier_admin_snapshot_id else "N/A"
-            if courier_admin_snapshot_id:
-                admin_row = get_admin_by_id(int(courier_admin_snapshot_id))
-                if admin_row and admin_row["full_name"]:
-                    courier_admin_label = "{} ({})".format(courier_admin_label, admin_row["full_name"])
+    if data.startswith("allyhist_periodo_"):
+        period = data[len("allyhist_periodo_"):]
+        _ally_show_period(query, ally["id"], period)
+        return
 
-            event_at = "N/A"
-            if order["status"] == "DELIVERED" and "delivered_at" in order.keys() and order["delivered_at"]:
-                event_at = order["delivered_at"]
-            elif order["status"] == "CANCELLED" and "canceled_at" in order.keys() and order["canceled_at"]:
-                event_at = order["canceled_at"]
-            canceled_by = order["canceled_by"] if "canceled_by" in order.keys() and order["canceled_by"] else "N/A"
+    if data.startswith("allyhist_dia_"):
+        # allyhist_dia_{YYYYMMDD}_{parent_period}
+        rest = data[len("allyhist_dia_"):]
+        parts = rest.split("_", 1)
+        compact = parts[0]
+        parent = parts[1] if len(parts) > 1 else "semana"
+        if len(compact) == 8 and compact.isdigit():
+            date_key = "{}-{}-{}".format(compact[:4], compact[4:6], compact[6:8])
+            _ally_show_day(query, ally["id"], date_key, parent)
+        else:
+            query.edit_message_text("Fecha invalida.", reply_markup=_ally_history_period_keyboard())
+        return
 
-            text = (
-                "Pedido #{}\n"
-                "Estado: {}\n"
-                "Fecha: {}\n"
-                "Cliente: {}\n"
-                "Repartidor: {}\n"
-                "Admin aliado (snapshot): {}\n"
-                "Admin repartidor (snapshot): {}\n"
-                "Cancelado por: {}"
-            ).format(
-                order["id"],
-                status_label,
-                event_at,
-                order["customer_name"] or "N/A",
-                courier_name,
-                ally_admin_label,
-                courier_admin_label,
-                canceled_by,
-            )
-            update.message.reply_text(text)
+    query.edit_message_text(
+        "Historial de pedidos\nSelecciona un periodo:",
+        reply_markup=_ally_history_period_keyboard(),
+    )
+
+
+def _ally_show_period(query, ally_id, period):
+    """Muestra resumen del historial para el periodo solicitado."""
+    start_s, end_s, label = _ally_period_range(period)
+    if not start_s:
+        query.edit_message_text("Periodo invalido.", reply_markup=_ally_history_period_keyboard())
+        return
+
+    orders = get_ally_orders_between(ally_id, start_s, end_s)
+    routes = get_ally_routes_between(ally_id, start_s, end_s)
+
+    if not orders and not routes:
+        query.edit_message_text(
+            "Historial — {}\nNo hay pedidos en este periodo.".format(label),
+            reply_markup=_ally_history_period_keyboard(),
+        )
+        return
+
+    if period in ("hoy", "ayer"):
+        text = _ally_history_flat_text(orders, routes, label)
+        query.edit_message_text(text, reply_markup=_ally_history_period_keyboard())
+    else:
+        text, sorted_keys = _ally_history_grouped_text(orders, routes, label)
+        day_buttons = []
+        for dk in sorted_keys:
+            compact = dk.replace("-", "")
+            day_buttons.append([InlineKeyboardButton(
+                _fmt_date_es(dk),
+                callback_data="allyhist_dia_{}_{}".format(compact, period),
+            )])
+        full_kb = InlineKeyboardMarkup(day_buttons + _ally_history_period_keyboard().inline_keyboard)
+        query.edit_message_text(text, reply_markup=full_kb)
+
+
+def _ally_show_day(query, ally_id, date_key, parent_period):
+    """Muestra detalle de un dia especifico del historial del aliado."""
+    try:
+        dt = datetime.strptime(date_key, "%Y-%m-%d")
+    except ValueError:
+        query.edit_message_text("Fecha invalida.", reply_markup=_ally_history_period_keyboard())
+        return
+
+    start_s = dt.strftime("%Y-%m-%d 00:00:00")
+    end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    orders = get_ally_orders_between(ally_id, start_s, end_s)
+    routes = get_ally_routes_between(ally_id, start_s, end_s)
+
+    text = _ally_history_flat_text(orders, routes, _fmt_date_es(date_key))
+    back_label = "Volver a semana" if parent_period == "semana" else "Volver a mes"
+    full_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(back_label, callback_data="allyhist_periodo_{}".format(parent_period))]]
+        + _ally_history_period_keyboard().inline_keyboard
+    )
+    query.edit_message_text(text, reply_markup=full_kb)
 
 
 def admin_orders_panel(update, context, admin_id, is_platform=False):
@@ -3894,31 +4082,93 @@ def _handle_route_pickup_confirm(update, context, route_id):
     _cancel_route_arrival_jobs(context, route_id)
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
 
-    # Notificar al aliado que el courier llego
+    courier_name = courier.get("full_name") or "El repartidor"
+    query.edit_message_text(
+        "Llegada confirmada. Esperando que el aliado confirme para recibir los detalles de la primera parada."
+    )
+    _notify_ally_route_courier_arrived(context, route, courier_name)
+
+
+def _notify_ally_route_courier_arrived(context, route, courier_name):
+    """Notifica al aliado que el courier llego al pickup de la ruta, con botones de confirmacion."""
     try:
         ally_id = route.get("ally_id")
-        if ally_id:
-            ally = get_ally_by_id(ally_id)
-            if ally:
-                au = get_user_by_id(ally["user_id"])
-                if au:
-                    courier_name = courier.get("full_name") or "El repartidor"
-                    context.bot.send_message(
-                        chat_id=au["telegram_id"],
-                        text="{} confirmo su llegada al punto de recogida de la ruta #{}.".format(
-                            courier_name, route_id
-                        ),
-                    )
-    except Exception:
-        pass
+        if not ally_id:
+            return
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            return
+        ally_user = get_user_by_id(ally["user_id"])
+        if not ally_user or not ally_user.get("telegram_id"):
+            return
+        route_id = route["id"]
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "Confirmar llegada",
+                    callback_data="ruta_pickupconfirm_approve_{}".format(route_id),
+                ),
+                InlineKeyboardButton(
+                    "No ha llegado",
+                    callback_data="ruta_pickupconfirm_reject_{}".format(route_id),
+                ),
+            ]
+        ])
+        context.bot.send_message(
+            chat_id=ally_user["telegram_id"],
+            text=(
+                "{} confirmo su llegada al punto de recogida de la ruta #{}.\n\n"
+                "Confirma su llegada para que reciba los detalles de la primera parada."
+            ).format(courier_name, route_id),
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        print("[WARN] _notify_ally_route_courier_arrived: {}".format(e))
 
-    destinations = get_route_destinations(route_id)
-    pending = [d for d in destinations if d.get("status") == "PENDING"]
-    if not pending:
-        query.edit_message_text("No hay paradas pendientes en esta ruta.")
+
+def _handle_route_pickupconfirm_by_ally(update, context, route_id, approve):
+    """Aliado confirma o rechaza la llegada del courier al pickup de la ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta activa.")
         return
-    query.edit_message_text("Llegada confirmada. Aqui van los detalles de tu primera parada:")
-    _send_route_stop_to_courier(context, query.message.chat_id, route, pending[0])
+
+    courier_id = _row_value(route, "courier_id")
+    courier_user = None
+    if courier_id:
+        courier = get_courier_by_id(courier_id)
+        if courier:
+            courier_user = get_user_by_id(courier["user_id"])
+
+    if approve:
+        query.edit_message_text("Llegada confirmada. El repartidor recibira los detalles de la primera parada.")
+        if not courier_user:
+            return
+        destinations = get_route_destinations(route_id)
+        pending = [d for d in destinations if d.get("status") == "PENDING"]
+        if not pending:
+            context.bot.send_message(
+                chat_id=courier_user["telegram_id"],
+                text="El aliado confirmo tu llegada. No hay paradas pendientes en esta ruta.",
+            )
+            return
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text="El aliado confirmo tu llegada. Aqui van los detalles de la primera parada:",
+        )
+        _send_route_stop_to_courier(context, courier_user["telegram_id"], route, pending[0])
+    else:
+        query.edit_message_text("Ok. El repartidor sera notificado.")
+        if not courier_user:
+            return
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text=(
+                "El aliado indica que aun no has llegado al punto de recogida de la ruta #{}.\n"
+                "Dirigete al lugar y confirma tu llegada cuando estes alli."
+            ).format(route_id),
+        )
 
 
 def _route_arrival_inactivity_job(context):

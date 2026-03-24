@@ -142,9 +142,12 @@ from db import (
     add_route_incentive,
     update_order_payment,
     get_orders_by_ally,
+    get_ally_orders_between,
+    get_ally_routes_between,
     get_orders_by_courier,
     get_courier_daily_earnings_history,
     get_courier_earnings_by_date,
+    get_courier_earnings_between,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -2658,6 +2661,21 @@ def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[b
         return False, None, [], "No tienes perfil de repartidor."
     try:
         rows = get_courier_earnings_by_date(int(courier["id"]), date_key)
+    except Exception as e:
+        return False, courier, [], str(e)
+    return True, courier, rows, "OK"
+
+
+def courier_get_earnings_by_period(telegram_id: int, start_s: str, end_s: str) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna ganancias del courier para un rango de timestamps arbitrario.
+    Usado por el selector de periodos (Hoy/Ayer/Esta semana/Este mes).
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    try:
+        rows = get_courier_earnings_between(int(courier["id"]), start_s, end_s)
     except Exception as e:
         return False, courier, [], str(e)
     return True, courier, rows, "OK"
