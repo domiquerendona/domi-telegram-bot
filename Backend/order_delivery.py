@@ -2757,8 +2757,15 @@ def _handle_pickup(update, context, order_id):
 
     set_courier_arrived(order_id)
     _cancel_arrival_jobs(context, order_id)
-    upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
     courier_name = courier["full_name"] or "Repartidor"
+
+    # Pedido de admin (sin aliado): auto-confirmar y revelar datos directamente
+    if not order["ally_id"]:
+        query.edit_message_text("Pedido #{} - Llegada confirmada.".format(order_id))
+        _notify_courier_pickup_approved(context, order)
+        return
+
+    upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
     _notify_ally_courier_arrived(context, order, courier_name)
 
     keyboard = [[InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))]]
