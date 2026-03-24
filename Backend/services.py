@@ -278,6 +278,7 @@ from db import (
 import math
 import re
 import os
+import urllib.request
 
 # Límite diario de llamadas a Google (configurable)
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))
@@ -328,6 +329,22 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
+
+
+def _osrm_distance_km(lat1: float, lng1: float, lat2: float, lng2: float):
+    """Distancia de carretera via OSRM (OpenStreetMap). Gratuita, sin API key, sin quota."""
+    try:
+        url = "http://router.project-osrm.org/route/v1/driving/{},{};{},{}?overview=false".format(
+            lng1, lat1, lng2, lat2
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "domiquerendona-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("code") == "Ok" and data.get("routes"):
+            return round(data["routes"][0]["distance"] / 1000, 2)
+    except Exception:
+        pass
+    return None
 
 
 def get_online_couriers_sorted_by_distance(lat: float, lng: float) -> list:
@@ -849,6 +866,17 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
                 "source": "google",
                 "used_api": True,
             }
+
+    # --- CAPA 2.5: OSRM (OpenStreetMap, gratuito, red vial real, sin quota) ---
+    osrm_dist = _osrm_distance_km(lat1, lng1, lat2, lng2)
+    if osrm_dist is not None:
+        upsert_distance_cache(origin_key, destination_key, mode="coords",
+                              distance_km=osrm_dist, provider="osrm")
+        return {
+            "distance_km": osrm_dist,
+            "source": "osrm",
+            "used_api": False,
+        }
 
     # --- CAPA 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego) ---
     haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
@@ -1558,6 +1586,13 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
                 upsert_distance_cache(origin_key, dest_key, mode="coords",
                                       distance_km=seg_km, provider="google_distance_matrix")
                 used_api = True
+
+        # Capa 2.5: OSRM (OpenStreetMap, gratuito, red vial real, sin quota)
+        if seg_km is None:
+            seg_km = _osrm_distance_km(lat1, lng1, lat2, lng2)
+            if seg_km is not None:
+                upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                      distance_km=seg_km, provider="osrm")
 
         # Capa 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego)
         if seg_km is None:
