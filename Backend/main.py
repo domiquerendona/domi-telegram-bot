@@ -464,9 +464,6 @@ from handlers.admin_panel import (
     admin_config_callback,
 )
 from handlers.courier_panel import (
-    _fmt_pesos,
-    _courier_earnings_group_by_date,
-    _courier_earnings_buttons,
     courier_earnings_start,
     courier_earnings_callback,
 )
