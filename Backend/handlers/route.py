@@ -27,11 +27,8 @@ from handlers.states import (
     RUTA_MAS_PARADAS,
     RUTA_DISTANCIA_KM,
     RUTA_CONFIRMACION,
-    RUTA_GUARDAR_CLIENTES,
     RUTA_PICKUP_NUEVA_CIUDAD,
     RUTA_PICKUP_NUEVA_BARRIO,
-    RUTA_PARADA_CIUDAD,
-    RUTA_PARADA_BARRIO,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -191,16 +188,48 @@ def _ruta_guardar_parada_actual(context):
         "name": context.user_data.get("ruta_temp_name") or "",
         "phone": context.user_data.get("ruta_temp_phone") or "",
         "address": context.user_data.get("ruta_temp_address") or "",
-        "city": context.user_data.get("ruta_temp_city") or "",
-        "barrio": context.user_data.get("ruta_temp_barrio") or "",
+        "city": "",
+        "barrio": "",
         "lat": context.user_data.get("ruta_temp_lat"),
         "lng": context.user_data.get("ruta_temp_lng"),
-        "customer_id": context.user_data.get("ruta_temp_customer_id"),  # None si es cliente nuevo
+        "customer_id": context.user_data.get("ruta_temp_customer_id"),
     }
     paradas = context.user_data.get("ruta_paradas", [])
     paradas.append(parada)
     context.user_data["ruta_paradas"] = paradas
     _ruta_limpiar_temp(context)
+
+
+def _ruta_guardar_parada_y_cliente(context, msg_or_query):
+    """Guarda cliente nuevo en la agenda del aliado y la parada en la ruta.
+
+    Si el cliente ya existe (ruta_temp_customer_id set), solo guarda la parada.
+    Si es nuevo (no hay customer_id), lo crea con label 'Principal'.
+    """
+    ally_id = context.user_data.get("ruta_ally_id")
+    customer_id = context.user_data.get("ruta_temp_customer_id")
+    name = context.user_data.get("ruta_temp_name") or ""
+    phone = context.user_data.get("ruta_temp_phone") or ""
+    address = context.user_data.get("ruta_temp_address") or ""
+    lat = context.user_data.get("ruta_temp_lat")
+    lng = context.user_data.get("ruta_temp_lng")
+
+    if ally_id and phone and not customer_id:
+        try:
+            existing = get_ally_customer_by_phone(ally_id, phone)
+            if existing:
+                customer_id = existing["id"]
+            else:
+                customer_id = create_ally_customer(ally_id, name, phone)
+            if address:
+                create_customer_address(customer_id, "Principal", address,
+                                        city="", barrio="", lat=lat, lng=lng)
+            context.user_data["ruta_temp_customer_id"] = customer_id
+        except Exception as e:
+            print("[WARN] Error guardando cliente de ruta: {}".format(e))
+
+    _ruta_guardar_parada_actual(context)
+    return _ruta_mostrar_mas_paradas(msg_or_query, context)
 
 
 def _ruta_mostrar_mas_paradas(update_or_query, context):
@@ -729,8 +758,7 @@ def ruta_parada_geo_callback(update, context):
         context.user_data["ruta_temp_lng"] = lng
         if formatted:
             context.user_data["ruta_temp_address"] = formatted
-            query.edit_message_text("Escribe la ciudad de la entrega:")
-            return RUTA_PARADA_CIUDAD
+            return _ruta_guardar_parada_y_cliente(context, query)
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
@@ -756,8 +784,7 @@ def ruta_parada_direccion_handler(update, context):
         update.message.reply_text("Escribe la direccion de entrega.")
         return RUTA_PARADA_DIRECCION
     context.user_data["ruta_temp_address"] = address
-    update.message.reply_text("Escribe la ciudad de la entrega:")
-    return RUTA_PARADA_CIUDAD
+    return _ruta_guardar_parada_y_cliente(context, update)
 
 
 def ruta_parada_ciudad_handler(update, context):
@@ -928,24 +955,6 @@ def ruta_confirmacion_callback(update, context):
     else:
         base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
     query.edit_message_text(base_msg)
-
-    # Verificar si hay clientes nuevos para ofrecer guardarlos
-    nuevos = [p for p in paradas if not p.get("customer_id")]
-    if nuevos:
-        # Guardar referencia para el callback
-        context.user_data["ruta_nuevos_clientes"] = nuevos
-        context.user_data["ruta_ally_id_guardar"] = ally_id
-        names_list = "\n".join("- {} ({})".format(p["name"], p["phone"]) for p in nuevos if p.get("name"))
-        keyboard = [
-            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_clientes_si")],
-            [InlineKeyboardButton("No", callback_data="ruta_guardar_clientes_no")],
-        ]
-        query.message.reply_text(
-            "Clientes nuevos en esta ruta:\n{}\n\nDeseas guardarlos para futuros pedidos?".format(names_list),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return RUTA_GUARDAR_CLIENTES
-
     context.user_data.clear()
     show_main_menu(update, context)
     return ConversationHandler.END
@@ -1051,14 +1060,6 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_direccion_handler),
         ],
-        RUTA_PARADA_CIUDAD: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ciudad_handler),
-        ],
-        RUTA_PARADA_BARRIO: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_barrio_handler),
-        ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
         ],
@@ -1068,9 +1069,6 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_CONFIRMACION: [
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
-        ],
-        RUTA_GUARDAR_CLIENTES: [
-            CallbackQueryHandler(ruta_guardar_clientes_callback, pattern=r"^ruta_guardar_clientes_(si|no)$"),
         ],
     },
     fallbacks=[
