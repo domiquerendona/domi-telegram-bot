@@ -9287,8 +9287,8 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
         raise ValueError("La parada de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
-    return _insert_returning_id(
-        cur, conn,
+    dest_id = _insert_returning_id(
+        cur,
         f"""
         INSERT INTO route_destinations (
             route_id, sequence, customer_name, customer_phone,
@@ -9300,6 +9300,9 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
          customer_address, customer_city, customer_barrio,
          dropoff_lat, dropoff_lng),
     )
+    conn.commit()
+    conn.close()
+    return dest_id
 
 
 def get_route_by_id(route_id):
