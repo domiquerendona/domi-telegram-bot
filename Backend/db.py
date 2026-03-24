@@ -3378,7 +3378,7 @@ def ensure_pricing_defaults():
         "fee_platform_share": "100",
         # Comision adicional al aliado: % sobre tarifa de domicilio, va 100% a plataforma
         # 0 = desactivado (default). Activar subiendo a 3 (= 3%) cuando el modelo lo requiera.
-        "fee_ally_commission_pct": "0",
+        "fee_ally_commission_pct": "2",
         # Suscripciones mensuales de aliados
         # Piso minimo que la plataforma recibe por cada suscripcion, independiente del precio total.
         # El admin retiene: precio_total - subscription_platform_share
