@@ -4614,6 +4614,14 @@ def handle_route_callback(update, context):
         route_id = int(data.replace("ruta_pickup_confirm_", ""))
         return _handle_route_pickup_confirm(update, context, route_id)
 
+    if data.startswith("ruta_pickupconfirm_approve_"):
+        route_id = int(data.replace("ruta_pickupconfirm_approve_", ""))
+        return _handle_route_pickupconfirm_by_ally(update, context, route_id, approve=True)
+
+    if data.startswith("ruta_pickupconfirm_reject_"):
+        route_id = int(data.replace("ruta_pickupconfirm_reject_", ""))
+        return _handle_route_pickupconfirm_by_ally(update, context, route_id, approve=False)
+
     if data.startswith("ruta_ocupado_"):
         route_id = int(data.replace("ruta_ocupado_", ""))
         return _handle_route_busy(update, context, route_id)
