@@ -1795,7 +1795,13 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
 
 
 def _arrival_inactivity_job(context):
-    """T+5: si el courier no se movio >=50m hacia el pickup, libera el pedido (Rappi-style)."""
+    """T+5: algoritmo direccional Rappi-style.
+
+    - Ya llego (<=100m): cancela jobs, no hace nada.
+    - Avanzando bien (>=20% mas cerca): no hace nada.
+    - Sin progreso o poco movimiento: avisa al courier.
+    - Alejandose del pickup (>15% mas lejos que al aceptar): libera inmediatamente.
+    """
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -1803,32 +1809,69 @@ def _arrival_inactivity_job(context):
     order = get_order_by_id(order_id)
     if not order or order["status"] != "ACCEPTED":
         return
-    if order["courier_arrived_at"]:
+    if order.get("courier_arrived_at"):
         return
 
     pickup_lat, pickup_lng = _get_pickup_coords(order)
-    accepted_lat = order["courier_accepted_lat"] if "courier_accepted_lat" in order.keys() else None
-    accepted_lng = order["courier_accepted_lng"] if "courier_accepted_lng" in order.keys() else None
+    accepted_lat = order.get("courier_accepted_lat")
+    accepted_lng = order.get("courier_accepted_lng")
 
     if not all([pickup_lat, pickup_lng, accepted_lat, accepted_lng]):
-        return  # Sin datos de posición, no podemos evaluar
+        return  # Sin datos suficientes
 
     courier = get_courier_by_id(order["courier_id"])
     if not courier:
         return
 
-    current_lat = _row_value(courier, "live_lat") or accepted_lat
-    current_lng = _row_value(courier, "live_lng") or accepted_lng
+    current_lat = float(_row_value(courier, "live_lat") or accepted_lat)
+    current_lng = float(_row_value(courier, "live_lng") or accepted_lng)
 
-    dist_at_acceptance = haversine_km(float(accepted_lat), float(accepted_lng),
-                                      float(pickup_lat), float(pickup_lng))
-    dist_now = haversine_km(float(current_lat), float(current_lng),
+    dist_accepted = haversine_km(float(accepted_lat), float(accepted_lng),
+                                 float(pickup_lat), float(pickup_lng))
+    dist_now = haversine_km(current_lat, current_lng,
                             float(pickup_lat), float(pickup_lng))
 
-    moved_toward_pickup = dist_at_acceptance - dist_now
-    if moved_toward_pickup < ARRIVAL_MOVEMENT_THRESHOLD_KM:
+    # Ya llego
+    if dist_now <= ARRIVAL_RADIUS_KM:
+        _cancel_arrival_jobs(context, order_id)
+        return
+
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    courier_tg_id = courier_user["telegram_id"] if courier_user else None
+
+    # Se esta alejando del pickup (>15% mas lejos)
+    if dist_accepted > 0.05 and dist_now > dist_accepted * 1.15:
+        if courier_tg_id:
+            try:
+                context.bot.send_message(
+                    chat_id=courier_tg_id,
+                    text=(
+                        "Pedido #{}: detectamos que te estas alejando del punto de recogida.\n"
+                        "Si no puedes atender este servicio, libera el pedido para que otro repartidor lo tome."
+                    ).format(order_id),
+                )
+            except Exception:
+                pass
         _release_order_by_timeout(order_id, order["courier_id"], context,
-                                  reason="inactividad (no se movio en 5 min)")
+                                  reason="T+5 alejandose del punto de recogida")
+        return
+
+    # Avanzando bien (>=20% mas cerca que al aceptar)
+    if dist_accepted > 0.05 and dist_now < dist_accepted * 0.80:
+        return  # Buen progreso, no hacer nada
+
+    # Sin progreso suficiente: avisar (no liberar — T+20 hara la liberacion si es necesario)
+    if courier_tg_id:
+        try:
+            context.bot.send_message(
+                chat_id=courier_tg_id,
+                text=(
+                    "Pedido #{}: llevamos 5 minutos y no hemos detectado avance hacia el punto de recogida.\n"
+                    "Asegurate de estar en camino. Si no puedes llegar, libera el pedido."
+                ).format(order_id),
+            )
+        except Exception:
+            pass
 
 
 def _arrival_warn_ally_job(context):
@@ -1880,16 +1923,27 @@ def _arrival_warn_ally_job(context):
     except Exception as e:
         print("[WARN] _arrival_warn_ally_job: {}".format(e))
 
-    # Notificar al courier
+    # Notificar al courier con botones de respuesta
     if courier_tg_id:
         try:
+            courier_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "Sigo en camino",
+                    callback_data="order_arrival_enroute_{}".format(order_id)
+                )],
+                [InlineKeyboardButton(
+                    "No puedo llegar — liberar pedido",
+                    callback_data="order_arrival_release_{}".format(order_id)
+                )],
+            ])
             context.bot.send_message(
                 chat_id=courier_tg_id,
                 text=(
-                    "El aliado fue notificado de que llevas 15 minutos sin reportar "
-                    "llegada al pedido #{}. Reporta tu llegada o el pedido "
-                    "sera liberado automaticamente en 5 minutos."
+                    "Pedido #{}: llevas 15 minutos sin confirmar llegada al punto de recogida.\n"
+                    "El aliado fue notificado. El pedido se liberara automaticamente en 5 minutos.\n\n"
+                    "Que esta pasando?"
                 ).format(order_id),
+                reply_markup=courier_keyboard,
             )
         except Exception:
             pass
@@ -1910,6 +1964,88 @@ def _arrival_deadline_job(context):
                                reason="timeout de llegada (20 min)")
 
 
+def _handle_courier_arrival_button(update, context, order_id):
+    """Courier presiona 'Confirmar llegada'. Valida GPS <= 100m del pickup."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.answer("Este pedido ya no esta activo.")
+        return
+
+    courier = get_courier_by_telegram_id(update.effective_user.id)
+    if not courier:
+        return
+
+    live_lat = _row_value(courier, "live_lat")
+    live_lng = _row_value(courier, "live_lng")
+    live_active = _row_value(courier, "live_location_active")
+
+    if not live_active or not live_lat or not live_lng:
+        query.answer()
+        query.message.reply_text(
+            "Tu GPS no esta activo. Activa tu ubicacion en vivo en Telegram para confirmar tu llegada."
+        )
+        return
+
+    pickup_lat, pickup_lng = _get_pickup_coords(order)
+    if pickup_lat and pickup_lng:
+        dist_km = haversine_km(float(live_lat), float(live_lng),
+                               float(pickup_lat), float(pickup_lng))
+        if dist_km > ARRIVAL_RADIUS_KM:
+            query.answer()
+            query.message.reply_text(
+                "Segun tu ubicacion estas a {:.0f} metros del punto de recogida.\n"
+                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.".format(dist_km * 1000)
+            )
+            return
+
+    _cancel_arrival_jobs(context, order_id)
+    set_courier_arrived(order_id)
+    courier_name = courier.get("full_name") or "Repartidor"
+    _notify_ally_courier_arrived(context, order, courier_name)
+    query.edit_message_text(
+        "Llegada confirmada. El aliado debe confirmar antes de entregarte los datos del cliente."
+    )
+
+
+def _handle_courier_arrival_enroute(update, context, order_id):
+    """Courier responde 'Sigo en camino' al T+15."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.answer()
+        return
+    query.edit_message_text(
+        "Confirmado. Sigue hacia el punto de recogida y presiona 'Confirmar llegada' cuando estes alli."
+    )
+    # Notificar al aliado
+    try:
+        if order.get("ally_id"):
+            ally = get_ally_by_id(order["ally_id"])
+            if ally:
+                au = get_user_by_id(ally["user_id"])
+                if au:
+                    context.bot.send_message(
+                        chat_id=au["telegram_id"],
+                        text="El repartidor confirma que sigue en camino al pedido #{}.".format(order_id),
+                    )
+    except Exception:
+        pass
+
+
+def _handle_courier_arrival_release(update, context, order_id):
+    """Courier responde 'No puedo llegar' al T+15."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.answer()
+        return
+    query.edit_message_text("Pedido #{} liberado. Gracias por avisar.".format(order_id))
+    _cancel_arrival_jobs(context, order_id)
+    _release_order_by_timeout(order_id, order["courier_id"], context,
+                              reason="courier confirmo que no puede llegar (T+15)")
+
+
 def check_courier_arrival_at_pickup(courier_id, lat, lng, context):
     """
     Verifica si el courier está a <=100m del pickup de su pedido activo (ACCEPTED).
@@ -1927,12 +2063,8 @@ def check_courier_arrival_at_pickup(courier_id, lat, lng, context):
     if not pickup_lat or not pickup_lng:
         return
 
-    dist_km = haversine_km(float(lat), float(lng), float(pickup_lat), float(pickup_lng))
-    if dist_km > ARRIVAL_RADIUS_KM:
-        return  # Aún lejos
-
-    courier = get_courier_by_id(courier_id)
-    _notify_courier_arrival_detected(context, order, courier)
+    # Auto-deteccion removida: el courier confirma manualmente con boton GPS-validado.
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1996,6 +2128,10 @@ def _handle_accept(update, context, order_id):
     pickup_lat, pickup_lng = _get_pickup_coords(order)
     keyboard = []
     keyboard.extend(_build_navigation_rows(pickup_lat, pickup_lng))
+    keyboard.append([InlineKeyboardButton(
+        "Confirmar llegada al punto de recogida",
+        callback_data="order_arrived_pickup_{}".format(order_id)
+    )])
     keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
 
     customer_city = _row_value(order, "customer_city") or ""
@@ -2007,12 +2143,9 @@ def _handle_accept(update, context, order_id):
         "Recoge en: {}\n"
         "Destino: {}\n"
         "Tarifa: ${:,}\n\n"
-        "Dirigete ahora al punto de recogida usando los botones de navegacion (Google Maps / Waze).\n"
-        "Manten tu GPS encendido.\n"
-        "Tienes 15 minutos para llegar al punto de recogida.\n"
-        "Cuando el sistema detecte que llegaste, confirma tu llegada manualmente desde el boton del pedido.\n"
-        "Si no puedes llegar, presiona \"Liberar pedido\".\n"
-        "El aliado confirmara tu llegada antes de entregarte los datos del cliente.".format(
+        "Dirigete al punto de recogida. Tienes 15 minutos.\n"
+        "Cuando estes alli, presiona 'Confirmar llegada al punto de recogida'.\n"
+        "Si no puedes llegar, presiona 'Liberar pedido'.".format(
             order_id,
             _get_pickup_address(order),
             destino_area,
@@ -3569,6 +3702,39 @@ def _handle_route_accept(update, context, route_id):
     route = get_route_by_id(route_id)
     destinations = get_route_destinations(route_id)
 
+    # Guardar posicion del courier al aceptar (base para T+5 de llegada)
+    try:
+        c_data = get_courier_by_id(courier_id)
+        if c_data:
+            c_lat = _row_value(c_data, "live_lat") or _row_value(c_data, "residence_lat")
+            c_lng = _row_value(c_data, "live_lng") or _row_value(c_data, "residence_lng")
+            if c_lat and c_lng:
+                context.bot_data.setdefault("route_accepted_pos", {})[route_id] = {
+                    "lat": float(c_lat), "lng": float(c_lng)
+                }
+    except Exception:
+        pass
+
+    # Programar timers de llegada al pickup (igual que pedidos)
+    context.job_queue.run_once(
+        _route_arrival_inactivity_job,
+        ARRIVAL_INACTIVITY_SECONDS,
+        context={"route_id": route_id, "courier_id": courier_id},
+        name="ruta_arr_inactive_{}".format(route_id),
+    )
+    context.job_queue.run_once(
+        _route_arrival_warn_job,
+        ARRIVAL_WARN_SECONDS,
+        context={"route_id": route_id, "courier_id": courier_id},
+        name="ruta_arr_warn_{}".format(route_id),
+    )
+    context.job_queue.run_once(
+        _route_arrival_deadline_job,
+        ARRIVAL_DEADLINE_SECONDS,
+        context={"route_id": route_id, "courier_id": courier_id},
+        name="ruta_arr_deadline_{}".format(route_id),
+    )
+
     _notify_ally_route_accepted(context, route, courier.get("full_name") or "Repartidor")
 
     # Mostrar pantalla de reordenamiento antes de salir a recoger
@@ -3652,7 +3818,7 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
 
     keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
     keyboard.append([InlineKeyboardButton(
-        "Confirmar recogida en tienda",
+        "Confirmar llegada al punto de recogida",
         callback_data="ruta_pickup_confirm_{}".format(route_id)
     )])
     keyboard.append([InlineKeyboardButton(
@@ -3662,8 +3828,8 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
     text = (
         "Ve a recoger los productos.\n\n"
         "Recogida: {}\n\n"
-        "Cuando estes en la tienda y tengas los productos, presiona 'Confirmar recogida en tienda'.\n"
-        "En ese momento recibiras los detalles de la primera parada."
+        "Tienes 15 minutos para llegar. Cuando estes alli, presiona 'Confirmar llegada'.\n"
+        "Si no puedes llegar, presiona 'Liberar ruta'."
     ).format(pickup_address)
 
     if hasattr(msg_or_query, "edit_message_text"):
@@ -3682,20 +3848,269 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
             pass
 
 
+def _cancel_route_arrival_jobs(context, route_id):
+    for suffix in ("inactive", "warn", "deadline"):
+        for job in context.job_queue.get_jobs_by_name("ruta_arr_{}_{}".format(suffix, route_id)):
+            job.schedule_removal()
+
+
 def _handle_route_pickup_confirm(update, context, route_id):
-    """Courier confirma que recogió los productos. Revela primera parada."""
+    """Courier confirma llegada al punto de recogida. Valida GPS <= 100m."""
     query = update.callback_query
     route = get_route_by_id(route_id)
     if not route or route["status"] != "ACCEPTED":
         query.edit_message_text("Esta ruta ya no esta activa.")
         return
+
+    courier = get_courier_by_telegram_id(update.effective_user.id)
+    if not courier:
+        return
+
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+
+    if pickup_lat and pickup_lng:
+        live_lat = _row_value(courier, "live_lat")
+        live_lng = _row_value(courier, "live_lng")
+        live_active = _row_value(courier, "live_location_active")
+
+        if not live_active or not live_lat or not live_lng:
+            query.answer()
+            query.message.reply_text(
+                "Tu GPS no esta activo. Activa tu ubicacion en vivo en Telegram para confirmar tu llegada."
+            )
+            return
+
+        dist_km = haversine_km(float(live_lat), float(live_lng),
+                               float(pickup_lat), float(pickup_lng))
+        if dist_km > ARRIVAL_RADIUS_KM:
+            query.answer()
+            query.message.reply_text(
+                "Segun tu ubicacion estas a {:.0f} metros del punto de recogida.\n"
+                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.".format(dist_km * 1000)
+            )
+            return
+
+    _cancel_route_arrival_jobs(context, route_id)
+    context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+
+    # Notificar al aliado que el courier llego
+    try:
+        ally_id = route.get("ally_id")
+        if ally_id:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                au = get_user_by_id(ally["user_id"])
+                if au:
+                    courier_name = courier.get("full_name") or "El repartidor"
+                    context.bot.send_message(
+                        chat_id=au["telegram_id"],
+                        text="{} confirmo su llegada al punto de recogida de la ruta #{}.".format(
+                            courier_name, route_id
+                        ),
+                    )
+    except Exception:
+        pass
+
     destinations = get_route_destinations(route_id)
     pending = [d for d in destinations if d.get("status") == "PENDING"]
     if not pending:
         query.edit_message_text("No hay paradas pendientes en esta ruta.")
         return
-    query.edit_message_text("Recogida confirmada. Aqui van los detalles de tu primera parada:")
+    query.edit_message_text("Llegada confirmada. Aqui van los detalles de tu primera parada:")
     _send_route_stop_to_courier(context, query.message.chat_id, route, pending[0])
+
+
+def _route_arrival_inactivity_job(context):
+    """T+5 ruta: algoritmo direccional — misma logica que pedidos."""
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    courier_id = data.get("courier_id")
+    if not route_id:
+        return
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        return
+
+    pickup_lat = route.get("pickup_lat")
+    pickup_lng = route.get("pickup_lng")
+    accepted_pos = context.bot_data.get("route_accepted_pos", {}).get(route_id, {})
+    accepted_lat = accepted_pos.get("lat")
+    accepted_lng = accepted_pos.get("lng")
+
+    if not all([pickup_lat, pickup_lng, accepted_lat, accepted_lng]):
+        return
+
+    courier = get_courier_by_id(courier_id) if courier_id else None
+    if not courier:
+        return
+
+    current_lat = float(_row_value(courier, "live_lat") or accepted_lat)
+    current_lng = float(_row_value(courier, "live_lng") or accepted_lng)
+
+    dist_accepted = haversine_km(float(accepted_lat), float(accepted_lng),
+                                 float(pickup_lat), float(pickup_lng))
+    dist_now = haversine_km(current_lat, current_lng, float(pickup_lat), float(pickup_lng))
+
+    if dist_now <= ARRIVAL_RADIUS_KM:
+        _cancel_route_arrival_jobs(context, route_id)
+        return
+
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    courier_tg_id = courier_user["telegram_id"] if courier_user else None
+
+    if dist_accepted > 0.05 and dist_now > dist_accepted * 1.15:
+        if courier_tg_id:
+            try:
+                context.bot.send_message(
+                    chat_id=courier_tg_id,
+                    text=(
+                        "Ruta #{}: detectamos que te estas alejando del punto de recogida.\n"
+                        "Si no puedes atender esta ruta, liberala para que otro repartidor la tome."
+                    ).format(route_id),
+                )
+            except Exception:
+                pass
+        _release_route_by_timeout(route_id, courier_id, context)
+        return
+
+    if dist_accepted > 0.05 and dist_now < dist_accepted * 0.80:
+        return  # Buen progreso
+
+    if courier_tg_id:
+        try:
+            context.bot.send_message(
+                chat_id=courier_tg_id,
+                text=(
+                    "Ruta #{}: llevamos 5 minutos y no hemos detectado avance hacia el punto de recogida.\n"
+                    "Asegurate de estar en camino. Si no puedes llegar, libera la ruta."
+                ).format(route_id),
+            )
+        except Exception:
+            pass
+
+
+def _route_arrival_warn_job(context):
+    """T+15 ruta: avisa al aliado y pregunta al courier."""
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    courier_id = data.get("courier_id")
+    if not route_id:
+        return
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        return
+
+    courier = get_courier_by_id(courier_id) if courier_id else None
+    courier_name = courier["full_name"] if courier else "El repartidor"
+    courier_user = get_user_by_id(courier["user_id"]) if courier else None
+    courier_tg_id = courier_user["telegram_id"] if courier_user else None
+
+    try:
+        ally_id = route.get("ally_id")
+        if ally_id:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                au = get_user_by_id(ally["user_id"])
+                if au:
+                    context.bot.send_message(
+                        chat_id=au["telegram_id"],
+                        text=(
+                            "Han pasado 15 minutos y {} no ha confirmado su llegada "
+                            "al punto de recogida de la ruta #{}.".format(courier_name, route_id)
+                        ),
+                    )
+    except Exception:
+        pass
+
+    if courier_tg_id:
+        try:
+            courier_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "Sigo en camino",
+                    callback_data="ruta_arrival_enroute_{}".format(route_id)
+                )],
+                [InlineKeyboardButton(
+                    "No puedo llegar — liberar ruta",
+                    callback_data="ruta_arrival_release_{}".format(route_id)
+                )],
+            ])
+            context.bot.send_message(
+                chat_id=courier_tg_id,
+                text=(
+                    "Ruta #{}: llevas 15 minutos sin confirmar llegada al punto de recogida.\n"
+                    "La ruta se liberara automaticamente en 5 minutos.\n\nQue esta pasando?"
+                ).format(route_id),
+                reply_markup=courier_keyboard,
+            )
+        except Exception:
+            pass
+
+
+def _route_arrival_deadline_job(context):
+    """T+20 ruta: libera la ruta si el courier no llego."""
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    courier_id = data.get("courier_id")
+    if not route_id:
+        return
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        return
+    _release_route_by_timeout(route_id, courier_id, context)
+
+
+def _release_route_by_timeout(route_id, courier_id, context):
+    """Libera una ruta por timeout o inactividad y re-oferta."""
+    _cancel_route_arrival_jobs(context, route_id)
+    context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+    try:
+        update_route_status(route_id, "PUBLISHED")
+        route = get_route_by_id(route_id)
+        if route:
+            ally_id = route.get("ally_id")
+            publish_route_to_couriers(route_id, ally_id, context)
+    except Exception as e:
+        print("[WARN] _release_route_by_timeout: {}".format(e))
+
+
+def _handle_route_arrival_enroute(update, context, route_id):
+    """Courier responde 'Sigo en camino' al T+15 de ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.answer()
+        return
+    query.edit_message_text(
+        "Confirmado. Sigue hacia el punto de recogida y presiona 'Confirmar llegada' cuando estes alli."
+    )
+    try:
+        ally_id = route.get("ally_id")
+        if ally_id:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                au = get_user_by_id(ally["user_id"])
+                if au:
+                    context.bot.send_message(
+                        chat_id=au["telegram_id"],
+                        text="El repartidor confirma que sigue en camino a la ruta #{}.".format(route_id),
+                    )
+    except Exception:
+        pass
+
+
+def _handle_route_arrival_release(update, context, route_id):
+    """Courier responde 'No puedo llegar' al T+15 de ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.answer()
+        return
+    query.edit_message_text("Ruta #{} liberada. Gracias por avisar.".format(route_id))
+    _cancel_route_arrival_jobs(context, route_id)
+    courier = get_courier_by_telegram_id(update.effective_user.id)
+    courier_id = courier["id"] if courier else None
+    _release_route_by_timeout(route_id, courier_id, context)
 
 
 def _handle_route_reject(update, context, route_id):
@@ -3920,6 +4335,26 @@ def handle_route_callback(update, context):
     if data.startswith("ruta_rechazar_"):
         route_id = int(data.replace("ruta_rechazar_", ""))
         return _handle_route_reject(update, context, route_id)
+
+    if data.startswith("order_arrived_pickup_"):
+        order_id = int(data.replace("order_arrived_pickup_", ""))
+        return _handle_courier_arrival_button(update, context, order_id)
+
+    if data.startswith("order_arrival_enroute_"):
+        order_id = int(data.replace("order_arrival_enroute_", ""))
+        return _handle_courier_arrival_enroute(update, context, order_id)
+
+    if data.startswith("order_arrival_release_"):
+        order_id = int(data.replace("order_arrival_release_", ""))
+        return _handle_courier_arrival_release(update, context, order_id)
+
+    if data.startswith("ruta_arrival_enroute_"):
+        route_id = int(data.replace("ruta_arrival_enroute_", ""))
+        return _handle_route_arrival_enroute(update, context, route_id)
+
+    if data.startswith("ruta_arrival_release_"):
+        route_id = int(data.replace("ruta_arrival_release_", ""))
+        return _handle_route_arrival_release(update, context, route_id)
 
     if data.startswith("ruta_orden_"):
         return _handle_route_reorder(update, context, data)
