@@ -27,6 +27,7 @@ from handlers.states import (
     RUTA_MAS_PARADAS,
     RUTA_DISTANCIA_KM,
     RUTA_CONFIRMACION,
+    RUTA_GUARDAR_CLIENTES,
     RUTA_PICKUP_NUEVA_CIUDAD,
     RUTA_PICKUP_NUEVA_BARRIO,
 )
@@ -201,34 +202,26 @@ def _ruta_guardar_parada_actual(context):
 
 
 def _ruta_guardar_parada_y_cliente(context, msg_or_query):
-    """Guarda cliente nuevo en la agenda del aliado y la parada en la ruta.
-
-    Si el cliente ya existe (ruta_temp_customer_id set), solo guarda la parada.
-    Si es nuevo (no hay customer_id), lo crea con label 'Principal'.
-    """
-    ally_id = context.user_data.get("ruta_ally_id")
+    """Guarda la parada. Si es cliente nuevo, pregunta si guardarlo en agenda."""
     customer_id = context.user_data.get("ruta_temp_customer_id")
     name = context.user_data.get("ruta_temp_name") or ""
     phone = context.user_data.get("ruta_temp_phone") or ""
-    address = context.user_data.get("ruta_temp_address") or ""
-    lat = context.user_data.get("ruta_temp_lat")
-    lng = context.user_data.get("ruta_temp_lng")
-
-    if ally_id and phone and not customer_id:
-        try:
-            existing = get_ally_customer_by_phone(ally_id, phone)
-            if existing:
-                customer_id = existing["id"]
-            else:
-                customer_id = create_ally_customer(ally_id, name, phone)
-            if address:
-                create_customer_address(customer_id, "Principal", address,
-                                        city="", barrio="", lat=lat, lng=lng)
-            context.user_data["ruta_temp_customer_id"] = customer_id
-        except Exception as e:
-            print("[WARN] Error guardando cliente de ruta: {}".format(e))
 
     _ruta_guardar_parada_actual(context)
+
+    # Si es cliente nuevo (sin customer_id), preguntar si guardar en agenda
+    if not customer_id and phone:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_cust_si")],
+            [InlineKeyboardButton("No", callback_data="ruta_guardar_cust_no")],
+        ])
+        text = "Deseas guardar a {} ({}) en tu agenda de clientes?".format(name, phone)
+        if hasattr(msg_or_query, "edit_message_text"):
+            msg_or_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            msg_or_query.message.reply_text(text, reply_markup=keyboard)
+        return RUTA_GUARDAR_CLIENTES
+
     return _ruta_mostrar_mas_paradas(msg_or_query, context)
 
 
@@ -960,45 +953,38 @@ def ruta_confirmacion_callback(update, context):
     return ConversationHandler.END
 
 
-def ruta_guardar_clientes_callback(update, context):
-    """Maneja la decision de guardar o no los clientes nuevos de la ruta."""
+def ruta_guardar_cust_callback(update, context):
+    """Preguntado por parada: guardar o no el cliente nuevo en la agenda."""
     query = update.callback_query
     query.answer()
-    data = query.data
-    ally_id = context.user_data.get("ruta_ally_id_guardar")
-    nuevos = context.user_data.get("ruta_nuevos_clientes", [])
+    ally_id = context.user_data.get("ruta_ally_id")
+    # Los datos del cliente aun estan en ruta_paradas[-1] (ya guardado como parada)
+    paradas = context.user_data.get("ruta_paradas", [])
+    ultima = paradas[-1] if paradas else {}
 
-    if data == "ruta_guardar_clientes_si" and ally_id:
-        saved = 0
-        for p in nuevos:
-            name = p.get("name") or ""
-            phone = p.get("phone") or ""
-            address = p.get("address") or ""
-            if not phone:
-                continue
-            try:
-                existing = get_ally_customer_by_phone(ally_id, phone)
-                if existing:
-                    customer_id = existing["id"]
-                else:
-                    customer_id = create_ally_customer(ally_id, name, phone)
-                if address:
-                    create_customer_address(
-                        customer_id, "Principal", address,
-                        city=p.get("city") or "",
-                        barrio=p.get("barrio") or "",
-                        lat=p.get("lat"), lng=p.get("lng"),
-                    )
-                saved += 1
-            except Exception as e:
-                print("[WARN] Error guardando cliente de ruta: {}".format(e))
-        query.edit_message_text("Se guardaron {} cliente(s) nuevos.".format(saved))
+    if query.data == "ruta_guardar_cust_si" and ally_id:
+        name = ultima.get("name") or ""
+        phone = ultima.get("phone") or ""
+        address = ultima.get("address") or ""
+        lat = ultima.get("lat")
+        lng = ultima.get("lng")
+        try:
+            existing = get_ally_customer_by_phone(ally_id, phone)
+            if existing:
+                customer_id = existing["id"]
+            else:
+                customer_id = create_ally_customer(ally_id, name, phone)
+            if address:
+                create_customer_address(customer_id, "Principal", address,
+                                        city="", barrio="", lat=lat, lng=lng)
+            query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
+        except Exception as e:
+            print("[WARN] Error guardando cliente de ruta: {}".format(e))
+            query.edit_message_text("No se pudo guardar el cliente.")
     else:
-        query.edit_message_text("Clientes no guardados.")
+        query.edit_message_text("OK, no se guardo el cliente.")
 
-    context.user_data.clear()
-    show_main_menu(update, context)
-    return ConversationHandler.END
+    return _ruta_mostrar_mas_paradas(query, context)
 
 
 # Conversacion "Nueva ruta" (multi-parada)
@@ -1069,6 +1055,9 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_CONFIRMACION: [
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
+        ],
+        RUTA_GUARDAR_CLIENTES: [
+            CallbackQueryHandler(ruta_guardar_cust_callback, pattern=r"^ruta_guardar_cust_(si|no)$"),
         ],
     },
     fallbacks=[
