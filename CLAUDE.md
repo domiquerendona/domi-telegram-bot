@@ -197,7 +197,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `registration.py` | `ally_conv` (soy_aliado), `courier_conv` (soy_repartidor), `admin_conv` (soy_admin), handlers de cédula/selfie |
 | `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
 | `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
-| `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada (~32 funciones) |
+| `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada. Al registrar parada "cliente nuevo": sin campos ciudad/barrio/notas; al confirmar dirección pregunta si guardar en agenda (`ruta_guardar_cust_si/no`). |
 | `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
 | `ally_bandeja.py` | `ally_bandeja_solicitudes`, `ally_mi_enlace`, `ally_enlace_refresh_callback`, `_ally_bandeja_mostrar_*`, `ally_bandeja_callback` |
 | `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, helpers internos de ganancias |
@@ -326,7 +326,7 @@ Separador operativo actual: guion bajo (`_`).
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤100m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
 | `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos. Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
 | `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas. Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
 | `pagos_` | Sistema de pagos |
@@ -342,6 +342,11 @@ Separador operativo actual: guion bajo (`_`).
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 | `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
+| `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
+| `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
+| `ruta_arrival_enroute_` | Courier ruta responde "Sigo en camino" en T+15. Incluye: `ruta_arrival_enroute_{route_id}` |
+| `ruta_arrival_release_` | Courier ruta decide liberar desde T+15 por no poder llegar. Incluye: `ruta_arrival_release_{route_id}` |
+| `ruta_guardar_cust_` | Al finalizar el registro de una parada nueva en ruta, pregunta si guardar el cliente en agenda. Incluye: `ruta_guardar_cust_si` / `ruta_guardar_cust_no` |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
 
@@ -898,60 +903,136 @@ Courier entrega
 
 ## Sistema de Tracking de Llegada (order_delivery.py)
 
-Implementado en commit `b06fc3e`. Controla el ciclo post-aceptación del courier hasta la confirmación de llegada al punto de recogida.
+Implementado originalmente en commit `b06fc3e`. Actualizado en 2026-03-24: confirmación manual con validación GPS, algoritmo T+5 direccional Rappi-style, T+15 con botones de respuesta del courier, y flujo equivalente para rutas multi-parada.
 
-### Flujo completo
+### Flujo completo — Pedidos
 
 ```
 Oferta publicada → courier acepta
   ↓ _handle_accept
   - Mensaje SIN datos del cliente (solo barrio destino + tarifa + pickup address)
-  - Mensaje incluye instruccion explicita: navegar al pickup (Google Maps/Waze) y liberar si no puede llegar
+  - Link Google Maps/Waze al pickup incluido
   - Guarda courier_accepted_lat/lng en orders (base para T+5)
+  - Muestra botón "Confirmar llegada al punto de recogida" (order_arrived_pickup_{id})
   - Programa 3 jobs:
       arr_inactive_{id}  T+5 min
       arr_warn_{id}      T+15 min
       arr_deadline_{id}  T+20 min
 
-  T+5:  ¿Movimiento ≥50m hacia pickup? No → _release_order_by_timeout
-  T+15: Notificar aliado (Buscar otro / Llamar / Seguir esperando) + advertir courier
-  T+20: _release_order_by_timeout automático
+  T+5 — Algoritmo direccional Rappi-style (usando GPS actual vs courier_accepted_lat/lng):
+    - Si GPS inactivo → solo registra; T+20 maneja la liberación
+    - Si courier se aleja >15% de la distancia original al pickup → liberar inmediatamente
+    - Si courier avanzó ≥20% más cerca del pickup → no hacer nada (progresando bien)
+    - Si no hay progreso suficiente → advertir al courier solamente (T+20 hace liberación dura)
 
-  (En paralelo, cada live location update llama check_courier_arrival_at_pickup)
-  GPS detecta ≤100m del pickup:
-    → set_courier_arrived (idempotente)
-    → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
-    → upsert_order_pickup_confirmation(PENDING)
-    → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
+  T+15 — Notificación al aliado + opciones al courier:
+    - Aliado: "Buscar otro courier" (order_find_another_{id}), "Llamar", "Seguir esperando" (order_wait_courier_{id})
+    - Courier: botones "Sigo en camino" (order_arrival_enroute_{id}) / "No puedo llegar" (order_arrival_release_{id})
+    - "Sigo en camino" → notifica al aliado que el courier confirmó que viene
+    - "No puedo llegar" → liberación inmediata del pedido
+
+  T+20: _release_order_by_timeout automático (hard deadline)
+
+  Courier pulsa "Confirmar llegada al pickup" (order_arrived_pickup_{id}):
+    → Valida GPS activo + distancia ≤ ARRIVAL_RADIUS_KM (100m)
+    → Si GPS inactivo o >100m: muestra distancia real y pide acercarse
+    → Si válido:
+        → set_courier_arrived (idempotente)
+        → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
+        → upsert_order_pickup_confirmation(PENDING)
+        → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
 
   Aliado confirma (order_pickupconfirm_approve_):
     → _handle_pickup_confirmation_by_ally(approve=True)
     → status = PICKED_UP
-    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta (en oferta solo ve mapas + ciudad/barrio)
+    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta
 ```
 
-- Para rutas: `order_delivery.py → _handle_route_accept` también incluye instrucción de navegación al pickup (Google Maps/Waze) y opción de liberar ruta.
+**Nota:** `check_courier_arrival_at_pickup` (llamada por cada live location update) ya no dispara notificaciones automáticas. Ahora es un stub que hace `pass` — la detección de llegada es 100% manual via el botón.
+
+### Flujo completo — Rutas multi-parada
+
+```
+Ruta ofertada → courier acepta
+  ↓ _handle_route_accept
+  - Muestra pantalla de reordenamiento de paradas (ruta_orden_{route_id}_{dest_id})
+  - Guarda posición de aceptación en context.bot_data["route_accepted_pos"][route_id]
+  - Programa 3 jobs equivalentes:
+      route_arr_inactive_{route_id}  T+5 min
+      route_arr_warn_{route_id}      T+15 min
+      route_arr_deadline_{route_id}  T+20 min
+
+  Courier confirma orden de paradas:
+    → _show_route_pickup_navigation: link Google Maps/Waze al pickup + botón "Confirmar llegada"
+    → NO revela primera parada hasta confirmación de llegada
+
+  T+5, T+15, T+20: misma lógica que pedidos (directional T+5, courier buttons T+15, hard release T+20)
+
+  Courier pulsa "Confirmar llegada al pickup de ruta" (ruta_pickup_confirm_{route_id}):
+    → Valida GPS activo ≤100m del pickup
+    → _cancel_route_arrival_jobs (cancela los 3 jobs)
+    → Notifica al aliado de llegada del courier
+    → Al confirmar aliado: revela primera parada
+```
+
+### Pantalla de reordenamiento de paradas (nueva — 2026-03-24)
+
+Al aceptar una ruta, el courier ve la lista de paradas en el orden sugerido y puede reorganizarlas:
+- Toca una parada → se marca como "seleccionada"
+- La posición de la parada seleccionada se intercambia con la siguiente pulsada
+- Al confirmar → `reorder_route_destinations(route_id, ordered_ids)` persiste el nuevo orden en BD
+- Luego se muestra la navegación al pickup
+
+### Oferta de pedidos y rutas (simplificada — 2026-03-24)
+
+**Pedidos:** La oferta ya NO incluye links de Google Maps. Solo muestra:
+- Barrio y ciudad de entrega
+- Distancia calculada
+- Tarifa + incentivo (si hay)
+- Aviso de tiempo máximo de respuesta (15 min)
+
+**Rutas:** La oferta muestra por cada parada:
+- Barrio y ciudad (NO nombre/dirección del cliente)
+- Incentivo total si aplica
+- Aviso de 15 minutos
+
+El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras confirmación de recogida por el aliado (PICKED_UP).
 
 ### Constantes (order_delivery.py)
 
 | Constante | Valor | Descripción |
 |-----------|-------|-------------|
-| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Timeout de inactividad Rappi-style |
-| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Notificación al aliado |
-| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Auto-liberación |
-| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio de detección de llegada |
-| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.05 (50 m) | Movimiento mínimo hacia pickup en T+5 |
+| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Job T+5 — algoritmo direccional |
+| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Job T+15 — notificación a aliado y opciones al courier |
+| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Job T+20 — liberación automática dura |
+| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio máximo para confirmar llegada manual |
+| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.15 (15%) | Umbral de alejamiento para liberación inmediata en T+5 |
+| `ARRIVAL_PROGRESS_THRESHOLD` | 0.20 (20%) | Progreso mínimo hacia pickup para considerar al courier en camino en T+5 |
 
-### Funciones nuevas en order_delivery.py
+### Funciones en order_delivery.py
 
 | Función | Descripción |
 |---------|-------------|
-| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Pública. Llamada desde main.py en cada live location |
-| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs por nombre |
-| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 y T+20) |
-| `_arrival_inactivity_job(context)` | Job T+5 |
-| `_arrival_warn_ally_job(context)` | Job T+15 |
-| `_arrival_deadline_job(context)` | Job T+20 |
+| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Stub — ya no dispara notificaciones automáticas |
+| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs de pedido por nombre |
+| `_cancel_route_arrival_jobs(context, route_id)` | Cancela los 3 jobs de ruta por nombre |
+| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 alejamiento y T+20) |
+| `_release_route_by_timeout(route_id, courier_id, context, reason)` | Liberación de ruta (T+5 y T+20) |
+| `_arrival_inactivity_job(context)` | Job T+5 pedido — algoritmo direccional |
+| `_arrival_warn_ally_job(context)` | Job T+15 pedido — notifica aliado + botones courier |
+| `_arrival_deadline_job(context)` | Job T+20 pedido — liberación dura |
+| `_route_arrival_inactivity_job(context)` | Job T+5 ruta |
+| `_route_arrival_warn_job(context)` | Job T+15 ruta |
+| `_route_arrival_deadline_job(context)` | Job T+20 ruta |
+| `_handle_courier_arrival_button(update, context, order_id)` | Valida GPS ≤100m → confirma llegada manual |
+| `_handle_courier_arrival_enroute(update, context, order_id)` | Courier: "Sigo en camino" — notifica al aliado |
+| `_handle_courier_arrival_release(update, context, order_id)` | Courier: "No puedo llegar" — libera inmediatamente |
+| `_handle_route_arrival_enroute(update, context, route_id)` | Equivalente de enroute para rutas |
+| `_handle_route_arrival_release(update, context, route_id)` | Equivalente de release para rutas |
+| `_handle_route_reorder(update, context, route_id, dest_id)` | Procesa reordenamiento de parada en pantalla |
+| `_show_route_reorder(update_or_query, context, route_id)` | Muestra pantalla de reordenamiento |
+| `_show_route_pickup_navigation(update_or_query, context, route_id)` | Link GPS + botón "Confirmar llegada" |
+| `_handle_route_pickup_confirm(update, context, route_id)` | GPS-validado: notifica al aliado de llegada |
 | `_notify_ally_courier_arrived(context, order, courier_name)` | Notificación al aliado con botones |
 | `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
 | `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
@@ -960,7 +1041,7 @@ Oferta publicada → courier acepta
 
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
-| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp cuando GPS detecta llegada (≤100m). NULL = no llegó aún |
+| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp de confirmación de llegada manual. NULL = no llegó aún |
 | `courier_accepted_lat` | REAL | Latitud del courier al momento de aceptar (base para T+5) |
 | `courier_accepted_lng` | REAL | Longitud del courier al momento de aceptar (base para T+5) |
 
@@ -970,13 +1051,20 @@ Oferta publicada → courier acepta
 - `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
 - `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
 - `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
+- `reorder_route_destinations(route_id, ordered_ids)` — actualiza `sequence` 1..N de paradas según el orden elegido por el courier
 
 Re-exportadas en `services.py`.
+
+### bot_data keys relacionados
+
+| Clave | Contenido |
+|-------|-----------|
+| `route_accepted_pos[route_id]` | `{"lat": float, "lng": float}` — posición del courier al aceptar ruta, base para T+5 |
+| `excluded_couriers[order_id]` | Set de courier_ids excluidos de re-oferta |
 
 ### Pendientes (NO implementado aún)
 
 - Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
-- Botón explícito "Llegué" para courier (hoy es detección automática por live location).
 - Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.
 
 ---
@@ -1165,7 +1253,25 @@ En `admin_pedido_confirmar_callback`:
 
 ## Cotizador y Uso de APIs (Control de Costos)
 
-El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota diaria limitada.
+El cotizador usa **Google Maps API** (Distance Matrix / Places) con cuota diaria limitada, y **OSRM** (capa 2.5, gratuita, sin clave API) como fallback antes de Haversine.
+
+### Pipeline de cálculo de distancia (`get_smart_distance` en `services.py`)
+
+```
+1. Caché BD (distance_cache por par de coordenadas)   → sin costo
+2. Google Maps Distance Matrix                         → costo USD/llamada, cuota diaria
+2.5. OSRM (OpenStreetMap Routing Machine)              → GRATIS, red vial real (implementado 2026-03-24)
+3. Haversine × 1.3                                     → sin costo, estimación conservadora
+```
+
+**OSRM** (`_osrm_distance_km` en `services.py`):
+- Endpoint: `http://router.project-osrm.org/route/v1/driving/{lng},{lat};{lng},{lat}?overview=false`
+- Sin API key. Timeout: 5 segundos.
+- Retorna distancia real en carreteras (metros → km).
+- Si falla (timeout, error de red, OSRM down): cae silenciosamente a Haversine.
+- Resultado se cachea en `distance_cache` con `provider="osrm"`.
+- Aplica también en `calcular_distancia_ruta_smart` (per-segment para rutas).
+- **No** registra eventos en `api_usage_events` (no hay costo).
 
 ### Regla de Cuota
 - **PROHIBIDO** llamar a la API sin verificar `api_usage_daily` primero.
@@ -1916,5 +2022,5 @@ Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
 
 ---
 
-*Última actualización: 2026-03-23*
+*Última actualización: 2026-03-24*
 
