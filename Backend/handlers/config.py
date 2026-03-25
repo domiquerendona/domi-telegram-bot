@@ -532,7 +532,7 @@ tarifas_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
 )
 
@@ -545,7 +545,7 @@ config_alertas_oferta_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -559,7 +559,7 @@ config_ally_minpurchase_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
 )
 
@@ -572,7 +572,7 @@ config_ally_subsidy_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
 )
 
@@ -656,6 +656,6 @@ config_subs_conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
 )

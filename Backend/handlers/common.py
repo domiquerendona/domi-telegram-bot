@@ -89,12 +89,25 @@ _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
 
-# Regex y filtro compartido para "Cancelar" / "Volver al menu" y botones de menú fijos.
-# Nota: se usa para evitar que ese texto sea consumido como input normal en estados con texto.
+# Regex y filtro compartido para todos los botones de navegación del menú.
+# Nota: cualquier texto que coincida NO será consumido como input en estados de conversación.
+# Al llegar al fallback de una conversación, cancela la conversación limpiamente.
 CANCELAR_VOLVER_MENU_REGEX = (
     r'(?i)^\s*[\W_]*\s*('
+    # Cancelación explícita
     r'cancelar|volver al men[uú]|men[uú]'
+    # Saldos
     r'|mi saldo repartidor|mi saldo aliado'
+    # Menú principal
+    r'|mi aliado|mi repartidor.*|mi admin|admin plataforma'
+    r'|mi perfil|ayuda|actualizar men[uú]'
+    # Submenú aliado (no entry-points de conversación)
+    r'|mis pedidos|mis repartidores|mis solicitudes'
+    r'|mi enlace de pedidos|mi suscripci[oó]n'
+    # Submenú repartidor
+    r'|activar repartidor|desactivarme|actualizar'
+    r'|pedidos en curso|mis pedidos repartidor|mis ganancias'
+    r'|recargar repartidor'
     r')\s*$'
 )
 CANCELAR_VOLVER_MENU_FILTER = Filters.regex(CANCELAR_VOLVER_MENU_REGEX)
