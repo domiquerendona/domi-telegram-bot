@@ -3434,6 +3434,7 @@ def pedido_confirmacion_callback(update, context):
                 increment_pickup_usage(pickup_location_id, ally_id)
 
             # Construir preview de oferta para repartidor
+            total_fee = pricing["total_fee"]
             preview = construir_preview_oferta(
                 order_id, service_type, pickup_text, customer_address,
                 distance_km, total_fee, requires_cash, cash_required_amount,
