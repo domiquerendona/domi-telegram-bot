@@ -721,6 +721,19 @@ def publish_order_to_couriers(
             p_lat = loc["lat"] if "lat" in loc.keys() else None
             p_lng = loc["lng"] if "lng" in loc.keys() else None
 
+    # Calcular distancia pickup → dropoff para filtrar bicicletas en pedidos largos
+    _order_distance_km = None
+    d_lat = order["dropoff_lat"] if "dropoff_lat" in order.keys() else None
+    d_lng = order["dropoff_lng"] if "dropoff_lng" in order.keys() else None
+    if p_lat is not None and p_lng is not None and d_lat is not None and d_lng is not None:
+        import math as _math
+        _dlat = _math.radians(d_lat - p_lat)
+        _dlng = _math.radians(d_lng - p_lng)
+        _a = (_math.sin(_dlat / 2) ** 2
+              + _math.cos(_math.radians(p_lat)) * _math.cos(_math.radians(d_lat))
+              * _math.sin(_dlng / 2) ** 2)
+        _order_distance_km = 6371.0 * 2 * _math.atan2(_math.sqrt(_a), _math.sqrt(1 - _a))
+
     # Red cooperativa: buscar en TODOS los couriers activos, sin filtro de equipo.
     # Cada courier opera bajo su propio admin; el fee se cobra a cada uno por separado.
     eligible = get_eligible_couriers_for_order(
@@ -729,6 +742,7 @@ def publish_order_to_couriers(
         cash_required_amount=cash_amount,
         pickup_lat=p_lat,
         pickup_lng=p_lng,
+        order_distance_km=_order_distance_km,
     )
     if not eligible:
         print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
