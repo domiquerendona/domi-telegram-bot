@@ -99,7 +99,7 @@ CANCELAR_VOLVER_MENU_REGEX = (
     # Saldos
     r'|mi saldo repartidor|mi saldo aliado'
     # Menú principal
-    r'|mi aliado|mi repartidor.*|mi admin|admin plataforma'
+    r'|mi aliado|mi repartidor(?:\s*[·\u00b7]\s*(?:online|offline))?|mi admin|admin plataforma'
     r'|mi perfil|ayuda|actualizar men[uú]'
     # Submenú aliado (no entry-points de conversación)
     r'|mis pedidos|mis repartidores|mis solicitudes'
