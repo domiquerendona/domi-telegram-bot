@@ -1854,10 +1854,7 @@ def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None
     if order_id is None:
         return [
             [
-                InlineKeyboardButton("+1000", callback_data=f"{prefix}1000"),
                 InlineKeyboardButton("+1500", callback_data=f"{prefix}1500"),
-            ],
-            [
                 InlineKeyboardButton("+2000", callback_data=f"{prefix}2000"),
                 InlineKeyboardButton("+3000", callback_data=f"{prefix}3000"),
             ],
@@ -1976,14 +1973,6 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
     pickup_lng = context.user_data.get("pickup_lng")
     if pickup_lat is None or pickup_lng is None:
         return mostrar_selector_pickup(query, context, edit=True)
-    try:
-        context.bot.send_location(
-            chat_id=query.message.chat_id,
-            latitude=float(pickup_lat),
-            longitude=float(pickup_lng),
-        )
-    except Exception:
-        pass
 
     keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
@@ -2006,14 +1995,6 @@ def mostrar_resumen_confirmacion_msg(update, context):
     pickup_lng = context.user_data.get("pickup_lng")
     if pickup_lat is None or pickup_lng is None:
         return mostrar_selector_pickup(update, context, edit=False)
-    try:
-        context.bot.send_location(
-            chat_id=update.effective_chat.id,
-            latitude=float(pickup_lat),
-            longitude=float(pickup_lng),
-        )
-    except Exception:
-        pass
 
     keyboard = _pedido_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],

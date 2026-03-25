@@ -355,3 +355,4 @@ ADMIN_PEDIDO_SAVE_PICKUP   = 919   # Preguntar si guardar nueva direccion de rec
 # =========================
 CONFIG_SUBS_PRECIO  = 994   # Admin ingresa precio de suscripcion para su aliado
 ALLY_SUBS_CONFIRMAR = 995   # Aliado confirma renovacion de suscripcion
+RUTA_INCENTIVO_MONTO = 996   # Capturar incentivo adicional libre en ruta (antes de confirmar)

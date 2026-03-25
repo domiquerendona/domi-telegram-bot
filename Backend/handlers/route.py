@@ -30,6 +30,7 @@ from handlers.states import (
     RUTA_GUARDAR_CLIENTES,
     RUTA_PICKUP_NUEVA_CIUDAD,
     RUTA_PICKUP_NUEVA_BARRIO,
+    RUTA_INCENTIVO_MONTO,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -70,6 +71,7 @@ from services import (
     create_route_destination,
     get_approved_admin_link_for_ally,
     get_ally_link_balance,
+    add_route_incentive,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -250,6 +252,18 @@ def _ruta_mostrar_mas_paradas(update_or_query, context):
     return RUTA_MAS_PARADAS
 
 
+def _ruta_incentivo_keyboard():
+    """Botones de incentivo pre-confirmacion para ruta."""
+    return [
+        [
+            InlineKeyboardButton("+1500", callback_data="ruta_inc_1500"),
+            InlineKeyboardButton("+2000", callback_data="ruta_inc_2000"),
+            InlineKeyboardButton("+3000", callback_data="ruta_inc_3000"),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data="ruta_inc_otro")],
+    ]
+
+
 def _ruta_mostrar_confirmacion(update_or_query, context):
     """Muestra el resumen de la ruta con precio desglosado y orden optimizado."""
     paradas = context.user_data.get("ruta_paradas", [])
@@ -299,7 +313,15 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     text += "TOTAL: ${:,}".format(total_fee)
     if mensaje_ahorro:
         text += "\n{}".format(mensaje_ahorro)
-    keyboard = [
+    incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    if incentivo > 0:
+        text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    text += (
+        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Confirmas esta ruta?"
+    )
+    keyboard = _ruta_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
     ]
@@ -860,6 +882,58 @@ def ruta_distancia_km_handler(update, context):
     return _ruta_mostrar_confirmacion(update, context)
 
 
+def ruta_inc_fijo_callback(update, context):
+    """Agrega incentivo fijo (+1500/+2000/+3000) antes de confirmar ruta."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # "ruta_inc_1500" etc
+    parts = data.split("_")
+    try:
+        delta = int(parts[-1])
+    except Exception:
+        return RUTA_CONFIRMACION
+    if delta <= 0:
+        return RUTA_CONFIRMACION
+    current = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    context.user_data["ruta_incentivo"] = current + delta
+    return _ruta_mostrar_confirmacion(query, context)
+
+
+def ruta_inc_otro_start(update, context):
+    """Pide al aliado ingresar un incentivo adicional por texto (antes de confirmar ruta)."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para volver al menu."
+    )
+    return RUTA_INCENTIVO_MONTO
+
+
+def ruta_inc_monto_handler(update, context):
+    """Recibe incentivo adicional por texto antes de confirmar ruta."""
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return RUTA_INCENTIVO_MONTO
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return RUTA_INCENTIVO_MONTO
+    if delta <= 0:
+        update.message.reply_text("El monto debe ser mayor a 0.")
+        return RUTA_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return RUTA_INCENTIVO_MONTO
+    current = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    context.user_data["ruta_incentivo"] = current + delta
+    return _ruta_mostrar_confirmacion(update, context)
+
+
 def ruta_confirmacion_callback(update, context):
     query = update.callback_query
     query.answer()
@@ -942,6 +1016,9 @@ def ruta_confirmacion_callback(update, context):
             dropoff_lat=parada.get("lat"),
             dropoff_lng=parada.get("lng"),
         )
+    incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    if incentivo > 0:
+        add_route_incentive(route_id, incentivo)
     count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
     if count > 0:
         base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
@@ -1054,7 +1131,13 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
+            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(ruta_inc_otro_start, pattern=r"^ruta_inc_otro$"),
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
+        ],
+        RUTA_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_inc_monto_handler),
         ],
         RUTA_GUARDAR_CLIENTES: [
             CallbackQueryHandler(ruta_guardar_cust_callback, pattern=r"^ruta_guardar_cust_(si|no)$"),
