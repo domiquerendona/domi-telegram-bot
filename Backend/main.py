@@ -259,8 +259,9 @@ from services import (
     update_ally_min_purchase_for_subsidy,
     count_ally_form_requests_by_status,
     compute_ally_subsidy,
+    expire_old_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
 from db import (
     init_db,
     force_platform_admin,
@@ -311,6 +312,7 @@ from handlers.config import (
     config_alertas_oferta_conv,
     config_ally_subsidy_conv,
     config_ally_minpurchase_conv,
+    config_subs_conv,
     tarifas_edit_callback,
 )
 from handlers.quotation import cotizar_conv
@@ -324,7 +326,6 @@ from handlers.customer_agenda import (
     admin_clientes_conv,
     ally_clientes_conv,
     agenda_conv,
-    clientes_conv,
 )
 from handlers.recharges import (
     recargar_conv,
@@ -340,6 +341,7 @@ from handlers.recharges import (
     local_recargas_pending_callback,
     admin_local_callback,
     ally_approval_callback,
+    ally_suscripcion_conv,
 )
 from handlers.registration import (
     soy_aliado,
@@ -410,6 +412,7 @@ from handlers.order import (
     pedido_incentivo_existing_monto_handler,
     offer_suggest_inc_fixed_callback, offer_suggest_inc_otro_start,
     offer_suggest_inc_monto_handler,
+    route_suggest_inc_fixed_callback,
     admin_nuevo_pedido_start, admin_pedido_pickup_callback,
     admin_pedido_nueva_dir_start, admin_pedido_pickup_text_handler,
     admin_pedido_geo_pickup_callback, admin_pedido_pickup_gps_handler,
@@ -430,6 +433,7 @@ from handlers.order import (
     ally_bandeja_crear_pedido_entry, ally_bandeja_crear_y_guardar_entry,
     pedido_incentivo_menu_callback, pedido_incentivo_existing_fixed_callback,
     nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv,
+    route_suggest_inc_conv,
     admin_pedido_conv,
 )
 from handlers.route import (
@@ -460,9 +464,6 @@ from handlers.admin_panel import (
     admin_config_callback,
 )
 from handlers.courier_panel import (
-    _fmt_pesos,
-    _courier_earnings_group_by_date,
-    _courier_earnings_buttons,
     courier_earnings_start,
     courier_earnings_callback,
 )
@@ -688,6 +689,21 @@ def start(update, context):
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
     return start(update, context)
+
+
+def stale_callback_handler(update, context):
+    """Catch-all para callbacks huerfanos (bot reiniciado, sesion expirada).
+    Se registra al final de todos los handlers para capturar cualquier callback
+    que ningun otro handler haya procesado."""
+    query = update.callback_query
+    query.answer()
+    chat_id = query.message.chat_id if query.message else None
+    if chat_id:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Esta accion ya no esta disponible (el bot se reinicio). Usa el menu para continuar."
+        )
+        show_main_menu(update, context)
 
 
 def mi_aliado(update, context):
@@ -1147,6 +1163,14 @@ def menu_button_handler(update, context):
         return ally_bandeja_solicitudes(update, context)
     elif text == "Mi enlace de pedidos":
         return ally_mi_enlace(update, context)
+    elif text == "Mi suscripcion":
+        update.message.reply_text(
+            "Cargando tu suscripcion...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Ver mi suscripcion", callback_data="ally_mi_suscripcion")
+            ]])
+        )
+        return
 
     # --- Botones del submenú Repartidor ---
     elif text == "Activar repartidor":
@@ -1728,9 +1752,19 @@ def courier_live_location_handler(update, context):
     if not message or not message.location:
         return
 
+    location = message.location
+    lat = location.latitude
+    lng = location.longitude
+
+    # Detectar si es live location (tiene live_period)
+    # Los pines estaticos se ignoran — pueden venir de flujos de conversacion
+    live_period = getattr(location, 'live_period', None)
+    if not live_period and not update.edited_message:
+        return
+
     telegram_id = update.effective_user.id
 
-    # Solo procesar si es repartidor aprobado y activo
+    # Solo procesar si es repartidor aprobado
     courier = get_courier_by_telegram_id(telegram_id)
     if not courier:
         return
@@ -1752,40 +1786,31 @@ def courier_live_location_handler(update, context):
                 pass
         return
 
-    location = message.location
-    lat = location.latitude
-    lng = location.longitude
+    # Es live location (nueva o update) -> actualizar y marcar ONLINE
+    if update.message and live_period:
+        update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
+    else:
+        update_courier_live_location(courier["id"], lat, lng)
 
-    # Detectar si es live location (tiene live_period)
-    live_period = getattr(location, 'live_period', None)
+    # Verificar llegada al punto de recogida si tiene pedido activo
+    try:
+        check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
+    except Exception as e:
+        print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
 
-    if live_period or update.edited_message:
-        # Es live location (nueva o update) -> actualizar y marcar ONLINE
-        if update.message and live_period:
-            update_courier_live_location(courier["id"], lat, lng, live_period_seconds=live_period)
-        else:
-            update_courier_live_location(courier["id"], lat, lng)
-
-        # Verificar llegada al punto de recogida si tiene pedido activo
+    # Solo notificar la primera vez (cuando pasa a ONLINE visible)
+    was_online = (
+        _row_value(courier, "availability_status") == "APPROVED"
+        and int(_row_value(courier, "live_location_active", 0) or 0) == 1
+    )
+    if not was_online and update.message and live_period:
         try:
-            check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
-        except Exception as e:
-            print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
-
-        # Solo notificar la primera vez (cuando pasa a ONLINE visible)
-        was_online = (
-            _row_value(courier, "availability_status") == "APPROVED"
-            and int(_row_value(courier, "live_location_active", 0) or 0) == 1
-        )
-        if not was_online and update.message and live_period:
-            try:
-                context.bot.send_message(
-                    chat_id=telegram_id,
-                    text="Tu ubicacion en vivo esta activa. Estas ONLINE y recibiras ofertas cercanas."
-                )
-            except Exception:
-                pass
-    # Si es ubicacion estatica (pin sin live_period), no hacemos nada
+            context.bot.send_message(
+                chat_id=telegram_id,
+                text="Tu ubicacion en vivo esta activa. Estas ONLINE y recibiras ofertas cercanas."
+            )
+        except Exception:
+            pass
 
 
 def courier_live_location_expired_check(context):
@@ -2107,10 +2132,20 @@ def solequipo_ally_sel_callback(update, context):
 
 
 def main():
+    # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
+    # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
+    # Desactivar: eliminar la variable o ponerla en "false".
+    if os.getenv("PAUSE_BOT_DEV", "").lower() in ("1", "true", "yes"):
+        print("[PAUSED] PAUSE_BOT_DEV activo. Bot en modo sleep. "
+              "Elimina o pon 'false' en PAUSE_BOT_DEV para reactivar.")
+        while True:
+            time.sleep(60)
+
     init_db()
     force_platform_admin(ADMIN_USER_ID)
     ensure_pricing_defaults()
     sync_all_courier_link_statuses()
+    expire_old_ally_subscriptions()
 
     if not BOT_TOKEN:
         raise RuntimeError("Falta BOT_TOKEN en variables de entorno.")
@@ -2170,6 +2205,8 @@ def main():
     # Configuraciones (botones config_*)
     dp.add_handler(config_ally_subsidy_conv)      # debe ir ANTES del handler general config_*
     dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
+    dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
+    dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
@@ -2194,10 +2231,12 @@ def main():
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
+    dp.add_handler(CallbackQueryHandler(route_suggest_inc_fixed_callback, pattern=r"^ruta_inc_\d+x(1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(courier_earnings_callback, pattern=r"^courier_earn_"))
     dp.add_handler(CallbackQueryHandler(courier_activate_callback, pattern=r"^courier_activate$"))
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
+    dp.add_handler(CallbackQueryHandler(ally_orders_history_callback, pattern=r"^allyhist_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
     dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))
@@ -2211,7 +2250,8 @@ def main():
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
     dp.add_handler(nuevo_pedido_conv)  # /nuevo_pedido
     dp.add_handler(pedido_incentivo_conv)  # Incentivo adicional post-creacion (aliado)
-    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (aliado y admin)
+    dp.add_handler(offer_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (pedido)
+    dp.add_handler(route_suggest_inc_conv)  # Incentivo desde sugerencia T+5 (ruta)
     dp.add_handler(ally_clientes_conv)     # Agenda de clientes del Aliado (entry: Mis clientes)
     dp.add_handler(CallbackQueryHandler(ally_bandeja_callback, pattern=r"^alybandeja_"))  # Bandeja solicitudes
     dp.add_handler(CallbackQueryHandler(ally_enlace_refresh_callback, pattern=r"^alyenlace_refresh$"))  # Refrescar Mi enlace
@@ -2220,7 +2260,7 @@ def main():
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
 
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_)"))
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_)"))
 
     # Configuracion de tarifas (botones pricing_*)
     dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
@@ -2245,12 +2285,11 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue)_"))  # callbacks de rutas al courier
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega
-    dp.add_handler(clientes_conv)      # /clientes (agenda de clientes)
     dp.add_handler(agenda_conv)        # /agenda (Agenda del aliado)
     dp.add_handler(ally_locs_conv)     # Mis ubicaciones (aliado)
     dp.add_handler(cotizar_conv)       # /cotizar
@@ -2295,6 +2334,9 @@ def main():
         Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'),
         volver_menu_global
     ))
+
+    # Catch-all para callbacks huerfanos (bot reiniciado, sesion expirada)
+    dp.add_handler(CallbackQueryHandler(stale_callback_handler))
 
     # -------------------------
     # Notificación de arranque al Administrador de Plataforma (opcional)

@@ -66,7 +66,7 @@ domi-telegram-bot/
 │   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
 │   │   ├── admin_panel.py        # admin_menu, admin_menu_callback, aliados_pendientes, repartidores_pendientes, admins_pendientes, admin_ver_pendiente, admin_aprobar_rechazar_callback, pendientes, volver_menu_global, courier_pick_admin_callback, reference validation helpers
 │   │   ├── ally_bandeja.py       # ally_bandeja_solicitudes, ally_mi_enlace, ally_enlace_refresh_callback, _ally_bandeja_mostrar_*, ally_bandeja_callback
-│   │   └── courier_panel.py      # courier_earnings_start, courier_earnings_callback, _courier_earnings_group_by_date, _courier_earnings_buttons
+│   │   └── courier_panel.py      # courier_earnings_start, courier_earnings_callback, _courier_period_keyboard, _courier_period_range, _courier_period_summary_text, _courier_period_grouped_text, _courier_earnings_group_by_date
 │   │
 │   ├── migrations/
 │   │   └── postgres_schema.sql   # Schema completo para PostgreSQL
@@ -197,10 +197,10 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `registration.py` | `ally_conv` (soy_aliado), `courier_conv` (soy_repartidor), `admin_conv` (soy_admin), handlers de cédula/selfie |
 | `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
 | `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
-| `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada (~32 funciones) |
+| `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada. Al registrar parada "cliente nuevo": sin campos ciudad/barrio/notas; al confirmar dirección pregunta si guardar en agenda (`ruta_guardar_cust_si/no`). |
 | `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
 | `ally_bandeja.py` | `ally_bandeja_solicitudes`, `ally_mi_enlace`, `ally_enlace_refresh_callback`, `_ally_bandeja_mostrar_*`, `ally_bandeja_callback` |
-| `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, helpers internos de ganancias |
+| `courier_panel.py` | `courier_earnings_start`, `courier_earnings_callback`, `_courier_period_keyboard`, `_courier_period_range`, helpers internos de ganancias por periodo |
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
@@ -271,7 +271,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
-| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`. |
+| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0` (contador de usos — ordena direcciones más usadas primero). |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
@@ -279,6 +279,9 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `settings` | Configuración del sistema (clave-valor) |
 | `profile_change_requests` | Solicitudes de cambio de perfil |
 | `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
+| `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
+| `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
+| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. |
 
 ---
 
@@ -323,7 +326,7 @@ Separador operativo actual: guion bajo (`_`).
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤100m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
 | `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos. Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
 | `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas. Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
 | `pagos_` | Sistema de pagos |
@@ -339,6 +342,13 @@ Separador operativo actual: guion bajo (`_`).
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 | `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
+| `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
+| `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
+| `ruta_arrival_enroute_` | Courier ruta responde "Sigo en camino" en T+15. Incluye: `ruta_arrival_enroute_{route_id}` |
+| `ruta_arrival_release_` | Courier ruta decide liberar desde T+15 por no poder llegar. Incluye: `ruta_arrival_release_{route_id}` |
+| `ruta_guardar_cust_` | Al finalizar el registro de una parada nueva en ruta, pregunta si guardar el cliente en agenda. Incluye: `ruta_guardar_cust_si` / `ruta_guardar_cust_no` |
+| `allyhist_` | Historial de pedidos del aliado filtrado por periodo. Incluye: `allyhist_periodo_{hoy\|ayer\|semana\|mes}` (seleccionar periodo), `allyhist_dia_{YYYYMMDD}_{period}` (ver detalle de un dia con volver al periodo padre). Handler: `ally_orders_history_callback` en `order_delivery.py`. |
+| `courier_earn_periodo_` | Selector de periodo en "Mis ganancias" del repartidor. Incluye: `courier_earn_periodo_{hoy\|ayer\|semana\|mes}`. Para Hoy/Ayer: lista plana. Para semana/mes: agrupado por dia con botones `courier_earn_{YYYYMMDD}_{period}`. Handler: `courier_earnings_callback` en `handlers/courier_panel.py`. |
 
 **Antes de agregar un callback nuevo:** `git grep "nuevo_prefijo" -- "*.py"` para verificar que no existe ya.
 
@@ -431,6 +441,7 @@ Archivo de referencia: `Backend/.env.example`
 | `DATABASE_URL` | URL de conexión PostgreSQL | DEV y PROD (Railway) |
 | `WEB_ADMIN_USER` | Username del admin inicial del panel web | Opcional (default: `admin`) |
 | `WEB_ADMIN_PASSWORD` | Contraseña del admin inicial del panel web | Opcional (default: `changeme`) |
+| `PAUSE_BOT_DEV` | Si es `1`, `true` o `yes`: el bot entra en bucle infinito de sleep sin procesar mensajes. Útil para pausar Railway DEV sin detener el servicio (evita cobro de llamadas Google Maps en periodos de no uso). Solo aplica en DEV; PROD nunca debe tener esta variable. | DEV (opcional) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
 
@@ -830,12 +841,23 @@ La plataforma opera como una **red cooperativa**: cualquier repartidor activo (d
 - `get_eligible_couriers_for_order` en `db.py` NO filtra por `admin_id`. Retorna todos los repartidores con `admin_couriers.status = 'APPROVED'` y `couriers.status = 'APPROVED'`.
 - El parámetro `admin_id` existe pero es opcional (`admin_id=None`) y se ignora en la query.
 
-**Modelo de comisiones (simétrico):**
-- Aliado crea pedido → fee $300 al aliado al entregar (o al expirar sin courier) → $200 al admin del aliado, $100 a Plataforma.
-- Courier entrega pedido → fee $300 al courier → $200 al admin del courier, $100 a Plataforma.
-- Cada admin gana $200 por cada servicio de sus propios miembros, sin importar con quién interactúan.
-- Si el admin es Plataforma: gana los $300 completos (no hay split).
-- Pedidos creados por admin (admin_pedido): **el admin creador no paga fee**; solo paga el courier que entrega ($200 su admin, $100 a Plataforma).
+**Modelo de comisiones (simétrico, configurable desde BD — IMPLEMENTADO 2026-03-22):**
+
+Los valores de fee están almacenados en la tabla `settings` y se leen con `get_fee_config()` en `services.py`:
+
+| Clave settings | Valor por defecto | Descripción |
+|----------------|-------------------|-------------|
+| `fee_service_total` | 300 | Fee total cobrado al miembro por servicio (aliado o courier) |
+| `fee_admin_share` | 200 | Parte que va al admin del miembro |
+| `fee_platform_share` | 100 | Parte que va a Plataforma |
+| `fee_ally_commission_pct` | 0 | Comisión adicional % sobre `total_fee` cobrada al aliado (ver sección de comisión) |
+
+- Aliado entrega pedido → fee `fee_service_total` al aliado → `fee_admin_share` al admin del aliado, `fee_platform_share` a Plataforma.
+- Courier entrega pedido → fee `fee_service_total` al courier → `fee_admin_share` al admin del courier, `fee_platform_share` a Plataforma.
+- Cada admin gana `fee_admin_share` por cada servicio de sus propios miembros, sin importar con quién interactúan.
+- **Si el admin es Plataforma gestionando su propio equipo**: el ledger registra `fee_admin_share` como `FEE_INCOME` (ganancia personal de Luis Felipe) y `fee_platform_share` como `PLATFORM_FEE` (ganancia de la sociedad, split 50/50 con inversora). Antes del fix 2026-03-22 todo se registraba como `FEE_INCOME`.
+- Pedidos creados por admin (admin_pedido): **el admin creador no paga fee**; solo paga el courier que entrega (`fee_admin_share` a su admin, `fee_platform_share` a Plataforma).
+- Si el aliado tiene suscripción activa (`check_ally_active_subscription`): **no se cobra fee al aliado** en ninguna entrega. El courier sigue pagando su fee normal.
 
 **Flujo técnico post-implementación:**
 ```
@@ -883,60 +905,136 @@ Courier entrega
 
 ## Sistema de Tracking de Llegada (order_delivery.py)
 
-Implementado en commit `b06fc3e`. Controla el ciclo post-aceptación del courier hasta la confirmación de llegada al punto de recogida.
+Implementado originalmente en commit `b06fc3e`. Actualizado en 2026-03-24: confirmación manual con validación GPS, algoritmo T+5 direccional Rappi-style, T+15 con botones de respuesta del courier, y flujo equivalente para rutas multi-parada.
 
-### Flujo completo
+### Flujo completo — Pedidos
 
 ```
 Oferta publicada → courier acepta
   ↓ _handle_accept
   - Mensaje SIN datos del cliente (solo barrio destino + tarifa + pickup address)
-  - Mensaje incluye instruccion explicita: navegar al pickup (Google Maps/Waze) y liberar si no puede llegar
+  - Link Google Maps/Waze al pickup incluido
   - Guarda courier_accepted_lat/lng en orders (base para T+5)
+  - Muestra botón "Confirmar llegada al punto de recogida" (order_arrived_pickup_{id})
   - Programa 3 jobs:
       arr_inactive_{id}  T+5 min
       arr_warn_{id}      T+15 min
       arr_deadline_{id}  T+20 min
 
-  T+5:  ¿Movimiento ≥50m hacia pickup? No → _release_order_by_timeout
-  T+15: Notificar aliado (Buscar otro / Llamar / Seguir esperando) + advertir courier
-  T+20: _release_order_by_timeout automático
+  T+5 — Algoritmo direccional Rappi-style (usando GPS actual vs courier_accepted_lat/lng):
+    - Si GPS inactivo → solo registra; T+20 maneja la liberación
+    - Si courier se aleja >15% de la distancia original al pickup → liberar inmediatamente
+    - Si courier avanzó ≥20% más cerca del pickup → no hacer nada (progresando bien)
+    - Si no hay progreso suficiente → advertir al courier solamente (T+20 hace liberación dura)
 
-  (En paralelo, cada live location update llama check_courier_arrival_at_pickup)
-  GPS detecta ≤100m del pickup:
-    → set_courier_arrived (idempotente)
-    → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
-    → upsert_order_pickup_confirmation(PENDING)
-    → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
+  T+15 — Notificación al aliado + opciones al courier:
+    - Aliado: "Buscar otro courier" (order_find_another_{id}), "Llamar", "Seguir esperando" (order_wait_courier_{id})
+    - Courier: botones "Sigo en camino" (order_arrival_enroute_{id}) / "No puedo llegar" (order_arrival_release_{id})
+    - "Sigo en camino" → notifica al aliado que el courier confirmó que viene
+    - "No puedo llegar" → liberación inmediata del pedido
+
+  T+20: _release_order_by_timeout automático (hard deadline)
+
+  Courier pulsa "Confirmar llegada al pickup" (order_arrived_pickup_{id}):
+    → Valida GPS activo + distancia ≤ ARRIVAL_RADIUS_KM (100m)
+    → Si GPS inactivo o >100m: muestra distancia real y pide acercarse
+    → Si válido:
+        → set_courier_arrived (idempotente)
+        → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
+        → upsert_order_pickup_confirmation(PENDING)
+        → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
 
   Aliado confirma (order_pickupconfirm_approve_):
     → _handle_pickup_confirmation_by_ally(approve=True)
     → status = PICKED_UP
-    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta (en oferta solo ve mapas + ciudad/barrio)
+    → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta
 ```
 
-- Para rutas: `order_delivery.py → _handle_route_accept` también incluye instrucción de navegación al pickup (Google Maps/Waze) y opción de liberar ruta.
+**Nota:** `check_courier_arrival_at_pickup` (llamada por cada live location update) ya no dispara notificaciones automáticas. Ahora es un stub que hace `pass` — la detección de llegada es 100% manual via el botón.
+
+### Flujo completo — Rutas multi-parada
+
+```
+Ruta ofertada → courier acepta
+  ↓ _handle_route_accept
+  - Muestra pantalla de reordenamiento de paradas (ruta_orden_{route_id}_{dest_id})
+  - Guarda posición de aceptación en context.bot_data["route_accepted_pos"][route_id]
+  - Programa 3 jobs equivalentes:
+      route_arr_inactive_{route_id}  T+5 min
+      route_arr_warn_{route_id}      T+15 min
+      route_arr_deadline_{route_id}  T+20 min
+
+  Courier confirma orden de paradas:
+    → _show_route_pickup_navigation: link Google Maps/Waze al pickup + botón "Confirmar llegada"
+    → NO revela primera parada hasta confirmación de llegada
+
+  T+5, T+15, T+20: misma lógica que pedidos (directional T+5, courier buttons T+15, hard release T+20)
+
+  Courier pulsa "Confirmar llegada al pickup de ruta" (ruta_pickup_confirm_{route_id}):
+    → Valida GPS activo ≤100m del pickup
+    → _cancel_route_arrival_jobs (cancela los 3 jobs)
+    → Notifica al aliado de llegada del courier
+    → Al confirmar aliado: revela primera parada
+```
+
+### Pantalla de reordenamiento de paradas (nueva — 2026-03-24)
+
+Al aceptar una ruta, el courier ve la lista de paradas en el orden sugerido y puede reorganizarlas:
+- Toca una parada → se marca como "seleccionada"
+- La posición de la parada seleccionada se intercambia con la siguiente pulsada
+- Al confirmar → `reorder_route_destinations(route_id, ordered_ids)` persiste el nuevo orden en BD
+- Luego se muestra la navegación al pickup
+
+### Oferta de pedidos y rutas (simplificada — 2026-03-24)
+
+**Pedidos:** La oferta ya NO incluye links de Google Maps. Solo muestra:
+- Barrio y ciudad de entrega
+- Distancia calculada
+- Tarifa + incentivo (si hay)
+- Aviso de tiempo máximo de respuesta (15 min)
+
+**Rutas:** La oferta muestra por cada parada:
+- Barrio y ciudad (NO nombre/dirección del cliente)
+- Incentivo total si aplica
+- Aviso de 15 minutos
+
+El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras confirmación de recogida por el aliado (PICKED_UP).
 
 ### Constantes (order_delivery.py)
 
 | Constante | Valor | Descripción |
 |-----------|-------|-------------|
-| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Timeout de inactividad Rappi-style |
-| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Notificación al aliado |
-| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Auto-liberación |
-| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio de detección de llegada |
-| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.05 (50 m) | Movimiento mínimo hacia pickup en T+5 |
+| `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Job T+5 — algoritmo direccional |
+| `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Job T+15 — notificación a aliado y opciones al courier |
+| `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Job T+20 — liberación automática dura |
+| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio máximo para confirmar llegada manual |
+| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.15 (15%) | Umbral de alejamiento para liberación inmediata en T+5 |
+| `ARRIVAL_PROGRESS_THRESHOLD` | 0.20 (20%) | Progreso mínimo hacia pickup para considerar al courier en camino en T+5 |
 
-### Funciones nuevas en order_delivery.py
+### Funciones en order_delivery.py
 
 | Función | Descripción |
 |---------|-------------|
-| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Pública. Llamada desde main.py en cada live location |
-| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs por nombre |
-| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 y T+20) |
-| `_arrival_inactivity_job(context)` | Job T+5 |
-| `_arrival_warn_ally_job(context)` | Job T+15 |
-| `_arrival_deadline_job(context)` | Job T+20 |
+| `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Stub — ya no dispara notificaciones automáticas |
+| `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs de pedido por nombre |
+| `_cancel_route_arrival_jobs(context, route_id)` | Cancela los 3 jobs de ruta por nombre |
+| `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 alejamiento y T+20) |
+| `_release_route_by_timeout(route_id, courier_id, context, reason)` | Liberación de ruta (T+5 y T+20) |
+| `_arrival_inactivity_job(context)` | Job T+5 pedido — algoritmo direccional |
+| `_arrival_warn_ally_job(context)` | Job T+15 pedido — notifica aliado + botones courier |
+| `_arrival_deadline_job(context)` | Job T+20 pedido — liberación dura |
+| `_route_arrival_inactivity_job(context)` | Job T+5 ruta |
+| `_route_arrival_warn_job(context)` | Job T+15 ruta |
+| `_route_arrival_deadline_job(context)` | Job T+20 ruta |
+| `_handle_courier_arrival_button(update, context, order_id)` | Valida GPS ≤100m → confirma llegada manual |
+| `_handle_courier_arrival_enroute(update, context, order_id)` | Courier: "Sigo en camino" — notifica al aliado |
+| `_handle_courier_arrival_release(update, context, order_id)` | Courier: "No puedo llegar" — libera inmediatamente |
+| `_handle_route_arrival_enroute(update, context, route_id)` | Equivalente de enroute para rutas |
+| `_handle_route_arrival_release(update, context, route_id)` | Equivalente de release para rutas |
+| `_handle_route_reorder(update, context, route_id, dest_id)` | Procesa reordenamiento de parada en pantalla |
+| `_show_route_reorder(update_or_query, context, route_id)` | Muestra pantalla de reordenamiento |
+| `_show_route_pickup_navigation(update_or_query, context, route_id)` | Link GPS + botón "Confirmar llegada" |
+| `_handle_route_pickup_confirm(update, context, route_id)` | GPS-validado: notifica al aliado de llegada |
 | `_notify_ally_courier_arrived(context, order, courier_name)` | Notificación al aliado con botones |
 | `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
 | `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
@@ -945,7 +1043,7 @@ Oferta publicada → courier acepta
 
 | Columna | Tipo | Descripción |
 |---------|------|-------------|
-| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp cuando GPS detecta llegada (≤100m). NULL = no llegó aún |
+| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp de confirmación de llegada manual. NULL = no llegó aún |
 | `courier_accepted_lat` | REAL | Latitud del courier al momento de aceptar (base para T+5) |
 | `courier_accepted_lng` | REAL | Longitud del courier al momento de aceptar (base para T+5) |
 
@@ -955,13 +1053,26 @@ Oferta publicada → courier acepta
 - `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
 - `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
 - `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
+- `reorder_route_destinations(route_id, ordered_ids)` — actualiza `sequence` 1..N de paradas según el orden elegido por el courier
+- `get_ally_orders_between(ally_id, start_s, end_s)` — pedidos DELIVERED/CANCELLED del aliado creados en el rango de timestamps
+- `get_ally_routes_between(ally_id, start_s, end_s)` — rutas DELIVERED/CANCELLED del aliado creadas en el rango de timestamps
+- `get_courier_earnings_between(courier_id, start_s, end_s)` — ganancias del repartidor en un rango arbitrario de timestamps (wrapper público de `_get_courier_earnings_between`)
 
 Re-exportadas en `services.py`.
+
+**Funciones nuevas en `services.py` (2026-03-24 — historial por periodo):**
+- `courier_get_earnings_by_period(telegram_id, start_s, end_s)` — retorna ganancias del courier para un rango de timestamps; usado por el selector de periodos de `courier_panel.py`.
+
+### bot_data keys relacionados
+
+| Clave | Contenido |
+|-------|-----------|
+| `route_accepted_pos[route_id]` | `{"lat": float, "lng": float}` — posición del courier al aceptar ruta, base para T+5 |
+| `excluded_couriers[order_id]` | Set de courier_ids excluidos de re-oferta |
 
 ### Pendientes (NO implementado aún)
 
 - Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
-- Botón explícito "Llegué" para courier (hoy es detección automática por live location).
 - Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.
 
 ---
@@ -987,10 +1098,10 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 
 **Cancelación del aliado**
 
-≤60 segundos desde creación → cancelación sin costo  
->60 segundos desde creación → cobro de $300  
-Expiración automática → cobro de $300  
-Pedidos creados por administrador (ally_id = None) → nunca se cobra comisión  
+Cancelación manual (en cualquier momento) → sin costo
+Expiración automática (nadie tomó el servicio en 10 min) → sin costo
+Pedidos creados por administrador (ally_id = None) → sin costo
+**El fee $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
 
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 
@@ -1150,7 +1261,25 @@ En `admin_pedido_confirmar_callback`:
 
 ## Cotizador y Uso de APIs (Control de Costos)
 
-El cotizador usa **Google Maps API** (Distance Matrix / Places). Tiene cuota diaria limitada.
+El cotizador usa **Google Maps API** (Distance Matrix / Places) con cuota diaria limitada, y **OSRM** (capa 2.5, gratuita, sin clave API) como fallback antes de Haversine.
+
+### Pipeline de cálculo de distancia (`get_smart_distance` en `services.py`)
+
+```
+1. Caché BD (distance_cache por par de coordenadas)   → sin costo
+2. Google Maps Distance Matrix                         → costo USD/llamada, cuota diaria
+2.5. OSRM (OpenStreetMap Routing Machine)              → GRATIS, red vial real (implementado 2026-03-24)
+3. Haversine × 1.3                                     → sin costo, estimación conservadora
+```
+
+**OSRM** (`_osrm_distance_km` en `services.py`):
+- Endpoint: `http://router.project-osrm.org/route/v1/driving/{lng},{lat};{lng},{lat}?overview=false`
+- Sin API key. Timeout: 5 segundos.
+- Retorna distancia real en carreteras (metros → km).
+- Si falla (timeout, error de red, OSRM down): cae silenciosamente a Haversine.
+- Resultado se cachea en `distance_cache` con `provider="osrm"`.
+- Aplica también en `calcular_distancia_ruta_smart` (per-segment para rutas).
+- **No** registra eventos en `api_usage_events` (no hay costo).
 
 ### Regla de Cuota
 - **PROHIBIDO** llamar a la API sin verificar `api_usage_daily` primero.
@@ -1178,9 +1307,24 @@ Además del fusible diario (`api_usage_daily`), existe tracking por evento para 
 - Privacidad: **PROHIBIDO** guardar direcciones/coords o cualquier PII en `api_usage_events.meta_json`. Solo metadata no sensible (status, provider, mode).
 - Helper de consulta rápida: `Backend/services.py:get_google_maps_cost_summary(days=7)`.
 
+### Límite diario y eficiencia de queries (ACTUALIZADO 2026-03-22)
+
+- `GOOGLE_LOOKUP_DAILY_LIMIT` en `services.py`: **150** (era 50 antes del 2026-03-22).
+- `resolve_location()` y `resolve_location_next()` usan **2 queries** por ciclo (era 4). Se eliminaron `google_place_details` y `google_places_text_search` del pipeline primario; ahora usa solo `google_geocode_forward` + `get_distance_from_api`.
+
+### Caché de Geocodificación por Texto (IMPLEMENTADO 2026-03-22)
+
+Antes de llamar a la API en `resolve_location` / `resolve_location_next`, `services.py` consulta `geocoding_text_cache` usando el texto normalizado como clave. Si hay hit, retorna el resultado cacheado sin consumir cuota. Al obtener resultado de la API, lo persiste en la caché.
+
+- **Normalización**: texto en minúsculas, sin espacios extra, sin tildes.
+- **Tabla**: `geocoding_text_cache` (ver sección Tablas Principales).
+- **Funciones**: `get_geocoding_text_cache(text_key)` / `upsert_geocoding_text_cache(text_key, lat, lng, display_name, city, barrio)` en `db.py`, re-exportadas en `services.py`.
+- **Impacto esperado**: elimina ~60–70% de llamadas repetidas en zonas geográficas activas.
+
 ### Regla de Caché
 - Distancias entre pares de coordenadas **deben cachearse** en base de datos.
 - **PROHIBIDO** recalcular una distancia ya cacheada para la misma consulta.
+- Textos de geocodificación **deben consultarse en `geocoding_text_cache`** antes de llamar a la API. **PROHIBIDO** llamar a la API para una dirección textual ya cacheada.
 
 ### Regla de Geocodificación
 - Coordenadas (lat/lng) se capturan vía Telegram (ubicación GPS). La API solo se usa para geocodificación inversa o búsqueda de direcciones escritas.
@@ -1423,7 +1567,7 @@ Entry: callback `admin_mis_clientes` (botón en menú admin)
 
 **Prefijo callbacks**: `acust_`
 **Prefijo user_data**: `acust_`
-**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`
+**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`, `increment_admin_customer_address_usage` (incrementa `use_count` al usar una dirección; `list_admin_customer_addresses` ordena por `use_count DESC, created_at DESC`)
 
 ### Flujo `admin_dirs_conv`
 
@@ -1449,14 +1593,58 @@ Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar d
 
 | Estado | Constante | Descripción |
 |--------|-----------|-------------|
-| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar |
+| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar (incluye búsqueda) |
 | `ADMIN_PEDIDO_SEL_CUST_ADDR` | 918 | Seleccionar dirección del cliente |
+| `ADMIN_PEDIDO_SEL_CUST_BUSCAR` | 999 | Texto de búsqueda de cliente en flujo admin_pedido |
+| `ADMIN_PEDIDO_CUST_DEDUP` | 1000 | Confirmar cliente existente encontrado por teléfono |
+| `ADMIN_PEDIDO_GUARDAR_CUST` | 1001 | Ofrecer guardar cliente/dirección manual en la agenda |
 
 **Callbacks nuevos en `admin_pedido_conv`**:
 - `admin_pedido_sel_cust` → `admin_pedido_sel_cust_handler`
+- `admin_pedido_buscar_cust` → `admin_pedido_buscar_cust_start`
 - `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
-- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected`
+- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected` (incrementa `use_count`)
 - `acust_pedido_addr_nueva` → `admin_pedido_addr_nueva`
+- `admin_ped_dedup_si/no` → `admin_pedido_cust_dedup_callback`
+- `admin_ped_guardar_cust_si/no` → `admin_pedido_guardar_cust_callback`
+- `admin_ped_guardar_dir_si/no` → `admin_pedido_guardar_cust_callback`
+
+---
+
+## Mejoras en Gestión de Clientes en Flujos de Pedido (IMPLEMENTADO 2026-03-25)
+
+Mejoras aplicadas a los 3 flujos de pedido (`nuevo_pedido_conv`, `nueva_ruta_conv`, `admin_pedido_conv`):
+
+1. **Búsqueda/filtro de clientes**: botón "Buscar cliente" en la lista de clientes recurrentes. Devuelve coincidencias por nombre o teléfono.
+2. **Deduplicación por teléfono**: al registrar un cliente nuevo, si el teléfono ya existe en la agenda, se muestra el cliente encontrado y se pregunta si usar ese en lugar de crear uno nuevo.
+3. **Direcciones ordenadas por uso**: `list_customer_addresses` y `list_admin_customer_addresses` ordenan por `use_count DESC, created_at DESC`. Columna `use_count INTEGER DEFAULT 0` agregada a `ally_customer_addresses` y `admin_customer_addresses`. Se incrementa al seleccionar una dirección guardada (`increment_customer_address_usage` / `increment_admin_customer_address_usage` en `db.py`, re-exportadas en `services.py`).
+4. **Ofrecer nueva dirección a cliente existente**: al finalizar un pedido con cliente recurrente, si la dirección usada es nueva (no coincide en agenda), se pregunta si agregarla. Usa `find_matching_customer_address` como guard.
+5. **Guardar cliente en agenda admin**: al finalizar un pedido especial de admin con datos ingresados manualmente (no seleccionados de agenda), se ofrece guardar el cliente y/o la dirección en `admin_customers` / `admin_customer_addresses`.
+
+### Nuevos estados (handlers/states.py)
+
+| Constante | Valor | Flujo | Descripción |
+|-----------|-------|-------|-------------|
+| `RUTA_PARADA_BUSCAR` | 52 | nueva_ruta | Texto de búsqueda de cliente en parada |
+| `RUTA_PARADA_DEDUP` | 53 | nueva_ruta | Confirmar cliente existente por teléfono |
+| `PEDIDO_DEDUP_CONFIRM` | 997 | nuevo_pedido | Confirmar cliente existente por teléfono |
+| `PEDIDO_GUARDAR_DIR_EXISTENTE` | 998 | nuevo_pedido | Ofrecer agregar dirección a cliente recurrente |
+| `ADMIN_PEDIDO_SEL_CUST_BUSCAR` | 999 | admin_pedido | Texto de búsqueda de cliente |
+| `ADMIN_PEDIDO_CUST_DEDUP` | 1000 | admin_pedido | Confirmar cliente existente por teléfono |
+| `ADMIN_PEDIDO_GUARDAR_CUST` | 1001 | admin_pedido | Ofrecer guardar cliente/dirección manual |
+
+### Nuevos callbacks
+
+| Callback | Flujo | Descripción |
+|----------|-------|-------------|
+| `pedido_dedup_si/no` | nuevo_pedido | Usar cliente existente o continuar como nuevo |
+| `pedido_guardar_dir_si/no` | nuevo_pedido | Agregar dirección nueva a cliente recurrente |
+| `ruta_buscar_cliente` | nueva_ruta | Activar búsqueda en lista de clientes de parada |
+| `ruta_dedup_si/no` | nueva_ruta | Usar cliente existente o continuar como nuevo |
+| `admin_pedido_buscar_cust` | admin_pedido | Activar búsqueda en lista de clientes |
+| `admin_ped_dedup_si/no` | admin_pedido | Usar cliente existente o continuar como nuevo |
+| `admin_ped_guardar_cust_si/no` | admin_pedido | Guardar cliente manual en agenda |
+| `admin_ped_guardar_dir_si/no` | admin_pedido | Guardar dirección manual en agenda del cliente |
 
 ---
 
@@ -1735,5 +1923,158 @@ Pendiente puntual: no consume aún el campo `subsidy_conditional` del response d
 
 ---
 
-*Última actualización: 2026-03-16*
+## Suscripciones Mensuales de Aliados (IMPLEMENTADO 2026-03-22)
+
+Sistema de suscripción mensual que permite a un aliado pagar una cuota fija y quedar exento del fee por servicio ($300) en todas sus entregas durante ese mes.
+
+### Modelo económico
+
+- El admin configura libremente el precio de la suscripción para cada aliado.
+- La plataforma retiene un piso fijo (`subscription_platform_share`, default $20.000/mes).
+- El admin se queda con el margen: `precio − platform_share`.
+- El aliado paga con saldo del bot. Si no tiene saldo suficiente → suscripción rechazada.
+- Un aliado suscrito no paga fee por servicio en ninguna entrega (el courier sigue pagando el suyo).
+
+### Tablas y columnas
+
+| Elemento | Descripción |
+|----------|-------------|
+| `admin_allies.subscription_price` | Precio mensual configurado por el admin para este aliado. NULL = sin precio configurado |
+| `ally_subscriptions` | Registro histórico de suscripciones (ver Tablas Principales) |
+| `settings.subscription_platform_share` | Piso mínimo de plataforma por suscripción (default: 20000) |
+
+### Ledger kinds usados
+
+| Kind | Significado |
+|------|-------------|
+| `SUBSCRIPTION_PLATFORM_SHARE` | Parte de la suscripción que va a plataforma |
+| `SUBSCRIPTION_ADMIN_SHARE` | Margen del admin por la suscripción |
+
+### Flujo del admin (`config_subs_conv` — `handlers/config.py`)
+
+Entry point: callback `config_subs_{ally_id}` (desde detalle del aliado en panel admin)
+
+1. Admin ve precio actual configurado (si existe) y puede ingresar uno nuevo.
+2. Se valida que el precio sea mayor que `subscription_platform_share` (el admin debe tener margen positivo).
+3. `set_ally_subscription_price(ally_id, admin_id, precio)` persiste en `admin_allies.subscription_price`.
+4. Confirmación con desglose: "Aliado paga $X — Plataforma recibe $20.000 — Tú recibes $Y".
+
+Estados: `CONFIG_SUBS_PRECIO = 994`
+
+### Flujo del aliado (`ally_suscripcion_conv` — `handlers/recharges.py`)
+
+Entry point: botón "Mi suscripcion" en menú del aliado → callback `ally_mi_suscripcion`
+
+1. Si no hay precio configurado → informar al aliado que contacte al admin.
+2. Si hay precio configurado → mostrar desglose + saldo actual + botón Confirmar / Cancelar.
+3. Si aliado confirma (`ALLY_SUBS_CONFIRMAR = 995`): `pay_ally_subscription(ally_id, admin_id, precio)`.
+   - Descuenta saldo del aliado (`admin_allies.balance -= precio`)
+   - Inserta en `ally_subscriptions` con `expires_at = NOW() + 30 días`
+   - Ledger: `SUBSCRIPTION_PLATFORM_SHARE` + `SUBSCRIPTION_ADMIN_SHARE`
+4. Confirma activación con fecha de vencimiento.
+
+### Funciones clave
+
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `set_ally_subscription_price(ally_id, admin_id, price)` | `db.py` | Guarda precio en `admin_allies.subscription_price` |
+| `get_ally_subscription_price(ally_id, admin_id)` | `db.py` | Retorna precio configurado o None |
+| `create_ally_subscription(ally_id, admin_id, price, platform_share, admin_share)` | `db.py` | Crea registro en `ally_subscriptions`, retorna id |
+| `get_active_ally_subscription(ally_id)` | `db.py` | Retorna suscripción activa o None |
+| `expire_old_ally_subscriptions()` | `db.py` | Marca como EXPIRED las suscripciones vencidas (llamado en boot) |
+| `get_ally_subscription_info(ally_id)` | `db.py` | Info completa de suscripción (precio + estado + vencimiento) |
+| `check_ally_active_subscription(ally_id)` | `services.py` | Retorna bool — True si hay suscripción activa |
+| `pay_ally_subscription(ally_id, admin_id, price)` | `services.py` | Ejecuta el pago y crea el registro |
+| `get_subscription_summary_for_ally(ally_id, admin_id)` | `services.py` | Resumen para mostrar al aliado |
+
+Todas re-exportadas en `services.py`. `expire_old_ally_subscriptions` se llama en arranque de `main.py`.
+
+---
+
+## Comisión del Aliado (IMPLEMENTADO 2026-03-22)
+
+Comisión adicional opcional sobre la tarifa de domicilio (`total_fee`) cobrada al aliado en cada entrega. Separada del fee de servicio estándar ($300).
+
+- **Controlada por**: `settings.fee_ally_commission_pct` (entero = porcentaje, default `0`).
+- **Activación**: cambiar en BD `fee_ally_commission_pct = 3` (o el % deseado). Default 0 = sin comisión.
+- **Cálculo**: `comision = round(total_fee * pct / 100)`; se descuenta de `admin_allies.balance` del aliado.
+- **Ledger**: registrado como `FEE_INCOME` en el ledger del admin del aliado.
+- **Exención**: si el aliado tiene suscripción activa, no se cobra esta comisión (junto con el fee estándar).
+- **Implementación**: `apply_service_fee(member_type="ALLY", ..., total_fee=order["total_fee"])` en `services.py`. El parámetro `total_fee` solo tiene efecto cuando `fee_ally_commission_pct > 0`.
+
+---
+
+## Precios de Rutas Multi-parada: Algoritmo Inteligente (IMPLEMENTADO 2026-03-22)
+
+### Estructura dual de fees en rutas
+
+Las rutas tienen DOS estructuras de costo completamente independientes:
+
+| Fee | Quién paga | Monto | Medio de pago | Propósito |
+|-----|-----------|-------|---------------|-----------|
+| **Tarifa al courier** (`total_fee`) | Aliado → Courier | `distance_fee + (n-1) × $4.000` | **Fuera de la plataforma** (efectivo/transferencia directa) | Retribución al courier por el trabajo de entrega |
+| **Fee de servicio** (`saldo del aliado`) | Aliado → Plataforma | `$300 + (n-1) × $200` | **Dentro de la plataforma** (descuento de `admin_allies.balance`) | Comisión operativa de plataforma |
+
+**Regla crítica:** La tarifa al courier (`total_fee`, `tarifa_parada_adicional = $4.000`) **NUNCA se descuenta de los saldos internos** del aliado, repartidor ni admin. Es un acuerdo externo entre aliado y courier. Solo se descuenta de saldos el fee de servicio ($300 base + $200 por parada adicional).
+
+**IMPORTANTE:** `pricing_tarifa_parada_adicional = $4.000` (pago externo al courier). El `$200` por parada es el fee de servicio interno — manejado por `liquidate_route_additional_stops_fee()` en `services.py` — y **NUNCA deben confundirse**. El valor correcto para notificaciones de cobro al aliado es siempre $200, no el valor del config de tarifas al courier.
+
+### Algoritmo de 3 casos
+
+`calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat, pickup_lng)` en `services.py` garantiza que el aliado siempre perciba ahorro respecto a pedidos individuales, sin perjudicar al courier.
+
+```
+precio_individual_total = sum(calcular_precio_distancia(pickup→parada[i]) para cada parada)
+precio_ruta_natural = calcular_precio_ruta(total_km, n).total_fee
+ahorro_natural = precio_individual_total - precio_ruta_natural
+porcentaje_ahorro = ahorro_natural / precio_individual_total
+
+Caso 1 — ahorro natural ≤ 20%:
+  precio_final = precio_ruta_natural  (sin ajuste)
+  mensaje: "Ahorras $X vs pedidos individuales"
+
+Caso 2 — ahorro natural > 20%:
+  descuento_max = precio_individual_total × 20%
+  precio_final = precio_individual_total - descuento_max
+  → El courier recibe más; el aliado igualmente ahorra 20%
+
+Caso 3 — ruta MÁS cara que pedidos individuales:
+  precio_parada_min = precio individual de la parada más económica
+  descuento_minimo = precio_parada_min × 20%
+  precio_final = precio_individual_total - descuento_minimo
+  → El aliado siempre ahorra algo, aunque la ruta sea cara
+```
+
+El `precio_final` se redondea al múltiplo de $100 más cercano.
+
+### Cálculo de precios individuales
+
+- **Con GPS en todas las paradas**: `haversine_road_km(pickup, parada[i])` por cada parada — precio exacto.
+- **Sin GPS completo** (fallback): `total_km / n` como distancia promedio por parada — estimación conservadora.
+
+### Optimización TSP (sin costo de API)
+
+Antes de calcular precios, `optimizar_orden_paradas()` reordena las paradas para minimizar distancia total usando Haversine puro:
+- n ≤ 10 paradas: fuerza bruta exacta (todas las permutaciones)
+- n > 10 paradas: algoritmo Nearest Neighbor heurístico
+
+Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
+
+### Funciones clave
+
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat, pickup_lng)` | `services.py` | Algoritmo de 3 casos |
+| `calcular_precio_ruta(total_km, num_stops, config)` | `services.py` | Precio natural (base para el algoritmo) |
+| `optimizar_orden_paradas(pickup_lat, pickup_lng, paradas)` | `services.py` | TSP Haversine |
+| `_ruta_mostrar_confirmacion(update_or_query, context)` | `handlers/route.py` | Usa `calcular_precio_ruta_inteligente` y muestra ahorro |
+| `liquidate_route_additional_stops_fee(route_id, admin_id)` | `db.py` | Fee de servicio al saldo del aliado ($200×paradas) |
+
+### Fecha de implementación
+
+2026-03-22
+
+---
+
+*Última actualización: 2026-03-25*
 

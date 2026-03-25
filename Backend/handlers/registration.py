@@ -18,9 +18,9 @@ from handlers.states import (
     ALLY_NAME, ALLY_OWNER, ALLY_DOCUMENT, ALLY_PHONE, ALLY_CITY, ALLY_BARRIO,
     ALLY_ADDRESS, ALLY_UBICACION, ALLY_CONFIRM, ALLY_TEAM,
     COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO,
-    COURIER_RESIDENCE_ADDRESS, COURIER_RESIDENCE_LOCATION, COURIER_PLATE,
-    COURIER_BIKETYPE, COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK, COURIER_SELFIE,
-    COURIER_CONFIRM, COURIER_TEAM,
+    COURIER_RESIDENCE_ADDRESS, COURIER_RESIDENCE_LOCATION, COURIER_VEHICLE_TYPE,
+    COURIER_PLATE, COURIER_BIKETYPE, COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK,
+    COURIER_SELFIE, COURIER_CONFIRM, COURIER_TEAM,
     LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
     LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
     LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
@@ -809,13 +809,7 @@ def courier_residence_location(update, context):
 
     context.user_data["residence_lat"] = lat
     context.user_data["residence_lng"] = lng
-    update.message.reply_text(
-        "Ubicacion guardada.\n\n"
-        "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_PLATE)
-    return COURIER_PLATE
+    return _ask_courier_vehicle_type(update.message, context)
 
 
 def courier_geo_ubicacion_callback(update, context):
@@ -833,15 +827,55 @@ def courier_geo_ubicacion_callback(update, context):
             return COURIER_RESIDENCE_LOCATION
         context.user_data["residence_lat"] = lat
         context.user_data["residence_lng"] = lng
+        query.edit_message_text("Ubicacion confirmada.")
+        return _ask_courier_vehicle_type(query.message, context)
+    else:  # courier_geo_no
+        return _geo_siguiente_o_gps(query, context, "courier_geo_si", "courier_geo_no", COURIER_RESIDENCE_LOCATION)
+
+
+def _ask_courier_vehicle_type(message, context):
+    """Muestra botones para seleccionar el tipo de vehículo del repartidor."""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Moto / Scooter", callback_data="courier_vehiculo_moto"),
+            InlineKeyboardButton("Bicicleta", callback_data="courier_vehiculo_bici"),
+        ]
+    ])
+    message.reply_text(
+        "Ubicacion guardada.\n\n"
+        "Selecciona tu tipo de vehiculo:",
+        reply_markup=keyboard,
+    )
+    _set_flow_step(context, "courier", COURIER_VEHICLE_TYPE)
+    return COURIER_VEHICLE_TYPE
+
+
+def courier_vehicle_type_callback(update, context):
+    """Maneja la seleccion de tipo de vehiculo (Moto o Bicicleta)."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "courier_vehiculo_moto":
+        context.user_data["vehicle_type"] = "MOTO"
         query.edit_message_text(
-            "Ubicacion confirmada.\n\n"
+            "Vehiculo: Moto / Scooter.\n\n"
             "Escribe la placa de tu moto (o escribe 'ninguna' si no tienes):"
             "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
         )
         _set_flow_step(context, "courier", COURIER_PLATE)
         return COURIER_PLATE
-    else:  # courier_geo_no
-        return _geo_siguiente_o_gps(query, context, "courier_geo_si", "courier_geo_no", COURIER_RESIDENCE_LOCATION)
+    else:  # courier_vehiculo_bici
+        context.user_data["vehicle_type"] = "BICICLETA"
+        context.user_data["plate"] = ""
+        context.user_data["bike_type"] = ""
+        query.edit_message_text(
+            "Vehiculo: Bicicleta.\n\n"
+            "Perfecto. Ahora necesitamos verificar tu identidad.\n\n"
+            "Envia una foto del FRENTE de tu cedula de ciudadania:"
+            + _OPTIONS_HINT
+        )
+        _set_flow_step(context, "courier", COURIER_CEDULA_FRONT)
+        return COURIER_CEDULA_FRONT
 
 
 def courier_plate(update, context):
@@ -917,6 +951,7 @@ def _show_courier_confirm(update, context):
     phone = context.user_data.get("phone", "")
     city = context.user_data.get("city", "")
     barrio = context.user_data.get("barrio", "")
+    vehicle_type = context.user_data.get("vehicle_type", "MOTO")
     plate = context.user_data.get("plate", "")
     bike_type = context.user_data.get("bike_type", "")
     residence_address = context.user_data.get("residence_address", "") or "No registrada"
@@ -934,6 +969,11 @@ def _show_courier_confirm(update, context):
         selected_team_name
     )
 
+    vehiculo_label = "Moto / Scooter" if vehicle_type == "MOTO" else "Bicicleta"
+    detalles_vehiculo = ""
+    if vehicle_type == "MOTO":
+        detalles_vehiculo = f"Placa: {plate}\nTipo de moto: {bike_type}\n"
+
     resumen = (
         "Fotos recibidas. Verifica tus datos de repartidor:\n\n"
         f"Nombre: {full_name}\n"
@@ -943,8 +983,8 @@ def _show_courier_confirm(update, context):
         f"Barrio: {barrio}\n"
         f"Dirección residencia: {residence_address}\n"
         f"Ubicación residencia: {residence_location}\n"
-        f"Placa: {plate}\n"
-        f"Tipo de moto: {bike_type}\n"
+        f"Vehículo: {vehiculo_label}\n"
+        + detalles_vehiculo +
         f"Equipo: {team_label}\n\n"
         "Si todo está bien escribe: SI\n"
         "Si quieres corregir, escribe 'volver' o usa /cancel y vuelve a /soy_repartidor"
@@ -1037,6 +1077,7 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
     phone = context.user_data.get("phone", "")
     city = context.user_data.get("city", "")
     barrio = context.user_data.get("barrio", "")
+    vehicle_type = context.user_data.get("vehicle_type", "MOTO")
     plate = context.user_data.get("plate", "")
     bike_type = context.user_data.get("bike_type", "")
     residence_address = context.user_data.get("residence_address", "")
@@ -1056,6 +1097,7 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
             phone=phone,
             city=city,
             barrio=barrio,
+            vehicle_type=vehicle_type,
             plate=plate,
             bike_type=bike_type,
             code=code,
@@ -1074,6 +1116,7 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
             phone=phone,
             city=city,
             barrio=barrio,
+            vehicle_type=vehicle_type,
             plate=plate,
             bike_type=bike_type,
             code=code,
@@ -1358,6 +1401,9 @@ courier_conv = ConversationHandler(
             CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
             MessageHandler(Filters.location, courier_residence_location),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_location),
+        ],
+        COURIER_VEHICLE_TYPE: [
+            CallbackQueryHandler(courier_vehicle_type_callback, pattern=r"^courier_vehiculo_"),
         ],
         COURIER_PLATE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_plate)

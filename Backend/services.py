@@ -12,6 +12,10 @@ from db import (
     get_api_usage_today, record_api_usage_event,
     get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
+    get_geocoding_text_cache, upsert_geocoding_text_cache,
+    set_ally_subscription_price, get_ally_subscription_price,
+    create_ally_subscription, get_active_ally_subscription,
+    expire_old_ally_subscriptions, get_ally_subscription_info,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
     register_platform_income,
@@ -34,6 +38,7 @@ from db import (
     get_order_status_by_id,
     cancel_order,
     get_admin_by_telegram_id,
+    get_ally_by_telegram_id,
     get_user_by_telegram_id,
     get_admin_by_user_id,
     can_admin_validate_references,
@@ -134,11 +139,15 @@ from db import (
     assign_order_to_courier,
     get_order_by_id,
     add_order_incentive,
+    add_route_incentive,
     update_order_payment,
     get_orders_by_ally,
+    get_ally_orders_between,
+    get_ally_routes_between,
     get_orders_by_courier,
     get_courier_daily_earnings_history,
     get_courier_earnings_by_date,
+    get_courier_earnings_between,
     get_totales_registros,
     add_courier_rating,
     get_active_terms_version,
@@ -159,6 +168,7 @@ from db import (
     restore_customer_address,
     get_customer_address_by_id,
     list_customer_addresses,
+    increment_customer_address_usage,
     find_matching_customer_address,
     update_customer_address_coords,
     get_last_order_by_ally,
@@ -187,8 +197,10 @@ from db import (
     create_route,
     create_route_destination,
     get_route_by_id,
+    get_active_routes_by_ally,
     get_route_destinations,
     get_pending_route_stops,
+    reorder_route_destinations,
     update_route_status,
     assign_route_to_courier,
     deliver_route_stop,
@@ -234,6 +246,7 @@ from db import (
     restore_admin_customer_address,
     get_admin_customer_address_by_id,
     list_admin_customer_addresses,
+    increment_admin_customer_address_usage,
     # Re-exports offer queue
     clear_offer_queue,
     # Re-exports order_support_requests
@@ -271,9 +284,10 @@ from db import (
 import math
 import re
 import os
+import urllib.request
 
 # Límite diario de llamadas a Google (configurable)
-GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "50"))
+GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
 
@@ -321,6 +335,22 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
+
+
+def _osrm_distance_km(lat1: float, lng1: float, lat2: float, lng2: float):
+    """Distancia de carretera via OSRM (OpenStreetMap). Gratuita, sin API key, sin quota."""
+    try:
+        url = "http://router.project-osrm.org/route/v1/driving/{},{};{},{}?overview=false".format(
+            lng1, lat1, lng2, lat2
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "domiquerendona-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("code") == "Ok" and data.get("routes"):
+            return round(data["routes"][0]["distance"] / 1000, 2)
+    except Exception:
+        pass
+    return None
 
 
 def get_online_couriers_sorted_by_distance(lat: float, lng: float) -> list:
@@ -822,31 +852,17 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
 
-    # --- CAPA 1: Haversine (primera opcion, gratis) ---
-    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
-    local_result = {
-        "distance_km": haversine_dist,
-        "source": "haversine",
-        "used_api": False,
-    }
-
-    # --- CAPA 2: Cache ---
+    # --- CAPA 1: Cache (solo valores reales de API, no Haversine) ---
     cached = get_distance_cache(origin_key, destination_key, mode="coords")
-    if cached and cached.get("distance_km") is not None:
+    if cached and cached.get("distance_km") is not None and cached.get("provider") != "haversine":
         return {
             "distance_km": float(cached["distance_km"]),
             "source": f"cache({cached.get('provider', 'unknown')})",
             "used_api": False,
         }
 
-    # Si no hay cache, guardamos resultado local para siguientes consultas.
-    upsert_distance_cache(origin_key, destination_key, mode="coords",
-                          distance_km=haversine_dist, provider="haversine")
-
-    # --- CAPA 3: Google API (solo si hay cuota) ---
-    # En cotizacion por coords casi nunca es necesario, pero se mantiene como ultimo recurso
-    # cuando no hay un valor local util.
-    if haversine_dist <= 0 and can_call_google_today() and GOOGLE_MAPS_API_KEY:
+    # --- CAPA 2: Google API ---
+    if can_call_google_today() and GOOGLE_MAPS_API_KEY:
         google_dist = get_distance_from_api_coords(lat1, lng1, lat2, lng2)
         if google_dist is not None:
             upsert_distance_cache(origin_key, destination_key, mode="coords",
@@ -857,8 +873,24 @@ def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> di
                 "used_api": True,
             }
 
-    # Fusible/fallback: continuar con estimacion local.
-    return local_result
+    # --- CAPA 2.5: OSRM (OpenStreetMap, gratuito, red vial real, sin quota) ---
+    osrm_dist = _osrm_distance_km(lat1, lng1, lat2, lng2)
+    if osrm_dist is not None:
+        upsert_distance_cache(origin_key, destination_key, mode="coords",
+                              distance_km=osrm_dist, provider="osrm")
+        return {
+            "distance_km": osrm_dist,
+            "source": "osrm",
+            "used_api": False,
+        }
+
+    # --- CAPA 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego) ---
+    haversine_dist = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
+    return {
+        "distance_km": haversine_dist,
+        "source": "haversine",
+        "used_api": False,
+    }
 
 
 def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: float, dropoff_lng: float) -> dict:
@@ -1044,7 +1076,41 @@ def get_pricing_config():
         "precio_km_extra_normal": _to_int(get_setting("pricing_km_extra_normal", "1200"), 1200),
         "umbral_km_largo": _to_float(get_setting("pricing_umbral_km_largo", "10.0"), 10.0),
         "precio_km_extra_largo": _to_int(get_setting("pricing_km_extra_largo", "1000"), 1000),
-        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "200"), 200),
+        "tarifa_parada_adicional": _to_int(get_setting("pricing_tarifa_parada_adicional", "4000"), 4000),
+    }
+
+
+def get_fee_config() -> dict:
+    """
+    Carga la configuración de fees de servicio desde BD.
+
+    El fee de servicio se cobra al saldo del miembro (courier o aliado) por cada entrega.
+    Invariante: fee_admin_share + fee_platform_share == fee_service_total.
+
+    Si los valores en BD no satisfacen el invariante, se usan los defaults seguros.
+
+    fee_ally_commission_pct: comision adicional al ALIADO sobre tarifa de domicilio.
+    Va 100% a plataforma. 0 = desactivado (default).
+
+    Returns:
+        dict con: fee_service_total, fee_admin_share, fee_platform_share, fee_ally_commission_pct
+    """
+    total = _to_int(get_setting("fee_service_total", "300"), 300)
+    admin_share = _to_int(get_setting("fee_admin_share", "200"), 200)
+    platform_share = _to_int(get_setting("fee_platform_share", "100"), 100)
+
+    # Guardar coherencia: si la suma no cuadra, recalcular platform_share
+    if admin_share + platform_share != total:
+        platform_share = max(0, total - admin_share)
+
+    # Comision adicional al aliado (% sobre tarifa del domicilio al courier)
+    commission_pct = _to_int(get_setting("fee_ally_commission_pct", "0"), 0)
+
+    return {
+        "fee_service_total": total,
+        "fee_admin_share": admin_share,
+        "fee_platform_share": platform_share,
+        "fee_ally_commission_pct": commission_pct,
     }
 
 
@@ -1261,6 +1327,127 @@ def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict 
     }
 
 
+def calcular_precio_ruta_inteligente(total_km, paradas, pickup_lat=None, pickup_lng=None, config=None):
+    """
+    Calcula el precio final de una ruta garantizando que el aliado siempre perciba ahorro
+    respecto a contratar cada entrega como pedido individual.
+
+    Implementa 3 casos basados en el ahorro natural:
+
+    Caso 1 - Ahorro natural <= 20%:
+        El precio natural de la ruta ya genera un ahorro razonable.
+        → precio_final = precio_ruta_natural (sin ajuste)
+        → El courier recibe lo que dicta la tarifa de ruta.
+
+    Caso 2 - Ahorro natural > 20%:
+        El precio natural es tan bajo que el courier saldría perjudicado.
+        Se recorta el descuento al 20% máximo del total individual.
+        → precio_final = precio_individual_total - (20% de precio_individual_total)
+        → El aliado ahorra exactamente el 20%.
+
+    Caso 3 - Ruta más cara que pedidos individuales:
+        La ruta naturalmente sale más cara (e.g., paradas muy dispersas con alta tarifa/parada).
+        Se garantiza ahorro mínimo del 20% sobre la parada más económica.
+        → precio_final = precio_individual_total - (20% del precio de la parada más barata)
+
+    Nota: tarifa_parada_adicional en config = $4.000 (pago al courier por parada adicional).
+    El fee de servicio al saldo del aliado ($200 por parada adicional) es ortogonal y no
+    interviene aquí — se maneja en liquidate_route_additional_stops_fee().
+
+    Args:
+        total_km:    Distancia total de la ruta (suma de segmentos)
+        paradas:     Lista de stops, cada uno con 'lat'/'lng' si hay GPS
+        pickup_lat:  Latitud del punto de recogida (para precios individuales)
+        pickup_lng:  Longitud del punto de recogida
+        config:      Dict de tarifas. Si None, carga desde BD.
+
+    Returns:
+        dict con: total_fee, precio_individual_total, precio_ruta_natural, ahorro_mostrado,
+                  caso, mensaje_ahorro, distance_fee, additional_stops_fee,
+                  tarifa_parada_adicional, total_distance_km, num_stops, precios_individuales
+    """
+    if config is None:
+        config = get_pricing_config()
+
+    n = len(paradas)
+    base = calcular_precio_ruta(total_km, n, config)
+    precio_ruta_natural = base["total_fee"]
+    tarifa_parada = base["tarifa_parada_adicional"]
+
+    # Precio total si cada parada fuera un pedido individual desde el pickup
+    todos_con_gps = (
+        pickup_lat is not None and pickup_lng is not None
+        and all(p.get("lat") and p.get("lng") for p in paradas)
+    )
+    precios_individuales = []
+    if todos_con_gps:
+        for p in paradas:
+            km_ind = haversine_road_km(float(pickup_lat), float(pickup_lng), float(p["lat"]), float(p["lng"]))
+            precios_individuales.append(calcular_precio_distancia(km_ind, config))
+    else:
+        # Sin GPS completo: estimar distancia individual como total_km / n (fallback conservador)
+        km_promedio = total_km / max(n, 1)
+        for _ in paradas:
+            precios_individuales.append(calcular_precio_distancia(km_promedio, config))
+
+    precio_individual_total = sum(precios_individuales)
+
+    if precio_individual_total <= 0:
+        # Fallback de seguridad: retornar precio natural sin comparación
+        return {
+            **base,
+            "precio_individual_total": 0,
+            "precio_ruta_natural": precio_ruta_natural,
+            "ahorro_mostrado": 0,
+            "caso": 1,
+            "mensaje_ahorro": "",
+            "precios_individuales": precios_individuales,
+        }
+
+    ahorro_natural = precio_individual_total - precio_ruta_natural
+    porcentaje_ahorro = ahorro_natural / precio_individual_total
+
+    if precio_ruta_natural < precio_individual_total:
+        if porcentaje_ahorro <= 0.20:
+            # Caso 1: ahorro natural razonable — no ajustar
+            precio_final = precio_ruta_natural
+            caso = 1
+        else:
+            # Caso 2: ahorro excesivo — cap al 20% para proteger al courier
+            descuento_max = int(precio_individual_total * 0.20)
+            precio_final = precio_individual_total - descuento_max
+            caso = 2
+    else:
+        # Caso 3: ruta más cara — garantizar descuento mínimo del 20% de la parada más barata
+        precio_parada_min = min(precios_individuales)
+        descuento_minimo = int(precio_parada_min * 0.20)
+        precio_final = precio_individual_total - descuento_minimo
+        caso = 3
+
+    # Redondear al múltiplo de 100 más cercano (precio más limpio)
+    precio_final = int(round(precio_final / 100.0) * 100)
+    ahorro_mostrado = precio_individual_total - precio_final
+    mensaje_ahorro = (
+        "Ahorras ${:,} vs pedidos individuales".format(ahorro_mostrado)
+        if ahorro_mostrado > 0 else ""
+    )
+
+    return {
+        "distance_fee": base["distance_fee"],
+        "additional_stops_fee": base["additional_stops_fee"],
+        "tarifa_parada_adicional": tarifa_parada,
+        "total_fee": precio_final,
+        "total_distance_km": total_km,
+        "num_stops": n,
+        "precio_individual_total": precio_individual_total,
+        "precio_ruta_natural": precio_ruta_natural,
+        "ahorro_mostrado": ahorro_mostrado,
+        "caso": caso,
+        "mensaje_ahorro": mensaje_ahorro,
+        "precios_individuales": precios_individuales,
+    }
+
+
 def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
     """
     Calcula la distancia total de una ruta de forma secuencial usando Haversine:
@@ -1280,6 +1467,84 @@ def calcular_distancia_ruta(pickup_lat, pickup_lng, paradas):
         total += haversine_road_km(prev_lat, prev_lng, float(lat), float(lng))
         prev_lat, prev_lng = float(lat), float(lng)
     return round(total, 2)
+
+
+def optimizar_orden_paradas(pickup_lat, pickup_lng, paradas):
+    """
+    Reordena las paradas de una ruta para minimizar la distancia total recorrida
+    usando Haversine como métrica (sin costo de API).
+
+    Estrategia:
+    - n <= 10: fuerza bruta exacta (evalúa todas las permutaciones)
+    - n > 10:  Nearest Neighbor heurístico (ir siempre a la parada más cercana)
+
+    Solo aplica si todas las paradas tienen lat/lng. Si alguna carece de GPS,
+    retorna las paradas en el orden original sin modificar.
+
+    Args:
+        pickup_lat, pickup_lng: coordenadas del punto de recogida (fijo, no se reordena)
+        paradas: lista de dicts con campos 'lat', 'lng' y datos del cliente
+
+    Returns:
+        (paradas_ordenadas, distancia_km, fue_optimizado)
+        - paradas_ordenadas: lista reordenada (o la original si no hay GPS)
+        - distancia_km: distancia total de la ruta optimizada (Haversine)
+        - fue_optimizado: True si se aplicó TSP, False si se devolvió sin cambios
+    """
+    from itertools import permutations as _perms
+
+    n = len(paradas)
+
+    # Sin paradas o solo una: nada que optimizar
+    if n <= 1:
+        dist = calcular_distancia_ruta(pickup_lat, pickup_lng, paradas) or 0.0
+        return paradas, dist, False
+
+    # Verificar que todas las paradas tienen coordenadas
+    for p in paradas:
+        if not p.get("lat") or not p.get("lng"):
+            dist = calcular_distancia_ruta(pickup_lat, pickup_lng, paradas) or 0.0
+            return paradas, dist, False
+
+    def _ruta_distancia(orden):
+        """Calcula distancia total de pickup -> paradas en el orden dado."""
+        total = 0.0
+        prev_lat, prev_lng = float(pickup_lat), float(pickup_lng)
+        for idx in orden:
+            p_lat = float(paradas[idx]["lat"])
+            p_lng = float(paradas[idx]["lng"])
+            total += haversine_km(prev_lat, prev_lng, p_lat, p_lng)
+            prev_lat, prev_lng = p_lat, p_lng
+        return total
+
+    if n <= 10:
+        # Fuerza bruta exacta
+        best_order = list(range(n))
+        best_dist = _ruta_distancia(best_order)
+        for perm in _perms(range(n)):
+            d = _ruta_distancia(perm)
+            if d < best_dist:
+                best_dist = d
+                best_order = list(perm)
+    else:
+        # Nearest Neighbor heurístico
+        remaining = list(range(n))
+        best_order = []
+        cur_lat, cur_lng = float(pickup_lat), float(pickup_lng)
+        while remaining:
+            nearest = min(
+                remaining,
+                key=lambda i: haversine_km(cur_lat, cur_lng, float(paradas[i]["lat"]), float(paradas[i]["lng"]))
+            )
+            best_order.append(nearest)
+            remaining.remove(nearest)
+            cur_lat = float(paradas[nearest]["lat"])
+            cur_lng = float(paradas[nearest]["lng"])
+        best_dist = _ruta_distancia(best_order)
+
+    paradas_ordenadas = [paradas[i] for i in best_order]
+    fue_optimizado = best_order != list(range(n))
+    return paradas_ordenadas, round(best_dist, 2), fue_optimizado
 
 
 def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
@@ -1304,6 +1569,7 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
 
     total_km = 0.0
     used_api = False
+    used_haversine = False
 
     for i in range(len(puntos) - 1):
         lat1, lng1 = puntos[i]
@@ -1312,9 +1578,9 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
         origin_key = _coords_cache_key(lat1, lng1)
         dest_key = _coords_cache_key(lat2, lng2)
 
-        # Capa 1: Cache
+        # Capa 1: Cache (solo valores reales de API, no Haversine)
         cached = get_distance_cache(origin_key, dest_key, mode="coords")
-        if cached and cached.get("distance_km") is not None:
+        if cached and cached.get("distance_km") is not None and cached.get("provider") != "haversine":
             total_km += float(cached["distance_km"])
             continue
 
@@ -1327,17 +1593,24 @@ def calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas):
                                       distance_km=seg_km, provider="google_distance_matrix")
                 used_api = True
 
-        # Capa 3: Haversine fallback
+        # Capa 2.5: OSRM (OpenStreetMap, gratuito, red vial real, sin quota)
+        if seg_km is None:
+            seg_km = _osrm_distance_km(lat1, lng1, lat2, lng2)
+            if seg_km is not None:
+                upsert_distance_cache(origin_key, dest_key, mode="coords",
+                                      distance_km=seg_km, provider="osrm")
+
+        # Capa 3: Haversine fallback (estimacion — NO se cachea para reintentar API luego)
         if seg_km is None:
             seg_km = round(_haversine_km(lat1, lng1, lat2, lng2) * _distance_factor(), 2)
-            upsert_distance_cache(origin_key, dest_key, mode="coords",
-                                  distance_km=seg_km, provider="haversine")
+            used_haversine = True
 
         total_km += seg_km
 
     return {
         "total_km": round(total_km, 2),
         "used_api": used_api,
+        "estimada": used_haversine,  # True si algun segmento uso Haversine en vez de API real
     }
 
 
@@ -1593,22 +1866,37 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     if local_ref:
         return local_ref
 
-    # 5. Geocoding por texto (ultimo recurso, cuesta API)
+    # 5. Caché de geocoding por texto (gratis, antes de llamar a la API)
     normalized_text = _normalize_reference_key(text)
+    if not is_url_like:
+        try:
+            cached = get_geocoding_text_cache(normalized_text)
+            if cached:
+                return {
+                    "lat": cached["lat"],
+                    "lng": cached["lng"],
+                    "method": "geocode_cache",
+                    "formatted_address": cached.get("formatted_address", ""),
+                    "place_id": cached.get("place_id"),
+                }
+        except Exception:
+            pass
+
+    # 6. Geocoding por texto (ultimo recurso, cuesta API)
     try:
         quota_ok = can_call_google_today()
     except Exception:
         quota_ok = False
 
     if quota_ok and not is_url_like:
-        # Cascada de consultas: texto original + sufijos de ciudad
-        # Para en el primer resultado valido (economia de cuota).
-        # Para mas candidatos usa resolve_location_next().
+        # Cascada de consultas: texto original + sufijo ciudad principal.
+        # Limitado a 2 variantes para economizar cuota (max 4 calls vs 8 anteriores).
+        # Si el texto original ya incluye ciudad, la segunda variante es redundante
+        # pero inofensiva — el break por resultado válido la salta de todas formas.
+        # Para más candidatos el usuario puede usar resolve_location_next().
         _queries = [
             text,
             f"{text}, Pereira, Risaralda, Colombia",
-            f"{text}, Dosquebradas, Risaralda, Colombia",
-            f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
         ]
         for _q in _queries:
             geo = google_geocode_forward(_q)
@@ -1620,6 +1908,15 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                             normalized_text=normalized_text,
                             suggested_lat=geo["lat"],
                             suggested_lng=geo["lng"],
+                            source="geocode",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        upsert_geocoding_text_cache(
+                            normalized_text, geo["lat"], geo["lng"],
+                            formatted_address=geo.get("formatted_address"),
+                            place_id=geo.get("place_id"),
                             source="geocode",
                         )
                     except Exception:
@@ -1648,6 +1945,15 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
                             normalized_text=normalized_text,
                             suggested_lat=places["lat"],
                             suggested_lng=places["lng"],
+                            source="textsearch",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        upsert_geocoding_text_cache(
+                            normalized_text, places["lat"], places["lng"],
+                            formatted_address=places.get("formatted_address"),
+                            place_id=places.get("place_id"),
                             source="textsearch",
                         )
                     except Exception:
@@ -1693,14 +1999,21 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
     _queries = [
         text,
         f"{text}, Pereira, Risaralda, Colombia",
-        f"{text}, Dosquebradas, Risaralda, Colombia",
-        f"{text}, Santa Rosa de Cabal, Risaralda, Colombia",
     ]
     for _q in _queries:
         geo = google_geocode_forward(_q)
         if geo and geo.get("lat") and geo.get("lng"):
             if _is_allowed_city(geo.get("formatted_address", "")):
                 _pid = geo.get("place_id") or f"{geo['lat']},{geo['lng']}"
+                try:
+                    upsert_geocoding_text_cache(
+                        _normalize_reference_key(text), geo["lat"], geo["lng"],
+                        formatted_address=geo.get("formatted_address"),
+                        place_id=geo.get("place_id"),
+                        source="geocode",
+                    )
+                except Exception:
+                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": geo["lat"],
@@ -1720,6 +2033,15 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
         if places and places.get("lat") and places.get("lng"):
             if _is_allowed_city(places.get("formatted_address", "")):
                 _pid = places.get("place_id") or f"{places['lat']},{places['lng']}"
+                try:
+                    upsert_geocoding_text_cache(
+                        _normalize_reference_key(text), places["lat"], places["lng"],
+                        formatted_address=places.get("formatted_address"),
+                        place_id=places.get("place_id"),
+                        source="textsearch",
+                    )
+                except Exception:
+                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": places["lat"],
@@ -1979,24 +2301,40 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
 
 
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
-                      ref_type: str = None, ref_id: int = None) -> Tuple[bool, str]:
+                      ref_type: str = None, ref_id: int = None,
+                      total_fee: int = None) -> Tuple[bool, str]:
     """
-    Cobra tarifa de $300 por servicio al courier/aliado y distribuye el ingreso.
+    Cobra tarifa de servicio al courier/aliado y distribuye el ingreso.
     Distribucion:
-    - Si admin es PLATFORM: $300 van a plataforma.
-    - Si admin es local: $200 al admin del miembro, $100 a plataforma.
+    - Si admin es PLATFORM: fee_service_total va a plataforma.
+    - Si admin es local: fee_admin_share al admin del miembro, fee_platform_share a plataforma.
+    Los montos se leen desde BD (settings: fee_service_total, fee_admin_share, fee_platform_share).
     El admin no paga comision; recibe ingresos por cada servicio de su equipo.
+
+    total_fee: tarifa de domicilio pagada al courier (solo relevante para ALLY).
+        Si target_type=="ALLY", total_fee>0 y fee_ally_commission_pct>0,
+        se cobra una comision adicional al aliado sobre esa tarifa, que va 100% a plataforma.
+
     Retorna: (success, message)
     """
-    fee = 300
-    admin_share = 200
-    platform_share = 100
+    fee_cfg = get_fee_config()
+    fee = fee_cfg["fee_service_total"]
+    admin_share = fee_cfg["fee_admin_share"]
+    platform_share = fee_cfg["fee_platform_share"]
+    commission_pct = fee_cfg["fee_ally_commission_pct"]
 
     platform_admin = get_platform_admin()
     if not platform_admin:
         return False, "Plataforma no configurada."
     platform_id = platform_admin["id"]
     is_platform = (admin_id == platform_id)
+
+    # Calcular comision adicional al aliado (0 si commission_pct==0 o total_fee no aplica)
+    ally_commission = 0
+    if target_type == "ALLY" and total_fee and commission_pct > 0:
+        ally_commission = int(round(total_fee * commission_pct / 100))
+
+    total_debit = fee + ally_commission
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -2005,21 +2343,35 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     else:
         return False, "Tipo de destino desconocido: {}".format(target_type)
 
-    if balance < fee:
-        return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, fee)
+    if balance < total_debit:
+        return False, "Saldo insuficiente. Balance: ${:,}, requerido: ${:,}.".format(balance, total_debit)
 
     if target_type == "COURIER":
         update_courier_link_balance(target_id, admin_id, -fee)
     elif target_type == "ALLY":
-        update_ally_link_balance(target_id, admin_id, -fee)
+        update_ally_link_balance(target_id, admin_id, -total_debit)
 
     if is_platform:
-        # Plataforma gana los $300 completos
+        # Platform admin gestionando su propio equipo:
+        # Se aplica el mismo split que un admin local, pero ambas partes van a la misma cuenta.
+        # Esto permite distinguir en el ledger:
+        #   FEE_INCOME   → ganancia personal del platform admin como admin de su equipo (no se divide)
+        #   PLATFORM_FEE → ganancia de plataforma (para dividir con socios/inversores)
         update_admin_balance_with_ledger(
             admin_id=platform_id,
-            delta=fee,
+            delta=admin_share,
             kind="FEE_INCOME",
-            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+            note="Ingreso admin por servicio de equipo propio ({} id={})".format(target_type, target_id),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=platform_share,
+            kind="PLATFORM_FEE",
+            note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
             ref_type=ref_type,
             ref_id=ref_id,
             from_type=target_type,
@@ -2049,12 +2401,32 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
             from_id=target_id,
         )
 
-    return True, "Tarifa de ${:,} aplicada.".format(fee)
+    # Comision adicional al aliado (va 100% a plataforma, separada del fee normal)
+    if ally_commission > 0:
+        update_admin_balance_with_ledger(
+            admin_id=platform_id,
+            delta=ally_commission,
+            kind="PLATFORM_FEE",
+            note="Comision {}% sobre tarifa domicilio (ALLY id={}, tarifa=${:,})".format(
+                commission_pct, target_id, total_fee),
+            ref_type=ref_type,
+            ref_id=ref_id,
+            from_type=target_type,
+            from_id=target_id,
+        )
+
+    msg = "Tarifa de ${:,} aplicada.".format(fee)
+    if ally_commission > 0:
+        msg += " Comision adicional ${:,}.".format(ally_commission)
+    return True, msg
 
 
 def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     """
-    Liquida el additional_stops_fee de una ruta entregada sin incidencias canceladas.
+    Liquida el additional_stops_fee de una ruta entregada.
+    Si hubo cancelaciones parciales, cobra proporcional a las paradas realmente entregadas:
+      fee = (paradas_entregadas - 1) x tarifa_parada_adicional
+    Si solo se entrego 1 o 0 paradas, no hay additional_stops_fee aplicable.
     """
     route = get_route_by_id(route_id)
     if not route:
@@ -2062,13 +2434,18 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     if route.get("status") != "DELIVERED":
         return False, "La ruta no esta entregada."
 
-    amount = int(route.get("additional_stops_fee") or 0)
-    if amount <= 0:
-        return False, "La ruta no tiene additional_stops_fee para liquidar."
-
     destinations = get_route_destinations(route_id)
-    if any(str(stop.get("status", "")).startswith("CANCELLED") for stop in destinations):
-        return False, "La ruta tuvo incidencias/cancelaciones; no se liquida additional_stops_fee."
+    n_delivered = sum(1 for s in destinations if str(s.get("status", "")) == "DELIVERED")
+
+    if n_delivered <= 1:
+        return False, "La ruta no tiene additional_stops_fee para liquidar ({} parada(s) entregada(s)).".format(n_delivered)
+
+    # Proporcional: solo paradas efectivamente entregadas
+    # IMPORTANTE: tarifa_parada_adicional ($4.000) es el pago al COURIER, no este fee.
+    # Este fee es la comisión de SERVICIO cobrada al saldo del aliado: $200 por parada adicional.
+    # Son dos conceptos distintos — este valor NO se lee del config de precios del courier.
+    TARIFA_PARADA_SERVICIO = 200
+    amount = (n_delivered - 1) * TARIFA_PARADA_SERVICIO
 
     platform_admin = get_platform_admin()
     if not platform_admin:
@@ -2092,12 +2469,13 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
     """
-    Verifica si el miembro tiene saldo suficiente para cobrar el fee ($300), sin cobrar.
+    Verifica si el miembro tiene saldo suficiente para cubrir el fee de servicio, sin cobrar.
+    El fee requerido se lee desde BD (fee_service_total, default $300).
     El admin no paga comision (recibe ingresos), por lo que no se valida su saldo aqui.
     Retorna: (can_operate, error_code)
     error_code: 'OK' o 'MEMBER_SIN_SALDO'
     """
-    fee = 300
+    fee = get_fee_config()["fee_service_total"]
 
     if target_type == "COURIER":
         balance = get_courier_link_balance(target_id, admin_id)
@@ -2115,10 +2493,10 @@ def check_service_fee_available(target_type: str, target_id: int, admin_id: int)
 def can_courier_activate(courier_id: int) -> Tuple[bool, str]:
     """
     Verifica si el repartidor tiene saldo operativo suficiente para activarse.
-    Requiere al menos $300 en admin_couriers.balance (fee minimo por servicio).
+    Requiere al menos fee_service_total en admin_couriers.balance (leído desde BD).
     Retorna (puede_activarse, mensaje_error).
     """
-    MIN_BALANCE = 300
+    MIN_BALANCE = get_fee_config()["fee_service_total"]
     admin_id = get_approved_admin_id_for_courier(courier_id)
     if admin_id is None:
         return False, "No tienes un administrador aprobado. Contacta a tu admin."
@@ -2285,6 +2663,21 @@ def courier_get_earnings_by_date_key(telegram_id: int, date_key: str) -> Tuple[b
         return False, None, [], "No tienes perfil de repartidor."
     try:
         rows = get_courier_earnings_by_date(int(courier["id"]), date_key)
+    except Exception as e:
+        return False, courier, [], str(e)
+    return True, courier, rows, "OK"
+
+
+def courier_get_earnings_by_period(telegram_id: int, start_s: str, end_s: str) -> Tuple[bool, Optional[Dict[str, Any]], list, str]:
+    """
+    Retorna ganancias del courier para un rango de timestamps arbitrario.
+    Usado por el selector de periodos (Hoy/Ayer/Esta semana/Este mes).
+    """
+    courier = get_courier_by_telegram_id(telegram_id)
+    if not courier:
+        return False, None, [], "No tienes perfil de repartidor."
+    try:
+        rows = get_courier_earnings_between(int(courier["id"]), start_s, end_s)
     except Exception as e:
         return False, courier, [], str(e)
     return True, courier, rows, "OK"
@@ -2596,6 +2989,7 @@ def reset_courier_registration_in_place_service(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     return reset_courier_registration_in_place(
         courier_id,
@@ -2613,6 +3007,7 @@ def reset_courier_registration_in_place_service(
         cedula_front_file_id,
         cedula_back_file_id,
         selfie_file_id,
+        vehicle_type,
     )
 
 
@@ -2927,13 +3322,14 @@ def resolve_support_request_from_admin_panel(support_id: int, action: str, admin
     if action == "fin":
         ally_id = order["ally_id"]
         ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
-        if ally_admin_link:
+        if ally_admin_link and not check_ally_active_subscription(ally_id):
             apply_service_fee(
                 target_type="ALLY",
                 target_id=ally_id,
                 admin_id=ally_admin_link["admin_id"],
                 ref_type="ORDER",
                 ref_id=order_id,
+                total_fee=order["total_fee"],
             )
         courier_admin_id = get_approved_admin_id_for_courier(courier_id)
         if courier_admin_id:
@@ -3072,3 +3468,135 @@ def courier_is_operational(courier) -> bool:
     if not courier:
         return False
     return _row_value(courier, "availability_status", 20) == "APPROVED"
+
+
+# ============================================================
+# SUSCRIPCIONES MENSUALES DE ALIADOS
+# ============================================================
+
+def check_ally_active_subscription(ally_id: int) -> bool:
+    """Retorna True si el aliado tiene suscripcion activa y vigente."""
+    sub = get_active_ally_subscription(ally_id)
+    return sub is not None
+
+
+def pay_ally_subscription(ally_id: int, admin_id: int) -> tuple:
+    """
+    Procesa el pago de una suscripcion mensual para un aliado.
+
+    Flujo:
+    - Verifica que admin tenga precio configurado para este aliado
+    - Verifica que el aliado tenga saldo suficiente (admin_allies.balance)
+    - Debita el precio total del saldo del aliado
+    - Acredita platform_share al admin de plataforma (kind=SUBSCRIPTION_PLATFORM_SHARE)
+    - Acredita admin_share al admin del aliado (kind=SUBSCRIPTION_ADMIN_SHARE)
+    - Crea registro en ally_subscriptions
+
+    Retorna: (success: bool, message: str)
+    """
+    price = get_ally_subscription_price(admin_id, ally_id)
+    if not price:
+        return False, "Este aliado no tiene precio de suscripcion configurado. Contacta a tu administrador."
+
+    platform_share = _to_int(get_setting("subscription_platform_share", "20000"), 20000)
+    if price < platform_share:
+        return False, "El precio configurado (${{:,}}) es menor al minimo de plataforma (${{:,}}).".format(
+            price, platform_share)
+
+    admin_share = price - platform_share
+
+    # Verificar saldo del aliado
+    balance = get_ally_link_balance(ally_id, admin_id)
+    if balance < price:
+        return False, "Saldo insuficiente. Tienes ${:,} y la suscripcion cuesta ${:,}.".format(
+            balance, price)
+
+    platform_admin = get_platform_admin()
+    if not platform_admin:
+        return False, "Plataforma no configurada."
+    platform_id = platform_admin["id"]
+
+    # Debitar del saldo del aliado
+    update_ally_link_balance(ally_id, admin_id, -price)
+
+    # Acreditar platform_share a plataforma
+    update_admin_balance_with_ledger(
+        admin_id=platform_id,
+        delta=platform_share,
+        kind="SUBSCRIPTION_PLATFORM_SHARE",
+        note="Suscripcion mensual aliado id={} via admin id={}".format(ally_id, admin_id),
+        ref_type="ALLY",
+        ref_id=ally_id,
+        from_type="ALLY",
+        from_id=ally_id,
+    )
+
+    # Acreditar admin_share al admin del aliado (puede ser el mismo que plataforma)
+    if admin_share > 0:
+        update_admin_balance_with_ledger(
+            admin_id=admin_id,
+            delta=admin_share,
+            kind="SUBSCRIPTION_ADMIN_SHARE",
+            note="Corte suscripcion mensual aliado id={}".format(ally_id),
+            ref_type="ALLY",
+            ref_id=ally_id,
+            from_type="ALLY",
+            from_id=ally_id,
+        )
+
+    # Crear registro de suscripcion
+    create_ally_subscription(
+        ally_id=ally_id,
+        admin_id=admin_id,
+        price=price,
+        platform_share=platform_share,
+        admin_share=admin_share,
+    )
+
+    return True, "Suscripcion activada por 30 dias. Total: ${:,}.".format(price)
+
+
+def get_subscription_summary_for_ally(ally_id: int, admin_id: int) -> dict:
+    """
+    Retorna resumen de suscripcion para mostrar al aliado en el bot.
+    {
+      'has_subscription': bool,
+      'price': int or None,
+      'expires_at': str or None,
+      'days_left': int or None,
+      'balance': int,
+      'can_renew': bool,
+    }
+    """
+    sub = get_active_ally_subscription(ally_id)
+    price = get_ally_subscription_price(admin_id, ally_id)
+    balance = get_ally_link_balance(ally_id, admin_id)
+
+    if sub:
+        expires_str = str(_row_value(sub, "expires_at", ""))
+        # Calcular dias restantes
+        try:
+            from datetime import datetime as _dt
+            exp = _dt.fromisoformat(expires_str[:19])
+            now = _dt.now()
+            days_left = max(0, (exp - now).days)
+        except Exception:
+            days_left = None
+
+        return {
+            "has_subscription": True,
+            "price": _row_value(sub, "price"),
+            "expires_at": expires_str,
+            "days_left": days_left,
+            "balance": balance,
+            "can_renew": price is not None and balance >= price,
+        }
+
+    return {
+        "has_subscription": False,
+        "price": price,
+        "expires_at": None,
+        "days_left": None,
+        "balance": balance,
+        "can_renew": price is not None and balance >= price,
+    }

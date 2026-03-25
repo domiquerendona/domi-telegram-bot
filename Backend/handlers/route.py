@@ -30,8 +30,9 @@ from handlers.states import (
     RUTA_GUARDAR_CLIENTES,
     RUTA_PICKUP_NUEVA_CIUDAD,
     RUTA_PICKUP_NUEVA_BARRIO,
-    RUTA_PARADA_CIUDAD,
-    RUTA_PARADA_BARRIO,
+    RUTA_INCENTIVO_MONTO,
+    RUTA_PARADA_BUSCAR,
+    RUTA_PARADA_DEDUP,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -54,21 +55,27 @@ from services import (
     get_default_ally_location,
     create_ally_location,
     list_ally_customers,
+    search_ally_customers,
     get_ally_customer_by_id,
     list_customer_addresses,
     get_customer_address_by_id,
     get_ally_customer_by_phone,
     create_ally_customer,
     create_customer_address,
+    increment_customer_address_usage,
     has_valid_coords,
     resolve_location,
     extract_lat_lng_from_text,
     expand_short_url,
     calcular_precio_ruta,
+    calcular_precio_ruta_inteligente,
     calcular_distancia_ruta_smart,
+    optimizar_orden_paradas,
     create_route,
     create_route_destination,
     get_approved_admin_link_for_ally,
+    get_ally_link_balance,
+    add_route_incentive,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -172,6 +179,8 @@ def _ruta_iniciar_parada(update_or_query, context):
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
         )])
+    if activos:
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="ruta_buscar_cliente")])
     markup = InlineKeyboardMarkup(keyboard)
     text = "PARADA {} DE LA RUTA\n\nSelecciona el cliente:".format(n)
     _ruta_limpiar_temp(context)
@@ -188,16 +197,40 @@ def _ruta_guardar_parada_actual(context):
         "name": context.user_data.get("ruta_temp_name") or "",
         "phone": context.user_data.get("ruta_temp_phone") or "",
         "address": context.user_data.get("ruta_temp_address") or "",
-        "city": context.user_data.get("ruta_temp_city") or "",
-        "barrio": context.user_data.get("ruta_temp_barrio") or "",
+        "city": "",
+        "barrio": "",
         "lat": context.user_data.get("ruta_temp_lat"),
         "lng": context.user_data.get("ruta_temp_lng"),
-        "customer_id": context.user_data.get("ruta_temp_customer_id"),  # None si es cliente nuevo
+        "customer_id": context.user_data.get("ruta_temp_customer_id"),
     }
     paradas = context.user_data.get("ruta_paradas", [])
     paradas.append(parada)
     context.user_data["ruta_paradas"] = paradas
     _ruta_limpiar_temp(context)
+
+
+def _ruta_guardar_parada_y_cliente(context, msg_or_query):
+    """Guarda la parada. Si es cliente nuevo, pregunta si guardarlo en agenda."""
+    customer_id = context.user_data.get("ruta_temp_customer_id")
+    name = context.user_data.get("ruta_temp_name") or ""
+    phone = context.user_data.get("ruta_temp_phone") or ""
+
+    _ruta_guardar_parada_actual(context)
+
+    # Si es cliente nuevo (sin customer_id), preguntar si guardar en agenda
+    if not customer_id and phone:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_cust_si")],
+            [InlineKeyboardButton("No", callback_data="ruta_guardar_cust_no")],
+        ])
+        text = "Deseas guardar a {} ({}) en tu agenda de clientes?".format(name, phone)
+        if hasattr(msg_or_query, "edit_message_text"):
+            msg_or_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            msg_or_query.message.reply_text(text, reply_markup=keyboard)
+        return RUTA_GUARDAR_CLIENTES
+
+    return _ruta_mostrar_mas_paradas(msg_or_query, context)
 
 
 def _ruta_mostrar_mas_paradas(update_or_query, context):
@@ -225,28 +258,76 @@ def _ruta_mostrar_mas_paradas(update_or_query, context):
     return RUTA_MAS_PARADAS
 
 
+def _ruta_incentivo_keyboard():
+    """Botones de incentivo pre-confirmacion para ruta."""
+    return [
+        [
+            InlineKeyboardButton("+1500", callback_data="ruta_inc_1500"),
+            InlineKeyboardButton("+2000", callback_data="ruta_inc_2000"),
+            InlineKeyboardButton("+3000", callback_data="ruta_inc_3000"),
+        ],
+        [InlineKeyboardButton("Otro monto", callback_data="ruta_inc_otro")],
+    ]
+
+
 def _ruta_mostrar_confirmacion(update_or_query, context):
-    """Muestra el resumen de la ruta con precio desglosado."""
+    """Muestra el resumen de la ruta con precio desglosado y orden optimizado."""
     paradas = context.user_data.get("ruta_paradas", [])
-    total_km = context.user_data.get("ruta_distancia_km", 0)
     pickup_address = context.user_data.get("ruta_pickup_address", "No definida")
-    precio_info = calcular_precio_ruta(total_km, len(paradas))
+    pickup_lat = context.user_data.get("ruta_pickup_lat")
+    pickup_lng = context.user_data.get("ruta_pickup_lng")
+
+    # Optimizar orden de paradas (TSP Haversine, sin costo de API)
+    paradas_opt, distancia_opt, fue_optimizado = optimizar_orden_paradas(
+        pickup_lat, pickup_lng, paradas
+    )
+    if fue_optimizado:
+        context.user_data["ruta_paradas"] = paradas_opt
+        paradas = paradas_opt
+
+    # Usar distancia calculada en el flujo (smart/haversine) o la del TSP como fallback
+    total_km = context.user_data.get("ruta_distancia_km") or distancia_opt or 0
+
+    precio_info = calcular_precio_ruta_inteligente(
+        total_km, paradas, pickup_lat=pickup_lat, pickup_lng=pickup_lng
+    )
     distance_fee = precio_info["distance_fee"]
     additional_fee = precio_info["additional_stops_fee"]
     total_fee = precio_info["total_fee"]
     stop_fee = precio_info.get("tarifa_parada_adicional", 0)
+    mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
     context.user_data["ruta_precio"] = precio_info
-    text = "RUTA DE ENTREGA\n\nRecoge en: {}\n\n".format(pickup_address)
+
+    distancia_estimada = context.user_data.get("ruta_distancia_estimada", False)
+
+    text = "RUTA DE ENTREGA\n"
+    if fue_optimizado:
+        text += "(Orden optimizado para menor distancia)\n"
+    if distancia_estimada:
+        text += "(Distancia aproximada — sin datos de carretera exactos)\n"
+    text += "\nRecoge en: {}\n\n".format(pickup_address)
     for i, p in enumerate(paradas, 1):
         text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
             i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion"
         )
-    text += "\nDistancia total: {:.1f} km\n".format(total_km)
+    text += "\nDistancia total: {:.1f} km{}\n".format(
+        total_km, " (aprox)" if distancia_estimada else ""
+    )
     text += "Precio base (distancia): ${:,}\n".format(distance_fee)
     if additional_fee > 0:
         text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(paradas) - 1, stop_fee, additional_fee)
     text += "TOTAL: ${:,}".format(total_fee)
-    keyboard = [
+    if mensaje_ahorro:
+        text += "\n{}".format(mensaje_ahorro)
+    incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    if incentivo > 0:
+        text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    text += (
+        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Confirmas esta ruta?"
+    )
+    keyboard = _ruta_incentivo_keyboard() + [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
     ]
@@ -535,6 +616,9 @@ def ruta_parada_selector_callback(update, context):
         n = len(paradas) + 1
         query.edit_message_text("PARADA {} - CLIENTE NUEVO\n\nEscribe el nombre del cliente:".format(n))
         return RUTA_PARADA_NOMBRE
+    if data == "ruta_buscar_cliente":
+        query.edit_message_text("Escribe el nombre o telefono del cliente:")
+        return RUTA_PARADA_BUSCAR
     if data.startswith("ruta_sel_cust_"):
         try:
             cust_id = int(data.replace("ruta_sel_cust_", ""))
@@ -601,6 +685,10 @@ def ruta_parada_sel_direccion_callback(update, context):
         context.user_data["ruta_temp_barrio"] = addr.get("barrio") or ""
         context.user_data["ruta_temp_lat"] = addr.get("lat")
         context.user_data["ruta_temp_lng"] = addr.get("lng")
+        try:
+            increment_customer_address_usage(addr_id, cust_id)
+        except Exception:
+            pass
         _ruta_guardar_parada_actual(context)
         return _ruta_mostrar_mas_paradas(query, context)
     return RUTA_PARADA_SEL_DIRECCION
@@ -627,6 +715,21 @@ def ruta_parada_telefono_handler(update, context):
         update.message.reply_text("Ingresa un numero de telefono valido (minimo 7 digitos).")
         return RUTA_PARADA_TELEFONO
     context.user_data["ruta_temp_phone"] = digits
+    ally_id = context.user_data.get("ruta_ally_id")
+    # Dedup: verificar si ya existe un cliente con este telefono
+    existing = get_ally_customer_by_phone(ally_id, digits) if ally_id else None
+    if existing:
+        context.user_data["ruta_dedup_found"] = {"id": existing["id"], "name": existing.get("name") or ""}
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, usar este cliente", callback_data="ruta_dedup_si")],
+            [InlineKeyboardButton("No, es otro cliente", callback_data="ruta_dedup_no")],
+        ])
+        update.message.reply_text(
+            "Este numero ya esta en tu agenda: {}\n\n"
+            "Usar este cliente para la parada?".format(existing.get("name") or digits),
+            reply_markup=keyboard,
+        )
+        return RUTA_PARADA_DEDUP
     paradas = context.user_data.get("ruta_paradas", [])
     n = len(paradas) + 1
     nombre = context.user_data.get("ruta_temp_name", "")
@@ -698,8 +801,7 @@ def ruta_parada_geo_callback(update, context):
         context.user_data["ruta_temp_lng"] = lng
         if formatted:
             context.user_data["ruta_temp_address"] = formatted
-            query.edit_message_text("Escribe la ciudad de la entrega:")
-            return RUTA_PARADA_CIUDAD
+            return _ruta_guardar_parada_y_cliente(context, query)
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
@@ -725,8 +827,7 @@ def ruta_parada_direccion_handler(update, context):
         update.message.reply_text("Escribe la direccion de entrega.")
         return RUTA_PARADA_DIRECCION
     context.user_data["ruta_temp_address"] = address
-    update.message.reply_text("Escribe la ciudad de la entrega:")
-    return RUTA_PARADA_CIUDAD
+    return _ruta_guardar_parada_y_cliente(context, update)
 
 
 def ruta_parada_ciudad_handler(update, context):
@@ -785,6 +886,7 @@ def ruta_mas_paradas_callback(update, context):
             dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
             if dist_result and dist_result["total_km"] > 0:
                 context.user_data["ruta_distancia_km"] = dist_result["total_km"]
+                context.user_data["ruta_distancia_estimada"] = dist_result.get("estimada", False)
                 return _ruta_mostrar_confirmacion(query, context)
         query.edit_message_text(
             "DISTANCIA DE LA RUTA\n\n"
@@ -805,6 +907,58 @@ def ruta_distancia_km_handler(update, context):
         update.message.reply_text("Ingresa un numero valido mayor a 0 (ej: 8 o 10.5).")
         return RUTA_DISTANCIA_KM
     context.user_data["ruta_distancia_km"] = round(km, 2)
+    return _ruta_mostrar_confirmacion(update, context)
+
+
+def ruta_inc_fijo_callback(update, context):
+    """Agrega incentivo fijo (+1500/+2000/+3000) antes de confirmar ruta."""
+    query = update.callback_query
+    query.answer()
+    data = query.data  # "ruta_inc_1500" etc
+    parts = data.split("_")
+    try:
+        delta = int(parts[-1])
+    except Exception:
+        return RUTA_CONFIRMACION
+    if delta <= 0:
+        return RUTA_CONFIRMACION
+    current = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    context.user_data["ruta_incentivo"] = current + delta
+    return _ruta_mostrar_confirmacion(query, context)
+
+
+def ruta_inc_otro_start(update, context):
+    """Pide al aliado ingresar un incentivo adicional por texto (antes de confirmar ruta)."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Escribe el incentivo adicional en pesos (solo numeros).\n"
+        "Ejemplo: 2500\n\n"
+        "Escribe 'cancelar' para volver al menu."
+    )
+    return RUTA_INCENTIVO_MONTO
+
+
+def ruta_inc_monto_handler(update, context):
+    """Recibe incentivo adicional por texto antes de confirmar ruta."""
+    text = (update.message.text or "").strip()
+    digits = "".join(filter(str.isdigit, text))
+    if not digits:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return RUTA_INCENTIVO_MONTO
+    try:
+        delta = int(digits)
+    except Exception:
+        update.message.reply_text("Ingresa un monto valido (solo numeros).")
+        return RUTA_INCENTIVO_MONTO
+    if delta <= 0:
+        update.message.reply_text("El monto debe ser mayor a 0.")
+        return RUTA_INCENTIVO_MONTO
+    if delta > 200000:
+        update.message.reply_text("El incentivo es demasiado alto.")
+        return RUTA_INCENTIVO_MONTO
+    current = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    context.user_data["ruta_incentivo"] = current + delta
     return _ruta_mostrar_confirmacion(update, context)
 
 
@@ -841,6 +995,22 @@ def ruta_confirmacion_callback(update, context):
         return RUTA_CONFIRMACION
     link = get_approved_admin_link_for_ally(ally_id)
     admin_id_snapshot = link["admin_id"] if link else None
+    # Validar saldo suficiente para el fee completo de la ruta:
+    # $300 base (mismo que pedido individual) + $200 por cada parada adicional
+    n_paradas = len(paradas)
+    fee_total_aliado = 300 + 200 * (n_paradas - 1)
+    if admin_id_snapshot:
+        saldo_aliado = get_ally_link_balance(ally_id, admin_id_snapshot)
+        if saldo_aliado < fee_total_aliado:
+            query.edit_message_text(
+                "Saldo insuficiente para crear la ruta.\n"
+                "Necesitas: ${:,}\n"
+                "Tu saldo actual: ${:,}\n\n"
+                "Solicita una recarga a tu administrador.".format(fee_total_aliado, saldo_aliado)
+            )
+            context.user_data.clear()
+            show_main_menu(update, context)
+            return ConversationHandler.END
     try:
         route_id = create_route(
             ally_id=ally_id,
@@ -874,74 +1044,132 @@ def ruta_confirmacion_callback(update, context):
             dropoff_lat=parada.get("lat"),
             dropoff_lng=parada.get("lng"),
         )
+    incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
+    if incentivo > 0:
+        add_route_incentive(route_id, incentivo)
     count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
     if count > 0:
         base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
     else:
         base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
     query.edit_message_text(base_msg)
-
-    # Verificar si hay clientes nuevos para ofrecer guardarlos
-    nuevos = [p for p in paradas if not p.get("customer_id")]
-    if nuevos:
-        # Guardar referencia para el callback
-        context.user_data["ruta_nuevos_clientes"] = nuevos
-        context.user_data["ruta_ally_id_guardar"] = ally_id
-        names_list = "\n".join("- {} ({})".format(p["name"], p["phone"]) for p in nuevos if p.get("name"))
-        keyboard = [
-            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_clientes_si")],
-            [InlineKeyboardButton("No", callback_data="ruta_guardar_clientes_no")],
-        ]
-        query.message.reply_text(
-            "Clientes nuevos en esta ruta:\n{}\n\nDeseas guardarlos para futuros pedidos?".format(names_list),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return RUTA_GUARDAR_CLIENTES
-
     context.user_data.clear()
     show_main_menu(update, context)
     return ConversationHandler.END
 
 
-def ruta_guardar_clientes_callback(update, context):
-    """Maneja la decision de guardar o no los clientes nuevos de la ruta."""
+def ruta_guardar_cust_callback(update, context):
+    """Preguntado por parada: guardar o no el cliente nuevo en la agenda."""
     query = update.callback_query
     query.answer()
-    data = query.data
-    ally_id = context.user_data.get("ruta_ally_id_guardar")
-    nuevos = context.user_data.get("ruta_nuevos_clientes", [])
+    ally_id = context.user_data.get("ruta_ally_id")
+    # Los datos del cliente aun estan en ruta_paradas[-1] (ya guardado como parada)
+    paradas = context.user_data.get("ruta_paradas", [])
+    ultima = paradas[-1] if paradas else {}
 
-    if data == "ruta_guardar_clientes_si" and ally_id:
-        saved = 0
-        for p in nuevos:
-            name = p.get("name") or ""
-            phone = p.get("phone") or ""
-            address = p.get("address") or ""
-            if not phone:
-                continue
-            try:
-                existing = get_ally_customer_by_phone(ally_id, phone)
-                if existing:
-                    customer_id = existing["id"]
-                else:
-                    customer_id = create_ally_customer(ally_id, name, phone)
-                if address:
-                    create_customer_address(
-                        customer_id, "Principal", address,
-                        city=p.get("city") or "",
-                        barrio=p.get("barrio") or "",
-                        lat=p.get("lat"), lng=p.get("lng"),
-                    )
-                saved += 1
-            except Exception as e:
-                print("[WARN] Error guardando cliente de ruta: {}".format(e))
-        query.edit_message_text("Se guardaron {} cliente(s) nuevos.".format(saved))
+    if query.data == "ruta_guardar_cust_si" and ally_id:
+        name = ultima.get("name") or ""
+        phone = ultima.get("phone") or ""
+        address = ultima.get("address") or ""
+        lat = ultima.get("lat")
+        lng = ultima.get("lng")
+        try:
+            existing = get_ally_customer_by_phone(ally_id, phone)
+            if existing:
+                customer_id = existing["id"]
+            else:
+                customer_id = create_ally_customer(ally_id, name, phone)
+            if address:
+                create_customer_address(customer_id, "Principal", address,
+                                        city="", barrio="", lat=lat, lng=lng)
+            query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
+        except Exception as e:
+            print("[WARN] Error guardando cliente de ruta: {}".format(e))
+            query.edit_message_text("No se pudo guardar el cliente.")
     else:
-        query.edit_message_text("Clientes no guardados.")
+        query.edit_message_text("OK, no se guardo el cliente.")
 
-    context.user_data.clear()
-    show_main_menu(update, context)
-    return ConversationHandler.END
+    return _ruta_mostrar_mas_paradas(query, context)
+
+
+def ruta_parada_buscar_handler(update, context):
+    """Busca clientes por nombre o telefono en el flujo de nueva ruta."""
+    texto = update.message.text.strip()
+    ally_id = context.user_data.get("ruta_ally_id")
+    if not ally_id or not texto:
+        update.message.reply_text("Escribe un nombre o telefono para buscar.")
+        return RUTA_PARADA_BUSCAR
+    resultados = search_ally_customers(ally_id, texto) if ally_id else []
+    activos = [c for c in resultados if c.get("status") == "ACTIVE"]
+    if not activos:
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text(
+            "No se encontro ningun cliente con '{}'.\n\n"
+            "Escribe el nombre del cliente para la parada {}:".format(texto, n)
+        )
+        return RUTA_PARADA_NOMBRE
+    keyboard = []
+    for c in activos[:10]:
+        nombre = (c.get("name") or "Sin nombre")[:25]
+        phone = c.get("phone") or ""
+        keyboard.append([InlineKeyboardButton(
+            "{} - {}".format(nombre, phone),
+            callback_data="ruta_sel_cust_{}".format(c["id"])
+        )])
+    keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")])
+    update.message.reply_text(
+        "Resultados para '{}':\n\nSelecciona el cliente:".format(texto),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RUTA_PARADA_SELECTOR
+
+
+def ruta_parada_dedup_callback(update, context):
+    """Confirma si usar cliente existente encontrado por telefono en ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_dedup_si":
+        found = context.user_data.pop("ruta_dedup_found", {})
+        cust_id = found.get("id")
+        name = found.get("name") or ""
+        phone = context.user_data.get("ruta_temp_phone", "")
+        context.user_data["ruta_temp_customer_id"] = cust_id
+        context.user_data["ruta_temp_name"] = name
+        # Mostrar direcciones del cliente
+        addrs = list_customer_addresses(cust_id) if cust_id else []
+        activos = [a for a in addrs if a.get("status") == "ACTIVE"]
+        if activos:
+            paradas = context.user_data.get("ruta_paradas", [])
+            n = len(paradas) + 1
+            keyboard = []
+            for a in activos[:8]:
+                label = a.get("label") or a.get("address_text") or "Direccion"
+                keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(a["id"]))])
+            keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
+            query.edit_message_text(
+                "PARADA {} - {}\n\nSelecciona la direccion de entrega:".format(n, name),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return RUTA_PARADA_SEL_DIRECCION
+        # Sin direcciones guardadas — pedir GPS
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text(
+            "PARADA {} - {}\n\nEnvia la ubicacion GPS (PIN de Telegram, link o lat,lng).".format(n, name)
+        )
+        return RUTA_PARADA_UBICACION
+    else:
+        # No es este cliente — continuar como nuevo con el telefono ya guardado
+        context.user_data.pop("ruta_dedup_found", None)
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text(
+            "PARADA {}\n\nEscribe el nombre del cliente:".format(n)
+        )
+        # Limpiar nombre temporal para que lo ingrese de nuevo
+        context.user_data.pop("ruta_temp_name", None)
+        return RUTA_PARADA_NOMBRE
 
 
 # Conversacion "Nueva ruta" (multi-parada)
@@ -980,7 +1208,7 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
         ],
         RUTA_PARADA_SELECTOR: [
-            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+)$"),
+            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+|buscar_cliente)$"),
         ],
         RUTA_PARADA_SEL_DIRECCION: [
             CallbackQueryHandler(ruta_parada_sel_direccion_callback, pattern=r"^ruta_(sel_addr_\d+|addr_nueva)$"),
@@ -1003,14 +1231,6 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_direccion_handler),
         ],
-        RUTA_PARADA_CIUDAD: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_ciudad_handler),
-        ],
-        RUTA_PARADA_BARRIO: [
-            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_barrio_handler),
-        ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
         ],
@@ -1019,10 +1239,23 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
+            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(ruta_inc_otro_start, pattern=r"^ruta_inc_otro$"),
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
         ],
+        RUTA_INCENTIVO_MONTO: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_inc_monto_handler),
+        ],
         RUTA_GUARDAR_CLIENTES: [
-            CallbackQueryHandler(ruta_guardar_clientes_callback, pattern=r"^ruta_guardar_clientes_(si|no)$"),
+            CallbackQueryHandler(ruta_guardar_cust_callback, pattern=r"^ruta_guardar_cust_(si|no)$"),
+        ],
+        RUTA_PARADA_BUSCAR: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_buscar_handler),
+        ],
+        RUTA_PARADA_DEDUP: [
+            CallbackQueryHandler(ruta_parada_dedup_callback, pattern=r"^ruta_dedup_(si|no)$"),
         ],
     },
     fallbacks=[

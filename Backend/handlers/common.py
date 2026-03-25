@@ -310,7 +310,7 @@ def get_ally_menu_keyboard():
         ['Cotizar envio', 'Recargar'],
         ['Mis repartidores', 'Mi saldo aliado'],
         ['Mis clientes', 'Mis solicitudes'],
-        ['Mi enlace de pedidos'],
+        ['Mi enlace de pedidos', 'Mi suscripcion'],
         ['Volver al menu'],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

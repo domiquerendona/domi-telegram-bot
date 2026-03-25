@@ -504,6 +504,22 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS geocoding_text_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text_key TEXT NOT NULL UNIQUE,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            formatted_address TEXT,
+            place_id TEXT,
+            source TEXT,
+            hit_count INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_geocoding_text_cache_key ON geocoding_text_cache(text_key)")
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS status_audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_type TEXT NOT NULL,
@@ -666,6 +682,12 @@ def init_db():
         cur.execute("ALTER TABLE couriers ADD COLUMN cedula_back_file_id TEXT")
     if "selfie_file_id" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN selfie_file_id TEXT")
+
+    # admin_allies: subscription_price (precio mensual configurado por el admin para este aliado)
+    cur.execute("PRAGMA table_info(admin_allies)")
+    admin_allies_cols = [r[1] for r in cur.fetchall()]
+    if "subscription_price" not in admin_allies_cols:
+        cur.execute("ALTER TABLE admin_allies ADD COLUMN subscription_price INTEGER DEFAULT NULL")
 
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
@@ -918,6 +940,25 @@ def init_db():
             FOREIGN KEY (ally_id) REFERENCES allies(id)
         );
     """)
+
+    # Tabla: ally_subscriptions (suscripciones mensuales de aliados)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ally_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ally_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            price INTEGER NOT NULL,
+            platform_share INTEGER NOT NULL,
+            admin_share INTEGER NOT NULL,
+            starts_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            status TEXT DEFAULT 'ACTIVE',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (ally_id) REFERENCES allies(id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_subscriptions_ally ON ally_subscriptions(ally_id, status)")
 
     # Tabla: admin_couriers (relación admin-repartidor)
     cur.execute("""
@@ -1283,6 +1324,15 @@ def init_db():
     except Exception:
         pass
 
+    # Migración: agregar additional_incentive a routes
+    try:
+        cur.execute("PRAGMA table_info(routes)")
+        route_cols = [col[1] for col in cur.fetchall()]
+        if 'additional_incentive' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN additional_incentive INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
     try:
         cur.execute("ALTER TABLE couriers ADD COLUMN available_cash INTEGER DEFAULT 0;")
     except Exception:
@@ -1371,6 +1421,18 @@ def init_db():
         cur.execute("ALTER TABLE ally_form_requests ADD COLUMN order_id INTEGER DEFAULT NULL")
     if 'purchase_amount_declared' not in afr_cols:
         cur.execute("ALTER TABLE ally_form_requests ADD COLUMN purchase_amount_declared INTEGER DEFAULT NULL")
+
+    # Migración: agregar use_count a ally_customer_addresses (orden por uso)
+    cur.execute("PRAGMA table_info(ally_customer_addresses)")
+    aca_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in aca_cols:
+        cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
+
+    # Migración: agregar use_count a admin_customer_addresses (orden por uso)
+    cur.execute("PRAGMA table_info(admin_customer_addresses)")
+    adca_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in adca_cols:
+        cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
 
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
@@ -1635,6 +1697,7 @@ def init_db():
             total_distance_km REAL DEFAULT 0,
             distance_fee INTEGER DEFAULT 0,
             additional_stops_fee INTEGER DEFAULT 0,
+            additional_incentive INTEGER DEFAULT 0,
             total_fee INTEGER DEFAULT 0,
             instructions TEXT,
             canceled_by TEXT,
@@ -1700,6 +1763,12 @@ def init_db():
     if "admin_id" not in _wu_cols:
         cur.execute("ALTER TABLE web_users ADD COLUMN admin_id INTEGER")
 
+    # Migración: agregar vehicle_type a couriers (MOTO por defecto para registros previos)
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN vehicle_type TEXT DEFAULT 'MOTO';")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -1763,11 +1832,15 @@ def _init_db_postgres():
         ("registration_reset_by_admin_id", "BIGINT"),
         ("registration_reset_note", "TEXT"),
         ("registration_reset_consumed_at", "TIMESTAMP"),
+        ("vehicle_type", "TEXT DEFAULT 'MOTO'"),
     ]:
         _pg_add_col("couriers", col, ctype)
 
     # allies
     for col, ctype in [
+        ("public_token", "TEXT"),
+        ("delivery_subsidy", "INTEGER DEFAULT 0"),
+        ("min_purchase_for_subsidy", "INTEGER DEFAULT NULL"),
         ("registration_reset_enabled_at", "TIMESTAMP"),
         ("registration_reset_by_admin_id", "BIGINT"),
         ("registration_reset_note", "TEXT"),
@@ -1833,11 +1906,22 @@ def _init_db_postgres():
         ("dropoff_lng", "REAL"),
         ("quote_source", "TEXT"),
         ("buy_surcharge", "INTEGER DEFAULT 0"),
+        ("ally_admin_id_snapshot", "BIGINT"),
+        ("courier_admin_id_snapshot", "BIGINT"),
         ("courier_arrived_at", "TIMESTAMP"),
         ("courier_accepted_lat", "REAL"),
         ("courier_accepted_lng", "REAL"),
         ("canceled_by", "TEXT"),
         ("creator_admin_id", "BIGINT"),
+        ("purchase_amount", "INTEGER DEFAULT NULL"),
+        ("delivery_subsidy_applied", "INTEGER DEFAULT 0"),
+        ("customer_delivery_fee", "INTEGER DEFAULT NULL"),
+        ("payment_method", "TEXT DEFAULT 'UNCONFIRMED'"),
+        ("payment_confirmed_at", "TIMESTAMP DEFAULT NULL"),
+        ("payment_confirmed_by", "BIGINT DEFAULT NULL"),
+        ("payment_changed_at", "TIMESTAMP DEFAULT NULL"),
+        ("payment_changed_by", "BIGINT DEFAULT NULL"),
+        ("payment_prev_method", "TEXT DEFAULT NULL"),
     ]:
         _pg_add_col("orders", col, ctype)
 
@@ -1865,6 +1949,10 @@ def _init_db_postgres():
 
     # admin_locations: agregar status para soft delete
     _pg_add_col("admin_locations", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
+
+    # ally_customer_addresses / admin_customer_addresses: use_count para orden por uso
+    _pg_add_col("ally_customer_addresses", "use_count", "INTEGER DEFAULT 0")
+    _pg_add_col("admin_customer_addresses", "use_count", "INTEGER DEFAULT 0")
 
     # web_users: tabla de usuarios del panel web (multiusuario real)
     cur.execute("""
@@ -2978,7 +3066,8 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                                       requires_cash: bool = False,
                                       cash_required_amount: int = 0,
                                       pickup_lat: float = None,
-                                      pickup_lng: float = None):
+                                      pickup_lng: float = None,
+                                      order_distance_km: float = None):
     """
     Devuelve couriers elegibles para un pedido en la red cooperativa.
     Busca TODOS los couriers activos sin restriccion de equipo/admin.
@@ -2991,6 +3080,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
     - live_location_active = 1 (courier compartiendo GPS en vivo)
     - No vetados por el aliado (si ally_id dado)
     - Con base suficiente (si requires_cash)
+    - Bicicletas excluidas si order_distance_km > 3.0
 
     Ordenamiento inteligente:
     1. Por distancia al pickup si hay coordenadas (max 7 km)
@@ -3004,7 +3094,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
     query = f"""
         SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash,
                c.availability_status, c.live_lat, c.live_lng, c.live_location_active,
-               c.residence_lat, c.residence_lng
+               c.residence_lat, c.residence_lng, c.vehicle_type
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
@@ -3047,6 +3137,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                 "live_lng": row.get("live_lng"),
                 "residence_lat": row.get("residence_lat"),
                 "residence_lng": row.get("residence_lng"),
+                "vehicle_type": row.get("vehicle_type") or "MOTO",
             }
         else:
             item = {
@@ -3060,8 +3151,13 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                 "live_location_active": row[7] if len(row) > 7 else 0,
                 "residence_lat": row[8] if len(row) > 8 else None,
                 "residence_lng": row[9] if len(row) > 9 else None,
+                "vehicle_type": row[10] if len(row) > 10 else "MOTO",
             }
         result.append(item)
+
+    # Excluir bicicletas si la distancia del pedido supera 3 km
+    if order_distance_km is not None and order_distance_km > 3.0:
+        result = [c for c in result if (c.get("vehicle_type") or "MOTO") != "BICICLETA"]
 
     # Ordenamiento inteligente si tenemos coordenadas de pickup
     if pickup_lat is not None and pickup_lng is not None:
@@ -3310,6 +3406,7 @@ def ensure_pricing_defaults():
     Solo inserta si no existen (idempotente).
     """
     defaults = {
+        # Tarifas de distancia (pago al courier)
         "pricing_precio_0_2km": "5000",
         "pricing_precio_2_3km": "6000",
         "pricing_tier1_max_km": "1.5",
@@ -3318,7 +3415,19 @@ def ensure_pricing_defaults():
         "pricing_km_extra_normal": "1200",
         "pricing_umbral_km_largo": "10.0",
         "pricing_km_extra_largo": "1000",
-        "pricing_tarifa_parada_adicional": "200",
+        "pricing_tarifa_parada_adicional": "4000",
+        # Fees de servicio (cobro al saldo del miembro por entrega)
+        # Invariante: fee_admin_share + fee_platform_share == fee_service_total
+        "fee_service_total": "300",
+        "fee_admin_share": "200",
+        "fee_platform_share": "100",
+        # Comision adicional al aliado: % sobre tarifa de domicilio, va 100% a plataforma
+        # 0 = desactivado (default). Activar subiendo a 3 (= 3%) cuando el modelo lo requiera.
+        "fee_ally_commission_pct": "2",
+        # Suscripciones mensuales de aliados
+        # Piso minimo que la plataforma recibe por cada suscripcion, independiente del precio total.
+        # El admin retiene: precio_total - subscription_platform_share
+        "subscription_platform_share": "20000",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
@@ -3329,9 +3438,10 @@ def ensure_pricing_defaults():
         base_distance = get_setting("pricing_base_distance_km")
         if base_distance in (None, "", "3", "3.0", "2", "2.0", "2.5"):
             set_setting("pricing_base_distance_km", tier2_value)
+    # Migración: corregir DBs existentes que tenían 200 (fee de servicio, no pago al courier)
     stop_fee = get_setting("pricing_tarifa_parada_adicional")
-    if stop_fee in (None, "", "4000"):
-        set_setting("pricing_tarifa_parada_adicional", "200")
+    if stop_fee in (None, "", "200"):
+        set_setting("pricing_tarifa_parada_adicional", "4000")
 
 
 # ---------- WEB USERS (PANEL WEB MULTIUSUARIO) ----------
@@ -4426,6 +4536,7 @@ def reset_courier_registration_in_place(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     _require_inactive_active_registration_reset(
         "couriers",
@@ -4473,6 +4584,7 @@ def reset_courier_registration_in_place(
                 cedula_front_file_id = {P},
                 cedula_back_file_id = {P},
                 selfie_file_id = {P},
+                vehicle_type = {P},
                 status = 'PENDING',
                 rejection_type = 0,
                 rejection_reason = NULL,
@@ -4498,6 +4610,7 @@ def reset_courier_registration_in_place(
             cedula_front_file_id,
             cedula_back_file_id,
             selfie_file_id,
+            vehicle_type,
             consumed_at,
             courier_id,
         ))
@@ -5306,6 +5419,23 @@ def add_order_incentive(order_id: int, delta: int):
     conn.close()
 
 
+def add_route_incentive(route_id: int, delta: int):
+    """Incrementa additional_incentive y total_fee de una ruta por delta."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE routes
+        SET additional_incentive = COALESCE(additional_incentive, 0) + {P},
+            total_fee = COALESCE(total_fee, 0) + {P}
+        WHERE id = {P};
+        """,
+        (delta, delta, route_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def update_order_payment(order_id, payment_method, cash_required_amount,
                          changed_by, conn=None):
     """Actualiza el medio de pago de un pedido existente."""
@@ -5379,6 +5509,42 @@ def get_orders_by_ally(ally_id: int, limit: int = 50):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_ally_orders_between(ally_id: int, start_s: str, end_s: str):
+    """Pedidos de un aliado (DELIVERED o CANCELLED) creados entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM orders
+        WHERE ally_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (ally_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_ally_routes_between(ally_id: int, start_s: str, end_s: str):
+    """Rutas de un aliado (DELIVERED o CANCELLED) creadas entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM routes
+        WHERE ally_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (ally_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_orders_by_courier(courier_id: int, limit: int = 50):
@@ -5999,6 +6165,7 @@ def create_courier(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     """Crea un repartidor en estado PENDING y devuelve su id."""
 
@@ -6028,8 +6195,9 @@ def create_courier(
                 residence_lng,
                 cedula_front_file_id,
                 cedula_back_file_id,
-                selfie_file_id
-            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P}, {P}, {P}, {P});
+                selfie_file_id,
+                vehicle_type
+            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P}, {P}, {P}, {P}, {P});
         """, (
             user_id,
             person_id,
@@ -6047,6 +6215,7 @@ def create_courier(
             cedula_front_file_id,
             cedula_back_file_id,
             selfie_file_id,
+            vehicle_type,
         ))
         conn.commit()
 
@@ -7084,18 +7253,32 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
             WHERE customer_id = {P}
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     else:
         cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
             WHERE customer_id = {P} AND status = 'ACTIVE'
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def increment_customer_address_usage(address_id: int, customer_id: int):
+    """Incrementa use_count en ally_customer_addresses al seleccionar una direccion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE ally_customer_addresses
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    conn.commit()
+    conn.close()
 
 
 def find_matching_customer_address(customer_id: int, address_text: str, city: str = None, barrio: str = None):
@@ -7414,18 +7597,32 @@ def list_admin_customer_addresses(customer_id: int, include_inactive: bool = Fal
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM admin_customer_addresses
             WHERE customer_id = {P}
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     else:
         cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM admin_customer_addresses
             WHERE customer_id = {P} AND status = 'ACTIVE'
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def increment_admin_customer_address_usage(address_id: int, customer_id: int):
+    """Incrementa use_count en admin_customer_addresses al seleccionar una direccion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
@@ -7594,6 +7791,72 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
           provider = COALESCE(excluded.provider, map_distance_cache.provider),
           updated_at = {now_sql}
     """, (origin_key, destination_key, mode, distance_km, provider))
+    conn.commit()
+    conn.close()
+
+
+# ---------- GEOCODING TEXT CACHE ----------
+
+def get_geocoding_text_cache(text_key: str):
+    """
+    Busca coordenadas cacheadas para un texto normalizado de dirección.
+    Retorna dict con lat/lng/formatted_address/place_id/source o None si no hay hit.
+    También incrementa hit_count para poder auditar qué entradas se usan más.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT lat, lng, formatted_address, place_id, source
+        FROM geocoding_text_cache
+        WHERE text_key = {P}
+        LIMIT 1
+    """, (text_key,))
+    row = cur.fetchone()
+    if row:
+        now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+        try:
+            cur.execute(f"""
+                UPDATE geocoding_text_cache
+                SET hit_count = hit_count + 1, updated_at = {now_sql}
+                WHERE text_key = {P}
+            """, (text_key,))
+            conn.commit()
+        except Exception:
+            pass
+    conn.close()
+    if not row:
+        return None
+    return {
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "formatted_address": row["formatted_address"],
+        "place_id": row["place_id"],
+        "source": row["source"],
+    }
+
+
+def upsert_geocoding_text_cache(text_key: str, lat: float, lng: float,
+                                formatted_address: str = None, place_id: str = None,
+                                source: str = None):
+    """
+    Inserta o actualiza la entrada de caché para un texto de dirección.
+    Idempotente: si ya existe, actualiza lat/lng y metadata.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        INSERT INTO geocoding_text_cache
+            (text_key, lat, lng, formatted_address, place_id, source, hit_count, created_at, updated_at)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 1, {now_sql}, {now_sql})
+        ON CONFLICT(text_key) DO UPDATE SET
+            lat = excluded.lat,
+            lng = excluded.lng,
+            formatted_address = COALESCE(excluded.formatted_address, geocoding_text_cache.formatted_address),
+            place_id = COALESCE(excluded.place_id, geocoding_text_cache.place_id),
+            source = COALESCE(excluded.source, geocoding_text_cache.source),
+            updated_at = {now_sql}
+    """, (text_key, lat, lng, formatted_address, place_id, source))
     conn.commit()
     conn.close()
 
@@ -8428,32 +8691,58 @@ def get_courier_daily_earnings_history(courier_id: int, days: int = 7):
 
 
 def _get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
+    platform_fee = int(get_setting("fee_service_total", "300") or 300)
+
     conn = get_connection()
     cur = conn.cursor()
+
+    # Pedidos individuales entregados
     cur.execute(f"""
         SELECT
-            s.order_id,
-            COALESCE(s.delivered_at, o.delivered_at, o.created_at) AS delivered_at,
-            o.customer_name,
-            COALESCE(s.order_total_fee, o.total_fee, 0) AS gross_amount,
-            COALESCE(s.courier_fee_charged, 0) AS platform_fee
-        FROM order_accounting_settlements s
-        JOIN orders o ON o.id = s.order_id
-        WHERE s.courier_id = {P}
-          AND COALESCE(s.delivered_at, o.delivered_at, o.created_at) >= {P}
-          AND COALESCE(s.delivered_at, o.delivered_at, o.created_at) < {P}
-        ORDER BY COALESCE(s.delivered_at, o.delivered_at, o.created_at) DESC
+            id AS order_id,
+            delivered_at,
+            customer_name,
+            COALESCE(total_fee, 0) AS gross_amount,
+            'order' AS kind
+        FROM orders
+        WHERE courier_id = {P}
+          AND status = 'DELIVERED'
+          AND delivered_at IS NOT NULL
+          AND delivered_at >= {P}
+          AND delivered_at < {P}
     """, (courier_id, start_s, end_s))
-    rows = cur.fetchall()
+    order_rows = cur.fetchall()
+
+    # Rutas entregadas
+    cur.execute(f"""
+        SELECT
+            id AS order_id,
+            delivered_at,
+            NULL AS customer_name,
+            COALESCE(total_fee, 0) AS gross_amount,
+            'route' AS kind
+        FROM routes
+        WHERE courier_id = {P}
+          AND status = 'DELIVERED'
+          AND delivered_at IS NOT NULL
+          AND delivered_at >= {P}
+          AND delivered_at < {P}
+    """, (courier_id, start_s, end_s))
+    route_rows = cur.fetchall()
+
     conn.close()
 
     result = []
-    for row in rows:
+    for row in list(order_rows) + list(route_rows):
+        kind = _row_value(row, "kind", 4, "order") or "order"
         order_id = int(_row_value(row, "order_id", 0, 0) or 0)
         delivered_at = _row_value(row, "delivered_at", 1, "") or ""
-        customer_name = _row_value(row, "customer_name", 2, "N/A") or "N/A"
+        raw_name = _row_value(row, "customer_name", 2, None)
+        if kind == "route":
+            customer_name = "Ruta #{}".format(order_id)
+        else:
+            customer_name = raw_name or "N/A"
         gross_amount = int(_row_value(row, "gross_amount", 3, 0) or 0)
-        platform_fee = int(_row_value(row, "platform_fee", 4, 0) or 0)
         net_amount = gross_amount - platform_fee
         date_key = str(delivered_at)[:10] if delivered_at else "-"
         hour_key = str(delivered_at)[11:16] if delivered_at else "--:--"
@@ -8468,6 +8757,8 @@ def _get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
             "platform_fee": platform_fee,
             "net_amount": net_amount,
         })
+
+    result.sort(key=lambda r: r["delivered_at"] or "", reverse=True)
     return result
 
 
@@ -8482,6 +8773,11 @@ def get_courier_earnings_by_date(courier_id: int, date_key: str):
 
     start_s = dt.strftime("%Y-%m-%d 00:00:00")
     end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    return _get_courier_earnings_between(courier_id, start_s, end_s)
+
+
+def get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
+    """Ganancias del repartidor en un rango de timestamps arbitrario."""
     return _get_courier_earnings_between(courier_id, start_s, end_s)
 
 
@@ -9116,8 +9412,8 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
         raise ValueError("La recogida de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
-    return _insert_returning_id(
-        cur, conn,
+    route_id = _insert_returning_id(
+        cur,
         f"""
         INSERT INTO routes (
             ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
@@ -9129,6 +9425,9 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
          total_distance_km, distance_fee, additional_stops_fee, total_fee,
          instructions, ally_admin_id_snapshot),
     )
+    conn.commit()
+    conn.close()
+    return route_id
 
 
 def create_route_destination(route_id, sequence, customer_name, customer_phone,
@@ -9139,8 +9438,8 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
         raise ValueError("La parada de la ruta requiere ubicacion confirmada.")
     conn = get_connection()
     cur = conn.cursor()
-    return _insert_returning_id(
-        cur, conn,
+    dest_id = _insert_returning_id(
+        cur,
         f"""
         INSERT INTO route_destinations (
             route_id, sequence, customer_name, customer_phone,
@@ -9152,6 +9451,9 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
          customer_address, customer_city, customer_barrio,
          dropoff_lat, dropoff_lng),
     )
+    conn.commit()
+    conn.close()
+    return dest_id
 
 
 def get_route_by_id(route_id):
@@ -9162,6 +9464,19 @@ def get_route_by_id(route_id):
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_active_routes_by_ally(ally_id):
+    """Retorna rutas activas (PUBLISHED o ACCEPTED) del aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM routes WHERE ally_id = {P} AND status IN ('PUBLISHED', 'ACCEPTED') ORDER BY created_at DESC",
+        (ally_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_route_destinations(route_id):
@@ -9175,6 +9490,22 @@ def get_route_destinations(route_id):
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def reorder_route_destinations(route_id, ordered_ids):
+    """Reasigna sequence 1..N a las paradas segun la lista ordered_ids.
+
+    ordered_ids: lista de destination.id en el nuevo orden deseado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    for new_seq, dest_id in enumerate(ordered_ids, 1):
+        cur.execute(
+            f"UPDATE route_destinations SET sequence = {P} WHERE id = {P} AND route_id = {P}",
+            (new_seq, dest_id, route_id),
+        )
+    conn.commit()
+    conn.close()
 
 
 def get_pending_route_stops(route_id):
@@ -9725,3 +10056,125 @@ def count_ally_form_requests_by_status(ally_id: int) -> dict:
     rows = cur.fetchall()
     conn.close()
     return {_row_value(r, 'status'): int(_row_value(r, 'cnt')) for r in rows}
+
+# ============================================================
+# SUSCRIPCIONES MENSUALES DE ALIADOS
+# ============================================================
+
+def set_ally_subscription_price(admin_id: int, ally_id: int, price: int):
+    """Configura el precio mensual de suscripcion para un aliado gestionado por este admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE admin_allies SET subscription_price = {P}, updated_at = {now_sql}"
+        f" WHERE admin_id = {P} AND ally_id = {P}",
+        (price, admin_id, ally_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ally_subscription_price(admin_id: int, ally_id: int):
+    """Retorna el precio de suscripcion configurado para este aliado, o None si no tiene."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT subscription_price FROM admin_allies WHERE admin_id = {P} AND ally_id = {P}",
+        (admin_id, ally_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_value(row, "subscription_price")
+
+
+def create_ally_subscription(ally_id: int, admin_id: int, price: int,
+                              platform_share: int, admin_share: int):
+    """
+    Crea un nuevo ciclo de suscripcion de 30 dias para el aliado.
+    Retorna el id generado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        starts_sql = "NOW()"
+        expires_sql = "NOW() + INTERVAL '30 days'"
+        cur.execute(
+            f"INSERT INTO ally_subscriptions"
+            f" (ally_id, admin_id, price, platform_share, admin_share, starts_at, expires_at, status)"
+            f" VALUES ({P}, {P}, {P}, {P}, {P}, {starts_sql}, {expires_sql}, 'ACTIVE')"
+            f" RETURNING id",
+            (ally_id, admin_id, price, platform_share, admin_share),
+        )
+        row = cur.fetchone()
+        new_id = _row_value(row, "id")
+    else:
+        cur.execute(
+            f"INSERT INTO ally_subscriptions"
+            f" (ally_id, admin_id, price, platform_share, admin_share,"
+            f"  starts_at, expires_at, status)"
+            f" VALUES ({P}, {P}, {P}, {P}, {P},"
+            f"  datetime('now'), datetime('now', '+30 days'), 'ACTIVE')",
+            (ally_id, admin_id, price, platform_share, admin_share),
+        )
+        new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def get_active_ally_subscription(ally_id: int):
+    """
+    Retorna la suscripcion ACTIVE del aliado si existe y no ha expirado, o None.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"SELECT * FROM ally_subscriptions"
+        f" WHERE ally_id = {P} AND status = 'ACTIVE' AND expires_at > {now_sql}"
+        f" ORDER BY expires_at DESC LIMIT 1",
+        (ally_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def expire_old_ally_subscriptions():
+    """
+    Marca como EXPIRED las suscripciones ACTIVE cuya expires_at ya paso.
+    Llamar al arranque del bot (en main()).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE ally_subscriptions SET status = 'EXPIRED'"
+        f" WHERE status = 'ACTIVE' AND expires_at <= {now_sql}",
+    )
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    if changed:
+        print(f"[SUBS] {changed} suscripcion(es) marcadas como EXPIRED.")
+    return changed
+
+
+def get_ally_subscription_info(ally_id: int):
+    """
+    Retorna la suscripcion mas reciente del aliado (activa o no), o None.
+    Util para mostrar estado en el bot.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM ally_subscriptions WHERE ally_id = {P}"
+        f" ORDER BY created_at DESC LIMIT 1",
+        (ally_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
