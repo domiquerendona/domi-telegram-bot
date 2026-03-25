@@ -1371,7 +1371,7 @@ ally_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -1433,7 +1433,7 @@ courier_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
 )
@@ -1871,6 +1871,6 @@ admin_conv = ConversationHandler(
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
-        MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
 )
