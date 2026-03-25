@@ -1422,6 +1422,18 @@ def init_db():
     if 'purchase_amount_declared' not in afr_cols:
         cur.execute("ALTER TABLE ally_form_requests ADD COLUMN purchase_amount_declared INTEGER DEFAULT NULL")
 
+    # Migración: agregar use_count a ally_customer_addresses (orden por uso)
+    cur.execute("PRAGMA table_info(ally_customer_addresses)")
+    aca_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in aca_cols:
+        cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
+
+    # Migración: agregar use_count a admin_customer_addresses (orden por uso)
+    cur.execute("PRAGMA table_info(admin_customer_addresses)")
+    adca_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in adca_cols:
+        cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
+
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
     # ============================================================
@@ -1751,6 +1763,12 @@ def init_db():
     if "admin_id" not in _wu_cols:
         cur.execute("ALTER TABLE web_users ADD COLUMN admin_id INTEGER")
 
+    # Migración: agregar vehicle_type a couriers (MOTO por defecto para registros previos)
+    try:
+        cur.execute("ALTER TABLE couriers ADD COLUMN vehicle_type TEXT DEFAULT 'MOTO';")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -1814,6 +1832,7 @@ def _init_db_postgres():
         ("registration_reset_by_admin_id", "BIGINT"),
         ("registration_reset_note", "TEXT"),
         ("registration_reset_consumed_at", "TIMESTAMP"),
+        ("vehicle_type", "TEXT DEFAULT 'MOTO'"),
     ]:
         _pg_add_col("couriers", col, ctype)
 
@@ -1930,6 +1949,10 @@ def _init_db_postgres():
 
     # admin_locations: agregar status para soft delete
     _pg_add_col("admin_locations", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
+
+    # ally_customer_addresses / admin_customer_addresses: use_count para orden por uso
+    _pg_add_col("ally_customer_addresses", "use_count", "INTEGER DEFAULT 0")
+    _pg_add_col("admin_customer_addresses", "use_count", "INTEGER DEFAULT 0")
 
     # web_users: tabla de usuarios del panel web (multiusuario real)
     cur.execute("""
@@ -3043,7 +3066,8 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                                       requires_cash: bool = False,
                                       cash_required_amount: int = 0,
                                       pickup_lat: float = None,
-                                      pickup_lng: float = None):
+                                      pickup_lng: float = None,
+                                      order_distance_km: float = None):
     """
     Devuelve couriers elegibles para un pedido en la red cooperativa.
     Busca TODOS los couriers activos sin restriccion de equipo/admin.
@@ -3056,6 +3080,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
     - live_location_active = 1 (courier compartiendo GPS en vivo)
     - No vetados por el aliado (si ally_id dado)
     - Con base suficiente (si requires_cash)
+    - Bicicletas excluidas si order_distance_km > 3.0
 
     Ordenamiento inteligente:
     1. Por distancia al pickup si hay coordenadas (max 7 km)
@@ -3069,7 +3094,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
     query = f"""
         SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.available_cash,
                c.availability_status, c.live_lat, c.live_lng, c.live_location_active,
-               c.residence_lat, c.residence_lng
+               c.residence_lat, c.residence_lng, c.vehicle_type
         FROM admin_couriers ac
         JOIN couriers c ON c.id = ac.courier_id
         JOIN users u ON u.id = c.user_id
@@ -3112,6 +3137,7 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                 "live_lng": row.get("live_lng"),
                 "residence_lat": row.get("residence_lat"),
                 "residence_lng": row.get("residence_lng"),
+                "vehicle_type": row.get("vehicle_type") or "MOTO",
             }
         else:
             item = {
@@ -3125,8 +3151,13 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
                 "live_location_active": row[7] if len(row) > 7 else 0,
                 "residence_lat": row[8] if len(row) > 8 else None,
                 "residence_lng": row[9] if len(row) > 9 else None,
+                "vehicle_type": row[10] if len(row) > 10 else "MOTO",
             }
         result.append(item)
+
+    # Excluir bicicletas si la distancia del pedido supera 3 km
+    if order_distance_km is not None and order_distance_km > 3.0:
+        result = [c for c in result if (c.get("vehicle_type") or "MOTO") != "BICICLETA"]
 
     # Ordenamiento inteligente si tenemos coordenadas de pickup
     if pickup_lat is not None and pickup_lng is not None:
@@ -4505,6 +4536,7 @@ def reset_courier_registration_in_place(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     _require_inactive_active_registration_reset(
         "couriers",
@@ -4552,6 +4584,7 @@ def reset_courier_registration_in_place(
                 cedula_front_file_id = {P},
                 cedula_back_file_id = {P},
                 selfie_file_id = {P},
+                vehicle_type = {P},
                 status = 'PENDING',
                 rejection_type = 0,
                 rejection_reason = NULL,
@@ -4577,6 +4610,7 @@ def reset_courier_registration_in_place(
             cedula_front_file_id,
             cedula_back_file_id,
             selfie_file_id,
+            vehicle_type,
             consumed_at,
             courier_id,
         ))
@@ -6131,6 +6165,7 @@ def create_courier(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     """Crea un repartidor en estado PENDING y devuelve su id."""
 
@@ -6160,8 +6195,9 @@ def create_courier(
                 residence_lng,
                 cedula_front_file_id,
                 cedula_back_file_id,
-                selfie_file_id
-            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P}, {P}, {P}, {P});
+                selfie_file_id,
+                vehicle_type
+            ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', 0, {P}, {P}, {P}, {P}, {P}, {P}, {P});
         """, (
             user_id,
             person_id,
@@ -6179,6 +6215,7 @@ def create_courier(
             cedula_front_file_id,
             cedula_back_file_id,
             selfie_file_id,
+            vehicle_type,
         ))
         conn.commit()
 
@@ -7216,18 +7253,32 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
             WHERE customer_id = {P}
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     else:
         cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM ally_customer_addresses
             WHERE customer_id = {P} AND status = 'ACTIVE'
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def increment_customer_address_usage(address_id: int, customer_id: int):
+    """Incrementa use_count en ally_customer_addresses al seleccionar una direccion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE ally_customer_addresses
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    conn.commit()
+    conn.close()
 
 
 def find_matching_customer_address(customer_id: int, address_text: str, city: str = None, barrio: str = None):
@@ -7546,18 +7597,32 @@ def list_admin_customer_addresses(customer_id: int, include_inactive: bool = Fal
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM admin_customer_addresses
             WHERE customer_id = {P}
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     else:
         cur.execute(f"""
             SELECT id, customer_id, label, address_text, city, barrio, notes, lat, lng, status, created_at, updated_at
             FROM admin_customer_addresses
             WHERE customer_id = {P} AND status = 'ACTIVE'
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(use_count, 0) DESC, created_at DESC
         """, (customer_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def increment_admin_customer_address_usage(address_id: int, customer_id: int):
+    """Incrementa use_count en admin_customer_addresses al seleccionar una direccion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customer_addresses
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND customer_id = {P} AND status = 'ACTIVE'
+    """, (address_id, customer_id))
+    conn.commit()
+    conn.close()
 
 
 # ============================================================

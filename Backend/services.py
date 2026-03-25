@@ -168,6 +168,7 @@ from db import (
     restore_customer_address,
     get_customer_address_by_id,
     list_customer_addresses,
+    increment_customer_address_usage,
     find_matching_customer_address,
     update_customer_address_coords,
     get_last_order_by_ally,
@@ -245,6 +246,7 @@ from db import (
     restore_admin_customer_address,
     get_admin_customer_address_by_id,
     list_admin_customer_addresses,
+    increment_admin_customer_address_usage,
     # Re-exports offer queue
     clear_offer_queue,
     # Re-exports order_support_requests
@@ -2987,6 +2989,7 @@ def reset_courier_registration_in_place_service(
     cedula_front_file_id=None,
     cedula_back_file_id=None,
     selfie_file_id=None,
+    vehicle_type="MOTO",
 ):
     return reset_courier_registration_in_place(
         courier_id,
@@ -3004,6 +3007,7 @@ def reset_courier_registration_in_place_service(
         cedula_front_file_id,
         cedula_back_file_id,
         selfie_file_id,
+        vehicle_type,
     )
 
 

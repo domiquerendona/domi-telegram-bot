@@ -35,6 +35,8 @@
     COURIER_TEAM,
 ) = range(100, 114)
 
+COURIER_VEHICLE_TYPE = 114  # Selección de vehículo: Moto o Bicicleta
+
 
 # =========================
 # Estados para registro de administrador local (flujo unificado)
@@ -63,7 +65,7 @@ FLOW_STATE_ORDER = {
     "courier": [
         COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE,
         COURIER_CITY, COURIER_BARRIO, COURIER_RESIDENCE_ADDRESS,
-        COURIER_RESIDENCE_LOCATION, COURIER_PLATE, COURIER_BIKETYPE,
+        COURIER_RESIDENCE_LOCATION, COURIER_VEHICLE_TYPE, COURIER_PLATE, COURIER_BIKETYPE,
         COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK, COURIER_SELFIE,
         COURIER_CONFIRM,
     ],
@@ -96,6 +98,7 @@ FLOW_STATE_KEYS = {
         COURIER_BARRIO: ["barrio"],
         COURIER_RESIDENCE_ADDRESS: ["residence_address"],
         COURIER_RESIDENCE_LOCATION: ["residence_lat", "residence_lng"],
+        COURIER_VEHICLE_TYPE: ["vehicle_type"],
         COURIER_PLATE: ["plate"],
         COURIER_BIKETYPE: ["bike_type"],
         COURIER_CEDULA_FRONT: ["cedula_front_file_id"],
@@ -181,6 +184,8 @@ RUTA_PICKUP_NUEVA_CIUDAD = 48
 RUTA_PICKUP_NUEVA_BARRIO = 49
 RUTA_PARADA_CIUDAD = 50
 RUTA_PARADA_BARRIO = 51
+RUTA_PARADA_BUSCAR = 52   # Buscar cliente por nombre/telefono en parada de ruta
+RUTA_PARADA_DEDUP  = 53   # Confirmar cliente existente encontrado por telefono en ruta
 
 
 # =========================
@@ -356,3 +361,12 @@ ADMIN_PEDIDO_SAVE_PICKUP   = 919   # Preguntar si guardar nueva direccion de rec
 CONFIG_SUBS_PRECIO  = 994   # Admin ingresa precio de suscripcion para su aliado
 ALLY_SUBS_CONFIRMAR = 995   # Aliado confirma renovacion de suscripcion
 RUTA_INCENTIVO_MONTO = 996   # Capturar incentivo adicional libre en ruta (antes de confirmar)
+
+# =========================
+# Estados para mejoras de agenda de clientes (2026-03-25)
+# =========================
+PEDIDO_DEDUP_CONFIRM         = 997   # Confirmar uso de cliente existente hallado por telefono en nuevo_pedido
+PEDIDO_GUARDAR_DIR_EXISTENTE = 998   # Ofrecer agregar nueva direccion a cliente ya existente
+ADMIN_PEDIDO_SEL_CUST_BUSCAR = 999   # Buscar cliente en agenda durante admin_pedido_conv
+ADMIN_PEDIDO_CUST_DEDUP      = 1000  # Confirmar cliente existente hallado por telefono en admin_pedido
+ADMIN_PEDIDO_GUARDAR_CUST    = 1001  # Ofrecer guardar cliente nuevo tras crear pedido admin

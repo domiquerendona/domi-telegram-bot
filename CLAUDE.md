@@ -271,7 +271,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
-| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`. |
+| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0` (contador de usos — ordena direcciones más usadas primero). |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
@@ -1567,7 +1567,7 @@ Entry: callback `admin_mis_clientes` (botón en menú admin)
 
 **Prefijo callbacks**: `acust_`
 **Prefijo user_data**: `acust_`
-**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`
+**Funciones DB**: `create_admin_customer`, `list_admin_customers`, `search_admin_customers`, `update_admin_customer`, `archive_admin_customer`, `restore_admin_customer`, `get_admin_customer_by_id`, `create_admin_customer_address`, `list_admin_customer_addresses`, `update_admin_customer_address`, `archive_admin_customer_address`, `get_admin_customer_address_by_id`, `increment_admin_customer_address_usage` (incrementa `use_count` al usar una dirección; `list_admin_customer_addresses` ordena por `use_count DESC, created_at DESC`)
 
 ### Flujo `admin_dirs_conv`
 
@@ -1593,14 +1593,58 @@ Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar d
 
 | Estado | Constante | Descripción |
 |--------|-----------|-------------|
-| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar |
+| `ADMIN_PEDIDO_SEL_CUST` | 917 | Lista de clientes para seleccionar (incluye búsqueda) |
 | `ADMIN_PEDIDO_SEL_CUST_ADDR` | 918 | Seleccionar dirección del cliente |
+| `ADMIN_PEDIDO_SEL_CUST_BUSCAR` | 999 | Texto de búsqueda de cliente en flujo admin_pedido |
+| `ADMIN_PEDIDO_CUST_DEDUP` | 1000 | Confirmar cliente existente encontrado por teléfono |
+| `ADMIN_PEDIDO_GUARDAR_CUST` | 1001 | Ofrecer guardar cliente/dirección manual en la agenda |
 
 **Callbacks nuevos en `admin_pedido_conv`**:
 - `admin_pedido_sel_cust` → `admin_pedido_sel_cust_handler`
+- `admin_pedido_buscar_cust` → `admin_pedido_buscar_cust_start`
 - `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
-- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected`
+- `acust_pedido_addr_{id}` → `admin_pedido_addr_selected` (incrementa `use_count`)
 - `acust_pedido_addr_nueva` → `admin_pedido_addr_nueva`
+- `admin_ped_dedup_si/no` → `admin_pedido_cust_dedup_callback`
+- `admin_ped_guardar_cust_si/no` → `admin_pedido_guardar_cust_callback`
+- `admin_ped_guardar_dir_si/no` → `admin_pedido_guardar_cust_callback`
+
+---
+
+## Mejoras en Gestión de Clientes en Flujos de Pedido (IMPLEMENTADO 2026-03-25)
+
+Mejoras aplicadas a los 3 flujos de pedido (`nuevo_pedido_conv`, `nueva_ruta_conv`, `admin_pedido_conv`):
+
+1. **Búsqueda/filtro de clientes**: botón "Buscar cliente" en la lista de clientes recurrentes. Devuelve coincidencias por nombre o teléfono.
+2. **Deduplicación por teléfono**: al registrar un cliente nuevo, si el teléfono ya existe en la agenda, se muestra el cliente encontrado y se pregunta si usar ese en lugar de crear uno nuevo.
+3. **Direcciones ordenadas por uso**: `list_customer_addresses` y `list_admin_customer_addresses` ordenan por `use_count DESC, created_at DESC`. Columna `use_count INTEGER DEFAULT 0` agregada a `ally_customer_addresses` y `admin_customer_addresses`. Se incrementa al seleccionar una dirección guardada (`increment_customer_address_usage` / `increment_admin_customer_address_usage` en `db.py`, re-exportadas en `services.py`).
+4. **Ofrecer nueva dirección a cliente existente**: al finalizar un pedido con cliente recurrente, si la dirección usada es nueva (no coincide en agenda), se pregunta si agregarla. Usa `find_matching_customer_address` como guard.
+5. **Guardar cliente en agenda admin**: al finalizar un pedido especial de admin con datos ingresados manualmente (no seleccionados de agenda), se ofrece guardar el cliente y/o la dirección en `admin_customers` / `admin_customer_addresses`.
+
+### Nuevos estados (handlers/states.py)
+
+| Constante | Valor | Flujo | Descripción |
+|-----------|-------|-------|-------------|
+| `RUTA_PARADA_BUSCAR` | 52 | nueva_ruta | Texto de búsqueda de cliente en parada |
+| `RUTA_PARADA_DEDUP` | 53 | nueva_ruta | Confirmar cliente existente por teléfono |
+| `PEDIDO_DEDUP_CONFIRM` | 997 | nuevo_pedido | Confirmar cliente existente por teléfono |
+| `PEDIDO_GUARDAR_DIR_EXISTENTE` | 998 | nuevo_pedido | Ofrecer agregar dirección a cliente recurrente |
+| `ADMIN_PEDIDO_SEL_CUST_BUSCAR` | 999 | admin_pedido | Texto de búsqueda de cliente |
+| `ADMIN_PEDIDO_CUST_DEDUP` | 1000 | admin_pedido | Confirmar cliente existente por teléfono |
+| `ADMIN_PEDIDO_GUARDAR_CUST` | 1001 | admin_pedido | Ofrecer guardar cliente/dirección manual |
+
+### Nuevos callbacks
+
+| Callback | Flujo | Descripción |
+|----------|-------|-------------|
+| `pedido_dedup_si/no` | nuevo_pedido | Usar cliente existente o continuar como nuevo |
+| `pedido_guardar_dir_si/no` | nuevo_pedido | Agregar dirección nueva a cliente recurrente |
+| `ruta_buscar_cliente` | nueva_ruta | Activar búsqueda en lista de clientes de parada |
+| `ruta_dedup_si/no` | nueva_ruta | Usar cliente existente o continuar como nuevo |
+| `admin_pedido_buscar_cust` | admin_pedido | Activar búsqueda en lista de clientes |
+| `admin_ped_dedup_si/no` | admin_pedido | Usar cliente existente o continuar como nuevo |
+| `admin_ped_guardar_cust_si/no` | admin_pedido | Guardar cliente manual en agenda |
+| `admin_ped_guardar_dir_si/no` | admin_pedido | Guardar dirección manual en agenda del cliente |
 
 ---
 
@@ -2032,5 +2076,5 @@ Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
 
 ---
 
-*Última actualización: 2026-03-24*
+*Última actualización: 2026-03-25*
 

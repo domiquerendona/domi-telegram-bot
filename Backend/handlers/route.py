@@ -31,6 +31,8 @@ from handlers.states import (
     RUTA_PICKUP_NUEVA_CIUDAD,
     RUTA_PICKUP_NUEVA_BARRIO,
     RUTA_INCENTIVO_MONTO,
+    RUTA_PARADA_BUSCAR,
+    RUTA_PARADA_DEDUP,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -53,12 +55,14 @@ from services import (
     get_default_ally_location,
     create_ally_location,
     list_ally_customers,
+    search_ally_customers,
     get_ally_customer_by_id,
     list_customer_addresses,
     get_customer_address_by_id,
     get_ally_customer_by_phone,
     create_ally_customer,
     create_customer_address,
+    increment_customer_address_usage,
     has_valid_coords,
     resolve_location,
     extract_lat_lng_from_text,
@@ -175,6 +179,8 @@ def _ruta_iniciar_parada(update_or_query, context):
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
         )])
+    if activos:
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="ruta_buscar_cliente")])
     markup = InlineKeyboardMarkup(keyboard)
     text = "PARADA {} DE LA RUTA\n\nSelecciona el cliente:".format(n)
     _ruta_limpiar_temp(context)
@@ -610,6 +616,9 @@ def ruta_parada_selector_callback(update, context):
         n = len(paradas) + 1
         query.edit_message_text("PARADA {} - CLIENTE NUEVO\n\nEscribe el nombre del cliente:".format(n))
         return RUTA_PARADA_NOMBRE
+    if data == "ruta_buscar_cliente":
+        query.edit_message_text("Escribe el nombre o telefono del cliente:")
+        return RUTA_PARADA_BUSCAR
     if data.startswith("ruta_sel_cust_"):
         try:
             cust_id = int(data.replace("ruta_sel_cust_", ""))
@@ -676,6 +685,10 @@ def ruta_parada_sel_direccion_callback(update, context):
         context.user_data["ruta_temp_barrio"] = addr.get("barrio") or ""
         context.user_data["ruta_temp_lat"] = addr.get("lat")
         context.user_data["ruta_temp_lng"] = addr.get("lng")
+        try:
+            increment_customer_address_usage(addr_id, cust_id)
+        except Exception:
+            pass
         _ruta_guardar_parada_actual(context)
         return _ruta_mostrar_mas_paradas(query, context)
     return RUTA_PARADA_SEL_DIRECCION
@@ -702,6 +715,21 @@ def ruta_parada_telefono_handler(update, context):
         update.message.reply_text("Ingresa un numero de telefono valido (minimo 7 digitos).")
         return RUTA_PARADA_TELEFONO
     context.user_data["ruta_temp_phone"] = digits
+    ally_id = context.user_data.get("ruta_ally_id")
+    # Dedup: verificar si ya existe un cliente con este telefono
+    existing = get_ally_customer_by_phone(ally_id, digits) if ally_id else None
+    if existing:
+        context.user_data["ruta_dedup_found"] = {"id": existing["id"], "name": existing.get("name") or ""}
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, usar este cliente", callback_data="ruta_dedup_si")],
+            [InlineKeyboardButton("No, es otro cliente", callback_data="ruta_dedup_no")],
+        ])
+        update.message.reply_text(
+            "Este numero ya esta en tu agenda: {}\n\n"
+            "Usar este cliente para la parada?".format(existing.get("name") or digits),
+            reply_markup=keyboard,
+        )
+        return RUTA_PARADA_DEDUP
     paradas = context.user_data.get("ruta_paradas", [])
     n = len(paradas) + 1
     nombre = context.user_data.get("ruta_temp_name", "")
@@ -1064,6 +1092,86 @@ def ruta_guardar_cust_callback(update, context):
     return _ruta_mostrar_mas_paradas(query, context)
 
 
+def ruta_parada_buscar_handler(update, context):
+    """Busca clientes por nombre o telefono en el flujo de nueva ruta."""
+    texto = update.message.text.strip()
+    ally_id = context.user_data.get("ruta_ally_id")
+    if not ally_id or not texto:
+        update.message.reply_text("Escribe un nombre o telefono para buscar.")
+        return RUTA_PARADA_BUSCAR
+    resultados = search_ally_customers(ally_id, texto) if ally_id else []
+    activos = [c for c in resultados if c.get("status") == "ACTIVE"]
+    if not activos:
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        update.message.reply_text(
+            "No se encontro ningun cliente con '{}'.\n\n"
+            "Escribe el nombre del cliente para la parada {}:".format(texto, n)
+        )
+        return RUTA_PARADA_NOMBRE
+    keyboard = []
+    for c in activos[:10]:
+        nombre = (c.get("name") or "Sin nombre")[:25]
+        phone = c.get("phone") or ""
+        keyboard.append([InlineKeyboardButton(
+            "{} - {}".format(nombre, phone),
+            callback_data="ruta_sel_cust_{}".format(c["id"])
+        )])
+    keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")])
+    update.message.reply_text(
+        "Resultados para '{}':\n\nSelecciona el cliente:".format(texto),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RUTA_PARADA_SELECTOR
+
+
+def ruta_parada_dedup_callback(update, context):
+    """Confirma si usar cliente existente encontrado por telefono en ruta."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "ruta_dedup_si":
+        found = context.user_data.pop("ruta_dedup_found", {})
+        cust_id = found.get("id")
+        name = found.get("name") or ""
+        phone = context.user_data.get("ruta_temp_phone", "")
+        context.user_data["ruta_temp_customer_id"] = cust_id
+        context.user_data["ruta_temp_name"] = name
+        # Mostrar direcciones del cliente
+        addrs = list_customer_addresses(cust_id) if cust_id else []
+        activos = [a for a in addrs if a.get("status") == "ACTIVE"]
+        if activos:
+            paradas = context.user_data.get("ruta_paradas", [])
+            n = len(paradas) + 1
+            keyboard = []
+            for a in activos[:8]:
+                label = a.get("label") or a.get("address_text") or "Direccion"
+                keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(a["id"]))])
+            keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
+            query.edit_message_text(
+                "PARADA {} - {}\n\nSelecciona la direccion de entrega:".format(n, name),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return RUTA_PARADA_SEL_DIRECCION
+        # Sin direcciones guardadas — pedir GPS
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text(
+            "PARADA {} - {}\n\nEnvia la ubicacion GPS (PIN de Telegram, link o lat,lng).".format(n, name)
+        )
+        return RUTA_PARADA_UBICACION
+    else:
+        # No es este cliente — continuar como nuevo con el telefono ya guardado
+        context.user_data.pop("ruta_dedup_found", None)
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        query.edit_message_text(
+            "PARADA {}\n\nEscribe el nombre del cliente:".format(n)
+        )
+        # Limpiar nombre temporal para que lo ingrese de nuevo
+        context.user_data.pop("ruta_temp_name", None)
+        return RUTA_PARADA_NOMBRE
+
+
 # Conversacion "Nueva ruta" (multi-parada)
 nueva_ruta_conv = ConversationHandler(
     entry_points=[
@@ -1100,7 +1208,7 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
         ],
         RUTA_PARADA_SELECTOR: [
-            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+)$"),
+            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+|buscar_cliente)$"),
         ],
         RUTA_PARADA_SEL_DIRECCION: [
             CallbackQueryHandler(ruta_parada_sel_direccion_callback, pattern=r"^ruta_(sel_addr_\d+|addr_nueva)$"),
@@ -1141,6 +1249,13 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_GUARDAR_CLIENTES: [
             CallbackQueryHandler(ruta_guardar_cust_callback, pattern=r"^ruta_guardar_cust_(si|no)$"),
+        ],
+        RUTA_PARADA_BUSCAR: [
+            MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú]|men[uú])\s*$'), cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_parada_buscar_handler),
+        ],
+        RUTA_PARADA_DEDUP: [
+            CallbackQueryHandler(ruta_parada_dedup_callback, pattern=r"^ruta_dedup_(si|no)$"),
         ],
     },
     fallbacks=[

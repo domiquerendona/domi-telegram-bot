@@ -23,6 +23,8 @@ from handlers.states import (
     ADMIN_PEDIDO_PICKUP, ADMIN_PEDIDO_CUST_NAME, ADMIN_PEDIDO_CUST_PHONE,
     ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
     ADMIN_PEDIDO_SEL_CUST, ADMIN_PEDIDO_SEL_CUST_ADDR, ADMIN_PEDIDO_SAVE_PICKUP,
+    PEDIDO_DEDUP_CONFIRM, PEDIDO_GUARDAR_DIR_EXISTENTE,
+    ADMIN_PEDIDO_SEL_CUST_BUSCAR, ADMIN_PEDIDO_CUST_DEDUP, ADMIN_PEDIDO_GUARDAR_CUST,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
@@ -54,8 +56,10 @@ from services import (
     add_route_incentive, get_route_by_id,
     get_admin_by_telegram_id, get_admin_locations, get_admin_location_by_id,
     create_admin_location, increment_admin_location_usage,
-    list_admin_customers, get_admin_customer_by_id,
+    list_admin_customers, search_admin_customers, get_admin_customer_by_id,
     get_admin_customer_address_by_id, list_admin_customer_addresses,
+    get_admin_customer_by_phone, create_admin_customer, create_admin_customer_address,
+    increment_customer_address_usage, increment_admin_customer_address_usage,
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
     get_ally_by_id, compute_ally_subsidy,
@@ -434,6 +438,10 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["customer_barrio"] = address["barrio"] or ""
         context.user_data["dropoff_lat"] = address["lat"]
         context.user_data["dropoff_lng"] = address["lng"]
+        try:
+            increment_customer_address_usage(address_id, customer_id)
+        except Exception:
+            pass
 
         if not has_valid_coords(address["lat"], address["lng"]):
             query.edit_message_text(
@@ -962,7 +970,29 @@ def pedido_nombre_cliente(update, context):
 
 
 def pedido_telefono_cliente(update, context):
-    context.user_data["customer_phone"] = update.message.text.strip()
+    raw = update.message.text.strip()
+    digits = "".join(filter(str.isdigit, raw))
+    if len(digits) < 7:
+        update.message.reply_text("Ingresa un numero de telefono valido (minimo 7 digitos).")
+        return PEDIDO_TELEFONO
+    context.user_data["customer_phone"] = digits
+    # Dedup: si es cliente nuevo, verificar si ya existe en agenda
+    if context.user_data.get("is_new_customer"):
+        ally_id = context.user_data.get("active_ally_id") or context.user_data.get("ally_id")
+        existing = get_ally_customer_by_phone(ally_id, digits) if ally_id else None
+        if existing:
+            context.user_data["dedup_found_customer_id"] = existing["id"]
+            context.user_data["dedup_found_name"] = existing.get("name") or ""
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Si, usar este cliente", callback_data="pedido_dedup_si")],
+                [InlineKeyboardButton("No, es otro cliente", callback_data="pedido_dedup_no")],
+            ])
+            update.message.reply_text(
+                "Este numero ya esta en tu agenda: {}\n\n"
+                "Usar este cliente para el pedido?".format(existing.get("name") or digits),
+                reply_markup=keyboard,
+            )
+            return PEDIDO_DEDUP_CONFIRM
     # Si viene del cotizador, la ubicacion ya esta capturada
     if context.user_data.get("cotizador_prefill_dropoff"):
         update.message.reply_text(
@@ -2834,6 +2864,7 @@ def admin_pedido_sel_cust_handler(update, context):
     for c in customers:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="admin_pedido_buscar_cust")])
     keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
 
     query.edit_message_text(
@@ -2857,6 +2888,7 @@ def admin_pedido_cust_selected(update, context):
 
     context.user_data["admin_ped_cust_name"] = customer["name"]
     context.user_data["admin_ped_cust_phone"] = customer["phone"]
+    context.user_data["admin_ped_selected_cust_id"] = customer_id  # marca que viene de agenda
 
     addresses = list_admin_customer_addresses(customer_id)
     keyboard = []
@@ -2904,6 +2936,12 @@ def admin_pedido_addr_selected(update, context):
     context.user_data["admin_ped_dropoff_lng"] = address["lng"]
     context.user_data["admin_ped_dropoff_city"] = address["city"] or ""
     context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
+    cust_id_for_inc = context.user_data.get("admin_ped_selected_cust_id")
+    if cust_id_for_inc:
+        try:
+            increment_admin_customer_address_usage(address_id, cust_id_for_inc)
+        except Exception:
+            pass
 
     query.edit_message_text(
         "Cliente: {}\nEntrega: {}\n\nCalculando tarifa...".format(
@@ -2928,7 +2966,23 @@ def admin_pedido_cust_phone_handler(update, context):
     if len(digits) < 7:
         update.message.reply_text("Telefono invalido. Ingresa minimo 7 digitos.")
         return ADMIN_PEDIDO_CUST_PHONE
-    context.user_data["admin_ped_cust_phone"] = phone
+    context.user_data["admin_ped_cust_phone"] = digits
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    # Dedup: verificar si ya existe en la agenda del admin
+    existing = get_admin_customer_by_phone(admin_id, digits) if admin_id else None
+    if existing:
+        context.user_data["admin_ped_dedup_cust_id"] = existing["id"]
+        context.user_data["admin_ped_dedup_name"] = existing.get("name") or ""
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, usar este cliente", callback_data="admin_ped_dedup_si")],
+            [InlineKeyboardButton("No, es otro cliente", callback_data="admin_ped_dedup_no")],
+        ])
+        update.message.reply_text(
+            "Este numero ya esta en tu agenda: {}\n\n"
+            "Usar este cliente para el pedido?".format(existing.get("name") or digits),
+            reply_markup=keyboard,
+        )
+        return ADMIN_PEDIDO_CUST_DEDUP
     update.message.reply_text("Direccion de entrega del cliente (escribe o envia GPS):")
     return ADMIN_PEDIDO_CUST_ADDR
 
@@ -3162,7 +3216,7 @@ def admin_pedido_confirmar_callback(update, context):
         )
     except Exception as e:
         print("[WARN] admin_pedido_confirmar_callback publish:", e)
-    query.edit_message_text(
+    success_msg = (
         "Pedido especial publicado.\n"
         "ID: #{}\n"
         "Tarifa: ${:,}{}\n"
@@ -3173,6 +3227,138 @@ def admin_pedido_confirmar_callback(update, context):
             published_count,
         )
     )
+    # Ofrecer guardar cliente si fue ingreso manual (no seleccionado de agenda) y tiene coords
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+    cust_phone = context.user_data.get("admin_ped_cust_phone", "")
+    is_from_agenda = bool(context.user_data.get("admin_ped_selected_cust_id"))
+    if not is_from_agenda and cust_phone and has_valid_coords(dropoff_lat, dropoff_lng):
+        existing = get_admin_customer_by_phone(admin_id, cust_phone)
+        if existing:
+            # Ya existe: ofrecer agregar direccion
+            context.user_data["admin_ped_guardar_existing_id"] = existing["id"]
+            query.edit_message_text(
+                success_msg + "\n\n"
+                "Este cliente ya esta en tu agenda ({}).\n"
+                "Deseas agregar esta direccion a su perfil?".format(existing.get("name") or cust_name),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Si, agregar", callback_data="admin_ped_guardar_dir_si")],
+                    [InlineKeyboardButton("No", callback_data="admin_ped_guardar_dir_no")],
+                ]),
+            )
+            return ADMIN_PEDIDO_GUARDAR_CUST
+        else:
+            query.edit_message_text(
+                success_msg + "\n\nDeseas guardar a {} en tu agenda?".format(cust_name),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Si, guardar", callback_data="admin_ped_guardar_cust_si")],
+                    [InlineKeyboardButton("No", callback_data="admin_ped_guardar_cust_no")],
+                ]),
+            )
+            return ADMIN_PEDIDO_GUARDAR_CUST
+    query.edit_message_text(success_msg)
+    for key in list(context.user_data.keys()):
+        if key.startswith("admin_ped_"):
+            del context.user_data[key]
+    return ConversationHandler.END
+
+
+def admin_pedido_buscar_cust_start(update, context):
+    """Admin toca 'Buscar cliente' en la lista de su agenda durante pedido especial."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Escribe el nombre o telefono del cliente:")
+    return ADMIN_PEDIDO_SEL_CUST_BUSCAR
+
+
+def admin_pedido_buscar_cust_handler(update, context):
+    """Busca clientes del admin por nombre o telefono durante pedido especial."""
+    texto = update.message.text.strip()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    resultados = search_admin_customers(admin_id, texto) if admin_id and texto else []
+    activos = [c for c in resultados if c.get("status") == "ACTIVE"]
+    if not activos:
+        update.message.reply_text(
+            "No se encontro ningun cliente con '{}'.\n\nEscribe el nombre del cliente:".format(texto)
+        )
+        return ADMIN_PEDIDO_CUST_NAME
+    keyboard = []
+    for c in activos[:10]:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    update.message.reply_text(
+        "Resultados para '{}':\n\nSelecciona el cliente:".format(texto),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_SEL_CUST
+
+
+def admin_pedido_cust_dedup_callback(update, context):
+    """Confirma si usar cliente existente encontrado por telefono en admin_pedido."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "admin_ped_dedup_si":
+        cust_id = context.user_data.pop("admin_ped_dedup_cust_id", None)
+        name = context.user_data.pop("admin_ped_dedup_name", "")
+        context.user_data["admin_ped_cust_name"] = name
+        context.user_data["admin_ped_selected_cust_id"] = cust_id
+        addrs = list_admin_customer_addresses(cust_id) if cust_id else []
+        activas = [a for a in addrs if a.get("status") == "ACTIVE"]
+        if activas:
+            keyboard = []
+            for a in activas[:8]:
+                label = (a.get("label") or a.get("address_text") or "Direccion")[:30]
+                btn_text = "{}: {}".format(label, (a.get("address_text") or "")[:25])
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_addr_{}".format(a["id"]))])
+            keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="acust_pedido_addr_nueva")])
+            query.edit_message_text(
+                "Cliente: {}\n\nSelecciona la direccion de entrega:".format(name),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return ADMIN_PEDIDO_SEL_CUST_ADDR
+        query.edit_message_text(
+            "Cliente: {}\n\nEscribe la direccion de entrega o envia GPS:".format(name)
+        )
+        return ADMIN_PEDIDO_CUST_ADDR
+    else:
+        context.user_data.pop("admin_ped_dedup_cust_id", None)
+        context.user_data.pop("admin_ped_dedup_name", None)
+        query.edit_message_text("Escribe la direccion de entrega del cliente:")
+        return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_guardar_cust_callback(update, context):
+    """Maneja la decision de guardar cliente/direccion tras crear pedido admin."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    cust_name = context.user_data.get("admin_ped_cust_name", "")
+    cust_phone = context.user_data.get("admin_ped_cust_phone", "")
+    addr = context.user_data.get("admin_ped_cust_addr", "")
+    city = context.user_data.get("admin_ped_dropoff_city", "")
+    barrio = context.user_data.get("admin_ped_dropoff_barrio", "")
+    lat = context.user_data.get("admin_ped_dropoff_lat")
+    lng = context.user_data.get("admin_ped_dropoff_lng")
+    label = barrio or city or "Principal"
+    data = query.data
+    msg = ""
+    if data == "admin_ped_guardar_cust_si":
+        try:
+            new_id = create_admin_customer(admin_id, cust_name, cust_phone)
+            create_admin_customer_address(new_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
+            msg = "Cliente {} guardado en tu agenda.".format(cust_name)
+        except Exception as e:
+            msg = "No se pudo guardar el cliente: {}".format(e)
+    elif data == "admin_ped_guardar_dir_si":
+        existing_id = context.user_data.get("admin_ped_guardar_existing_id")
+        try:
+            create_admin_customer_address(existing_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
+            msg = "Direccion agregada a la agenda del cliente."
+        except Exception as e:
+            msg = "No se pudo agregar la direccion: {}".format(e)
+    else:
+        msg = "OK, no se guardo."
+    query.edit_message_text(msg)
     for key in list(context.user_data.keys()):
         if key.startswith("admin_ped_"):
             del context.user_data[key]
@@ -3483,7 +3669,20 @@ def pedido_confirmacion_callback(update, context):
                     pass
                 return PEDIDO_GUARDAR_CLIENTE
             else:
-                # Cliente existente: éxito directo + menú
+                # Cliente existente: ofrecer agregar nueva direccion si no existe ya
+                dropoff_lat = context.user_data.get("dropoff_lat")
+                dropoff_lng = context.user_data.get("dropoff_lng")
+                customer_address = context.user_data.get("customer_address", "")
+                customer_city = context.user_data.get("customer_city", "")
+                customer_barrio = context.user_data.get("customer_barrio", "")
+                addr_already_saved = False
+                if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng):
+                    addr_match = find_matching_customer_address(
+                        existing_customer["id"], customer_address, customer_city, customer_barrio
+                    )
+                    addr_already_saved = bool(addr_match)
+                    if not addr_already_saved:
+                        context.user_data["guardar_dir_existing_cust_id"] = existing_customer["id"]
                 try:
                     context.bot.send_message(
                         chat_id=query.message.chat_id,
@@ -3497,6 +3696,23 @@ def pedido_confirmacion_callback(update, context):
                     )
                 except Exception:
                     pass
+                if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng) and not addr_already_saved:
+                    success_text = (
+                        "Pedido #{} creado exitosamente.\n".format(order_id)
+                        + ("No hay repartidores elegibles en este momento. El pedido quedo sin publicar.\n\n"
+                           if published_count == 0 else "\n")
+                        + "Deseas agregar esta direccion a la agenda de {}?".format(
+                            existing_customer.get("name") or "este cliente"
+                        )
+                    )
+                    query.edit_message_text(
+                        success_text,
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Si, agregar", callback_data="pedido_guardar_dir_si")],
+                            [InlineKeyboardButton("No", callback_data="pedido_guardar_dir_no")],
+                        ]),
+                    )
+                    return PEDIDO_GUARDAR_DIR_EXISTENTE
                 context.user_data.clear()
                 if published_count == 0:
                     show_main_menu(
@@ -3634,6 +3850,66 @@ def pedido_guardar_cliente_callback(update, context):
 
     return PEDIDO_GUARDAR_CLIENTE
 
+
+def pedido_dedup_confirm_callback(update, context):
+    """Confirma si usar cliente existente encontrado por telefono al crear pedido."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "pedido_dedup_si":
+        cust_id = context.user_data.pop("dedup_found_customer_id", None)
+        name = context.user_data.pop("dedup_found_name", "")
+        phone = context.user_data.get("customer_phone", "")
+        context.user_data["customer_id"] = cust_id
+        context.user_data["customer_name"] = name
+        context.user_data["customer_phone"] = phone
+        context.user_data["is_new_customer"] = False
+        addrs = list_customer_addresses(cust_id) if cust_id else []
+        activas = [a for a in addrs if a.get("status") == "ACTIVE"]
+        if activas:
+            keyboard = []
+            for a in activas[:8]:
+                label = (a.get("label") or a.get("address_text") or "Direccion")[:30]
+                text_btn = "{}: {}".format(label, (a.get("address_text") or "")[:25])
+                keyboard.append([InlineKeyboardButton(text_btn, callback_data="pedido_sel_addr_{}".format(a["id"]))])
+            keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
+            query.edit_message_text(
+                "Cliente: {}\n\nSelecciona la direccion de entrega:".format(name),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return PEDIDO_SELECCIONAR_DIRECCION
+        query.edit_message_text(
+            "Cliente: {}\n\nEscribe la direccion de entrega o envia un PIN de ubicacion:".format(name)
+        )
+        return PEDIDO_UBICACION
+    else:
+        context.user_data.pop("dedup_found_customer_id", None)
+        context.user_data.pop("dedup_found_name", None)
+        query.edit_message_text("Escribe la direccion de entrega del cliente:")
+        return PEDIDO_UBICACION
+
+
+def pedido_guardar_dir_existente_callback(update, context):
+    """Ofrece agregar nueva direccion a cliente ya existente tras crear pedido."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "pedido_guardar_dir_si":
+        cust_id = context.user_data.get("guardar_dir_existing_cust_id")
+        address = context.user_data.get("customer_address", "")
+        city = context.user_data.get("customer_city", "")
+        barrio = context.user_data.get("customer_barrio", "")
+        lat = context.user_data.get("dropoff_lat")
+        lng = context.user_data.get("dropoff_lng")
+        label = barrio or city or "Nueva direccion"
+        try:
+            create_customer_address(cust_id, label, address, city=city, barrio=barrio, lat=lat, lng=lng)
+            query.edit_message_text("Direccion guardada en la agenda del cliente.")
+        except Exception as e:
+            query.edit_message_text("No se pudo guardar la direccion: {}".format(e))
+    else:
+        query.edit_message_text("OK, no se guardo la direccion.")
+    context.user_data.clear()
+    show_main_menu(update, context)
+    return ConversationHandler.END
 
 
 def _ally_bandeja_guardar_en_agenda(ally_id, solicitud):
@@ -4059,6 +4335,12 @@ nuevo_pedido_conv = ConversationHandler(
         PEDIDO_GUARDAR_CLIENTE: [
             CallbackQueryHandler(pedido_guardar_cliente_callback, pattern=r"^pedido_guardar_")
         ],
+        PEDIDO_DEDUP_CONFIRM: [
+            CallbackQueryHandler(pedido_dedup_confirm_callback, pattern=r"^pedido_dedup_(si|no)$"),
+        ],
+        PEDIDO_GUARDAR_DIR_EXISTENTE: [
+            CallbackQueryHandler(pedido_guardar_dir_existente_callback, pattern=r"^pedido_guardar_dir_(si|no)$"),
+        ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
@@ -4142,6 +4424,7 @@ admin_pedido_conv = ConversationHandler(
         ],
         ADMIN_PEDIDO_SEL_CUST: [
             CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
+            CallbackQueryHandler(admin_pedido_buscar_cust_start, pattern=r"^admin_pedido_buscar_cust$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_SEL_CUST_ADDR: [
@@ -4167,6 +4450,15 @@ admin_pedido_conv = ConversationHandler(
         ],
         ADMIN_PEDIDO_INC_MONTO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_inc_monto_handler),
+        ],
+        ADMIN_PEDIDO_SEL_CUST_BUSCAR: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_buscar_cust_handler),
+        ],
+        ADMIN_PEDIDO_CUST_DEDUP: [
+            CallbackQueryHandler(admin_pedido_cust_dedup_callback, pattern=r"^admin_ped_dedup_(si|no)$"),
+        ],
+        ADMIN_PEDIDO_GUARDAR_CUST: [
+            CallbackQueryHandler(admin_pedido_guardar_cust_callback, pattern=r"^admin_ped_guardar_(cust|dir)_(si|no)$"),
         ],
     },
     fallbacks=[
