@@ -1819,6 +1819,9 @@ def _init_db_postgres():
 
     # allies
     for col, ctype in [
+        ("public_token", "TEXT"),
+        ("delivery_subsidy", "INTEGER DEFAULT 0"),
+        ("min_purchase_for_subsidy", "INTEGER DEFAULT NULL"),
         ("registration_reset_enabled_at", "TIMESTAMP"),
         ("registration_reset_by_admin_id", "BIGINT"),
         ("registration_reset_note", "TEXT"),
@@ -1884,11 +1887,22 @@ def _init_db_postgres():
         ("dropoff_lng", "REAL"),
         ("quote_source", "TEXT"),
         ("buy_surcharge", "INTEGER DEFAULT 0"),
+        ("ally_admin_id_snapshot", "BIGINT"),
+        ("courier_admin_id_snapshot", "BIGINT"),
         ("courier_arrived_at", "TIMESTAMP"),
         ("courier_accepted_lat", "REAL"),
         ("courier_accepted_lng", "REAL"),
         ("canceled_by", "TEXT"),
         ("creator_admin_id", "BIGINT"),
+        ("purchase_amount", "INTEGER DEFAULT NULL"),
+        ("delivery_subsidy_applied", "INTEGER DEFAULT 0"),
+        ("customer_delivery_fee", "INTEGER DEFAULT NULL"),
+        ("payment_method", "TEXT DEFAULT 'UNCONFIRMED'"),
+        ("payment_confirmed_at", "TIMESTAMP DEFAULT NULL"),
+        ("payment_confirmed_by", "BIGINT DEFAULT NULL"),
+        ("payment_changed_at", "TIMESTAMP DEFAULT NULL"),
+        ("payment_changed_by", "BIGINT DEFAULT NULL"),
+        ("payment_prev_method", "TEXT DEFAULT NULL"),
     ]:
         _pg_add_col("orders", col, ctype)
 
