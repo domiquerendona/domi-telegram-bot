@@ -2061,6 +2061,19 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
     return None
 
 
+def save_confirmed_geocoding(text: str, lat: float, lng: float):
+    """Guarda en cache el resultado de geocoding confirmado por el usuario."""
+    if not text or lat is None or lng is None:
+        return
+    try:
+        upsert_geocoding_text_cache(
+            _normalize_reference_key(text), lat, lng,
+            source="confirmed",
+        )
+    except Exception:
+        pass
+
+
 # ============================================================
 # SISTEMA DE RECARGAS
 # ============================================================
