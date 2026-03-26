@@ -370,3 +370,8 @@ PEDIDO_GUARDAR_DIR_EXISTENTE = 998   # Ofrecer agregar nueva direccion a cliente
 ADMIN_PEDIDO_SEL_CUST_BUSCAR = 999   # Buscar cliente en agenda durante admin_pedido_conv
 ADMIN_PEDIDO_CUST_DEDUP      = 1000  # Confirmar cliente existente hallado por telefono en admin_pedido
 ADMIN_PEDIDO_GUARDAR_CUST    = 1001  # Ofrecer guardar cliente nuevo tras crear pedido admin
+
+# =========================
+# Estados para flujo de parqueadero (2026-03-26)
+# =========================
+ALLY_CUST_PARKING = 1002  # Pregunta al aliado si el punto de entrega tiene parqueadero

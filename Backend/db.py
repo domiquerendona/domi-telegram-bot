@@ -1318,6 +1318,8 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN delivery_subsidy_applied INTEGER DEFAULT 0")
     if 'customer_delivery_fee' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN customer_delivery_fee INTEGER DEFAULT NULL")
+    if 'parking_fee' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN parking_fee INTEGER DEFAULT 0")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -1427,12 +1429,24 @@ def init_db():
     aca_cols = [col[1] for col in cur.fetchall()]
     if 'use_count' not in aca_cols:
         cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
+    if 'parking_status' not in aca_cols:
+        cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN parking_status TEXT DEFAULT 'NOT_ASKED'")
+    if 'parking_reviewed_by' not in aca_cols:
+        cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN parking_reviewed_by INTEGER DEFAULT NULL")
+    if 'parking_reviewed_at' not in aca_cols:
+        cur.execute("ALTER TABLE ally_customer_addresses ADD COLUMN parking_reviewed_at TEXT DEFAULT NULL")
 
     # Migración: agregar use_count a admin_customer_addresses (orden por uso)
     cur.execute("PRAGMA table_info(admin_customer_addresses)")
     adca_cols = [col[1] for col in cur.fetchall()]
     if 'use_count' not in adca_cols:
         cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN use_count INTEGER DEFAULT 0")
+    if 'parking_status' not in adca_cols:
+        cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN parking_status TEXT DEFAULT 'NOT_ASKED'")
+    if 'parking_reviewed_by' not in adca_cols:
+        cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN parking_reviewed_by INTEGER DEFAULT NULL")
+    if 'parking_reviewed_at' not in adca_cols:
+        cur.execute("ALTER TABLE admin_customer_addresses ADD COLUMN parking_reviewed_at TEXT DEFAULT NULL")
 
     # ============================================================
     # H) TABLAS PARA SISTEMA DE RECARGAS
@@ -1953,6 +1967,15 @@ def _init_db_postgres():
     # ally_customer_addresses / admin_customer_addresses: use_count para orden por uso
     _pg_add_col("ally_customer_addresses", "use_count", "INTEGER DEFAULT 0")
     _pg_add_col("admin_customer_addresses", "use_count", "INTEGER DEFAULT 0")
+
+    # Parqueadero: estado de revision y columna en orders
+    _pg_add_col("ally_customer_addresses", "parking_status", "TEXT DEFAULT 'NOT_ASKED'")
+    _pg_add_col("ally_customer_addresses", "parking_reviewed_by", "INTEGER DEFAULT NULL")
+    _pg_add_col("ally_customer_addresses", "parking_reviewed_at", "TIMESTAMP")
+    _pg_add_col("admin_customer_addresses", "parking_status", "TEXT DEFAULT 'NOT_ASKED'")
+    _pg_add_col("admin_customer_addresses", "parking_reviewed_by", "INTEGER DEFAULT NULL")
+    _pg_add_col("admin_customer_addresses", "parking_reviewed_at", "TIMESTAMP")
+    _pg_add_col("orders", "parking_fee", "INTEGER DEFAULT 0")
 
     # web_users: tabla de usuarios del panel web (multiusuario real)
     cur.execute("""
@@ -5374,11 +5397,13 @@ def create_order(
     payment_method: str = "UNCONFIRMED",
     payment_confirmed_at: str = None,
     payment_confirmed_by: int = None,
+    parking_fee: int = 0,
 ):
     """Crea un pedido en estado PENDING y devuelve su id.
 
     Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
     Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
+    parking_fee: tarifa de parqueadero incluida en este pedido (0 si no aplica).
     """
     if not has_valid_coords(pickup_lat, pickup_lng):
         raise ValueError("El punto de recogida requiere ubicacion confirmada.")
@@ -5423,8 +5448,9 @@ def create_order(
             customer_delivery_fee,
             payment_method,
             payment_confirmed_at,
-            payment_confirmed_by
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+            payment_confirmed_by,
+            parking_fee
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -5460,6 +5486,7 @@ def create_order(
         payment_method,
         payment_confirmed_at,
         payment_confirmed_by,
+        parking_fee if parking_fee else 0,
     ))
     conn.commit()
     conn.close()
@@ -7389,6 +7416,97 @@ def find_matching_customer_address(customer_id: int, address_text: str, city: st
         ):
             return dict(row)
     return None
+
+
+PARKING_FEE_AMOUNT = 1200  # Tarifa fija de parqueadero en COP
+
+
+def set_address_parking_status(address_id: int, status: str, reviewed_by: int = None) -> bool:
+    """Actualiza el estado de parqueadero de una direccion de cliente aliado.
+
+    status validos: NOT_ASKED | ALLY_YES | PENDING_REVIEW | ADMIN_YES | ADMIN_NO
+    reviewed_by: admins.id (solo cuando el admin hace la revision).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if reviewed_by is not None:
+        cur.execute(f"""
+            UPDATE ally_customer_addresses
+            SET parking_status = {P}, parking_reviewed_by = {P}, parking_reviewed_at = {now_sql},
+                updated_at = {now_sql}
+            WHERE id = {P} AND status = 'ACTIVE'
+        """, (status, reviewed_by, address_id))
+    else:
+        cur.execute(f"""
+            UPDATE ally_customer_addresses
+            SET parking_status = {P}, updated_at = {now_sql}
+            WHERE id = {P} AND status = 'ACTIVE'
+        """, (status, address_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_addresses_pending_parking_review(admin_id: int) -> list:
+    """Retorna direcciones de clientes aliados del admin que necesitan revision de parqueadero.
+
+    IMPORTANTE PRIVACIDAD: solo retorna datos geograficos (direccion, ciudad, barrio)
+    y nombre del aliado. NO incluye nombre ni telefono del cliente.
+    Incluye registros con parking_status: NOT_ASKED, ALLY_YES, PENDING_REVIEW.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+               aca.parking_reviewed_by, aca.parking_reviewed_at,
+               al.business_name AS ally_name
+        FROM ally_customer_addresses aca
+        JOIN ally_customers ac ON aca.customer_id = ac.id
+        JOIN allies al ON ac.ally_id = al.id
+        JOIN admin_allies aa ON aa.ally_id = al.id
+            AND aa.admin_id = {P} AND aa.status = 'APPROVED'
+        WHERE aca.status = 'ACTIVE'
+          AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
+        ORDER BY aca.created_at DESC
+        LIMIT 30
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_addresses_parking_review(admin_id: int) -> list:
+    """Retorna todas las direcciones (pendientes y revisadas) del admin para consulta y correccion.
+
+    IMPORTANTE PRIVACIDAD: solo datos geograficos y nombre del aliado. Sin PII del cliente.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+               aca.parking_reviewed_by, aca.parking_reviewed_at,
+               al.business_name AS ally_name
+        FROM ally_customer_addresses aca
+        JOIN ally_customers ac ON aca.customer_id = ac.id
+        JOIN allies al ON ac.ally_id = al.id
+        JOIN admin_allies aa ON aa.ally_id = al.id
+            AND aa.admin_id = {P} AND aa.status = 'APPROVED'
+        WHERE aca.status = 'ACTIVE'
+        ORDER BY
+            CASE aca.parking_status
+                WHEN 'ALLY_YES' THEN 1
+                WHEN 'PENDING_REVIEW' THEN 2
+                WHEN 'NOT_ASKED' THEN 3
+                ELSE 4
+            END,
+            aca.created_at DESC
+        LIMIT 50
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def update_customer_address_coords(address_id: int, customer_id: int, lat: float, lng: float) -> bool:

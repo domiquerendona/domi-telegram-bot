@@ -465,6 +465,8 @@ from handlers.admin_panel import (
     admin_aprobar_rechazar_callback,
     pendientes,
     admin_config_callback,
+    admin_parking_review,
+    admin_parking_review_callback,
 )
 from handlers.courier_panel import (
     courier_earnings_start,
@@ -1246,6 +1248,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("💰 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
+            [InlineKeyboardButton("🅿️ Revisar parqueaderos", callback_data="parking_review_list")],
         ]
         update.message.reply_text(
             header +
@@ -1296,6 +1299,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
+        [InlineKeyboardButton("🅿️ Revisar parqueaderos", callback_data="parking_review_list")],
     ]
 
     update.message.reply_text(
@@ -2266,6 +2270,16 @@ def main():
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
+
+    # Parqueadero: revision de direcciones (admin local y plataforma)
+    dp.add_handler(CallbackQueryHandler(
+        lambda u, c: admin_parking_review(u, c, show_all=False),
+        pattern=r"^parking_review_list$"
+    ))
+    dp.add_handler(CallbackQueryHandler(
+        admin_parking_review_callback,
+        pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas)$"
+    ))
 
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_)"))
 

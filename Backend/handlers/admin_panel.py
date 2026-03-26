@@ -29,6 +29,10 @@ from services import (
     get_admin_reference_validator_permission,
     get_admin_reset_state_by_id,
     get_all_admins,
+    PARKING_FEE_AMOUNT,
+    set_address_parking_status,
+    get_addresses_pending_parking_review,
+    get_all_addresses_parking_review,
     get_all_allies,
     get_all_couriers,
     get_all_local_admins,
@@ -2626,6 +2630,118 @@ def admin_config_callback(update, context):
         return
 
     query.answer("Opción no reconocida.", show_alert=True)
+
+
+def _parking_status_label(status):
+    """Etiqueta legible para el estado de parqueadero."""
+    return {
+        "NOT_ASKED": "Sin revisar",
+        "ALLY_YES": "Aliado dice SI (pendiente verificacion)",
+        "PENDING_REVIEW": "Aliado dice NO (pendiente revision)",
+        "ADMIN_YES": "Confirmado: SI tiene parqueadero",
+        "ADMIN_NO": "Confirmado: NO tiene parqueadero",
+    }.get(status, status)
+
+
+def admin_parking_review(update, context, show_all=False):
+    """Muestra al admin la lista de direcciones pendientes de revision de parqueadero.
+
+    PRIVACIDAD: solo muestra datos geograficos (direccion, ciudad, barrio) y nombre
+    del aliado. Nunca expone nombre ni telefono del cliente.
+    show_all=True: incluye tambien las ya revisadas (para correccion).
+    """
+    if update.callback_query:
+        query = update.callback_query
+        query.answer()
+        user_id = query.from_user.id
+        send_fn = query.edit_message_text
+    else:
+        user_id = update.effective_user.id
+        send_fn = update.message.reply_text
+
+    admin = get_admin_by_user_id(get_user_db_id_from_update(update))
+    if not admin:
+        send_fn("No tienes un perfil de administrador activo.")
+        return
+
+    admin_id = admin["id"]
+    rows = get_all_addresses_parking_review(admin_id) if show_all else get_addresses_pending_parking_review(admin_id)
+
+    if not rows:
+        keyboard = [[InlineKeyboardButton("Ver todas (incluyendo revisadas)", callback_data="parking_ver_todas")]]
+        send_fn(
+            "No hay direcciones pendientes de revision de parqueadero.\n\n"
+            "Puedes ver tambien las ya revisadas para corregirlas si es necesario.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    title = "REVISION DE PARQUEADEROS\n\n" if not show_all else "TODAS LAS DIRECCIONES (parqueadero)\n\n"
+    lines = []
+    keyboard = []
+    for row in rows:
+        addr_id = row["id"] if "id" in row.keys() else row[0]
+        address_text = row["address_text"] if "address_text" in row.keys() else row[1]
+        city = row["city"] if "city" in row.keys() else row[2]
+        barrio = row["barrio"] if "barrio" in row.keys() else row[3]
+        status = row["parking_status"] if "parking_status" in row.keys() else row[4]
+        ally_name = row["ally_name"] if "ally_name" in row.keys() else row[7]
+
+        location_label = "{}, {}".format(barrio or "Sin barrio", city or "Sin ciudad")
+        lines.append(
+            "Aliado: {}\nDireccion: {}\nZona: {}\nEstado: {}".format(
+                ally_name, address_text[:40], location_label, _parking_status_label(status)
+            )
+        )
+        keyboard.append([
+            InlineKeyboardButton("SI parqueadero", callback_data="parking_rev_yes_{}".format(addr_id)),
+            InlineKeyboardButton("NO parqueadero", callback_data="parking_rev_no_{}".format(addr_id)),
+        ])
+
+    if not show_all:
+        keyboard.append([InlineKeyboardButton("Ver todas (con revisadas)", callback_data="parking_ver_todas")])
+
+    text = title + "\n\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n... (hay mas registros)"
+
+    send_fn(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def admin_parking_review_callback(update, context):
+    """Procesa la decision del admin sobre parqueadero de una direccion."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "parking_ver_todas":
+        admin_parking_review(update, context, show_all=True)
+        return
+
+    if data.startswith("parking_rev_yes_") or data.startswith("parking_rev_no_"):
+        try:
+            address_id = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            query.answer("Error de formato.", show_alert=True)
+            return
+
+        admin = get_admin_by_user_id(get_user_db_id_from_update(update))
+        if not admin:
+            query.answer("No tienes perfil de administrador.", show_alert=True)
+            return
+        admin_id = admin["id"]
+
+        if data.startswith("parking_rev_yes_"):
+            set_address_parking_status(address_id, "ADMIN_YES", reviewed_by=admin_id)
+            query.answer(
+                "Confirmado: SI tiene parqueadero. Se aplicaran ${:,} en pedidos a esta direccion.".format(PARKING_FEE_AMOUNT),
+                show_alert=True
+            )
+        else:
+            set_address_parking_status(address_id, "ADMIN_NO", reviewed_by=admin_id)
+            query.answer("Confirmado: NO tiene parqueadero.", show_alert=True)
+
+        admin_parking_review(update, context, show_all=False)
 
 
 def config_ally_subsidy_start(update, context):
