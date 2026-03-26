@@ -2380,6 +2380,90 @@ def get_setting(key: str, default=None):
     return row["value"] if row else default
 
 
+def ensure_platform_sociedad():
+    """
+    Asegura que exista la entidad contable de la Sociedad en admins (team_code='SOCIEDAD').
+    - Usuario sistema con telegram_id=0 (reservado, nunca un Telegram real).
+    - Solo puede existir UNA fila SOCIEDAD (UNIQUE en team_code).
+    - Idempotente: no modifica si ya existe.
+    Retorna el admins.id de la sociedad.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    NOW = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
+    # 1) Asegurar users fila para el sistema (telegram_id=0)
+    cur.execute(f"SELECT id FROM users WHERE telegram_id = 0 LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        system_user_id = _row_value(row, "id", 0)
+    else:
+        system_user_id = _insert_returning_id(
+            cur,
+            f"INSERT INTO users (telegram_id, username, role, created_at)"
+            f" VALUES (0, 'sociedad_sistema', NULL, {NOW})",
+            (),
+        )
+
+    # 2) Asegurar admins fila SOCIEDAD
+    cur.execute("SELECT id FROM admins WHERE team_code = 'SOCIEDAD' LIMIT 1")
+    admin_row = cur.fetchone()
+    if admin_row:
+        sociedad_id = _row_value(admin_row, "id", 0)
+    else:
+        sociedad_id = _insert_returning_id(
+            cur,
+            f"INSERT INTO admins"
+            f" (user_id, full_name, phone, city, barrio,"
+            f"  status, created_at, team_name, document_number, team_code)"
+            f" VALUES ({P},{P},{P},{P},{P},'APPROVED',{NOW},{P},{P},'SOCIEDAD')",
+            (
+                system_user_id,
+                "Sociedad Domiquerendona",
+                "+570000000000",
+                "SISTEMA",
+                "SISTEMA",
+                "Domiquerendona Sociedad",
+                "SOCIEDAD",
+            ),
+        )
+        # Guardar en settings para lookup rápido
+        cur.execute(
+            f"INSERT INTO settings (key, value) VALUES ({P},{P})"
+            f" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            ("platform_sociedad_id", str(sociedad_id)),
+        ) if DB_ENGINE == "postgres" else cur.execute(
+            f"INSERT OR REPLACE INTO settings (key, value) VALUES ({P},{P})",
+            ("platform_sociedad_id", str(sociedad_id)),
+        )
+
+    conn.commit()
+    conn.close()
+    print(f"[BOOT] ensure_platform_sociedad: sociedad_id={sociedad_id}")
+    return sociedad_id
+
+
+def get_platform_sociedad_id() -> int:
+    """
+    Retorna admins.id de la cuenta contable de la Sociedad (team_code='SOCIEDAD').
+    Usa settings como cache; fallback a query directa.
+    """
+    val = get_setting("platform_sociedad_id")
+    if val:
+        try:
+            return int(val)
+        except Exception:
+            pass
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM admins WHERE team_code = 'SOCIEDAD' AND is_deleted = 0 LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return _row_value(row, "id", 0)
+    return 0
+
+
 def get_platform_admin_id() -> int:
     """
     Retorna admins.id del Administrador de Plataforma.
@@ -8781,6 +8865,127 @@ def get_courier_earnings_between(courier_id: int, start_s: str, end_s: str):
     return _get_courier_earnings_between(courier_id, start_s, end_s)
 
 
+def get_admin_balance_breakdown(admin_id: int) -> dict:
+    """
+    Desglose del saldo master del admin para el mes en curso.
+    Retorna: fees_mes, fees_total, ingresos_mes, recargas_mes, subs_mes, mes_inicio.
+    Compatible SQLite y PostgreSQL (usa comparación de strings para fechas).
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    mes_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    mes_start_s = mes_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Fees del mes (FEE_INCOME + PLATFORM_FEE como receptor)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    fees_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    # Fees acumulados totales
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}",
+        (admin_id,),
+    )
+    fees_total = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    # Ingresos externos del mes
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f" WHERE kind = 'INCOME' AND to_type = 'ADMIN' AND to_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    ingresos_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    # Recargas aprobadas salidas del mes (el admin es el origen)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f" WHERE kind = 'RECHARGE' AND from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    recargas_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    # Ganancias por suscripciones del mes
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f" WHERE kind IN ('SUBSCRIPTION_PLATFORM_SHARE', 'SUBSCRIPTION_ADMIN_SHARE')"
+        f" AND to_type = 'ADMIN' AND to_id = {P} AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    subs_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+
+    conn.close()
+    return {
+        "fees_mes": fees_mes,
+        "fees_total": fees_total,
+        "ingresos_mes": ingresos_mes,
+        "recargas_mes": recargas_mes,
+        "subs_mes": subs_mes,
+        "mes_inicio": mes_start_s[:7],
+    }
+
+
+def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = None, limit: int = 30) -> list:
+    """
+    Movimientos del ledger del admin: entradas donde el admin recibe (to_id)
+    o envía (from_id) dinero. Ordenados por fecha DESC.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    date_filter = ""
+    date_params = []
+    if start_s:
+        date_filter += f" AND created_at >= {P}"
+        date_params.append(start_s)
+    if end_s:
+        date_filter += f" AND created_at < {P}"
+        date_params.append(end_s)
+
+    params = [admin_id, admin_id] + date_params + [limit]
+    cur.execute(
+        f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
+        f" FROM ledger"
+        f" WHERE ("
+        f"   (to_type = 'ADMIN' AND to_id = {P})"
+        f"   OR (from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P})"
+        f" ){date_filter}"
+        f" ORDER BY created_at DESC"
+        f" LIMIT {P}",
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        to_type = _row_value(r, "to_type", 5, "") or ""
+        to_id_val = _row_value(r, "to_id", 6, 0) or 0
+        direction = "IN" if (to_type == "ADMIN" and to_id_val == admin_id) else "OUT"
+        result.append({
+            "id": _row_value(r, "id", 0),
+            "kind": _row_value(r, "kind", 1, "") or "",
+            "amount": _row_value(r, "amount", 2, 0) or 0,
+            "from_type": _row_value(r, "from_type", 3, "") or "",
+            "from_id": _row_value(r, "from_id", 4, 0) or 0,
+            "to_type": to_type,
+            "to_id": to_id_val,
+            "note": _row_value(r, "note", 7, "") or "",
+            "created_at": str(_row_value(r, "created_at", 8, "")) or "",
+            "direction": direction,
+        })
+    return result
+
+
 def close_accounting_week(week_key: str, closed_by: str = "SYSTEM") -> bool:
     conn = get_connection()
     cur = conn.cursor()
@@ -9015,6 +9220,21 @@ def get_platform_admin():
         SELECT id, user_id, full_name, team_name, team_code, balance
         FROM admins
         WHERE team_code = 'PLATFORM' AND is_deleted = 0
+        LIMIT 1
+    """)
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_platform_sociedad():
+    """Obtiene la entidad contable de la Sociedad (team_code='SOCIEDAD')."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, full_name, team_name, team_code, balance
+        FROM admins
+        WHERE team_code = 'SOCIEDAD' AND is_deleted = 0
         LIMIT 1
     """)
     row = cur.fetchone()

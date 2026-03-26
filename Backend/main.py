@@ -266,6 +266,7 @@ from db import (
     init_db,
     force_platform_admin,
     ensure_pricing_defaults,
+    ensure_platform_sociedad,
 )
 from profile_changes import (
     profile_change_conv,
@@ -342,6 +343,8 @@ from handlers.recharges import (
     admin_local_callback,
     ally_approval_callback,
     ally_suscripcion_conv,
+    admin_movimientos_callback,
+    admin_movimientos_periodo_callback,
 )
 from handlers.registration import (
     soy_aliado,
@@ -1240,6 +1243,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
             [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
+            [InlineKeyboardButton("💰 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         ]
@@ -2143,6 +2147,7 @@ def main():
 
     init_db()
     force_platform_admin(ADMIN_USER_ID)
+    ensure_platform_sociedad()
     ensure_pricing_defaults()
     sync_all_courier_link_statuses()
     expire_old_ally_subscriptions()
@@ -2207,6 +2212,8 @@ def main():
     dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
     dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_mes|soc_todo)$"))
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
