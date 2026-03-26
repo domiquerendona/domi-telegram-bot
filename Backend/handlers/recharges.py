@@ -408,15 +408,15 @@ def recargar_monto(update, context):
         payment_info = get_admin_payment_info(platform_id)
         if payment_info:
             info_text = "Datos de pago de Plataforma:\n\n"
-            if payment_info.get("bank_name"):
+            if payment_info["bank_name"]:
                 info_text += "Banco: {}\n".format(payment_info["bank_name"])
-            if payment_info.get("account_type"):
+            if payment_info["account_type"]:
                 info_text += "Tipo: {}\n".format(payment_info["account_type"])
-            if payment_info.get("account_number"):
+            if payment_info["account_number"]:
                 info_text += "Cuenta: {}\n".format(payment_info["account_number"])
-            if payment_info.get("nequi_number"):
+            if payment_info["nequi_number"]:
                 info_text += "Nequi: {}\n".format(payment_info["nequi_number"])
-            if payment_info.get("daviplata_number"):
+            if payment_info["daviplata_number"]:
                 info_text += "Daviplata: {}\n".format(payment_info["daviplata_number"])
             info_text += "\nMonto a pagar: ${:,}\n\n".format(monto)
             info_text += "Realiza el pago y envia el comprobante (foto)."
@@ -847,21 +847,21 @@ def recharge_callback(update, context):
         if success:
             # Notificar al solicitante (ally/courier/admin) su nuevo saldo
             try:
-                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user_id = _req["requested_by_user_id"] if _req else None
                 req_user = get_user_by_id(req_user_id) if req_user_id else None
-                req_chat_id = req_user.get("telegram_id") if req_user else None
+                req_chat_id = req_user["telegram_id"] if req_user else None
 
                 new_balance = None
-                if _req and _req.get("target_type") == "COURIER":
-                    link = get_approved_admin_link_for_courier(_req.get("target_id"))
+                if _req and _req["target_type"] == "COURIER":
+                    link = get_approved_admin_link_for_courier(_req["target_id"])
                     if link:
-                        new_balance = link.get("balance")
-                elif _req and _req.get("target_type") == "ALLY":
-                    link = get_approved_admin_link_for_ally(_req.get("target_id"))
+                        new_balance = link["balance"]
+                elif _req and _req["target_type"] == "ALLY":
+                    link = get_approved_admin_link_for_ally(_req["target_id"])
                     if link:
-                        new_balance = link.get("balance")
-                elif _req and _req.get("target_type") == "ADMIN":
-                    new_balance = get_admin_balance(_req.get("target_id"))
+                        new_balance = link["balance"]
+                elif _req and _req["target_type"] == "ADMIN":
+                    new_balance = get_admin_balance(_req["target_id"])
 
                 if req_chat_id and (new_balance is not None):
                     context.bot.send_message(
@@ -900,9 +900,9 @@ def recharge_callback(update, context):
         if success:
             # Notificar al solicitante (ally/courier/admin) sobre el rechazo
             try:
-                req_user_id = _req.get("requested_by_user_id") if _req else None
+                req_user_id = _req["requested_by_user_id"] if _req else None
                 req_user = get_user_by_id(req_user_id) if req_user_id else None
-                req_chat_id = req_user.get("telegram_id") if req_user else None
+                req_chat_id = req_user["telegram_id"] if req_user else None
                 if req_chat_id:
                     context.bot.send_message(
                         chat_id=req_chat_id,
@@ -1495,8 +1495,8 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_check_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full.get("status") or "-"
-        team_code = admin_full.get("team_code") or "-"
+        status = admin_full["status"] or "-"
+        team_code = admin_full["team_code"] or "-"
 
         # Administrador de Plataforma: siempre operativo
         if team_code == "PLATFORM":
@@ -1565,8 +1565,8 @@ def admin_local_callback(update, context):
 
     if data.startswith("local_status_"):
         admin_full = get_admin_by_id(admin_id)
-        status = admin_full.get("status") or "-"
-        team_code = admin_full.get("team_code") or "-"
+        status = admin_full["status"] or "-"
+        team_code = admin_full["team_code"] or "-"
 
         # Administrador de Plataforma: mensaje especial
         if team_code == "PLATFORM":
@@ -1643,9 +1643,9 @@ def admin_local_callback(update, context):
             query.edit_message_text("No se encontró el repartidor.")
             return
 
-        residence_address = courier.get("residence_address")
-        residence_lat = courier.get("residence_lat")
-        residence_lng = courier.get("residence_lng")
+        residence_address = courier["residence_address"]
+        residence_lat = courier["residence_lat"]
+        residence_lng = courier["residence_lng"]
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -1683,9 +1683,9 @@ def admin_local_callback(update, context):
 
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
-        cedula_front = courier.get("cedula_front_file_id")
-        cedula_back = courier.get("cedula_back_file_id")
-        selfie = courier.get("selfie_file_id")
+        cedula_front = courier["cedula_front_file_id"]
+        cedula_back = courier["cedula_back_file_id"]
+        selfie = courier["selfie_file_id"]
         if cedula_front or cedula_back or selfie:
             try:
                 if cedula_front:
@@ -1702,7 +1702,7 @@ def admin_local_callback(update, context):
     # Bloquear acciones de aprobar/rechazar/bloquear si Admin Local no esta APPROVED
     if data.startswith(("local_courier_approve_", "local_courier_reject_", "local_courier_block_")):
         admin_full = get_admin_by_id(admin_id)
-        admin_status = admin_full.get("status") if admin_full else None
+        admin_status = admin_full["status"] if admin_full else None
         if admin_status != "APPROVED":
             query.answer("Acceso restringido: tu Admin Local no esta APPROVED.", show_alert=True)
             return
@@ -1823,13 +1823,13 @@ def admin_local_callback(update, context):
             "Barrio: {}\n"
             "Direccion: {}\n"
         ).format(
-            ally.get("id"),
-            ally.get("business_name") or "-",
-            ally.get("owner_name") or "-",
-            ally.get("phone") or "-",
-            ally.get("city") or "-",
-            ally.get("barrio") or "-",
-            ally.get("address") or "-",
+            ally["id"],
+            ally["business_name"] or "-",
+            ally["owner_name"] or "-",
+            ally["phone"] or "-",
+            ally["city"] or "-",
+            ally["barrio"] or "-",
+            ally["address"] or "-",
         )
         keyboard = [
             [
@@ -1839,9 +1839,9 @@ def admin_local_callback(update, context):
             [InlineKeyboardButton("⬅ Volver", callback_data=f"local_allies_pending_{admin_id}")]
         ]
         query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
-        cedula_front = ally.get("cedula_front_file_id")
-        cedula_back = ally.get("cedula_back_file_id")
-        selfie = ally.get("selfie_file_id")
+        cedula_front = ally["cedula_front_file_id"]
+        cedula_back = ally["cedula_back_file_id"]
+        selfie = ally["selfie_file_id"]
         if cedula_front or cedula_back or selfie:
             try:
                 if cedula_front:
@@ -1857,7 +1857,7 @@ def admin_local_callback(update, context):
     if data.startswith("local_ally_approve_") or data.startswith("local_ally_reject_"):
         ally_id_val = int(data.split("_")[-1])
         admin_full = get_admin_by_id(admin_id)
-        admin_status = admin_full.get("status") if admin_full else None
+        admin_status = admin_full["status"] if admin_full else None
         if admin_status != "APPROVED":
             query.edit_message_text("Tu cuenta de administrador no está APPROVED. No puedes aprobar/rechazar aliados.")
             return

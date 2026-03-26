@@ -448,7 +448,7 @@ def config_ally_minpurchase_start(update, context):
     query.answer()
     telegram_id = query.from_user.id
     admin = get_admin_by_telegram_id(telegram_id)
-    if not admin or admin.get("role") != "PLATFORM_ADMIN":
+    if not admin or admin["role"] != "PLATFORM_ADMIN":
         query.answer("Solo el Administrador de Plataforma puede editar esto.", show_alert=True)
         return ConversationHandler.END
     ally_id = int(query.data.split("_")[-1])

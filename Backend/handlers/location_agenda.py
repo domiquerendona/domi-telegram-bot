@@ -58,14 +58,14 @@ def _ally_locs_mostrar_lista(query_or_update, ally_id, edit=False, aviso=None):
     keyboard = []
     if locations:
         for loc in locations:
-            label = (loc.get("label") or "Sin nombre")[:25]
+            label = (loc["label"] or "Sin nombre")[:25]
             tags = []
-            if loc.get("is_default"):
+            if loc["is_default"]:
                 tags.append("BASE")
-            if loc.get("is_frequent"):
+            if loc["is_frequent"]:
                 tags.append("FRECUENTE")
             tag_str = " [{}]".format(", ".join(tags)) if tags else ""
-            sin_gps = " (sin GPS)" if loc.get("lat") is None else ""
+            sin_gps = " (sin GPS)" if loc["lat"] is None else ""
             keyboard.append([InlineKeyboardButton(
                 "{}{}{}".format(label, tag_str, sin_gps),
                 callback_data="ally_locs_ver_{}".format(loc["id"])
@@ -97,7 +97,7 @@ def mis_ubicaciones_start(update, context):
     """Muestra el panel de gestión de ubicaciones del aliado."""
     user_db_id = get_user_db_id_from_update(update)
     ally = get_ally_by_user_id(user_db_id)
-    if not ally or ally.get("status") != "APPROVED":
+    if not ally or ally["status"] != "APPROVED":
         update.message.reply_text(
             "No tienes un perfil de aliado activo. Contacta al administrador."
         )
@@ -130,11 +130,11 @@ def ally_locs_menu_callback(update, context):
         if not loc:
             return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Ubicacion no encontrada.")
 
-        label = loc.get("label") or "Sin nombre"
-        address = loc.get("address") or "-"
-        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc.get("lat") else "Sin GPS"
-        usos = loc.get("use_count") or 0
-        is_base = bool(loc.get("is_default"))
+        label = loc["label"] or "Sin nombre"
+        address = loc["address"] or "-"
+        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc["lat"] else "Sin GPS"
+        usos = loc["use_count"] or 0
+        is_base = bool(loc["is_default"])
 
         detalle = (
             "UBICACION: {}\n\n"
@@ -180,7 +180,7 @@ def ally_locs_menu_callback(update, context):
         except (ValueError, IndexError):
             return _ally_locs_mostrar_lista(query, ally_id, edit=True)
         loc = get_ally_location_by_id(loc_id, ally_id)
-        label = loc.get("label") or "esta ubicacion" if loc else "esta ubicacion"
+        label = loc["label"] or "esta ubicacion" if loc else "esta ubicacion"
         keyboard = [
             [InlineKeyboardButton(
                 "Confirmar eliminacion",

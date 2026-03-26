@@ -154,7 +154,7 @@ def nuevo_pedido(update, context):
 
         ally = get_ally_by_user_id(db_user["id"])
         print(
-            f"[DEBUG][nuevo_pedido] ally_found={bool(ally)} ally_status={ally.get('status') if ally else None}",
+            f"[DEBUG][nuevo_pedido] ally_found={bool(ally)} ally_status={ally['status'] if ally else None}",
             flush=True,
         )
         if not ally:
@@ -596,9 +596,9 @@ def pedido_tipo_servicio_callback(update, context):
             customer = get_ally_customer_by_id(customer_id, ally_id)
             if customer:
                 if not context.user_data.get("customer_name"):
-                    context.user_data["customer_name"] = customer.get("name") or ""
+                    context.user_data["customer_name"] = customer["name"] or ""
                 if not context.user_data.get("customer_phone"):
-                    context.user_data["customer_phone"] = customer.get("phone") or ""
+                    context.user_data["customer_phone"] = customer["phone"] or ""
 
     # Verificar si ya tenemos todos los datos del cliente
     has_name = context.user_data.get("customer_name")
@@ -872,10 +872,10 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     if not pickup_text and ally_id:
         default_location = get_default_ally_location(ally_id)
         if default_location:
-            pickup_text = default_location.get("address")
-            pickup_city = default_location.get("city") or ""
-            pickup_lat = default_location.get("lat")
-            pickup_lng = default_location.get("lng")
+            pickup_text = default_location["address"]
+            pickup_city = default_location["city"] or ""
+            pickup_lat = default_location["lat"]
+            pickup_lng = default_location["lng"]
 
     if not pickup_text:
         return mostrar_error_cotizacion(
@@ -983,14 +983,14 @@ def pedido_telefono_cliente(update, context):
         existing = get_ally_customer_by_phone(ally_id, digits) if ally_id else None
         if existing:
             context.user_data["dedup_found_customer_id"] = existing["id"]
-            context.user_data["dedup_found_name"] = existing.get("name") or ""
+            context.user_data["dedup_found_name"] = existing["name"] or ""
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Si, usar este cliente", callback_data="pedido_dedup_si")],
                 [InlineKeyboardButton("No, es otro cliente", callback_data="pedido_dedup_no")],
             ])
             update.message.reply_text(
                 "Este numero ya esta en tu agenda: {}\n\n"
-                "Usar este cliente para el pedido?".format(existing.get("name") or digits),
+                "Usar este cliente para el pedido?".format(existing["name"] or digits),
                 reply_markup=keyboard,
             )
             return PEDIDO_DEDUP_CONFIRM
@@ -1014,8 +1014,8 @@ def pedido_telefono_cliente(update, context):
             if address_id:
                 addr = get_customer_address_by_id(address_id, customer_id)
                 if addr:
-                    context.user_data["dropoff_lat"] = addr.get("lat")
-                    context.user_data["dropoff_lng"] = addr.get("lng")
+                    context.user_data["dropoff_lat"] = addr["lat"]
+                    context.user_data["dropoff_lng"] = addr["lng"]
                     dropoff_lat = context.user_data.get("dropoff_lat")
                     dropoff_lng = context.user_data.get("dropoff_lng")
 
@@ -1318,18 +1318,18 @@ def mostrar_selector_pickup(query_or_update, context, edit=False):
     keyboard = []
     if ally_id:
         locations = get_ally_locations(ally_id)
-        default_loc = next((l for l in locations if l.get("is_default")), None)
+        default_loc = next((l for l in locations if l["is_default"]), None)
 
         if default_loc:
-            label = (default_loc.get("label") or "Base")[:20]
-            address = (default_loc.get("address") or "")[:35]
-            sin_gps = " (sin GPS)" if default_loc.get("lat") is None else ""
+            label = (default_loc["label"] or "Base")[:20]
+            address = (default_loc["address"] or "")[:35]
+            sin_gps = " (sin GPS)" if default_loc["lat"] is None else ""
             keyboard.append([InlineKeyboardButton(
                 "Usar base: {} - {}{}".format(label, address, sin_gps),
                 callback_data="pickup_select_base"
             )])
 
-        otros = [l for l in locations if not l.get("is_default")]
+        otros = [l for l in locations if not l["is_default"]]
         if otros or (locations and not default_loc):
             n = len(locations)
             keyboard.append([InlineKeyboardButton(
@@ -1377,8 +1377,8 @@ def pedido_pickup_callback(update, context):
             )
             return mostrar_selector_pickup(query, context, edit=False)
 
-        default_lat = default_loc.get("lat")
-        default_lng = default_loc.get("lng")
+        default_lat = default_loc["lat"]
+        default_lng = default_loc["lng"]
         if default_lat is None or default_lng is None:
             keyboard = [
                 [InlineKeyboardButton("Enviar PIN ahora", callback_data="pickup_select_fixbasecoords")],
@@ -1394,12 +1394,12 @@ def pedido_pickup_callback(update, context):
 
         # Guardar pickup en user_data
         context.user_data["pickup_location"] = default_loc
-        context.user_data["pickup_label"] = default_loc.get("label") or "Base"
-        context.user_data["pickup_address"] = default_loc.get("address", "")
-        context.user_data["pickup_city"] = default_loc.get("city", "")
-        context.user_data["pickup_barrio"] = default_loc.get("barrio", "")
-        context.user_data["pickup_lat"] = default_loc.get("lat")
-        context.user_data["pickup_lng"] = default_loc.get("lng")
+        context.user_data["pickup_label"] = default_loc["label"] or "Base"
+        context.user_data["pickup_address"] = default_loc["address"] or ""
+        context.user_data["pickup_city"] = default_loc["city"] or ""
+        context.user_data["pickup_barrio"] = default_loc["barrio"] or ""
+        context.user_data["pickup_lat"] = default_loc["lat"]
+        context.user_data["pickup_lng"] = default_loc["lng"]
 
         # Continuar al siguiente paso
         return continuar_despues_pickup(query, context, edit=True)
@@ -1446,14 +1446,14 @@ def pedido_pickup_callback(update, context):
 
 def construir_etiqueta_pickup(loc):
     """Construye etiqueta para un pickup con info de uso."""
-    label = loc.get("label") or loc.get("address", "Sin nombre")[:25]
+    label = loc["label"] or (loc["address"] or "Sin nombre")[:25]
     tags = []
 
-    if loc.get("is_default"):
+    if loc["is_default"]:
         tags.append("BASE")
-    if loc.get("is_frequent"):
+    if loc["is_frequent"]:
         tags.append("FRECUENTE")
-    elif loc.get("use_count", 0) > 0:
+    elif (loc["use_count"] or 0) > 0:
         tags.append(f"x{loc['use_count']}")
 
     if tags:
@@ -1481,17 +1481,17 @@ def mostrar_lista_pickups(query, context):
     # Botones directos sin submenú — un clic usa la dirección
     keyboard = []
     for loc in locations[:8]:
-        label = (loc.get("label") or "Sin nombre")[:20]
-        address = (loc.get("address") or "")[:28]
+        label = (loc["label"] or "Sin nombre")[:20]
+        address = (loc["address"] or "")[:28]
         tags = []
-        if loc.get("is_default"):
+        if loc["is_default"]:
             tags.append("BASE")
-        if loc.get("is_frequent"):
+        if loc["is_frequent"]:
             tags.append("FRECUENTE")
-        elif loc.get("use_count", 0) > 0:
+        elif (loc["use_count"] or 0) > 0:
             tags.append("x{}".format(loc["use_count"]))
         tag_str = " [{}]".format(", ".join(tags)) if tags else ""
-        sin_gps = " (sin GPS)" if loc.get("lat") is None else ""
+        sin_gps = " (sin GPS)" if loc["lat"] is None else ""
         keyboard.append([InlineKeyboardButton(
             "{}: {}{}{}".format(label, address, tag_str, sin_gps),
             callback_data="pickup_list_usar_{}".format(loc["id"])
@@ -1545,17 +1545,17 @@ def pedido_pickup_lista_callback(update, context):
             query.edit_message_text("Error: direccion no encontrada.")
             return mostrar_selector_pickup(query, context, edit=False)
 
-        if location.get("lat") is None or location.get("lng") is None:
+        if location["lat"] is None or location["lng"] is None:
             query.answer("Esta direccion no tiene GPS. Selecciona otra o agrega una nueva.", show_alert=True)
             return mostrar_lista_pickups(query, context)
 
         context.user_data["pickup_location"] = location
-        context.user_data["pickup_label"] = location.get("label") or "Recogida"
-        context.user_data["pickup_address"] = location.get("address", "")
-        context.user_data["pickup_city"] = location.get("city", "")
-        context.user_data["pickup_barrio"] = location.get("barrio", "")
-        context.user_data["pickup_lat"] = location.get("lat")
-        context.user_data["pickup_lng"] = location.get("lng")
+        context.user_data["pickup_label"] = location["label"] or "Recogida"
+        context.user_data["pickup_address"] = location["address"] or ""
+        context.user_data["pickup_city"] = location["city"] or ""
+        context.user_data["pickup_barrio"] = location["barrio"] or ""
+        context.user_data["pickup_lat"] = location["lat"]
+        context.user_data["pickup_lng"] = location["lng"]
 
         return continuar_despues_pickup(query, context, edit=True)
 
@@ -1769,7 +1769,7 @@ def pedido_pickup_nueva_detalles_handler(update, context):
     default_city = "Pereira"
     if ally:
         default_loc = get_default_ally_location(ally["id"])
-        if default_loc and default_loc.get("city"):
+        if default_loc and default_loc["city"]:
             default_city = default_loc["city"]
 
     update.message.reply_text(
@@ -2526,7 +2526,7 @@ def route_suggest_inc_fixed_callback(update, context):
         return
 
     route = get_route_by_id(route_id)
-    if not route or route.get("status") not in ("PUBLISHED",):
+    if not route or route["status"] not in ("PUBLISHED",):
         query.edit_message_text("Esta ruta ya no permite agregar incentivo.")
         return
 
@@ -2538,8 +2538,8 @@ def route_suggest_inc_fixed_callback(update, context):
     repost_count = repost_route_to_couriers(route_id, context)
 
     route = get_route_by_id(route_id)
-    total_fee = int(route.get("total_fee") or 0) if route else 0
-    incentive = int(route.get("additional_incentive") or 0) if route else delta
+    total_fee = int(route["total_fee"] or 0) if route else 0
+    incentive = int(route["additional_incentive"] or 0) if route else delta
 
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
@@ -2563,7 +2563,7 @@ def route_suggest_inc_otro_start(update, context):
         return ConversationHandler.END
 
     route = get_route_by_id(route_id)
-    if not route or route.get("status") not in ("PUBLISHED",):
+    if not route or route["status"] not in ("PUBLISHED",):
         query.edit_message_text("Esta ruta ya no permite agregar incentivo.")
         return ConversationHandler.END
 
@@ -2603,8 +2603,8 @@ def route_suggest_inc_monto_handler(update, context):
     context.user_data.pop("route_suggest_edit_route_id", None)
 
     route = get_route_by_id(route_id)
-    total_fee = int(route.get("total_fee") or 0) if route else 0
-    incentive = int(route.get("additional_incentive") or 0) if route else delta
+    total_fee = int(route["total_fee"] or 0) if route else 0
+    incentive = int(route["additional_incentive"] or 0) if route else delta
 
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
@@ -2737,7 +2737,7 @@ def admin_nuevo_pedido_start(update, context):
     query.answer()
     telegram_id = update.effective_user.id
     admin = get_admin_by_telegram_id(telegram_id)
-    if not admin or (admin.get("status") or "").upper() != "APPROVED":
+    if not admin or (admin["status"] or "").upper() != "APPROVED":
         query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
         return ConversationHandler.END
     admin_id = admin["id"]
@@ -3070,14 +3070,14 @@ def admin_pedido_cust_phone_handler(update, context):
     existing = get_admin_customer_by_phone(admin_id, digits) if admin_id else None
     if existing:
         context.user_data["admin_ped_dedup_cust_id"] = existing["id"]
-        context.user_data["admin_ped_dedup_name"] = existing.get("name") or ""
+        context.user_data["admin_ped_dedup_name"] = existing["name"] or ""
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Si, usar este cliente", callback_data="admin_ped_dedup_si")],
             [InlineKeyboardButton("No, es otro cliente", callback_data="admin_ped_dedup_no")],
         ])
         update.message.reply_text(
             "Este numero ya esta en tu agenda: {}\n\n"
-            "Usar este cliente para el pedido?".format(existing.get("name") or digits),
+            "Usar este cliente para el pedido?".format(existing["name"] or digits),
             reply_markup=keyboard,
         )
         return ADMIN_PEDIDO_CUST_DEDUP
@@ -3337,7 +3337,7 @@ def admin_pedido_confirmar_callback(update, context):
             query.edit_message_text(
                 success_msg + "\n\n"
                 "Este cliente ya esta en tu agenda ({}).\n"
-                "Deseas agregar esta direccion a su perfil?".format(existing.get("name") or cust_name),
+                "Deseas agregar esta direccion a su perfil?".format(existing["name"] or cust_name),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Si, agregar", callback_data="admin_ped_guardar_dir_si")],
                     [InlineKeyboardButton("No", callback_data="admin_ped_guardar_dir_no")],
@@ -3373,7 +3373,7 @@ def admin_pedido_buscar_cust_handler(update, context):
     texto = update.message.text.strip()
     admin_id = context.user_data.get("admin_ped_admin_id")
     resultados = search_admin_customers(admin_id, texto) if admin_id and texto else []
-    activos = [c for c in resultados if c.get("status") == "ACTIVE"]
+    activos = [c for c in resultados if c["status"] == "ACTIVE"]
     if not activos:
         update.message.reply_text(
             "No se encontro ningun cliente con '{}'.\n\nEscribe el nombre del cliente:".format(texto)
@@ -3401,12 +3401,12 @@ def admin_pedido_cust_dedup_callback(update, context):
         context.user_data["admin_ped_cust_name"] = name
         context.user_data["admin_ped_selected_cust_id"] = cust_id
         addrs = list_admin_customer_addresses(cust_id) if cust_id else []
-        activas = [a for a in addrs if a.get("status") == "ACTIVE"]
+        activas = [a for a in addrs if a["status"] == "ACTIVE"]
         if activas:
             keyboard = []
             for a in activas[:8]:
-                label = (a.get("label") or a.get("address_text") or "Direccion")[:30]
-                btn_text = "{}: {}".format(label, (a.get("address_text") or "")[:25])
+                label = (a["label"] or a["address_text"] or "Direccion")[:30]
+                btn_text = "{}: {}".format(label, (a["address_text"] or "")[:25])
                 keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_addr_{}".format(a["id"]))])
             keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="acust_pedido_addr_nueva")])
             query.edit_message_text(
@@ -3656,7 +3656,7 @@ def _pedido_confirmar_como_ruta(query, context):
             return ConversationHandler.END
 
     pickup_location = context.user_data.get("pickup_location")
-    pickup_location_id = pickup_location.get("id") if pickup_location else None
+    pickup_location_id = pickup_location["id"] if pickup_location else None
     if not pickup_location_id:
         default_loc = get_default_ally_location(ally_id)
         pickup_location_id = default_loc["id"] if default_loc else None
@@ -3842,13 +3842,13 @@ def pedido_confirmacion_callback(update, context):
         pickup_location = context.user_data.get("pickup_location")
         pickup_text = context.user_data.get("pickup_address", "")
         if pickup_location:
-            pickup_location_id = pickup_location.get("id")
+            pickup_location_id = pickup_location["id"]
         else:
             # Fallback: usar default si no se selecciono ninguno
             default_location = get_default_ally_location(ally_id)
             pickup_location_id = default_location["id"] if default_location else None
             if not pickup_text and default_location:
-                pickup_text = default_location.get("address", "No definida")
+                pickup_text = default_location["address"] or "No definida"
 
         if not pickup_text:
             pickup_text = "No definida"
@@ -4049,7 +4049,7 @@ def pedido_confirmacion_callback(update, context):
                         + ("No hay repartidores elegibles en este momento. El pedido quedo sin publicar.\n\n"
                            if published_count == 0 else "\n")
                         + "Deseas agregar esta direccion a la agenda de {}?".format(
-                            existing_customer.get("name") or "este cliente"
+                            existing_customer["name"] or "este cliente"
                         )
                     )
                     query.edit_message_text(
@@ -4211,12 +4211,12 @@ def pedido_dedup_confirm_callback(update, context):
         context.user_data["customer_phone"] = phone
         context.user_data["is_new_customer"] = False
         addrs = list_customer_addresses(cust_id) if cust_id else []
-        activas = [a for a in addrs if a.get("status") == "ACTIVE"]
+        activas = [a for a in addrs if a["status"] == "ACTIVE"]
         if activas:
             keyboard = []
             for a in activas[:8]:
-                label = (a.get("label") or a.get("address_text") or "Direccion")[:30]
-                text_btn = "{}: {}".format(label, (a.get("address_text") or "")[:25])
+                label = (a["label"] or a["address_text"] or "Direccion")[:30]
+                text_btn = "{}: {}".format(label, (a["address_text"] or "")[:25])
                 keyboard.append([InlineKeyboardButton(text_btn, callback_data="pedido_sel_addr_{}".format(a["id"]))])
             keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
             query.edit_message_text(
@@ -4299,7 +4299,7 @@ def _ally_bandeja_guardar_en_agenda(ally_id, solicitud):
             msg_dir = " Direccion nueva guardada{}.".format(" con coordenadas" if tiene_coords else "")
         else:
             addr_id = existente["id"]
-            if tiene_coords and not has_valid_coords(existente.get("lat"), existente.get("lng")):
+            if tiene_coords and not has_valid_coords(existente["lat"], existente["lng"]):
                 update_customer_address_coords(addr_id, customer_id, lat, lng)
                 msg_dir = " Direccion ya existia; coordenadas completadas."
             else:
@@ -4383,7 +4383,7 @@ def _ally_bandeja_precargar_pedido(context, ally, solicitud, request_id):
     context.user_data["customer_barrio"] = (solicitud["delivery_barrio"] or "").strip()
     if solicitud["notes"]:
         context.user_data["instructions"] = solicitud["notes"].strip()
-    if solicitud.get("purchase_amount_declared") is not None:
+    if solicitud["purchase_amount_declared"] is not None:
         context.user_data["pedido_purchase_amount_suggested"] = solicitud["purchase_amount_declared"]
     if has_valid_coords(solicitud["lat"], solicitud["lng"]):
         context.user_data["dropoff_lat"] = solicitud["lat"]
@@ -4391,12 +4391,12 @@ def _ally_bandeja_precargar_pedido(context, ally, solicitud, request_id):
     # Pre-cargar pickup default para que aparezca en resumen
     default_loc = get_default_ally_location(ally["id"])
     if default_loc:
-        context.user_data["pickup_address"] = default_loc.get("address") or ""
-        context.user_data["pickup_city"] = default_loc.get("city") or ""
-        context.user_data["pickup_barrio"] = default_loc.get("barrio") or ""
-        context.user_data["pickup_lat"] = default_loc.get("lat")
-        context.user_data["pickup_lng"] = default_loc.get("lng")
-        if default_loc.get("id"):
+        context.user_data["pickup_address"] = default_loc["address"] or ""
+        context.user_data["pickup_city"] = default_loc["city"] or ""
+        context.user_data["pickup_barrio"] = default_loc["barrio"] or ""
+        context.user_data["pickup_lat"] = default_loc["lat"]
+        context.user_data["pickup_lng"] = default_loc["lng"]
+        if default_loc["id"]:
             context.user_data["pickup_location_id"] = default_loc["id"]
 
 

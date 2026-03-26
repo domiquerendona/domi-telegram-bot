@@ -300,7 +300,7 @@ def _notify_courier_arrival_detected(context, order, courier):
     debe confirmarse manualmente desde el boton del courier.
     """
     courier_user = get_user_by_id(courier["user_id"]) if courier else None
-    if not courier_user or not courier_user.get("telegram_id"):
+    if not courier_user or not courier_user["telegram_id"]:
         return
 
     prompted = context.bot_data.setdefault("arrival_manual_prompted", {})
@@ -530,12 +530,12 @@ def _route_no_response_job(context):
         return
 
     route = get_route_by_id(route_id)
-    if not route or route.get("status") != "PUBLISHED":
+    if not route or route["status"] != "PUBLISHED":
         return
 
     creator_chat_id = None
     try:
-        ally_id = route.get("ally_id")
+        ally_id = route["ally_id"]
         if ally_id:
             ally = get_ally_by_id(int(ally_id))
             if ally:
@@ -549,8 +549,8 @@ def _route_no_response_job(context):
     if not creator_chat_id:
         return
 
-    total_fee = int(route.get("total_fee") or 0)
-    incentive = int(route.get("additional_incentive") or 0)
+    total_fee = int(route["total_fee"] or 0)
+    incentive = int(route["additional_incentive"] or 0)
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -588,13 +588,13 @@ def repost_route_to_couriers(route_id, context):
     Limpia la cola existente y relanza el ciclo de ofertas.
     """
     route = get_route_by_id(route_id)
-    if not route or route.get("status") != "PUBLISHED":
+    if not route or route["status"] != "PUBLISHED":
         return 0
 
     delete_route_offer_queue(route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
 
-    ally_id = route.get("ally_id")
+    ally_id = route["ally_id"]
     admin_id_override = _row_value(route, "ally_admin_id_snapshot")
     if admin_id_override:
         admin_id_override = int(admin_id_override)
@@ -789,13 +789,13 @@ def publish_order_to_couriers(
 
     if pickup_city is None or pickup_barrio is None:
         if pickup_loc_row:
-            pickup_city = pickup_city if pickup_city is not None else pickup_loc_row.get("city")
-            pickup_barrio = pickup_barrio if pickup_barrio is not None else pickup_loc_row.get("barrio")
+            pickup_city = pickup_city if pickup_city is not None else pickup_loc_row["city"]
+            pickup_barrio = pickup_barrio if pickup_barrio is not None else pickup_loc_row["barrio"]
         elif ally_id is not None:
             default_loc = get_default_ally_location(ally_id)
             if default_loc:
-                pickup_city = pickup_city if pickup_city is not None else default_loc.get("city")
-                pickup_barrio = pickup_barrio if pickup_barrio is not None else default_loc.get("barrio")
+                pickup_city = pickup_city if pickup_city is not None else default_loc["city"]
+                pickup_barrio = pickup_barrio if pickup_barrio is not None else default_loc["barrio"]
 
     if dropoff_city is None:
         dropoff_city = _row_value(order, "customer_city")
@@ -1001,7 +1001,7 @@ def _expire_order(order_id, cycle_info, context):
             ally = get_ally_by_id(ally_id)
             if ally:
                 ally_user = get_user_by_id(ally["user_id"])
-                if ally_user and ally_user.get("telegram_id"):
+                if ally_user and ally_user["telegram_id"]:
                     context.bot.send_message(
                         chat_id=ally_user["telegram_id"],
                         text=(
@@ -1019,7 +1019,7 @@ def _expire_order(order_id, cycle_info, context):
                 admin = get_admin_by_id(int(creator_admin_id))
                 if admin:
                     user = get_user_by_id(admin["user_id"])
-                    if user and user.get("telegram_id"):
+                    if user and user["telegram_id"]:
                         context.bot.send_message(
                             chat_id=user["telegram_id"],
                             text=(
@@ -1091,14 +1091,14 @@ def _ally_history_flat_text(orders, routes, label):
     """Genera un bloque de texto con todos los pedidos/rutas del periodo (para Hoy/Ayer)."""
     delivered_orders = [o for o in orders if _row_value(o, "status", "") == "DELIVERED"]
     cancelled_orders = [o for o in orders if _row_value(o, "status", "") == "CANCELLED"]
-    delivered_routes = [r for r in routes if r.get("status") == "DELIVERED"]
-    cancelled_routes = [r for r in routes if r.get("status") == "CANCELLED"]
+    delivered_routes = [r for r in routes if r["status"] == "DELIVERED"]
+    cancelled_routes = [r for r in routes if r["status"] == "CANCELLED"]
 
     total = len(orders) + len(routes)
     total_delivered = len(delivered_orders) + len(delivered_routes)
     total_cancelled = len(cancelled_orders) + len(cancelled_routes)
     total_pesos = sum(int(_row_value(o, "total_fee", 0) or 0) for o in delivered_orders)
-    total_pesos += sum(int(r.get("total_fee") or 0) for r in delivered_routes)
+    total_pesos += sum(int(r["total_fee"] or 0) for r in delivered_routes)
 
     STATUS_LABELS = {"DELIVERED": "Entregado", "CANCELLED": "Cancelado"}
     lines = [
@@ -1123,12 +1123,12 @@ def _ally_history_flat_text(orders, routes, label):
             STATUS_LABELS.get(status, status),
         )))
     for r in routes:
-        created = str(r.get("created_at") or "")
+        created = str(r["created_at"] or "")
         hour = created[11:16] if len(created) >= 16 else "--:--"
-        status = r.get("status") or ""
-        fee = int(r.get("total_fee") or 0)
+        status = r["status"] or ""
+        fee = int(r["total_fee"] or 0)
         all_items.append((created, "Ruta #{} {} — {} — {}".format(
-            r.get("id"), hour, _fmt_pesos_ally(fee), STATUS_LABELS.get(status, status),
+            r["id"], hour, _fmt_pesos_ally(fee), STATUS_LABELS.get(status, status),
         )))
 
     all_items.sort(key=lambda x: x[0], reverse=True)
@@ -1155,13 +1155,13 @@ def _ally_history_grouped_text(orders, routes, label):
         else:
             d["cancelled"] += 1
     for r in routes:
-        created = str(r.get("created_at") or "")
+        created = str(r["created_at"] or "")
         dk = created[:10] if len(created) >= 10 else "-"
         d = days.setdefault(dk, {"total": 0, "delivered": 0, "cancelled": 0, "pesos": 0})
         d["total"] += 1
-        if r.get("status") == "DELIVERED":
+        if r["status"] == "DELIVERED":
             d["delivered"] += 1
-            d["pesos"] += int(r.get("total_fee") or 0)
+            d["pesos"] += int(r["total_fee"] or 0)
         else:
             d["cancelled"] += 1
 
@@ -1216,11 +1216,11 @@ def ally_active_orders(update, context):
         update.message.reply_text("Rutas activas:")
         for route in active_routes:
             n_stops = len(get_route_destinations(route["id"]))
-            status_label = STATUS_LABELS.get(route.get("status"), route.get("status", ""))
+            status_label = STATUS_LABELS.get(route["status"], route["status"] or "")
             text = "Ruta #{}\nEstado: {}\nParadas: {}".format(
                 route["id"], status_label, n_stops
             )
-            if route.get("status") in ("PUBLISHED", "ACCEPTED"):
+            if route["status"] in ("PUBLISHED", "ACCEPTED"):
                 keyboard = [[InlineKeyboardButton(
                     "Cancelar ruta",
                     callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
@@ -1687,7 +1687,7 @@ def _admin_order_cancel(update, context, data):
         ally = get_ally_by_id(order["ally_id"])
         if ally:
             ally_user = get_user_by_id(ally["user_id"])
-            if ally_user and ally_user.get("telegram_id"):
+            if ally_user and ally_user["telegram_id"]:
                 context.bot.send_message(
                     chat_id=ally_user["telegram_id"],
                     text="Tu pedido #{} fue cancelado por el administrador.".format(order_id),
@@ -2011,12 +2011,12 @@ def _arrival_inactivity_job(context):
     order = get_order_by_id(order_id)
     if not order or order["status"] != "ACCEPTED":
         return
-    if order.get("courier_arrived_at"):
+    if order["courier_arrived_at"]:
         return
 
     pickup_lat, pickup_lng = _get_pickup_coords(order)
-    accepted_lat = order.get("courier_accepted_lat")
-    accepted_lng = order.get("courier_accepted_lng")
+    accepted_lat = order["courier_accepted_lat"]
+    accepted_lng = order["courier_accepted_lng"]
 
     if not all([pickup_lat, pickup_lng, accepted_lat, accepted_lng]):
         return  # Sin datos suficientes
@@ -2203,7 +2203,7 @@ def _handle_courier_arrival_button(update, context, order_id):
 
     _cancel_arrival_jobs(context, order_id)
     set_courier_arrived(order_id)
-    courier_name = courier.get("full_name") or "Repartidor"
+    courier_name = courier["full_name"] or "Repartidor"
     _notify_ally_courier_arrived(context, order, courier_name)
     query.edit_message_text(
         "Llegada confirmada. El aliado debe confirmar antes de entregarte los datos del cliente."
@@ -2222,7 +2222,7 @@ def _handle_courier_arrival_enroute(update, context, order_id):
     )
     # Notificar al aliado
     try:
-        if order.get("ally_id"):
+        if order["ally_id"]:
             ally = get_ally_by_id(order["ally_id"])
             if ally:
                 au = get_user_by_id(ally["user_id"])
@@ -2680,7 +2680,7 @@ def _handle_cancel_ally_route(update, context, route_id):
         query.edit_message_text("Ruta no encontrada.")
         return
 
-    if route.get("status") not in ("PUBLISHED", "ACCEPTED"):
+    if route["status"] not in ("PUBLISHED", "ACCEPTED"):
         query.edit_message_text(
             "No se puede cancelar la ruta #{} en su estado actual.".format(route_id)
         )
@@ -2689,12 +2689,12 @@ def _handle_cancel_ally_route(update, context, route_id):
     telegram_id = update.effective_user.id
     user = get_user_by_telegram_id(telegram_id)
     ally = get_ally_by_user_id(user["id"]) if user else None
-    if not ally or ally["id"] != route.get("ally_id"):
+    if not ally or ally["id"] != route["ally_id"]:
         query.edit_message_text("No tienes permiso para cancelar esta ruta.")
         return
 
-    had_courier = route.get("status") == "ACCEPTED" and route.get("courier_id")
-    was_published = route.get("status") == "PUBLISHED"
+    had_courier = route["status"] == "ACCEPTED" and route["courier_id"]
+    was_published = route["status"] == "PUBLISHED"
 
     # Cancelar jobs de oferta y sugerencia T+5
     _cancel_route_no_response_job(context, route_id)
@@ -2718,7 +2718,7 @@ def _handle_cancel_ally_route(update, context, route_id):
             courier = get_courier_by_id(route["courier_id"])
             if courier:
                 courier_user = get_user_by_id(courier["user_id"])
-                if courier_user and courier_user.get("telegram_id"):
+                if courier_user and courier_user["telegram_id"]:
                     context.bot.send_message(
                         chat_id=courier_user["telegram_id"],
                         text="La ruta #{} fue cancelada por el aliado.".format(route_id),
@@ -2899,7 +2899,7 @@ def _handle_delivered(update, context, order_id):
                         courier_row = get_courier_by_id(courier_id)
                         if courier_row:
                             user = get_user_by_id(courier_row["user_id"])
-                            if user and user.get("telegram_id"):
+                            if user and user["telegram_id"]:
                                 context.bot.send_message(
                                     chat_id=user["telegram_id"],
                                     text=(
@@ -2919,7 +2919,7 @@ def _handle_delivered(update, context, order_id):
                     admin_row = get_admin_by_id(courier_admin_id)
                     if admin_row:
                         admin_user = get_user_by_id(admin_row["user_id"])
-                        if admin_user and admin_user.get("telegram_id"):
+                        if admin_user and admin_user["telegram_id"]:
                             context.bot.send_message(
                                 chat_id=admin_user["telegram_id"],
                                 text=(
@@ -3040,7 +3040,7 @@ def _build_offer_text(
         text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
 
     cash_amount = order["cash_required_amount"] or 0
-    payment_method = order.get("payment_method", "UNCONFIRMED")
+    payment_method = order["payment_method"] or "UNCONFIRMED"
 
     if payment_method == "CASH_CONFIRMED":
         text += "Pago: efectivo confirmado\n"
@@ -3167,7 +3167,7 @@ def _notify_ally_order_accepted(context, order, courier_name):
             return
 
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
 
         context.bot.send_message(
@@ -3194,7 +3194,7 @@ def _notify_ally_courier_arrived(context, order, courier_name):
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
         order_id = order["id"]
         keyboard = InlineKeyboardMarkup([
@@ -3230,7 +3230,7 @@ def _notify_courier_awaiting_pickup_confirm(context, order):
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
@@ -3290,7 +3290,7 @@ def _notify_courier_pickup_approved(context, order):
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
 
         dropoff_lat, dropoff_lng = _get_dropoff_coords(order)
@@ -3342,7 +3342,7 @@ def _notify_courier_pickup_rejected(context, order):
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
 
         keyboard = [
@@ -3368,10 +3368,10 @@ def _notify_ally_delivered(context, order, durations=None):
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
 
-        courier = get_courier_by_id(order["courier_id"]) if order.get("courier_id") else None
+        courier = get_courier_by_id(order["courier_id"]) if order["courier_id"] else None
         courier_name = (courier["full_name"] if courier else None) or "el repartidor"
         order_id = order["id"]
 
@@ -3415,7 +3415,7 @@ def handle_rating_callback(update, context):
         stars = int(parts[3])
 
         order = get_order_by_id(order_id)
-        if not order or not order.get("courier_id"):
+        if not order or not order["courier_id"]:
             query.edit_message_text("Pedido no encontrado.")
             return
 
@@ -3496,7 +3496,7 @@ def _notify_courier_order_cancelled(context, order):
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
@@ -3513,7 +3513,7 @@ def _notify_ally_order_released(context, order, reason_label=None):
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
         reason_line = ""
         if reason_label:
@@ -3542,9 +3542,9 @@ def _notify_admin_order_released(context, order, courier, reason_label, arrived_
         if not admin:
             return
         admin_user = get_user_by_id(admin["user_id"])
-        if not admin_user or not admin_user.get("telegram_id"):
+        if not admin_user or not admin_user["telegram_id"]:
             return
-        courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+        courier_name = (courier["full_name"] or "").strip() or "Repartidor"
         context.bot.send_message(
             chat_id=admin_user["telegram_id"],
             text=(
@@ -3583,15 +3583,15 @@ def _route_offer_reply_markup(route_id):
 
 def _build_route_offer_text(route, destinations):
     """Construye el texto de oferta de ruta para el courier."""
-    total_km = float(route.get("total_distance_km") or 0)
-    total_fee = int(route.get("total_fee") or 0)
-    additional_incentive = int(route.get("additional_incentive") or 0)
+    total_km = float(route["total_distance_km"] or 0)
+    total_fee = int(route["total_fee"] or 0)
+    additional_incentive = int(route["additional_incentive"] or 0)
 
     # Barrio/ciudad de recogida
-    pickup_city = route.get("pickup_city") or ""
-    pickup_barrio = route.get("pickup_barrio") or ""
+    pickup_city = route["pickup_city"] or ""
+    pickup_barrio = route["pickup_barrio"] or ""
     if not pickup_city and not pickup_barrio:
-        pickup_area = route.get("pickup_address") or "No disponible"
+        pickup_area = route["pickup_address"] or "No disponible"
     elif pickup_barrio and pickup_city:
         pickup_area = "{}, {}".format(pickup_barrio, pickup_city)
     else:
@@ -3601,14 +3601,14 @@ def _build_route_offer_text(route, destinations):
     text += "{} paradas:\n".format(len(destinations))
 
     for dest in destinations:
-        barrio = dest.get("customer_barrio") or ""
-        city = dest.get("customer_city") or ""
+        barrio = dest["customer_barrio"] or ""
+        city = dest["customer_city"] or ""
         if barrio and city:
             area = "{}, {}".format(barrio, city)
         elif barrio or city:
             area = barrio or city
         else:
-            area = dest.get("customer_address") or "Sin direccion"
+            area = dest["customer_address"] or "Sin direccion"
         text += "  Parada {}: {}\n".format(dest["sequence"], area)
 
     text += "\nDistancia total: {:.1f} km\n".format(total_km)
@@ -3695,7 +3695,7 @@ def _expire_route(route_id, cycle_info, context):
         ally = get_ally_by_id(ally_id)
         if ally:
             ally_user = get_user_by_id(ally["user_id"])
-            if ally_user and ally_user.get("telegram_id"):
+            if ally_user and ally_user["telegram_id"]:
                 context.bot.send_message(
                     chat_id=ally_user["telegram_id"],
                     text=(
@@ -3762,8 +3762,8 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     if not route:
         return 0
 
-    pickup_lat = route.get("pickup_lat")
-    pickup_lng = route.get("pickup_lng")
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
 
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
@@ -3821,8 +3821,8 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
     """Envia los detalles de una parada al courier."""
     route_id = route["id"]
     seq = stop["sequence"]
-    lat = stop.get("dropoff_lat")
-    lng = stop.get("dropoff_lng")
+    lat = stop["dropoff_lat"]
+    lng = stop["dropoff_lng"]
     total_stops = len(get_route_destinations(route_id))
 
     keyboard = []
@@ -3835,7 +3835,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
     ])
     keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
-    stop_instructions = stop.get("instructions") or ""
+    stop_instructions = stop["instructions"] or ""
     instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
 
     context.bot.send_message(
@@ -3850,9 +3850,9 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
         ).format(
             seq,
             total_stops,
-            stop.get("customer_name") or "Sin nombre",
-            stop.get("customer_phone") or "Sin telefono",
-            stop.get("customer_address") or "Sin direccion",
+            stop["customer_name"] or "Sin nombre",
+            stop["customer_phone"] or "Sin telefono",
+            stop["customer_address"] or "Sin direccion",
             instr_line,
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -3962,7 +3962,7 @@ def _handle_route_accept(update, context, route_id):
         name="ruta_arr_deadline_{}".format(route_id),
     )
 
-    _notify_ally_route_accepted(context, route, courier.get("full_name") or "Repartidor")
+    _notify_ally_route_accepted(context, route, courier["full_name"] or "Repartidor")
 
     # Mostrar pantalla de reordenamiento antes de salir a recoger
     _show_route_reorder(query, context, route_id, destinations)
@@ -3972,7 +3972,7 @@ def _show_route_reorder(msg_or_query, context, route_id, destinations):
     """Muestra la lista de paradas con botones para reordenar."""
     text = "Ruta #{} aceptada.\n\nOrden actual de paradas:\n".format(route_id)
     for d in destinations:
-        barrio = d.get("customer_barrio") or d.get("customer_address") or "Sin info"
+        barrio = d["customer_barrio"] or d["customer_address"] or "Sin info"
         text += "  {}. {}\n".format(d["sequence"], barrio)
     text += "\nPuedes cambiar el orden segun tu conveniencia o confirmar el orden actual."
 
@@ -4039,9 +4039,9 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
     route = get_route_by_id(route_id)
     if not route:
         return
-    pickup_address = route.get("pickup_address") or "No disponible"
-    pickup_lat = route.get("pickup_lat")
-    pickup_lng = route.get("pickup_lng")
+    pickup_address = route["pickup_address"] or "No disponible"
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
 
     keyboard = list(_build_navigation_rows(pickup_lat, pickup_lng))
     keyboard.append([InlineKeyboardButton(
@@ -4093,8 +4093,8 @@ def _handle_route_pickup_confirm(update, context, route_id):
     if not courier:
         return
 
-    pickup_lat = route.get("pickup_lat")
-    pickup_lng = route.get("pickup_lng")
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
 
     if pickup_lat and pickup_lng:
         live_lat = _row_value(courier, "live_lat")
@@ -4121,7 +4121,7 @@ def _handle_route_pickup_confirm(update, context, route_id):
     _cancel_route_arrival_jobs(context, route_id)
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
 
-    courier_name = courier.get("full_name") or "El repartidor"
+    courier_name = courier["full_name"] or "El repartidor"
     query.edit_message_text(
         "Llegada confirmada. Esperando que el aliado confirme para recibir los detalles de la primera parada."
     )
@@ -4131,14 +4131,14 @@ def _handle_route_pickup_confirm(update, context, route_id):
 def _notify_ally_route_courier_arrived(context, route, courier_name):
     """Notifica al aliado que el courier llego al pickup de la ruta, con botones de confirmacion."""
     try:
-        ally_id = route.get("ally_id")
+        ally_id = route["ally_id"]
         if not ally_id:
             return
         ally = get_ally_by_id(ally_id)
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
         route_id = route["id"]
         keyboard = InlineKeyboardMarkup([
@@ -4185,7 +4185,7 @@ def _handle_route_pickupconfirm_by_ally(update, context, route_id, approve):
         if not courier_user:
             return
         destinations = get_route_destinations(route_id)
-        pending = [d for d in destinations if d.get("status") == "PENDING"]
+        pending = [d for d in destinations if d["status"] == "PENDING"]
         if not pending:
             context.bot.send_message(
                 chat_id=courier_user["telegram_id"],
@@ -4221,8 +4221,8 @@ def _route_arrival_inactivity_job(context):
     if not route or route["status"] != "ACCEPTED":
         return
 
-    pickup_lat = route.get("pickup_lat")
-    pickup_lng = route.get("pickup_lng")
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
     accepted_pos = context.bot_data.get("route_accepted_pos", {}).get(route_id, {})
     accepted_lat = accepted_pos.get("lat")
     accepted_lng = accepted_pos.get("lng")
@@ -4296,7 +4296,7 @@ def _route_arrival_warn_job(context):
     courier_tg_id = courier_user["telegram_id"] if courier_user else None
 
     try:
-        ally_id = route.get("ally_id")
+        ally_id = route["ally_id"]
         if ally_id:
             ally = get_ally_by_id(ally_id)
             if ally:
@@ -4357,7 +4357,7 @@ def _release_route_by_timeout(route_id, courier_id, context):
         update_route_status(route_id, "PUBLISHED")
         route = get_route_by_id(route_id)
         if route:
-            ally_id = route.get("ally_id")
+            ally_id = route["ally_id"]
             publish_route_to_couriers(route_id, ally_id, context)
     except Exception as e:
         print("[WARN] _release_route_by_timeout: {}".format(e))
@@ -4374,7 +4374,7 @@ def _handle_route_arrival_enroute(update, context, route_id):
         "Confirmado. Sigue hacia el punto de recogida y presiona 'Confirmar llegada' cuando estes alli."
     )
     try:
-        ally_id = route.get("ally_id")
+        ally_id = route["ally_id"]
         if ally_id:
             ally = get_ally_by_id(ally_id)
             if ally:
@@ -4463,7 +4463,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
 
     telegram_id = update.effective_user.id
     courier = get_courier_by_telegram_id(telegram_id)
-    if not courier or courier["id"] != route.get("courier_id"):
+    if not courier or courier["id"] != route["courier_id"]:
         query.edit_message_text("Solo el repartidor asignado puede confirmar entregas.")
         return
 
@@ -4524,7 +4524,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
             if not ally_ok:
                 print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg))
         # Fee base al repartidor: $300 (igual que pedido individual — $200 admin + $100 plataforma)
-        courier_id_route = route.get("courier_id")
+        courier_id_route = route["courier_id"]
         courier_admin_id_route = _row_value(route, "courier_admin_id_snapshot")
         if not courier_admin_id_route and courier_id_route:
             courier_admin_id_route = get_approved_admin_id_for_courier(courier_id_route)
@@ -4552,7 +4552,7 @@ def _notify_ally_route_accepted(context, route, courier_name):
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
@@ -4572,12 +4572,12 @@ def _notify_ally_route_delivered(context, route):
         if not ally:
             return
         ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user.get("telegram_id"):
+        if not ally_user or not ally_user["telegram_id"]:
             return
         route_id = route["id"]
         # Calcular desglose de fees cobrados
         stops = get_route_destinations(route_id)
-        n_delivered = sum(1 for s in stops if str(s.get("status", "")) == "DELIVERED")
+        n_delivered = sum(1 for s in stops if str(s["status"] or "") == "DELIVERED")
         n_cancelled = len(stops) - n_delivered
         fee_base = 300
         # $200 por parada adicional = tarifa de SERVICIO cobrada al saldo del aliado.
@@ -4744,19 +4744,19 @@ def _handle_route_release_menu(update, context, route_id):
         query.edit_message_text("Ruta no encontrada.")
         return
 
-    if route.get("status") != "ACCEPTED":
+    if route["status"] != "ACCEPTED":
         query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
         return
 
     telegram_id = update.effective_user.id
     courier = get_courier_by_telegram_id(telegram_id)
-    if not courier or courier["id"] != route.get("courier_id"):
+    if not courier or courier["id"] != route["courier_id"]:
         query.edit_message_text("No tienes permiso para liberar esta ruta.")
         return
 
     # Bloquear liberación si ya entrego alguna parada (ya recogió el producto)
     stops = get_route_destinations(route_id)
-    n_delivered = sum(1 for s in stops if str(s.get("status", "")) == "DELIVERED")
+    n_delivered = sum(1 for s in stops if str(s["status"] or "") == "DELIVERED")
     if n_delivered > 0:
         query.edit_message_text(
             "Ya entregaste {} parada(s). No puedes liberar la ruta una vez que recogiste los productos.\n\n"
@@ -4825,13 +4825,13 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         query.edit_message_text("Ruta no encontrada.")
         return
 
-    if route.get("status") != "ACCEPTED":
+    if route["status"] != "ACCEPTED":
         query.edit_message_text("Esta ruta no se puede liberar en su estado actual.")
         return
 
     telegram_id = update.effective_user.id
     courier = get_courier_by_telegram_id(telegram_id)
-    if not courier or courier["id"] != route.get("courier_id"):
+    if not courier or courier["id"] != route["courier_id"]:
         query.edit_message_text("No tienes permiso para liberar esta ruta.")
         return
 
@@ -4844,7 +4844,7 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
     }
     reason_label = reason_labels.get(reason_code, reason_code or "No especificado")
 
-    ally_id = route.get("ally_id")
+    ally_id = route["ally_id"]
     link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
     admin_id = link["admin_id"] if link else None
     if not admin_id:
@@ -4877,7 +4877,7 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         ally = get_ally_by_id(ally_id) if ally_id else None
         if ally:
             ally_user = get_user_by_id(ally["user_id"])
-            if ally_user and ally_user.get("telegram_id"):
+            if ally_user and ally_user["telegram_id"]:
                 context.bot.send_message(
                     chat_id=ally_user["telegram_id"],
                     text=(
@@ -4894,8 +4894,8 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
             admin = get_admin_by_id(admin_id)
             if admin:
                 admin_user = get_user_by_id(admin["user_id"])
-                if admin_user and admin_user.get("telegram_id"):
-                    courier_name = (courier.get("full_name") or "").strip() or "Repartidor"
+                if admin_user and admin_user["telegram_id"]:
+                    courier_name = (courier["full_name"] or "").strip() or "Repartidor"
                     context.bot.send_message(
                         chat_id=admin_user["telegram_id"],
                         text=(
@@ -4912,8 +4912,8 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
     if not admin_id or not ally_id:
         return
 
-    pickup_lat = route.get("pickup_lat")
-    pickup_lng = route.get("pickup_lng")
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
@@ -5061,7 +5061,7 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
         if not admin:
             return
         admin_user = get_user_by_id(admin["user_id"])
-        if not admin_user or not admin_user.get("telegram_id"):
+        if not admin_user or not admin_user["telegram_id"]:
             return
 
         courier_lat = _row_value(courier, "live_lat")
@@ -5079,7 +5079,7 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
 
         courier_user = get_user_by_id(courier["user_id"])
         courier_tg = ""
-        if courier_user and courier_user.get("telegram_id"):
+        if courier_user and courier_user["telegram_id"]:
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
@@ -5240,7 +5240,7 @@ def _notify_courier_support_resolved(context, courier_id, order_id, resolution):
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
         messages = {
             "fin": (
@@ -5279,7 +5279,7 @@ def _handle_route_pin_issue(update, context, route_id, seq):
         return
     telegram_id = update.effective_user.id
     courier = get_courier_by_telegram_id(telegram_id)
-    if not courier or courier["id"] != route.get("courier_id"):
+    if not courier or courier["id"] != route["courier_id"]:
         query.edit_message_text("No tienes permiso para esta accion.")
         return
 
@@ -5327,7 +5327,7 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
         if not admin:
             return
         admin_user = get_user_by_id(admin["user_id"])
-        if not admin_user or not admin_user.get("telegram_id"):
+        if not admin_user or not admin_user["telegram_id"]:
             return
 
         courier_lat = _row_value(courier, "live_lat")
@@ -5345,7 +5345,7 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
 
         courier_user = get_user_by_id(courier["user_id"])
         courier_tg = ""
-        if courier_user and courier_user.get("telegram_id"):
+        if courier_user and courier_user["telegram_id"]:
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
@@ -5461,7 +5461,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
         courier = get_courier_by_id(courier_id)
         if courier:
             courier_user = get_user_by_id(courier["user_id"])
-            if courier_user and courier_user.get("telegram_id"):
+            if courier_user and courier_user["telegram_id"]:
                 next_stop = pending[0]
                 _send_route_stop_to_courier(context, courier_user["telegram_id"], route, next_stop)
     else:
@@ -5499,12 +5499,12 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
         _notify_ally_route_delivered(context, route)
         # Notificar al courier si hay devoluciones pendientes
         cancelled = [s for s in get_route_destinations(route_id)
-                     if str(s.get("status", "")).startswith("CANCELLED")]
+                     if str(s["status"] or "").startswith("CANCELLED")]
         if cancelled:
             try:
                 courier = get_courier_by_id(courier_id)
                 courier_user = get_user_by_id(courier["user_id"]) if courier else None
-                if courier_user and courier_user.get("telegram_id"):
+                if courier_user and courier_user["telegram_id"]:
                     names = [s["customer_name"] or "Parada {}".format(s["sequence"]) for s in cancelled]
                     context.bot.send_message(
                         chat_id=courier_user["telegram_id"],
@@ -5526,7 +5526,7 @@ def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, reso
         if not courier:
             return
         courier_user = get_user_by_id(courier["user_id"])
-        if not courier_user or not courier_user.get("telegram_id"):
+        if not courier_user or not courier_user["telegram_id"]:
             return
         messages = {
             "fin": "Tu administrador finalizo la parada {} de la ruta #{}.".format(seq, route_id),

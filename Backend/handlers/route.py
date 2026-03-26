@@ -101,9 +101,9 @@ def nueva_ruta_desde_cotizador(update, context):
     if pickup_lat and pickup_lng:
         locations = get_ally_locations(ally["id"])
         for loc in locations:
-            if loc.get("lat") == pickup_lat and loc.get("lng") == pickup_lng:
-                pickup_address = loc.get("address") or ""
-                pickup_location_id = loc.get("id")
+            if loc["lat"] == pickup_lat and loc["lng"] == pickup_lng:
+                pickup_address = loc["address"] or ""
+                pickup_location_id = loc["id"]
                 break
     context.user_data.clear()
     context.user_data["ruta_ally_id"] = ally["id"]
@@ -134,10 +134,10 @@ def _ruta_mostrar_selector_pickup(update_or_query, context):
     keyboard = []
     if ally_id:
         locations = get_ally_locations(ally_id)
-        default_loc = next((l for l in locations if l.get("is_default")), None)
+        default_loc = next((l for l in locations if l["is_default"]), None)
         if default_loc:
-            label = (default_loc.get("label") or "Base")[:20]
-            address = (default_loc.get("address") or "")[:30]
+            label = (default_loc["label"] or "Base")[:20]
+            address = (default_loc["address"] or "")[:30]
             keyboard.append([InlineKeyboardButton(
                 "Usar base: {} - {}".format(label, address),
                 callback_data="ruta_pickup_base"
@@ -158,10 +158,10 @@ def _ruta_mostrar_selector_pickup(update_or_query, context):
 
 
 def _ruta_guardar_pickup(context, location):
-    context.user_data["ruta_pickup_location_id"] = location.get("id")
-    context.user_data["ruta_pickup_address"] = location.get("address", "")
-    context.user_data["ruta_pickup_lat"] = location.get("lat")
-    context.user_data["ruta_pickup_lng"] = location.get("lng")
+    context.user_data["ruta_pickup_location_id"] = location["id"]
+    context.user_data["ruta_pickup_address"] = location["address"] or ""
+    context.user_data["ruta_pickup_lat"] = location["lat"]
+    context.user_data["ruta_pickup_lng"] = location["lng"]
 
 
 def _ruta_iniciar_parada(update_or_query, context):
@@ -170,11 +170,11 @@ def _ruta_iniciar_parada(update_or_query, context):
     n = len(paradas) + 1
     ally_id = context.user_data.get("ruta_ally_id")
     clientes = list_ally_customers(ally_id) if ally_id else []
-    activos = [c for c in clientes if c.get("status") == "ACTIVE"]
+    activos = [c for c in clientes if c["status"] == "ACTIVE"]
     keyboard = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]
     for c in activos[:8]:
-        nombre = (c.get("name") or "Sin nombre")[:25]
-        phone = c.get("phone") or ""
+        nombre = (c["name"] or "Sin nombre")[:25]
+        phone = c["phone"] or ""
         keyboard.append([InlineKeyboardButton(
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
@@ -393,7 +393,7 @@ def ruta_pickup_selector_callback(update, context):
     ally_id = context.user_data.get("ruta_ally_id")
     if data == "ruta_pickup_base":
         default_loc = get_default_ally_location(ally_id)
-        if not default_loc or not default_loc.get("lat"):
+        if not default_loc or not default_loc["lat"]:
             query.edit_message_text("Tu ubicacion base no tiene GPS. Elige otra.")
             return _ruta_mostrar_selector_pickup(query, context)
         _ruta_guardar_pickup(context, default_loc)
@@ -405,9 +405,9 @@ def ruta_pickup_selector_callback(update, context):
             return _ruta_mostrar_selector_pickup(query, context)
         keyboard = []
         for loc in locations[:8]:
-            label = (loc.get("label") or "Sin nombre")[:20]
-            address = (loc.get("address") or "")[:25]
-            sin_gps = " (sin GPS)" if not loc.get("lat") else ""
+            label = (loc["label"] or "Sin nombre")[:20]
+            address = (loc["address"] or "")[:25]
+            sin_gps = " (sin GPS)" if not loc["lat"] else ""
             keyboard.append([InlineKeyboardButton(
                 "{}: {}{}".format(label, address, sin_gps),
                 callback_data="ruta_pickup_usar_{}".format(loc["id"])
@@ -440,7 +440,7 @@ def ruta_pickup_lista_callback(update, context):
         except ValueError:
             return RUTA_PICKUP_LISTA
         location = get_ally_location_by_id(loc_id, ally_id)
-        if not location or not location.get("lat"):
+        if not location or not location["lat"]:
             query.edit_message_text("Esa ubicacion no tiene GPS. Elige otra.")
             return RUTA_PICKUP_LISTA
         _ruta_guardar_pickup(context, location)
@@ -629,26 +629,26 @@ def ruta_parada_selector_callback(update, context):
             query.edit_message_text("Cliente no encontrado.")
             return RUTA_PARADA_SELECTOR
         context.user_data["ruta_temp_customer_id"] = cust_id
-        context.user_data["ruta_temp_name"] = customer.get("name") or ""
-        context.user_data["ruta_temp_phone"] = customer.get("phone") or ""
+        context.user_data["ruta_temp_name"] = customer["name"] or ""
+        context.user_data["ruta_temp_phone"] = customer["phone"] or ""
         addresses = list_customer_addresses(cust_id)
-        activas = [a for a in addresses if a.get("status") == "ACTIVE"]
+        activas = [a for a in addresses if a["status"] == "ACTIVE"]
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         if not activas:
             query.edit_message_text(
                 "PARADA {} - {}\n\nNo tiene direcciones guardadas. Escribe la direccion de entrega:".format(
-                    n, customer.get("name") or "Cliente"
+                    n, customer["name"] or "Cliente"
                 )
             )
             return RUTA_PARADA_DIRECCION
         keyboard = []
         for addr in activas[:6]:
-            label = (addr.get("label") or addr.get("address_text") or "Direccion")[:30]
+            label = (addr["label"] or addr["address_text"] or "Direccion")[:30]
             keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(addr["id"]))])
         keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
         query.edit_message_text(
-            "PARADA {} - {}\n\nSelecciona la direccion de entrega:".format(n, customer.get("name") or "Cliente"),
+            "PARADA {} - {}\n\nSelecciona la direccion de entrega:".format(n, customer["name"] or "Cliente"),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return RUTA_PARADA_SEL_DIRECCION
@@ -674,17 +674,17 @@ def ruta_parada_sel_direccion_callback(update, context):
         if not addr:
             query.edit_message_text("Direccion no encontrada.")
             return RUTA_PARADA_SEL_DIRECCION
-        if not has_valid_coords(addr.get("lat"), addr.get("lng")):
+        if not has_valid_coords(addr["lat"], addr["lng"]):
             query.edit_message_text(
                 "Esta direccion guardada no tiene ubicacion confirmada.\n\n"
                 "Envia ahora la ubicacion GPS de la parada."
             )
             return RUTA_PARADA_UBICACION
-        context.user_data["ruta_temp_address"] = addr.get("address_text") or ""
-        context.user_data["ruta_temp_city"] = addr.get("city") or ""
-        context.user_data["ruta_temp_barrio"] = addr.get("barrio") or ""
-        context.user_data["ruta_temp_lat"] = addr.get("lat")
-        context.user_data["ruta_temp_lng"] = addr.get("lng")
+        context.user_data["ruta_temp_address"] = addr["address_text"] or ""
+        context.user_data["ruta_temp_city"] = addr["city"] or ""
+        context.user_data["ruta_temp_barrio"] = addr["barrio"] or ""
+        context.user_data["ruta_temp_lat"] = addr["lat"]
+        context.user_data["ruta_temp_lng"] = addr["lng"]
         try:
             increment_customer_address_usage(addr_id, cust_id)
         except Exception:
@@ -719,7 +719,7 @@ def ruta_parada_telefono_handler(update, context):
     # Dedup: verificar si ya existe un cliente con este telefono
     existing = get_ally_customer_by_phone(ally_id, digits) if ally_id else None
     if existing:
-        context.user_data["ruta_dedup_found"] = {"id": existing["id"], "name": existing.get("name") or ""}
+        context.user_data["ruta_dedup_found"] = {"id": existing["id"], "name": existing["name"] or ""}
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Si, usar este cliente", callback_data="ruta_dedup_si")],
             [InlineKeyboardButton("No, es otro cliente", callback_data="ruta_dedup_no")],
@@ -1100,7 +1100,7 @@ def ruta_parada_buscar_handler(update, context):
         update.message.reply_text("Escribe un nombre o telefono para buscar.")
         return RUTA_PARADA_BUSCAR
     resultados = search_ally_customers(ally_id, texto) if ally_id else []
-    activos = [c for c in resultados if c.get("status") == "ACTIVE"]
+    activos = [c for c in resultados if c["status"] == "ACTIVE"]
     if not activos:
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
@@ -1111,8 +1111,8 @@ def ruta_parada_buscar_handler(update, context):
         return RUTA_PARADA_NOMBRE
     keyboard = []
     for c in activos[:10]:
-        nombre = (c.get("name") or "Sin nombre")[:25]
-        phone = c.get("phone") or ""
+        nombre = (c["name"] or "Sin nombre")[:25]
+        phone = c["phone"] or ""
         keyboard.append([InlineKeyboardButton(
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
@@ -1138,13 +1138,13 @@ def ruta_parada_dedup_callback(update, context):
         context.user_data["ruta_temp_name"] = name
         # Mostrar direcciones del cliente
         addrs = list_customer_addresses(cust_id) if cust_id else []
-        activos = [a for a in addrs if a.get("status") == "ACTIVE"]
+        activos = [a for a in addrs if a["status"] == "ACTIVE"]
         if activos:
             paradas = context.user_data.get("ruta_paradas", [])
             n = len(paradas) + 1
             keyboard = []
             for a in activos[:8]:
-                label = a.get("label") or a.get("address_text") or "Direccion"
+                label = a["label"] or a["address_text"] or "Direccion"
                 keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(a["id"]))])
             keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
             query.edit_message_text(

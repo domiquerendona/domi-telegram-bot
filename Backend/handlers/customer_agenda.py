@@ -2883,9 +2883,9 @@ def agenda_pickups_mostrar(query, context):
 
     if locations:
         for loc in locations[:10]:
-            label = (loc.get("label") or "Sin nombre")[:25]
+            label = (loc["label"] or "Sin nombre")[:25]
             tags = []
-            if loc.get("is_default"):
+            if loc["is_default"]:
                 tags.append("BASE")
             tag_str = " [{}]".format(", ".join(tags)) if tags else ""
             keyboard.append([InlineKeyboardButton(
@@ -2938,10 +2938,10 @@ def agenda_pickups_callback(update, context):
         loc = get_ally_location_by_id(loc_id, ally_id)
         if not loc:
             return agenda_pickups_mostrar(query, context)
-        label = loc.get("label") or "Sin nombre"
-        address = loc.get("address") or "-"
-        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc.get("lat") else "Sin GPS"
-        is_base = bool(loc.get("is_default"))
+        label = loc["label"] or "Sin nombre"
+        address = loc["address"] or "-"
+        gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc["lat"] else "Sin GPS"
+        is_base = bool(loc["is_default"])
         detalle = "{}\n\nDireccion: {}\nGPS: {}".format(label, address, gps)
         keyboard = []
         if not is_base:
@@ -2979,7 +2979,7 @@ def agenda_pickups_callback(update, context):
         except (ValueError, IndexError):
             return agenda_pickups_mostrar(query, context)
         loc = get_ally_location_by_id(loc_id, ally_id)
-        label = (loc.get("label") or "esta ubicacion") if loc else "esta ubicacion"
+        label = (loc["label"] or "esta ubicacion") if loc else "esta ubicacion"
         keyboard = [
             [InlineKeyboardButton(
                 "Confirmar eliminacion",
@@ -3077,7 +3077,7 @@ def direcciones_pickup_nueva_detalles(update, context):
     default_city = "Pereira"
     if ally_id:
         default_loc = get_default_ally_location(ally_id)
-        if default_loc and default_loc.get("city"):
+        if default_loc and default_loc["city"]:
             default_city = default_loc["city"]
     update.message.reply_text("Ciudad de la recogida (ej: {}).".format(default_city))
     return DIRECCIONES_PICKUP_NUEVA_CIUDAD

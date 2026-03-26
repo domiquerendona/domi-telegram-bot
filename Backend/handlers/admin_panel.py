@@ -533,7 +533,15 @@ def repartidores_pendientes(update, context):
             seen_ids = set()
             pendientes = []
             for c in nuevos + join_requests:
-                cid = c.get("courier_id") or c.get("id")
+                try:
+                    cid = c["courier_id"]
+                except (IndexError, KeyError):
+                    cid = None
+                if not cid:
+                    try:
+                        cid = c["id"]
+                    except (IndexError, KeyError):
+                        cid = None
                 if cid and cid not in seen_ids:
                     seen_ids.add(cid)
                     pendientes.append(c)
@@ -550,11 +558,19 @@ def repartidores_pendientes(update, context):
 
     for c in pendientes:
         # Ideal: que ambas funciones de DB devuelvan (courier_id, full_name, phone, city, barrio)
-        courier_id = c.get("courier_id") or c.get("id")
-        full_name = c.get("full_name", "")
-        phone = c.get("phone", "")
-        city = c.get("city", "")
-        barrio = c.get("barrio", "")
+        try:
+            courier_id = c["courier_id"]
+        except (IndexError, KeyError):
+            courier_id = None
+        if not courier_id:
+            try:
+                courier_id = c["id"]
+            except (IndexError, KeyError):
+                courier_id = None
+        full_name = c["full_name"] or ""
+        phone = c["phone"] or ""
+        city = c["city"] or ""
+        barrio = c["barrio"] or ""
 
         if not courier_id:
             continue
@@ -799,14 +815,14 @@ def admin_menu_callback(update, context):
             return
 
         # Datos del admin objetivo
-        adm_full_name = admin_obj.get("full_name") or "-"
-        adm_phone = admin_obj.get("phone") or "-"
-        adm_city = admin_obj.get("city") or "-"
-        adm_barrio = admin_obj.get("barrio") or "-"
-        adm_team_name = admin_obj.get("team_name") or "-"
-        adm_document = admin_obj.get("document_number") or "-"
-        adm_team_code = admin_obj.get("team_code") or "-"
-        adm_status = admin_obj.get("status") or "-"
+        adm_full_name = admin_obj["full_name"] or "-"
+        adm_phone = admin_obj["phone"] or "-"
+        adm_city = admin_obj["city"] or "-"
+        adm_barrio = admin_obj["barrio"] or "-"
+        adm_team_name = admin_obj["team_name"] or "-"
+        adm_document = admin_obj["document_number"] or "-"
+        adm_team_code = admin_obj["team_code"] or "-"
+        adm_status = admin_obj["status"] or "-"
 
         # Tipo de admin
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
@@ -819,9 +835,9 @@ def admin_menu_callback(update, context):
         reset_state = get_admin_reset_state_by_id(adm_id)
         reset_status = _registration_reset_status_label(reset_state)
 
-        residence_address = admin_obj.get("residence_address")
-        residence_lat = admin_obj.get("residence_lat")
-        residence_lng = admin_obj.get("residence_lng")
+        residence_address = admin_obj["residence_address"]
+        residence_lat = admin_obj["residence_lat"]
+        residence_lng = admin_obj["residence_lng"]
         if residence_lat is not None and residence_lng is not None:
             residence_location = "{}, {}".format(residence_lat, residence_lng)
             maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -966,12 +982,12 @@ def admin_menu_callback(update, context):
             query.answer("Admin no encontrado")
             return
 
-        if admin_obj.get("team_code") == "PLATFORM":
+        if admin_obj["team_code"] == "PLATFORM":
             query.answer("No puedes modificar a un admin de plataforma")
             return
 
         # Aplicar cambio
-        was_reactivated = bool(admin_obj.get("status") in ("INACTIVE", "REJECTED"))
+        was_reactivated = bool(admin_obj["status"] in ("INACTIVE", "REJECTED"))
         update_admin_status_by_id(adm_id, nuevo_status, changed_by=f"tg:{update.effective_user.id}")
         if nuevo_status == "APPROVED":
             try:
@@ -982,14 +998,14 @@ def admin_menu_callback(update, context):
 
         # Recargar el detalle
         admin_obj = get_admin_by_id(adm_id)
-        adm_full_name = admin_obj.get("full_name") or "-"
-        adm_phone = admin_obj.get("phone") or "-"
-        adm_city = admin_obj.get("city") or "-"
-        adm_barrio = admin_obj.get("barrio") or "-"
-        adm_team_name = admin_obj.get("team_name") or "-"
-        adm_document = admin_obj.get("document_number") or "-"
-        adm_team_code = admin_obj.get("team_code") or "-"
-        adm_status = admin_obj.get("status") or "-"
+        adm_full_name = admin_obj["full_name"] or "-"
+        adm_phone = admin_obj["phone"] or "-"
+        adm_city = admin_obj["city"] or "-"
+        adm_barrio = admin_obj["barrio"] or "-"
+        adm_team_name = admin_obj["team_name"] or "-"
+        adm_document = admin_obj["document_number"] or "-"
+        adm_team_code = admin_obj["team_code"] or "-"
+        adm_status = admin_obj["status"] or "-"
 
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
         num_couriers = count_admin_couriers(adm_id)
@@ -1061,13 +1077,13 @@ def admin_menu_callback(update, context):
         if not admin_obj:
             query.answer("Admin no encontrado", show_alert=True)
             return
-        if admin_obj.get("team_code") == "PLATFORM":
+        if admin_obj["team_code"] == "PLATFORM":
             query.answer("No aplica para Admin Plataforma", show_alert=True)
             return
 
         reset_state = get_admin_reset_state_by_id(adm_id)
         if action == "enable":
-            if admin_obj.get("status") != "INACTIVE":
+            if admin_obj["status"] != "INACTIVE":
                 query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
@@ -1438,10 +1454,10 @@ def admin_menu_callback(update, context):
             )
             return
 
-        adm_full_name = admin_obj.get("full_name") or "-"
-        adm_team_name = admin_obj.get("team_name") or "-"
-        adm_team_code = admin_obj.get("team_code") or "-"
-        adm_status = admin_obj.get("status") or "-"
+        adm_full_name = admin_obj["full_name"] or "-"
+        adm_team_name = admin_obj["team_name"] or "-"
+        adm_team_code = admin_obj["team_code"] or "-"
+        adm_status = admin_obj["status"] or "-"
         balance = get_admin_balance(admin_id)
         texto = (
             "ADMIN ID: {}\n"
@@ -1820,9 +1836,9 @@ def admin_ver_pendiente(update, context):
         query.edit_message_text("Administrador no encontrado.")
         return
 
-    residence_address = admin.get("residence_address")
-    residence_lat = admin.get("residence_lat")
-    residence_lng = admin.get("residence_lng")
+    residence_address = admin["residence_address"]
+    residence_lat = admin["residence_lat"]
+    residence_lng = admin["residence_lng"]
     if residence_lat is not None and residence_lng is not None:
         residence_location = "{}, {}".format(residence_lat, residence_lng)
         maps_line = "Maps: https://www.google.com/maps?q={},{}\n".format(residence_lat, residence_lng)
@@ -1860,9 +1876,9 @@ def admin_ver_pendiente(update, context):
     query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # Enviar fotos de verificación de identidad si están disponibles
-    cedula_front = admin.get("cedula_front_file_id")
-    cedula_back = admin.get("cedula_back_file_id")
-    selfie = admin.get("selfie_file_id")
+    cedula_front = admin["cedula_front_file_id"]
+    cedula_back = admin["cedula_back_file_id"]
+    selfie = admin["selfie_file_id"]
     if cedula_front or cedula_back or selfie:
         try:
             if cedula_front:
@@ -1900,7 +1916,7 @@ def admin_aprobar_rechazar_callback(update, context):
 
     if accion == "aprobar":
         admin_actual = get_admin_by_id(admin_id)
-        was_reactivated = bool(admin_actual and admin_actual.get("status") in ("INACTIVE", "REJECTED"))
+        was_reactivated = bool(admin_actual and admin_actual["status"] in ("INACTIVE", "REJECTED"))
         try:
             update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
@@ -2389,7 +2405,7 @@ def admin_config_callback(update, context):
     if data.startswith("config_ally_enable_"):
         ally_id = int(data.split("_")[-1])
         ally_before = get_ally_by_id(ally_id)
-        if ally_before and ally_before.get("status") == "PENDING":
+        if ally_before and ally_before["status"] == "PENDING":
             result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
             if not result.get("ok"):
                 query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
@@ -2410,7 +2426,7 @@ def admin_config_callback(update, context):
             kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
             query.edit_message_text("Aliado aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
             return
-        was_reactivated = bool(ally_before and ally_before.get("status") in ("INACTIVE", "REJECTED"))
+        was_reactivated = bool(ally_before and ally_before["status"] in ("INACTIVE", "REJECTED"))
         update_ally_status_by_id(ally_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         try:
             link = get_admin_link_for_ally(ally_id)

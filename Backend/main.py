@@ -611,14 +611,14 @@ def start(update, context):
     comandos.append("General:")
     comandos.append("• /mi_perfil  - Ver tu perfil consolidado")
 
-    if ally and ally.get("status") == "APPROVED" and "/soy_aliado" not in missing_cmds:
+    if ally and ally["status"] == "APPROVED" and "/soy_aliado" not in missing_cmds:
         comandos.append("")
         comandos.append("🍕 Aliado:")
         comandos.append("• Toca [Mi aliado] en el menu para ver todas las opciones:")
         comandos.append("  Nuevo pedido, Mis pedidos, Clientes, Agenda,")
         comandos.append("  Cotizar envio, Recargar, Mi saldo")
     elif ally:
-        ally_status = ally.get("status", "PENDING")
+        ally_status = ally["status"] or "PENDING"
         comandos.append("")
         comandos.append("Aliado:")
         comandos.append(f"• Tu perfil de aliado está {ally_status}.")
@@ -1069,7 +1069,7 @@ def courier_pedidos_en_curso(update, context):
         next_seq = None
         if pending_stops:
             try:
-                next_seq = min(int(s["sequence"]) for s in pending_stops if s.get("sequence") is not None)
+                next_seq = min(int(s["sequence"]) for s in pending_stops if s["sequence"] is not None)
             except Exception:
                 next_seq = None
 
@@ -1222,9 +1222,9 @@ def mi_admin(update, context):
         update.message.reply_text("No se pudo cargar tu perfil de administrador. Revisa BD.")
         return
 
-    status = admin_full.get("status") or "-"
-    team_name = admin_full.get("team_name") or "-"
-    team_code = admin_full.get("team_code") or "-"
+    status = admin_full["status"] or "-"
+    team_name = admin_full["team_name"] or "-"
+    team_code = admin_full["team_code"] or "-"
 
     header = (
         "Panel Administrador Local\n\n"
