@@ -370,3 +370,10 @@ PEDIDO_GUARDAR_DIR_EXISTENTE = 998   # Ofrecer agregar nueva direccion a cliente
 ADMIN_PEDIDO_SEL_CUST_BUSCAR = 999   # Buscar cliente en agenda durante admin_pedido_conv
 ADMIN_PEDIDO_CUST_DEDUP      = 1000  # Confirmar cliente existente hallado por telefono en admin_pedido
 ADMIN_PEDIDO_GUARDAR_CUST    = 1001  # Ofrecer guardar cliente nuevo tras crear pedido admin
+
+# =========================
+# Estados para agregar paradas extra a un pedido simple (conversion a ruta antes de confirmar)
+# =========================
+PEDIDO_PARADA_EXTRA_NOMBRE    = 1002  # Nombre del cliente de la parada adicional
+PEDIDO_PARADA_EXTRA_TELEFONO  = 1003  # Telefono del cliente de la parada adicional
+PEDIDO_PARADA_EXTRA_DIRECCION = 1004  # Direccion (texto, GPS, geo confirm) de la parada adicional

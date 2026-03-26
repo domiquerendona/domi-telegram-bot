@@ -25,6 +25,7 @@ from handlers.states import (
     ADMIN_PEDIDO_SEL_CUST, ADMIN_PEDIDO_SEL_CUST_ADDR, ADMIN_PEDIDO_SAVE_PICKUP,
     PEDIDO_DEDUP_CONFIRM, PEDIDO_GUARDAR_DIR_EXISTENTE,
     ADMIN_PEDIDO_SEL_CUST_BUSCAR, ADMIN_PEDIDO_CUST_DEDUP, ADMIN_PEDIDO_GUARDAR_CUST,
+    PEDIDO_PARADA_EXTRA_NOMBRE, PEDIDO_PARADA_EXTRA_TELEFONO, PEDIDO_PARADA_EXTRA_DIRECCION,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
@@ -32,7 +33,7 @@ from handlers.common import (
     cancel_conversacion, cancel_por_texto, ensure_terms,
     show_main_menu, show_flow_menu, _fmt_pesos,
 )
-from order_delivery import publish_order_to_couriers, repost_order_to_couriers, repost_route_to_couriers
+from order_delivery import publish_order_to_couriers, repost_order_to_couriers, repost_route_to_couriers, publish_route_to_couriers
 from services import (
     ensure_user, get_user_by_telegram_id, get_ally_by_user_id,
     get_approved_admin_link_for_ally, get_admin_link_for_ally,
@@ -54,6 +55,9 @@ from services import (
     ally_get_order_for_incentive, ally_increment_order_incentive,
     admin_increment_order_incentive,
     add_route_incentive, get_route_by_id,
+    create_route, create_route_destination,
+    calcular_precio_ruta_inteligente, optimizar_orden_paradas,
+    get_ally_link_balance,
     get_admin_by_telegram_id, get_admin_locations, get_admin_location_by_id,
     create_admin_location, increment_admin_location_usage,
     list_admin_customers, search_admin_customers, get_admin_customer_by_id,
@@ -64,7 +68,7 @@ from services import (
     mark_ally_form_request_converted,
     get_ally_by_id, compute_ally_subsidy,
     get_active_terms_version, save_terms_acceptance,
-    resolve_location, resolve_location_next,
+    resolve_location, resolve_location_next, save_confirmed_geocoding,
 )
 
 
@@ -920,10 +924,7 @@ def calcular_cotizacion_y_confirmar(query_or_update, context, edit=False):
     context.user_data["distance_source"] = cotizacion.get("distance_source", "")
 
     # Mostrar resumen con botones de confirmacion
-    keyboard = _pedido_incentivo_keyboard() + [
-        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
-        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
-    ]
+    keyboard = _pedido_confirmacion_keyboard(context)
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
 
@@ -1193,11 +1194,12 @@ def pedido_geo_ubicacion_callback(update, context):
     if query.data == "pedido_geo_si":
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
-        context.user_data.pop("pending_geo_text", None)
+        original_text = context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return PEDIDO_UBICACION
+        save_confirmed_geocoding(original_text, lat, lng)
         context.user_data["dropoff_lat"] = lat
         context.user_data["dropoff_lng"] = lng
         query.edit_message_text(
@@ -1904,8 +1906,110 @@ def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None
     ]
 
 
+def _pedido_confirmacion_keyboard(context):
+    """Teclado de confirmacion: incentivos + agregar parada + confirmar + cancelar."""
+    paradas_extra = context.user_data.get("pedido_paradas_extra", [])
+    n_extras = len(paradas_extra)
+    confirmar_label = "Confirmar ruta ({} paradas)".format(n_extras + 1) if n_extras else "Confirmar pedido"
+    rows = _pedido_incentivo_keyboard()
+    rows.append([InlineKeyboardButton("+ Agregar otra entrega", callback_data="pedido_agregar_parada")])
+    rows.append([InlineKeyboardButton(confirmar_label, callback_data="pedido_confirmar")])
+    rows.append([InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")])
+    return rows
+
+
+def _haversine_km_inline(lat1, lng1, lat2, lng2):
+    """Calcula distancia Haversine en km entre dos puntos."""
+    import math
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _construir_resumen_ruta_desde_pedido(context):
+    """Construye el resumen de ruta cuando hay paradas extra en un pedido."""
+    pickup_label = context.user_data.get("pickup_label", "")
+    pickup_address = context.user_data.get("pickup_address", "")
+    if pickup_label and pickup_address:
+        recogida = "{}: {}".format(pickup_label, pickup_address)
+    elif pickup_address:
+        recogida = pickup_address
+    else:
+        recogida = "-"
+
+    primera = {
+        "name": context.user_data.get("customer_name", "-"),
+        "phone": context.user_data.get("customer_phone", "-"),
+        "address": context.user_data.get("customer_address", "-"),
+        "city": context.user_data.get("customer_city", ""),
+        "barrio": context.user_data.get("customer_barrio", ""),
+        "lat": context.user_data.get("dropoff_lat"),
+        "lng": context.user_data.get("dropoff_lng"),
+    }
+    paradas_extra = context.user_data.get("pedido_paradas_extra", [])
+    all_paradas = [primera] + paradas_extra
+
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+
+    # Distancia total: primer tramo ya calculado + tramos extra por Haversine
+    total_km = float(context.user_data.get("quote_distance_km") or 0)
+    for i in range(1, len(all_paradas)):
+        prev = all_paradas[i - 1]
+        curr = all_paradas[i]
+        if has_valid_coords(prev.get("lat"), prev.get("lng")) and has_valid_coords(curr.get("lat"), curr.get("lng")):
+            total_km += _haversine_km_inline(prev["lat"], prev["lng"], curr["lat"], curr["lng"])
+
+    paradas_opt, _, fue_optimizado = optimizar_orden_paradas(pickup_lat, pickup_lng, all_paradas)
+    if fue_optimizado:
+        all_paradas = paradas_opt
+        context.user_data["pedido_paradas_extra"] = all_paradas[1:]
+
+    precio_info = calcular_precio_ruta_inteligente(total_km, all_paradas, pickup_lat=pickup_lat, pickup_lng=pickup_lng)
+    context.user_data["ruta_precio_desde_pedido"] = precio_info
+    context.user_data["ruta_paradas_desde_pedido"] = all_paradas
+    context.user_data["ruta_distancia_desde_pedido"] = total_km
+
+    distance_fee = precio_info["distance_fee"]
+    additional_fee = precio_info["additional_stops_fee"]
+    total_fee = precio_info["total_fee"]
+    stop_fee = precio_info.get("tarifa_parada_adicional", 0)
+    mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
+    incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+
+    text = "RUTA DE ENTREGA\n"
+    if fue_optimizado:
+        text += "(Orden optimizado para menor distancia)\n"
+    text += "\nRecoge en: {}\n\n".format(recogida)
+    for i, p in enumerate(all_paradas, 1):
+        text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
+            i, p.get("name") or "-", p.get("phone") or "", p.get("address") or "-"
+        )
+    text += "\nDistancia total: {:.1f} km\n".format(total_km)
+    text += "Precio base (distancia): ${:,}\n".format(distance_fee)
+    if additional_fee > 0:
+        text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(all_paradas) - 1, stop_fee, additional_fee)
+    total_con_incentivo = total_fee + incentivo
+    text += "TOTAL: ${:,}".format(total_con_incentivo)
+    if mensaje_ahorro:
+        text += "\n{}".format(mensaje_ahorro)
+    if incentivo > 0:
+        text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    text += (
+        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
+        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "Confirmas esta ruta?"
+    )
+    return text
+
+
 def construir_resumen_pedido(context):
-    """Construye el texto del resumen del pedido."""
+    """Construye el texto del resumen del pedido. Si hay paradas extra, devuelve resumen de ruta."""
+    if context.user_data.get("pedido_paradas_extra"):
+        return _construir_resumen_ruta_desde_pedido(context)
     tipo_servicio = context.user_data.get("service_type", "-")
     nombre = context.user_data.get("customer_name", "-")
     telefono = context.user_data.get("customer_phone", "-")
@@ -2004,10 +2108,7 @@ def mostrar_resumen_confirmacion(query, context, edit=True):
     if pickup_lat is None or pickup_lng is None:
         return mostrar_selector_pickup(query, context, edit=True)
 
-    keyboard = _pedido_incentivo_keyboard() + [
-        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
-        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
-    ]
+    keyboard = _pedido_confirmacion_keyboard(context)
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
 
@@ -2026,10 +2127,7 @@ def mostrar_resumen_confirmacion_msg(update, context):
     if pickup_lat is None or pickup_lng is None:
         return mostrar_selector_pickup(update, context, edit=False)
 
-    keyboard = _pedido_incentivo_keyboard() + [
-        [InlineKeyboardButton("Confirmar pedido", callback_data="pedido_confirmar")],
-        [InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")],
-    ]
+    keyboard = _pedido_confirmacion_keyboard(context)
     reply_markup = InlineKeyboardMarkup(keyboard)
     resumen = construir_resumen_pedido(context)
 
@@ -3376,6 +3474,250 @@ def admin_pedido_cancelar_callback(update, context):
     return ConversationHandler.END
 
 
+# =============================================================================
+# Handlers para agregar paradas extra a un pedido (conversion a ruta en preview)
+# =============================================================================
+
+def pedido_agregar_parada_callback(update, context):
+    """Inicia captura de una parada adicional desde la pantalla de confirmacion."""
+    query = update.callback_query
+    query.answer()
+    paradas_extra = context.user_data.get("pedido_paradas_extra", [])
+    n = len(paradas_extra) + 2  # parada 1 es la original; nueva seria la n
+    query.edit_message_text(
+        "Parada {}:\n\nEscribe el nombre del cliente:".format(n)
+    )
+    return PEDIDO_PARADA_EXTRA_NOMBRE
+
+
+def pedido_extra_nombre_handler(update, context):
+    """Captura el nombre del cliente de la parada extra."""
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text("El nombre no puede estar vacio. Escribe el nombre del cliente:")
+        return PEDIDO_PARADA_EXTRA_NOMBRE
+    context.user_data["pedido_extra_temp_name"] = texto
+    update.message.reply_text("Escribe el telefono del cliente:")
+    return PEDIDO_PARADA_EXTRA_TELEFONO
+
+
+def pedido_extra_telefono_handler(update, context):
+    """Captura el telefono del cliente de la parada extra."""
+    texto = update.message.text.strip()
+    digits = "".join(c for c in texto if c.isdigit())
+    if len(digits) < 7:
+        update.message.reply_text("Ingresa un telefono valido (minimo 7 digitos):")
+        return PEDIDO_PARADA_EXTRA_TELEFONO
+    context.user_data["pedido_extra_temp_phone"] = texto
+    update.message.reply_text(
+        "Escribe la direccion de entrega para esta parada:\n(Puedes enviar la ubicacion GPS o escribir la direccion)"
+    )
+    return PEDIDO_PARADA_EXTRA_DIRECCION
+
+
+def pedido_extra_direccion_handler(update, context):
+    """Captura la direccion de la parada extra por texto con geocoding."""
+    texto = update.message.text.strip()
+    if not texto:
+        update.message.reply_text("Escribe la direccion de entrega:")
+        return PEDIDO_PARADA_EXTRA_DIRECCION
+    geo = resolve_location(texto)
+    if geo and has_valid_coords(geo.get("lat"), geo.get("lng")):
+        context.user_data["pedido_extra_geo_pending"] = {
+            "lat": geo["lat"],
+            "lng": geo["lng"],
+            "address": geo.get("address", texto),
+            "city": geo.get("city", ""),
+            "barrio": geo.get("barrio", ""),
+            "original_text": texto,
+        }
+        _mostrar_confirmacion_geocode(
+            update.message, context,
+            geo, texto,
+            "pedido_extra_geo_si", "pedido_extra_geo_no",
+        )
+        return PEDIDO_PARADA_EXTRA_DIRECCION
+    # Sin resultado: pedir GPS
+    update.message.reply_text(
+        "No encontre esa direccion.\n\nEnvia la ubicacion GPS de la parada o escribe la direccion de otra forma."
+    )
+    return PEDIDO_PARADA_EXTRA_DIRECCION
+
+
+def pedido_extra_gps_handler(update, context):
+    """Captura GPS de la parada extra."""
+    location = update.message.location
+    context.user_data["pedido_extra_temp_lat"] = location.latitude
+    context.user_data["pedido_extra_temp_lng"] = location.longitude
+    context.user_data["pedido_extra_temp_address"] = context.user_data.get("pedido_extra_temp_address", "")
+    context.user_data["pedido_extra_temp_city"] = ""
+    context.user_data["pedido_extra_temp_barrio"] = ""
+    return _pedido_extra_guardar_y_mostrar(update, context)
+
+
+def pedido_extra_geo_callback(update, context):
+    """Confirma o rechaza geocoding de la parada extra."""
+    query = update.callback_query
+    query.answer()
+    if query.data == "pedido_extra_geo_si":
+        pending = context.user_data.pop("pedido_extra_geo_pending", {})
+        context.user_data["pedido_extra_temp_lat"] = pending.get("lat")
+        context.user_data["pedido_extra_temp_lng"] = pending.get("lng")
+        context.user_data["pedido_extra_temp_address"] = pending.get("address", "")
+        context.user_data["pedido_extra_temp_city"] = pending.get("city", "")
+        context.user_data["pedido_extra_temp_barrio"] = pending.get("barrio", "")
+        return _pedido_extra_guardar_y_mostrar(query, context)
+    else:  # pedido_extra_geo_no
+        return _geo_siguiente_o_gps(query, context, "pedido_extra_geo_si", "pedido_extra_geo_no", PEDIDO_PARADA_EXTRA_DIRECCION)
+
+
+def _pedido_extra_guardar_y_mostrar(update_or_query, context):
+    """Guarda la parada temporal en pedido_paradas_extra y vuelve al resumen del pedido."""
+    parada = {
+        "name": context.user_data.pop("pedido_extra_temp_name", ""),
+        "phone": context.user_data.pop("pedido_extra_temp_phone", ""),
+        "address": context.user_data.pop("pedido_extra_temp_address", ""),
+        "city": context.user_data.pop("pedido_extra_temp_city", ""),
+        "barrio": context.user_data.pop("pedido_extra_temp_barrio", ""),
+        "lat": context.user_data.pop("pedido_extra_temp_lat", None),
+        "lng": context.user_data.pop("pedido_extra_temp_lng", None),
+    }
+    context.user_data.pop("pedido_extra_geo_pending", None)
+    paradas_extra = context.user_data.get("pedido_paradas_extra", [])
+    paradas_extra.append(parada)
+    context.user_data["pedido_paradas_extra"] = paradas_extra
+
+    resumen = construir_resumen_pedido(context)
+    keyboard = _pedido_confirmacion_keyboard(context)
+    markup = InlineKeyboardMarkup(keyboard)
+    if hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(resumen, reply_markup=markup)
+    else:
+        update_or_query.message.reply_text(resumen, reply_markup=markup)
+    return PEDIDO_CONFIRMACION
+
+
+def _pedido_confirmar_como_ruta(query, context):
+    """Crea y publica una ruta cuando el aliado convirtio su pedido agregando paradas extra."""
+    ally_id = context.user_data.get("ally_id")
+    if not ally_id:
+        query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Reutilizar datos calculados en _construir_resumen_ruta_desde_pedido
+    all_paradas = context.user_data.get("ruta_paradas_desde_pedido")
+    precio_info = context.user_data.get("ruta_precio_desde_pedido")
+    total_km = context.user_data.get("ruta_distancia_desde_pedido", 0)
+
+    # Si por alguna razon no se calcularon aun (ej. preview no fue actualizado), calcular ahora
+    if not all_paradas or not precio_info:
+        _construir_resumen_ruta_desde_pedido(context)
+        all_paradas = context.user_data.get("ruta_paradas_desde_pedido", [])
+        precio_info = context.user_data.get("ruta_precio_desde_pedido", {})
+        total_km = context.user_data.get("ruta_distancia_desde_pedido", 0)
+
+    if not all_paradas or len(all_paradas) < 2:
+        query.edit_message_text("Error: datos de ruta incompletos. Intenta de nuevo.")
+        context.user_data.clear()
+        show_main_menu(query, context)
+        return ConversationHandler.END
+
+    # Verificar que todas las paradas tienen coordenadas
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    if not has_valid_coords(pickup_lat, pickup_lng):
+        query.edit_message_text("La recogida requiere ubicacion confirmada.")
+        return PEDIDO_CONFIRMACION
+    for p in all_paradas:
+        if not has_valid_coords(p.get("lat"), p.get("lng")):
+            query.edit_message_text(
+                "La parada '{}' no tiene ubicacion confirmada. Intenta agregar la direccion de nuevo.".format(
+                    p.get("address", "sin nombre"))
+            )
+            return PEDIDO_CONFIRMACION
+
+    link = get_approved_admin_link_for_ally(ally_id)
+    admin_id_snapshot = link["admin_id"] if link else None
+
+    # Validar saldo para fee de ruta: $300 base + $200 por parada adicional
+    n_paradas = len(all_paradas)
+    fee_total_aliado = 300 + 200 * (n_paradas - 1)
+    if admin_id_snapshot:
+        saldo = get_ally_link_balance(ally_id, admin_id_snapshot)
+        if saldo < fee_total_aliado:
+            query.edit_message_text(
+                "Saldo insuficiente para crear la ruta.\n"
+                "Necesitas: ${:,}\nTu saldo actual: ${:,}\n\n"
+                "Solicita una recarga a tu administrador.".format(fee_total_aliado, saldo)
+            )
+            context.user_data.clear()
+            show_main_menu(query, context)
+            return ConversationHandler.END
+
+    pickup_location = context.user_data.get("pickup_location")
+    pickup_location_id = pickup_location.get("id") if pickup_location else None
+    if not pickup_location_id:
+        default_loc = get_default_ally_location(ally_id)
+        pickup_location_id = default_loc["id"] if default_loc else None
+    pickup_address = context.user_data.get("pickup_address", "")
+
+    base_instructions = context.user_data.get("instructions", "")
+    incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+
+    try:
+        route_id = create_route(
+            ally_id=ally_id,
+            pickup_location_id=pickup_location_id,
+            pickup_address=pickup_address,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            total_distance_km=total_km,
+            distance_fee=precio_info.get("distance_fee", 0),
+            additional_stops_fee=precio_info.get("additional_stops_fee", 0),
+            total_fee=precio_info.get("total_fee", 0),
+            instructions=base_instructions or None,
+            ally_admin_id_snapshot=admin_id_snapshot,
+        )
+    except Exception as e:
+        query.edit_message_text("Error al crear la ruta: {}".format(str(e)))
+        context.user_data.pop("pedido_processed", None)
+        return PEDIDO_CONFIRMACION
+
+    for i, parada in enumerate(all_paradas, 1):
+        create_route_destination(
+            route_id=route_id,
+            sequence=i,
+            customer_name=parada.get("name") or "",
+            customer_phone=parada.get("phone") or "",
+            customer_address=parada.get("address") or "",
+            customer_city=parada.get("city") or "",
+            customer_barrio=parada.get("barrio") or "",
+            dropoff_lat=parada.get("lat"),
+            dropoff_lng=parada.get("lng"),
+        )
+
+    if incentivo > 0:
+        add_route_incentive(route_id, incentivo)
+
+    if pickup_location_id:
+        try:
+            increment_pickup_usage(pickup_location_id, ally_id)
+        except Exception:
+            pass
+
+    count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
+    if count > 0:
+        msg = "Ruta #{} creada y publicada.\nPronto un repartidor sera asignado.".format(route_id)
+    else:
+        msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
+
+    query.edit_message_text(msg)
+    context.user_data.clear()
+    show_main_menu(query, context)
+    return ConversationHandler.END
+
+
 def pedido_confirmacion_callback(update, context):
     """Maneja la confirmacion/cancelacion del pedido por botones."""
     query = update.callback_query
@@ -3390,6 +3732,11 @@ def pedido_confirmacion_callback(update, context):
     if data == "pedido_confirmar":
         # Marcar como procesado ANTES de crear el pedido
         context.user_data["pedido_processed"] = True
+
+        # Si hay paradas extra, crear ruta en lugar de pedido individual
+        paradas_extra = context.user_data.get("pedido_paradas_extra", [])
+        if paradas_extra:
+            return _pedido_confirmar_como_ruta(query, context)
 
         # Obtener datos del usuario y ally
         ally_id = context.user_data.get("ally_id")
@@ -4325,6 +4672,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
             CallbackQueryHandler(pedido_incentivo_fixed_callback, pattern=r"^pedido_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(pedido_incentivo_otro_start, pattern=r"^pedido_inc_otro$"),
+            CallbackQueryHandler(pedido_agregar_parada_callback, pattern=r"^pedido_agregar_parada$"),
             CallbackQueryHandler(pedido_confirmacion_callback, pattern=r"^pedido_(confirmar|cancelar)$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_confirmacion)
         ],
@@ -4340,6 +4688,20 @@ nuevo_pedido_conv = ConversationHandler(
         ],
         PEDIDO_GUARDAR_DIR_EXISTENTE: [
             CallbackQueryHandler(pedido_guardar_dir_existente_callback, pattern=r"^pedido_guardar_dir_(si|no)$"),
+        ],
+        PEDIDO_PARADA_EXTRA_NOMBRE: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_extra_nombre_handler),
+        ],
+        PEDIDO_PARADA_EXTRA_TELEFONO: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_extra_telefono_handler),
+        ],
+        PEDIDO_PARADA_EXTRA_DIRECCION: [
+            CallbackQueryHandler(pedido_extra_geo_callback, pattern=r"^pedido_extra_geo_(si|no)$"),
+            MessageHandler(Filters.location, pedido_extra_gps_handler),
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_extra_direccion_handler),
         ],
     },
     fallbacks=[
