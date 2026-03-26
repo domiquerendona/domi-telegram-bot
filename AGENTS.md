@@ -1123,6 +1123,43 @@ PROHIBIDO usar secuencias de escape directas (
 , 	) dentro de strings Python cuando
 el objetivo es escribir esas secuencias literalmente en otro archivo Python.
 
+14C. Funcion importada en handler pero nunca definida en services.py
+
+Sintoma (detectado 2026-03-26):
+    ImportError: cannot import name 'save_confirmed_geocoding' from 'services'
+    El bot no arranca. El error aparece al iniciar main.py.
+
+Causa:
+    Un commit agrego una llamada a una funcion nueva (save_confirmed_geocoding) en
+    handlers/order.py y la incluyo en el bloque import from services, pero nunca
+    creo la funcion en services.py ni en db.py.
+    El error solo se descubre al intentar correr el bot, no en py_compile del archivo
+    que la llama (porque py_compile no resuelve imports dinamicamente).
+
+Por que py_compile no lo detecta:
+    python3 -m py_compile handlers/order.py no falla porque solo verifica sintaxis.
+    El ImportError ocurre en tiempo de ejecucion cuando Python resuelve los imports.
+    Para detectarlo hay que compilar main.py, que importa order.py transitivamente,
+    o correr el bot directamente.
+
+Correccion aplicada:
+    Se definio save_confirmed_geocoding en services.py como wrapper de
+    upsert_geocoding_text_cache (ya existia), guardando con source="confirmed".
+    La funcion acepta (text, lat, lng) y falla silenciosamente si los parametros
+    son invalidos (patron estandar del proyecto para operaciones de cache).
+
+Regla preventiva obligatoria:
+    Antes de agregar una funcion al bloque import from services en cualquier handler,
+    verificar que existe:
+        git grep "def nombre_funcion" -- "*.py"
+    Si no aparece en services.py o db.py -> crearla antes de importarla.
+    NUNCA importar una funcion que no existe aun.
+
+Verificacion correcta para detectar este tipo de error antes de push:
+    python3 -c "import sys; sys.path.insert(0, 'Backend'); import main"
+    (este comando si resuelve los imports y falla si falta alguna funcion)
+
+
 15. Colaboración entre agentes IA (Claude Code y Codex)
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
