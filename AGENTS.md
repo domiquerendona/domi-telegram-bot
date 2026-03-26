@@ -1160,6 +1160,41 @@ Verificacion correcta para detectar este tipo de error antes de push:
     (este comando si resuelve los imports y falla si falta alguna funcion)
 
 
+14D. sqlite3.Row no tiene metodo .get() — usar acceso directo por clave
+
+Sintoma (detectado 2026-03-26):
+    AttributeError: 'sqlite3.Row' object has no attribute 'get'
+    El handler lanza excepcion silenciosa: el bot responde al callback (boton deja de girar)
+    pero no realiza ninguna accion visible para el usuario ("no pasa nada").
+
+Causa:
+    Las funciones de db.py retornan sqlite3.Row en SQLite y RealDictRow en PostgreSQL.
+    sqlite3.Row NO tiene el metodo dict.get(key, default).
+    Solo soporta acceso por indice: row["key"] o row[0].
+    Codigo incorrecto: admin_row.get("telegram_id")   <- AttributeError en SQLite
+    Codigo correcto:   admin_row["telegram_id"]        <- funciona en SQLite y Postgres
+
+Comportamiento de acceso directo en ambos motores:
+    - sqlite3.Row["key"]: retorna None si el valor en la BD es NULL. No lanza KeyError.
+    - RealDictRow["key"]: igual, retorna None si el valor es NULL.
+    El comportamiento es equivalente a dict.get(key) — sin necesidad del metodo .get().
+
+Por que es dificil de detectar:
+    - py_compile no lo detecta (error de atributo en tiempo de ejecucion, no de sintaxis).
+    - El error ocurre DESPUES de query.answer(): el boton deja de girar (parece que funciono)
+      pero la accion no se completa. El usuario ve que "no pasa nada".
+    - Solo falla en SQLite (desarrollo local). En PostgreSQL RealDictRow SI tiene .get(),
+      por lo que el bug puede pasar desapercibido si solo se prueba en Railway.
+
+Regla preventiva obligatoria:
+    NUNCA usar .get() en objetos retornados por funciones de db.py.
+    Usar siempre acceso directo: row["columna"].
+    Si se necesita un valor por defecto: row["columna"] or valor_default
+
+Casos corregidos en registration.py (2026-03-26):
+    ally_team_callback lineas 617, 634 y courier_team_callback lineas 1323, 1339.
+
+
 15. Colaboración entre agentes IA (Claude Code y Codex)
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
