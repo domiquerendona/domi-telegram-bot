@@ -24,6 +24,7 @@ from db import (
     credit_welcome_balance,
     get_courier_link_balance, get_ally_link_balance,
     get_platform_admin,
+    get_platform_sociedad_id,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
     get_approved_admin_id_for_courier,
     upsert_reference_alias_candidate,
@@ -260,6 +261,10 @@ from db import (
     get_admin_panel_balances_data,
     get_admin_panel_users_data,
     get_admin_panel_earnings_data,
+    get_admin_balance_breakdown,
+    get_admin_ledger_movements,
+    get_platform_sociedad,
+    get_platform_sociedad_id,
     get_dashboard_stats_data,
     # Re-exports web_users (panel web multiusuario)
     create_web_user,
@@ -2329,6 +2334,9 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     platform_id = platform_admin["id"]
     is_platform = (admin_id == platform_id)
 
+    # Cuenta contable de la sociedad (PLATFORM_FEE va aquí, separado del balance de Luis Felipe)
+    sociedad_id = get_platform_sociedad_id()
+
     # Calcular comision adicional al aliado (0 si commission_pct==0 o total_fee no aplica)
     ally_commission = 0
     if target_type == "ALLY" and total_fee and commission_pct > 0:
@@ -2351,60 +2359,34 @@ def apply_service_fee(target_type: str, target_id: int, admin_id: int,
     elif target_type == "ALLY":
         update_ally_link_balance(target_id, admin_id, -total_debit)
 
-    if is_platform:
-        # Platform admin gestionando su propio equipo:
-        # Se aplica el mismo split que un admin local, pero ambas partes van a la misma cuenta.
-        # Esto permite distinguir en el ledger:
-        #   FEE_INCOME   → ganancia personal del platform admin como admin de su equipo (no se divide)
-        #   PLATFORM_FEE → ganancia de plataforma (para dividir con socios/inversores)
+    # FEE_INCOME: va al admin del miembro (Luis Felipe si es PLATFORM, admin local si no)
+    update_admin_balance_with_ledger(
+        admin_id=platform_id if is_platform else admin_id,
+        delta=admin_share,
+        kind="FEE_INCOME",
+        note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
+        ref_type=ref_type,
+        ref_id=ref_id,
+        from_type=target_type,
+        from_id=target_id,
+    )
+    # PLATFORM_FEE: SIEMPRE va a la cuenta de la Sociedad (separada del balance personal)
+    if sociedad_id:
         update_admin_balance_with_ledger(
-            admin_id=platform_id,
-            delta=admin_share,
-            kind="FEE_INCOME",
-            note="Ingreso admin por servicio de equipo propio ({} id={})".format(target_type, target_id),
-            ref_type=ref_type,
-            ref_id=ref_id,
-            from_type=target_type,
-            from_id=target_id,
-        )
-        update_admin_balance_with_ledger(
-            admin_id=platform_id,
+            admin_id=sociedad_id,
             delta=platform_share,
             kind="PLATFORM_FEE",
-            note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
-            ref_type=ref_type,
-            ref_id=ref_id,
-            from_type=target_type,
-            from_id=target_id,
-        )
-    else:
-        # Admin local gana $200
-        update_admin_balance_with_ledger(
-            admin_id=admin_id,
-            delta=admin_share,
-            kind="FEE_INCOME",
-            note="Ingreso de tarifa de servicio ({} id={})".format(target_type, target_id),
-            ref_type=ref_type,
-            ref_id=ref_id,
-            from_type=target_type,
-            from_id=target_id,
-        )
-        # Plataforma gana $100
-        update_admin_balance_with_ledger(
-            admin_id=platform_id,
-            delta=platform_share,
-            kind="PLATFORM_FEE",
-            note="Comision plataforma por servicio de {} id={}".format(target_type, target_id),
+            note="Comision sociedad por servicio de {} id={}".format(target_type, target_id),
             ref_type=ref_type,
             ref_id=ref_id,
             from_type=target_type,
             from_id=target_id,
         )
 
-    # Comision adicional al aliado (va 100% a plataforma, separada del fee normal)
-    if ally_commission > 0:
+    # Comision adicional al aliado (va 100% a la Sociedad)
+    if ally_commission > 0 and sociedad_id:
         update_admin_balance_with_ledger(
-            admin_id=platform_id,
+            admin_id=sociedad_id,
             delta=ally_commission,
             kind="PLATFORM_FEE",
             note="Comision {}% sobre tarifa domicilio (ALLY id={}, tarifa=${:,})".format(
@@ -3511,25 +3493,22 @@ def pay_ally_subscription(ally_id: int, admin_id: int) -> tuple:
         return False, "Saldo insuficiente. Tienes ${:,} y la suscripcion cuesta ${:,}.".format(
             balance, price)
 
-    platform_admin = get_platform_admin()
-    if not platform_admin:
-        return False, "Plataforma no configurada."
-    platform_id = platform_admin["id"]
-
     # Debitar del saldo del aliado
     update_ally_link_balance(ally_id, admin_id, -price)
 
-    # Acreditar platform_share a plataforma
-    update_admin_balance_with_ledger(
-        admin_id=platform_id,
-        delta=platform_share,
-        kind="SUBSCRIPTION_PLATFORM_SHARE",
-        note="Suscripcion mensual aliado id={} via admin id={}".format(ally_id, admin_id),
-        ref_type="ALLY",
-        ref_id=ally_id,
-        from_type="ALLY",
-        from_id=ally_id,
-    )
+    # Acreditar platform_share a la cuenta de la Sociedad
+    sociedad_id = get_platform_sociedad_id()
+    if sociedad_id:
+        update_admin_balance_with_ledger(
+            admin_id=sociedad_id,
+            delta=platform_share,
+            kind="SUBSCRIPTION_PLATFORM_SHARE",
+            note="Suscripcion mensual aliado id={} via admin id={}".format(ally_id, admin_id),
+            ref_type="ALLY",
+            ref_id=ally_id,
+            from_type="ALLY",
+            from_id=ally_id,
+        )
 
     # Acreditar admin_share al admin del aliado (puede ser el mismo que plataforma)
     if admin_share > 0:

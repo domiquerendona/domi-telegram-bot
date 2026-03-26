@@ -42,6 +42,10 @@ from handlers.common import (
 from services import (
     admin_puede_operar,
     approve_recharge_request,
+    get_admin_balance_breakdown,
+    get_admin_ledger_movements,
+    get_platform_sociedad,
+    get_platform_sociedad_id,
     approve_role_registration,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
@@ -107,6 +111,7 @@ def cmd_saldo(update, context):
     mensaje = "💰 TUS SALDOS\n"
     mensaje += "(Los saldos de Repartidor/Aliado son por vínculo, no globales)\n\n"
     tiene_algo = False
+    es_plataforma = False
 
     admin = get_admin_by_user_id(user_db_id)
     if admin:
@@ -118,7 +123,38 @@ def cmd_saldo(update, context):
         if team_code:
             admin_label = "{} [{}]".format(admin_label, team_code)
         mensaje += "🔧 Admin ({}):\n".format(admin_label)
-        mensaje += "   Saldo master: ${:,}\n\n".format(balance)
+        mensaje += "   Saldo master: ${:,}\n".format(balance)
+        if team_code == "PLATFORM":
+            es_plataforma = True
+            bd = get_admin_balance_breakdown(admin_id)
+            mes = bd["mes_inicio"]
+            mensaje += "\n   Desglose del mes ({}):\n".format(mes)
+            if bd["ingresos_mes"]:
+                mensaje += "   Ingresos externos:   +${:,}\n".format(bd["ingresos_mes"])
+            if bd["fees_mes"]:
+                mensaje += "   Fees equipo:         +${:,}\n".format(bd["fees_mes"])
+            if bd["recargas_mes"]:
+                mensaje += "   Recargas aprobadas:  -${:,}\n".format(bd["recargas_mes"])
+            if not any([bd["ingresos_mes"], bd["fees_mes"], bd["recargas_mes"]]):
+                mensaje += "   (sin movimientos este mes)\n"
+            mensaje += "   Ganancias equipo acumuladas: ${:,}\n".format(bd["fees_total"])
+            # Cuenta de la Sociedad (separada)
+            sociedad = get_platform_sociedad()
+            if sociedad:
+                soc_id = sociedad["id"]
+                soc_balance = sociedad["balance"] if sociedad["balance"] else 0
+                soc_bd = get_admin_balance_breakdown(soc_id)
+                mensaje += "\n💼 Sociedad Domiquerendona:\n"
+                mensaje += "   Saldo sociedad: ${:,}\n".format(soc_balance)
+                mensaje += "\n   Desglose del mes ({}):\n".format(mes)
+                if soc_bd["fees_mes"]:
+                    mensaje += "   Fees plataforma:     +${:,}\n".format(soc_bd["fees_mes"])
+                if soc_bd["subs_mes"]:
+                    mensaje += "   Suscripciones:       +${:,}\n".format(soc_bd["subs_mes"])
+                if not any([soc_bd["fees_mes"], soc_bd["subs_mes"]]):
+                    mensaje += "   (sin movimientos este mes)\n"
+                mensaje += "   Acumulado total sociedad: ${:,}\n".format(soc_bd["fees_total"])
+        mensaje += "\n"
         tiene_algo = True
 
     courier = get_courier_by_user_id(user_db_id)
@@ -204,7 +240,13 @@ def cmd_saldo(update, context):
     if not tiene_algo:
         mensaje = "No tienes roles registrados.\nUsa /soy_repartidor o /soy_aliado para registrarte."
 
-    update.message.reply_text(mensaje)
+    if es_plataforma:
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Ver movimientos", callback_data="admin_movimientos")]
+        ])
+        update.message.reply_text(mensaje, reply_markup=markup)
+    else:
+        update.message.reply_text(mensaje)
 
 
 
@@ -2323,6 +2365,109 @@ ingreso_conv = ConversationHandler(
     ],
     allow_reentry=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# admin_movimientos — Historial de movimientos del saldo master (PLATFORM)
+# Entry: callback admin_movimientos
+# Periodo: admin_movimientos_hoy / semana / mes / todo
+# ---------------------------------------------------------------------------
+
+_KIND_LABELS = {
+    "INCOME": "Ingreso externo",
+    "FEE_INCOME": "Fee cobrado",
+    "PLATFORM_FEE": "Fee plataforma",
+    "RECHARGE": "Recarga aprobada",
+    "SUBSCRIPTION_PLATFORM_SHARE": "Suscripcion (plataforma)",
+    "SUBSCRIPTION_ADMIN_SHARE": "Suscripcion (admin)",
+}
+
+_MOVIMIENTOS_KEYBOARD = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
+        InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
+    ],
+    [
+        InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
+        InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
+    ],
+    [
+        InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
+        InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
+    ],
+])
+
+
+def admin_movimientos_callback(update, context):
+    """Muestra selector de periodo para ver movimientos del saldo master."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Movimientos del saldo master — selecciona un periodo:",
+        reply_markup=_MOVIMIENTOS_KEYBOARD,
+    )
+
+
+def admin_movimientos_periodo_callback(update, context):
+    """Muestra movimientos del ledger para el periodo elegido (cuenta personal o sociedad)."""
+    from datetime import datetime, timezone, timedelta
+    query = update.callback_query
+    query.answer()
+
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    admin = get_admin_by_user_id(user_row["id"])
+    if not admin:
+        query.answer("No tienes perfil de administrador.", show_alert=True)
+        return
+
+    # Determinar si es cuenta personal o sociedad
+    data = query.data  # admin_movimientos_hoy / admin_movimientos_soc_mes / etc.
+    parts = data.split("_")  # ['admin', 'movimientos', 'soc', 'mes'] o ['admin', 'movimientos', 'mes']
+    es_sociedad = "soc" in parts
+    periodo = parts[-1]  # hoy, semana, mes, todo
+
+    if es_sociedad:
+        target_id = get_platform_sociedad_id()
+        cuenta_label = "Sociedad"
+    else:
+        target_id = admin["id"]
+        cuenta_label = "Cuenta personal"
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if periodo == "hoy":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        periodo_label = "Hoy"
+    elif periodo == "semana":
+        start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        periodo_label = "Esta semana"
+    elif periodo == "mes":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        periodo_label = "Este mes"
+    else:
+        start = None
+        periodo_label = "Todo el historial"
+
+    start_s = start.strftime("%Y-%m-%d %H:%M:%S") if start else None
+    movimientos = get_admin_ledger_movements(target_id, start_s=start_s, limit=30)
+
+    label = "{} — {}".format(cuenta_label, periodo_label)
+    if not movimientos:
+        texto = "Sin movimientos para: " + label
+    else:
+        lineas = ["Movimientos — {}\n".format(label)]
+        for m in movimientos:
+            kind_label = _KIND_LABELS.get(m["kind"], m["kind"])
+            signo = "+" if m["direction"] == "IN" else "-"
+            fecha = m["created_at"][:10] if m["created_at"] else ""
+            nota = m["note"] or ""
+            nota_corta = "  " + nota[:28] if nota else ""
+            lineas.append("{} {} ${:,}  {}{}".format(signo, kind_label, m["amount"], fecha, nota_corta))
+        texto = "\n".join(lineas)
+        if len(movimientos) == 30:
+            texto += "\n(mostrando ultimos 30)"
+
+    query.edit_message_text(texto, reply_markup=_MOVIMIENTOS_KEYBOARD)
 
 
 # ---------------------------------------------------------------------------
