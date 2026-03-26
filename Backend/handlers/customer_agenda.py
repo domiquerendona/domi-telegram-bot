@@ -37,6 +37,7 @@ from handlers.states import (
     ALLY_CUST_DIR_BARRIO,
     ALLY_CUST_DIR_CIUDAD,
     ALLY_CUST_DIR_CORREGIR,
+    ALLY_CUST_PARKING,
     ALLY_CUST_DIR_EDITAR_LABEL,
     ALLY_CUST_DIR_EDITAR_NOTA,
     ALLY_CUST_DIR_EDITAR_TEXT,
@@ -98,6 +99,8 @@ from services import (
     create_ally_location,
     create_customer_address,
     delete_ally_location,
+    PARKING_FEE_AMOUNT,
+    set_address_parking_status,
     ensure_user,
     find_matching_customer_address,
     get_admin_by_telegram_id,
@@ -2282,15 +2285,24 @@ def ally_clientes_ver_callback(update, context):
 
 
 def _ally_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
-    """Crea cliente + direccion 'Principal' directamente. Limpia claves temporales."""
+    """Crea cliente + direccion 'Principal' directamente. Luego pregunta sobre parqueadero."""
     ally_id = context.user_data.get("allycust_ally_id")
     name = context.user_data.get("allycust_new_customer_name")
     phone = context.user_data.get("allycust_new_customer_phone")
     try:
         customer_id = create_ally_customer(ally_id, name, phone, None)
-        create_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")]]
-        text = "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}".format(name, phone, address_text)
+        address_id = create_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
+        context.user_data["allycust_parking_address_id"] = address_id
+        keyboard = [
+            [InlineKeyboardButton("Si, hay parqueadero", callback_data="allycust_parking_si")],
+            [InlineKeyboardButton("No / No lo se", callback_data="allycust_parking_no")],
+        ]
+        text = (
+            "Cliente '{}' guardado.\n\n"
+            "Telefono: {}\n"
+            "Direccion: {}\n\n"
+            "Sabes si en ese lugar se debe pagar parqueadero?"
+        ).format(name, phone, address_text)
         if hasattr(msg_or_query, 'reply_text'):
             msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         else:
@@ -2301,6 +2313,15 @@ def _ally_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
             msg_or_query.reply_text(err_text)
         else:
             msg_or_query.edit_message_text(err_text)
+        for key in [
+            "allycust_new_customer_name", "allycust_new_customer_phone",
+            "allycust_geo_mode", "allycust_geo_address_input", "allycust_geo_formatted",
+            "allycust_pending_mode", "allycust_pending_address_text",
+            "allycust_pending_lat", "allycust_pending_lng",
+            "allycust_pending_city", "allycust_pending_barrio", "allycust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return ALLY_CUST_MENU
     for key in [
         "allycust_new_customer_name", "allycust_new_customer_phone",
         "allycust_geo_mode", "allycust_geo_address_input", "allycust_geo_formatted",
@@ -2309,7 +2330,7 @@ def _ally_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
         "allycust_pending_city", "allycust_pending_barrio", "allycust_pending_notes",
     ]:
         context.user_data.pop(key, None)
-    return ALLY_CUST_MENU
+    return ALLY_CUST_PARKING
 
 
 def ally_clientes_nuevo_nombre(update, context):
@@ -2580,20 +2601,29 @@ def ally_clientes_dir_barrio_handler(update, context):
         label = context.user_data.get("allycust_new_address_label")
         try:
             customer_id = create_ally_customer(ally_id, name, phone, customer_notes)
-            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
-            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")]]
+            address_id = create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            context.user_data["allycust_parking_address_id"] = address_id
+            keyboard = [
+                [InlineKeyboardButton("Si, hay parqueadero", callback_data="allycust_parking_si")],
+                [InlineKeyboardButton("No / No lo se", callback_data="allycust_parking_no")],
+            ]
             update.message.reply_text(
-                "Cliente '{}' creado exitosamente.\n\nTelefono: {}\nDireccion ({}): {}".format(
+                "Cliente '{}' creado exitosamente.\n\nTelefono: {}\nDireccion ({}): {}\n\n"
+                "Sabes si en ese lugar se debe pagar parqueadero?".format(
                     name, phone, label, address_text
                 ),
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except Exception as e:
             update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+            for key in _ALLYCUST_PENDING_KEYS + ["allycust_new_customer_name", "allycust_new_customer_phone",
+                                                  "allycust_new_customer_notes", "allycust_new_address_label"]:
+                context.user_data.pop(key, None)
+            return ALLY_CUST_MENU
         for key in _ALLYCUST_PENDING_KEYS + ["allycust_new_customer_name", "allycust_new_customer_phone",
                                               "allycust_new_customer_notes", "allycust_new_address_label"]:
             context.user_data.pop(key, None)
-        return ALLY_CUST_MENU
+        return ALLY_CUST_PARKING
 
     if mode == "dir_nueva":
         customer_id = context.user_data.get("allycust_current_customer_id")
@@ -3373,6 +3403,39 @@ admin_clientes_conv = ConversationHandler(
     ],
     allow_reentry=True,
 )
+def ally_clientes_parking_callback(update, context):
+    """Maneja la respuesta del aliado sobre parqueadero al crear cliente.
+
+    Si dice SI: marca ALLY_YES (tarifa $1.200 activa, admin verifica).
+    Si dice NO: marca PENDING_REVIEW (admin debe confirmar).
+    En ningun caso se expone PII del cliente — solo se actualiza el campo geografico.
+    """
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("allycust_parking_address_id", None)
+
+    if not address_id:
+        query.edit_message_text("Error: no se pudo identificar la direccion. Intenta de nuevo.")
+        return ALLY_CUST_MENU
+
+    if query.data == "allycust_parking_si":
+        set_address_parking_status(address_id, "ALLY_YES")
+        query.edit_message_text(
+            "Parqueadero registrado. Se agregaran ${:,} al domicilio cuando hagas "
+            "pedidos a esta direccion.\n\n"
+            "Tu administrador verificara el dato para confirmarlo.".format(PARKING_FEE_AMOUNT)
+        )
+    else:
+        set_address_parking_status(address_id, "PENDING_REVIEW")
+        query.edit_message_text(
+            "Entendido. La direccion queda pendiente de revision de parqueadero.\n\n"
+            "Tu administrador revisara si aplica cobro. Por ahora no se agrega "
+            "tarifa de parqueadero a esta direccion."
+        )
+
+    return ALLY_CUST_MENU
+
+
 ally_clientes_conv = ConversationHandler(
     entry_points=[
         MessageHandler(Filters.regex(r'^Mis clientes$'), ally_clientes_cmd),
@@ -3434,6 +3497,9 @@ ally_clientes_conv = ConversationHandler(
             CallbackQueryHandler(ally_clientes_geo_callback, pattern=r"^allycust_geo_(si|no)$"),
             MessageHandler(Filters.location, ally_clientes_dir_corregir_location_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_dir_corregir_handler),
+        ],
+        ALLY_CUST_PARKING: [
+            CallbackQueryHandler(ally_clientes_parking_callback, pattern=r"^allycust_parking_(si|no)$"),
         ],
     },
     fallbacks=[

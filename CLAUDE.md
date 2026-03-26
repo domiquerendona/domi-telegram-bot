@@ -271,7 +271,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
-| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0` (contador de usos — ordena direcciones más usadas primero). |
+| `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0`, `parking_status TEXT DEFAULT 'NOT_ASKED'`, `parking_reviewed_by INTEGER`, `parking_reviewed_at TEXT`. |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
 | `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
@@ -2076,5 +2076,86 @@ Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
 
 ---
 
-*Última actualización: 2026-03-25*
+---
+
+## Sistema de Parqueadero (IMPLEMENTADO 2026-03-26)
+
+Permite registrar si una dirección de entrega requiere pago de parqueadero. El aliado responde al crear cada dirección; el admin local verifica y puede corregir la decisión. El cobro ($1.200) se aplica solo cuando el estado está confirmado como `ALLY_YES` o `ADMIN_YES`.
+
+### Columnas nuevas en BD
+
+| Tabla | Columna | Tipo | Descripción |
+|---|---|---|---|
+| `ally_customer_addresses` | `parking_status` | `TEXT DEFAULT 'NOT_ASKED'` | Estado de parqueadero de esta dirección |
+| `ally_customer_addresses` | `parking_reviewed_by` | `INTEGER` | `admins.id` de quien revisó (NULL si solo el aliado respondió) |
+| `ally_customer_addresses` | `parking_reviewed_at` | `TEXT/TIMESTAMP` | Timestamp de la revisión del admin |
+| `admin_customer_addresses` | `parking_status` | `TEXT DEFAULT 'NOT_ASKED'` | Ídem para direcciones de admin |
+| `admin_customer_addresses` | `parking_reviewed_by` | `INTEGER` | Ídem |
+| `admin_customer_addresses` | `parking_reviewed_at` | `TEXT/TIMESTAMP` | Ídem |
+| `orders` | `parking_fee` | `INTEGER DEFAULT 0` | Snapshot de tarifa de parqueadero aplicada al pedido |
+
+### Estados de `parking_status`
+
+| Estado | Significado | ¿Cobra $1.200? |
+|---|---|---|
+| `NOT_ASKED` | Dirección existente antes de la feature | No |
+| `ALLY_YES` | Aliado dijo que sí hay parqueadero | **Sí** (aliado confirmó, admin debe verificar) |
+| `PENDING_REVIEW` | Aliado dijo que no sabe / no hay, pendiente de admin | No |
+| `ADMIN_YES` | Admin confirmó que sí hay parqueadero | **Sí** |
+| `ADMIN_NO` | Admin confirmó que no hay parqueadero | No |
+
+**Constante:** `PARKING_FEE_AMOUNT = 1200` en `db.py`, re-exportada en `services.py`.
+
+### Flujo del aliado
+
+Al crear un cliente nuevo (agenda `ally_clientes_conv`), después de guardar la dirección el bot pregunta:
+- "Sí, hay parqueadero" → `parking_status = ALLY_YES`, se notifica al admin
+- "No / No lo sé" → `parking_status = PENDING_REVIEW`, admin debe revisar
+
+Estado de conversación nuevo: `ALLY_CUST_PARKING = 1002`
+Callbacks: `allycust_parking_si` / `allycust_parking_no`
+Handler: `ally_clientes_parking_callback` en `handlers/customer_agenda.py`
+
+### Flujo del admin
+
+Botón **"🅿️ Revisar parqueaderos"** en el menú del admin local y del admin de plataforma.
+
+- Lista pendientes (`parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')`)
+- Botones: `[SI parqueadero]` / `[NO parqueadero]` por cada dirección
+- "Ver todas" incluye las ya revisadas para corrección posterior
+- Al confirmar → `parking_reviewed_by` y `parking_reviewed_at` se registran
+
+**PRIVACIDAD OBLIGATORIA:** las funciones `get_addresses_pending_parking_review` y `get_all_addresses_parking_review` en `db.py` hacen JOIN con `ally_customer_addresses`, `ally_customers`, `allies` y `admin_allies`, pero **SOLO retornan**: `address_text`, `city`, `barrio`, `parking_status`, `ally_name`. **Nunca se expone** `name` ni `phone` del cliente.
+
+Callbacks: `parking_review_list` / `parking_rev_yes_{id}` / `parking_rev_no_{id}` / `parking_ver_todas`
+Funciones: `admin_parking_review`, `admin_parking_review_callback` en `handlers/admin_panel.py`
+Registrados en `main.py` con `dp.add_handler(CallbackQueryHandler(...))`
+
+### Aviso al courier (order_delivery.py)
+
+Si `orders.parking_fee > 0`:
+
+**En la oferta** (`_build_offer_text`): aviso claro antes de aceptar — el courier sabe que hay parqueadero, que el dinero es suyo para usarlo, y que cualquier multa o inmovilización por no pagarlo es su responsabilidad.
+
+**Al recibir datos del cliente** (`_notify_courier_pickup_approved`): recordatorio más corto al revelar la dirección exacta — justo antes de llegar al destino.
+
+### Funciones nuevas en `db.py`
+
+| Función | Descripción |
+|---|---|
+| `set_address_parking_status(address_id, status, reviewed_by)` | Actualiza parking_status; si reviewed_by no es None, registra quién y cuándo revisó |
+| `get_addresses_pending_parking_review(admin_id)` | Solo pendientes. Sin PII del cliente. |
+| `get_all_addresses_parking_review(admin_id)` | Todas (pendientes + revisadas). Sin PII del cliente. |
+
+Todas re-exportadas en `services.py`.
+
+### Lo que NO hace este sistema (aún)
+
+- No aplica `parking_fee` automáticamente al crear el pedido desde la agenda (la lógica de crear el pedido con `parking_fee` está en `create_order` pero el handler `nuevo_pedido_conv` aún no lee el `parking_status` de la dirección seleccionada — implementación futura).
+- No notifica al aliado por Telegram cuando el admin cambia el estado de una dirección.
+- No aplica a `admin_customer_addresses` (solo `ally_customer_addresses` tiene el flujo completo de pregunta al aliado).
+
+---
+
+*Última actualización: 2026-03-26*
 

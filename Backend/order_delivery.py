@@ -3058,6 +3058,15 @@ def _build_offer_text(
 
     text += "\nAviso: una vez aceptado tienes 15 min para llegar al punto de recogida.\n"
 
+    parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
+    if parking_fee > 0:
+        text += (
+            "\nAVISO PARQUEADERO: Este pedido incluye ${:,} para cubrir el parqueadero "
+            "en el punto de entrega. Ese dinero es tuyo para usarlo ahi. "
+            "Si decides no pagarlo y te multan o inmovilizas la moto, es tu responsabilidad. "
+            "Piensa bien donde dejas tu herramienta de trabajo.\n".format(parking_fee)
+        )
+
     return text
 
 
@@ -3288,13 +3297,21 @@ def _notify_courier_pickup_approved(context, order):
         keyboard = []
         keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
         keyboard.append([InlineKeyboardButton("Finalizar servicio", callback_data="order_delivered_confirm_{}".format(order["id"]))])
+        parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
+        parking_aviso = ""
+        if parking_fee > 0:
+            parking_aviso = (
+                "\n\nRECUERDA: Este pedido tiene parqueadero incluido (${:,}). "
+                "Usalo. Si te multan por no pagarlo, es tu responsabilidad. "
+                "Entrega directamente en manos del cliente.".format(parking_fee)
+            )
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
             text=(
                 "Datos de entrega - Pedido #{}\n\n"
                 "Entrega en: {}\n"
                 "Cliente: {}\n"
-                "Telefono: {}\n\n"
+                "Telefono: {}{}\n\n"
                 "Dirigete al punto de entrega. Solo podras finalizar el servicio cuando estes "
                 "a menos de 100 metros del lugar de entrega."
             ).format(
@@ -3302,6 +3319,7 @@ def _notify_courier_pickup_approved(context, order):
                 order["customer_address"] or "No disponible",
                 order["customer_name"] or "No disponible",
                 order["customer_phone"] or "No disponible",
+                parking_aviso,
             ),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
