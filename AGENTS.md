@@ -1191,8 +1191,27 @@ Regla preventiva obligatoria:
     Usar siempre acceso directo: row["columna"].
     Si se necesita un valor por defecto: row["columna"] or valor_default
 
-Casos corregidos en registration.py (2026-03-26):
-    ally_team_callback lineas 617, 634 y courier_team_callback lineas 1323, 1339.
+Casos corregidos en barrido completo (2026-03-26):
+    handlers/registration.py    — ally_team_callback, courier_team_callback
+    services.py                 — approve_role_registration, liquidate_route_additional_stops_fee,
+                                  check_user_can_quote (actor_admin, target, ally, courier, route)
+    handlers/recharges.py       — bloque de aprobacion local (ally fields)
+    handlers/config.py          — admin["role"]
+    handlers/location_agenda.py — loc fields en listado y detalle
+    handlers/order.py           — ubicaciones, alias, estado del aliado
+    handlers/route.py           — paradas y rutas
+    handlers/customer_agenda.py — clientes y direcciones
+    handlers/admin_panel.py     — admins y pendientes
+    order_delivery.py           — ~24+ ocurrencias: ally_user, courier_user, route,
+                                  order, courier, stop, dest, pickup_loc_row
+    main.py                     — varios objetos de BD
+
+Excluidos del barrido (estos .get() son seguros):
+    - context.user_data.get(...)        — siempre es dict de Python
+    - geo.get(), cotizacion.get()       — dicts retornados por funciones de geocodeo
+    - response.get(), route.get()       — dicts de requests/OSRM
+    - p.get("lat"), p.get("lng")        — paradas de user_data (dicts)
+    - bloques con isinstance(obj, dict) — ya tienen guard correcto
 
 
 15. Colaboración entre agentes IA (Claude Code y Codex)
