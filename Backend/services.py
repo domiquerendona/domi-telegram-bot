@@ -2430,11 +2430,11 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     route = get_route_by_id(route_id)
     if not route:
         return False, "Ruta no encontrada."
-    if route.get("status") != "DELIVERED":
+    if route["status"] != "DELIVERED":
         return False, "La ruta no esta entregada."
 
     destinations = get_route_destinations(route_id)
-    n_delivered = sum(1 for s in destinations if str(s.get("status", "")) == "DELIVERED")
+    n_delivered = sum(1 for s in destinations if str(s["status"] or "") == "DELIVERED")
 
     if n_delivered <= 1:
         return False, "La ruta no tiene additional_stops_fee para liquidar ({} parada(s) entregada(s)).".format(n_delivered)
@@ -2567,7 +2567,7 @@ def ally_increment_order_incentive(telegram_id: int, order_id: int, delta: int) 
             courier = get_courier_by_id(courier_id)
             if courier:
                 courier_user = get_user_by_id(courier["user_id"])
-                if courier_user and courier_user.get("telegram_id"):
+                if courier_user and courier_user["telegram_id"]:
                     courier_telegram_id = int(courier_user["telegram_id"])
     except Exception:
         courier_telegram_id = None
@@ -2634,7 +2634,7 @@ def admin_increment_order_incentive(telegram_id: int, order_id: int, delta: int)
             courier = get_courier_by_id(courier_id)
             if courier:
                 courier_user = get_user_by_id(courier["user_id"])
-                if courier_user and courier_user.get("telegram_id"):
+                if courier_user and courier_user["telegram_id"]:
                     courier_telegram_id = int(courier_user["telegram_id"])
     except Exception:
         courier_telegram_id = None
@@ -2836,8 +2836,8 @@ def approve_role_registration(actor_telegram_id: int, role_type: str, target_id:
         return {"ok": False, "message": "No se encontró tu perfil admin."}
 
     actor_admin_id = actor_admin["id"]
-    actor_team_code = (actor_admin.get("team_code") or "").upper()
-    actor_status = (actor_admin.get("status") or "").upper()
+    actor_team_code = (actor_admin["team_code"] or "").upper()
+    actor_status = (actor_admin["status"] or "").upper()
     is_platform_actor = actor_team_code == "PLATFORM"
 
     if not is_platform_actor and actor_status != "APPROVED":
@@ -2857,7 +2857,7 @@ def approve_role_registration(actor_telegram_id: int, role_type: str, target_id:
     if not target:
         return {"ok": False, "message": "Registro no encontrado."}
 
-    current_status = (target.get("status") or "").upper()
+    current_status = (target["status"] or "").upper()
     if current_status != "PENDING":
         return {
             "ok": False,
@@ -3431,15 +3431,15 @@ def can_use_cotizador(telegram_id: int):
     user_id = user["id"]
 
     admin = get_admin_by_user_id(user_id)
-    if admin and str(admin.get("status") or "").upper() == "APPROVED":
+    if admin and str(admin["status"] or "").upper() == "APPROVED":
         return True, "OK"
 
     ally = get_ally_by_user_id(user_id)
-    if ally and str(ally.get("status") or "").upper() == "APPROVED":
+    if ally and str(ally["status"] or "").upper() == "APPROVED":
         return True, "OK"
 
     courier = get_courier_by_user_id(user_id)
-    if courier and str(courier.get("status") or "").upper() == "APPROVED":
+    if courier and str(courier["status"] or "").upper() == "APPROVED":
         return True, "OK"
 
     if admin or ally or courier:
