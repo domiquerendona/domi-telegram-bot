@@ -288,7 +288,7 @@ def get_main_menu_keyboard(missing_cmds, courier=None, ally=None, admin_local=No
     """Retorna el teclado principal para usuarios fuera de flujos."""
     keyboard = []
     role_row = []
-    if ally and ally.get("status") == "APPROVED" and "/soy_aliado" not in missing_cmds:
+    if ally and ally["status"] == "APPROVED" and "/soy_aliado" not in missing_cmds:
         role_row.append('Mi aliado')
     courier_btn = _courier_main_button_label(courier)
     if courier_btn and "/soy_repartidor" not in missing_cmds:
