@@ -2078,38 +2078,40 @@ Si se reordena, el aliado ve la nota: "(Orden optimizado para menor distancia)"
 
 ---
 
-## Sistema de Parqueadero (IMPLEMENTADO 2026-03-26)
+## Sistema de Puntos con Dificultad de Parqueo (IMPLEMENTADO 2026-03-26)
 
-Permite registrar si una dirección de entrega requiere pago de parqueadero. El aliado responde al crear cada dirección; el admin local verifica y puede corregir la decisión. El cobro ($1.200) se aplica solo cuando el estado está confirmado como `ALLY_YES` o `ADMIN_YES`.
+Permite registrar si una dirección de entrega tiene dificultad para estacionar motos o bicicletas (zona restringida, riesgo de comparendo, sin lugar seguro para dejar el vehículo). El aliado responde al crear cada dirección; el admin local verifica y puede corregir la decisión. El cobro adicional ($1.200) se aplica solo cuando el estado está confirmado como `ALLY_YES` o `ADMIN_YES`.
+
+**Concepto clave:** no es sobre si el cliente paga parqueadero, sino sobre si el repartidor tendrá dificultad para dejar su moto o bici de forma segura y legal al momento de entregar. El monto $1.200 ayuda al courier a cubrir parqueo o cualquier imprevisto con su vehículo.
 
 ### Columnas nuevas en BD
 
 | Tabla | Columna | Tipo | Descripción |
 |---|---|---|---|
-| `ally_customer_addresses` | `parking_status` | `TEXT DEFAULT 'NOT_ASKED'` | Estado de parqueadero de esta dirección |
+| `ally_customer_addresses` | `parking_status` | `TEXT DEFAULT 'NOT_ASKED'` | Estado de dificultad de parqueo en esta dirección |
 | `ally_customer_addresses` | `parking_reviewed_by` | `INTEGER` | `admins.id` de quien revisó (NULL si solo el aliado respondió) |
 | `ally_customer_addresses` | `parking_reviewed_at` | `TEXT/TIMESTAMP` | Timestamp de la revisión del admin |
 | `admin_customer_addresses` | `parking_status` | `TEXT DEFAULT 'NOT_ASKED'` | Ídem para direcciones de admin |
 | `admin_customer_addresses` | `parking_reviewed_by` | `INTEGER` | Ídem |
 | `admin_customer_addresses` | `parking_reviewed_at` | `TEXT/TIMESTAMP` | Ídem |
-| `orders` | `parking_fee` | `INTEGER DEFAULT 0` | Snapshot de tarifa de parqueadero aplicada al pedido |
+| `orders` | `parking_fee` | `INTEGER DEFAULT 0` | Snapshot de tarifa adicional por dificultad de parqueo aplicada al pedido |
 
 ### Estados de `parking_status`
 
 | Estado | Significado | ¿Cobra $1.200? |
 |---|---|---|
 | `NOT_ASKED` | Dirección existente antes de la feature | No |
-| `ALLY_YES` | Aliado dijo que sí hay parqueadero | **Sí** (aliado confirmó, admin debe verificar) |
-| `PENDING_REVIEW` | Aliado dijo que no sabe / no hay, pendiente de admin | No |
-| `ADMIN_YES` | Admin confirmó que sí hay parqueadero | **Sí** |
-| `ADMIN_NO` | Admin confirmó que no hay parqueadero | No |
+| `ALLY_YES` | Aliado reporta dificultad de parqueo | **Sí** (aliado confirmó, admin debe verificar) |
+| `PENDING_REVIEW` | Aliado no sabe, pendiente de revisión del admin | No |
+| `ADMIN_YES` | Admin confirmó que sí hay dificultad de parqueo | **Sí** |
+| `ADMIN_NO` | Admin confirmó que no hay dificultad de parqueo | No |
 
 **Constante:** `PARKING_FEE_AMOUNT = 1200` en `db.py`, re-exportada en `services.py`.
 
 ### Flujo del aliado
 
 Al crear un cliente nuevo (agenda `ally_clientes_conv`), después de guardar la dirección el bot pregunta:
-- "Sí, hay parqueadero" → `parking_status = ALLY_YES`, se notifica al admin
+- "Sí, hay dificultad para parquear" → `parking_status = ALLY_YES`, admin verifica
 - "No / No lo sé" → `parking_status = PENDING_REVIEW`, admin debe revisar
 
 Estado de conversación nuevo: `ALLY_CUST_PARKING = 1002`
@@ -2118,10 +2120,10 @@ Handler: `ally_clientes_parking_callback` en `handlers/customer_agenda.py`
 
 ### Flujo del admin
 
-Botón **"🅿️ Revisar parqueaderos"** en el menú del admin local y del admin de plataforma.
+Botón **"🅿️ Puntos difícil parqueo"** en el menú del admin local y del admin de plataforma.
 
 - Lista pendientes (`parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')`)
-- Botones: `[SI parqueadero]` / `[NO parqueadero]` por cada dirección
+- Botones: `[SI, dificultad]` / `[NO, sin problema]` por cada dirección
 - "Ver todas" incluye las ya revisadas para corrección posterior
 - Al confirmar → `parking_reviewed_by` y `parking_reviewed_at` se registran
 
@@ -2135,9 +2137,9 @@ Registrados en `main.py` con `dp.add_handler(CallbackQueryHandler(...))`
 
 Si `orders.parking_fee > 0`:
 
-**En la oferta** (`_build_offer_text`): aviso claro antes de aceptar — el courier sabe que hay parqueadero, que el dinero es suyo para usarlo, y que cualquier multa o inmovilización por no pagarlo es su responsabilidad.
+**En la oferta** (`_build_offer_text`): aviso claro antes de aceptar — el courier sabe que el punto tiene dificultad para parquear, que se incluyen $X para cubrir el parqueo o cualquier imprevisto, y que comparendos o inmovilizaciones son su responsabilidad.
 
-**Al recibir datos del cliente** (`_notify_courier_pickup_approved`): recordatorio más corto al revelar la dirección exacta — justo antes de llegar al destino.
+**Al recibir datos del cliente** (`_notify_courier_pickup_approved`): recordatorio más corto al revelar la dirección exacta — que asegure su vehículo en lugar seguro y legal antes de entregar.
 
 ### Funciones nuevas en `db.py`
 

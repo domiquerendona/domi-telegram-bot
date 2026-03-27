@@ -1248,7 +1248,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("💰 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
-            [InlineKeyboardButton("🅿️ Revisar parqueaderos", callback_data="parking_review_list")],
+            [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
         update.message.reply_text(
             header +
@@ -1299,7 +1299,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
-        [InlineKeyboardButton("🅿️ Revisar parqueaderos", callback_data="parking_review_list")],
+        [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
     ]
 
     update.message.reply_text(

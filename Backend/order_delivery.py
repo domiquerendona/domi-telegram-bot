@@ -3061,10 +3061,10 @@ def _build_offer_text(
     parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
     if parking_fee > 0:
         text += (
-            "\nAVISO PARQUEADERO: Este pedido incluye ${:,} para cubrir el parqueadero "
-            "en el punto de entrega. Ese dinero es tuyo para usarlo ahi. "
-            "Si decides no pagarlo y te multan o inmovilizas la moto, es tu responsabilidad. "
-            "Piensa bien donde dejas tu herramienta de trabajo.\n".format(parking_fee)
+            "\nATENCION: El punto de entrega tiene dificultad para parquear moto o bicicleta. "
+            "Se incluyen ${:,} para que cubras el parqueo o cualquier imprevisto con tu vehiculo. "
+            "No dejes tu moto o bici en lugar prohibido — comparendos o inmovilizaciones "
+            "son tu responsabilidad.\n".format(parking_fee)
         )
 
     return text
@@ -3301,9 +3301,8 @@ def _notify_courier_pickup_approved(context, order):
         parking_aviso = ""
         if parking_fee > 0:
             parking_aviso = (
-                "\n\nRECUERDA: Este pedido tiene parqueadero incluido (${:,}). "
-                "Usalo. Si te multan por no pagarlo, es tu responsabilidad. "
-                "Entrega directamente en manos del cliente.".format(parking_fee)
+                "\n\nRECUERDA: Este punto tiene dificultad de parqueo (${:,} incluidos). "
+                "Asegurate de dejar tu vehiculo en un lugar seguro y legal antes de entregar.".format(parking_fee)
             )
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
