@@ -853,6 +853,7 @@ def publish_order_to_couriers(
         "requires_cash": requires_cash,
         "cash_amount": cash_amount,
         "excluded_couriers": set(),
+        "order_distance_km": _order_distance_km,
     }
 
     _send_next_offer(order_id, context)
@@ -998,6 +999,7 @@ def _try_restart_cycle(order_id, context):
         cash_required_amount=cash_amount,
         pickup_lat=p_lat,
         pickup_lng=p_lng,
+        order_distance_km=cycle_info.get("order_distance_km"),
     )
     courier_ids = [c["courier_id"] for c in fresh if c["courier_id"] not in excluded]
 
@@ -2011,6 +2013,7 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
         admin_id=admin_id, ally_id=ally_id,
         requires_cash=requires_cash, cash_required_amount=cash_amount,
         pickup_lat=p_lat, pickup_lng=p_lng,
+        order_distance_km=cycle.get("order_distance_km") if cycle else None,
     )
     eligible = [c for c in eligible if c["courier_id"] not in excluded]
 
@@ -2028,6 +2031,7 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
             "dropoff_barrio": cycle.get("dropoff_barrio") if cycle else None,
             "requires_cash": requires_cash, "cash_amount": cash_amount,
             "excluded_couriers": excluded,
+            "order_distance_km": cycle.get("order_distance_km") if cycle else None,
         }
         _send_next_offer(order_id, context)
     else:
@@ -3838,6 +3842,26 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     pickup_lat = route["pickup_lat"]
     pickup_lng = route["pickup_lng"]
 
+    # Calcular distancia máxima pickup→parada para filtrar bicicletas >3 km
+    _route_max_dist_km = None
+    try:
+        import math as _rmath
+        _rdests = get_route_destinations(route_id)
+        for _d in _rdests:
+            _dlat = _d.get("dropoff_lat") if hasattr(_d, "get") else _d["dropoff_lat"]
+            _dlng = _d.get("dropoff_lng") if hasattr(_d, "get") else _d["dropoff_lng"]
+            if _dlat is not None and _dlng is not None and pickup_lat is not None and pickup_lng is not None:
+                _rlat = _rmath.radians(_dlat - pickup_lat)
+                _rlng = _rmath.radians(_dlng - pickup_lng)
+                _a = (_rmath.sin(_rlat / 2) ** 2
+                      + _rmath.cos(_rmath.radians(pickup_lat)) * _rmath.cos(_rmath.radians(_dlat))
+                      * _rmath.sin(_rlng / 2) ** 2)
+                _seg_km = 6371.0 * 2 * _rmath.atan2(_rmath.sqrt(_a), _rmath.sqrt(1 - _a))
+                if _route_max_dist_km is None or _seg_km > _route_max_dist_km:
+                    _route_max_dist_km = _seg_km
+    except Exception:
+        pass
+
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
@@ -3845,6 +3869,7 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
         cash_required_amount=0,
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
+        order_distance_km=_route_max_dist_km,
     )
 
     if not eligible:
@@ -5092,6 +5117,27 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
 
     pickup_lat = route["pickup_lat"]
     pickup_lng = route["pickup_lng"]
+
+    # Calcular distancia máxima pickup→parada para filtrar bicicletas >3 km
+    _rrel_max_dist_km = None
+    try:
+        import math as _rrelmath
+        _rreldests = get_route_destinations(route_id)
+        for _d in _rreldests:
+            _dlat = _d.get("dropoff_lat") if hasattr(_d, "get") else _d["dropoff_lat"]
+            _dlng = _d.get("dropoff_lng") if hasattr(_d, "get") else _d["dropoff_lng"]
+            if _dlat is not None and _dlng is not None and pickup_lat is not None and pickup_lng is not None:
+                _rlat = _rrelmath.radians(_dlat - pickup_lat)
+                _rlng = _rrelmath.radians(_dlng - pickup_lng)
+                _a = (_rrelmath.sin(_rlat / 2) ** 2
+                      + _rrelmath.cos(_rrelmath.radians(pickup_lat)) * _rrelmath.cos(_rrelmath.radians(_dlat))
+                      * _rrelmath.sin(_rlng / 2) ** 2)
+                _seg_km = 6371.0 * 2 * _rrelmath.atan2(_rrelmath.sqrt(_a), _rrelmath.sqrt(1 - _a))
+                if _rrel_max_dist_km is None or _seg_km > _rrel_max_dist_km:
+                    _rrel_max_dist_km = _seg_km
+    except Exception:
+        pass
+
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
@@ -5099,6 +5145,7 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
         cash_required_amount=0,
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
+        order_distance_km=_rrel_max_dist_km,
     )
     # Excluir al courier que liberó y a los sin saldo suficiente
     couriers_re_oferta = []
