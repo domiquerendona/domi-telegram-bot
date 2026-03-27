@@ -2308,6 +2308,7 @@ def main():
     )
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^order_(arrived_pickup|arrival_enroute|arrival_release)_\d+$"))  # llegada al pickup (pedidos normales)
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega

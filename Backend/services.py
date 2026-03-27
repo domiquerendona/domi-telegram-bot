@@ -2014,15 +2014,6 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
         if geo and geo.get("lat") and geo.get("lng"):
             if _is_allowed_city(geo.get("formatted_address", "")):
                 _pid = geo.get("place_id") or f"{geo['lat']},{geo['lng']}"
-                try:
-                    upsert_geocoding_text_cache(
-                        _normalize_reference_key(text), geo["lat"], geo["lng"],
-                        formatted_address=geo.get("formatted_address"),
-                        place_id=geo.get("place_id"),
-                        source="geocode",
-                    )
-                except Exception:
-                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": geo["lat"],
@@ -2042,15 +2033,6 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
         if places and places.get("lat") and places.get("lng"):
             if _is_allowed_city(places.get("formatted_address", "")):
                 _pid = places.get("place_id") or f"{places['lat']},{places['lng']}"
-                try:
-                    upsert_geocoding_text_cache(
-                        _normalize_reference_key(text), places["lat"], places["lng"],
-                        formatted_address=places.get("formatted_address"),
-                        place_id=places.get("place_id"),
-                        source="textsearch",
-                    )
-                except Exception:
-                    pass
                 if _pid not in seen_ids:
                     return {
                         "lat": places["lat"],
