@@ -1205,6 +1205,12 @@ Casos corregidos en barrido completo (2026-03-26):
     order_delivery.py           — ~24+ ocurrencias: ally_user, courier_user, route,
                                   order, courier, stop, dest, pickup_loc_row
     main.py                     — varios objetos de BD
+    handlers/common.py          — ally["status"] en get_main_menu_keyboard (fallaba en /start)
+                                  (omitido del primer barrido — archivo no estaba en la lista)
+
+Leccion adicional: el barrido debe incluir TODOS los archivos del Backend, no solo los handlers
+listados en CLAUDE.md. Verificar siempre con:
+    grep -rn "\.get(" Backend/ --include="*.py" | grep -v "user_data\|requests\.\|geo\.\|json\.\|isinstance"
 
 Excluidos del barrido (estos .get() son seguros):
     - context.user_data.get(...)        — siempre es dict de Python
