@@ -2170,15 +2170,25 @@ Permite registrar si una dirección de entrega tiene dificultad para estacionar 
 
 **Constante:** `PARKING_FEE_AMOUNT = 1200` en `db.py`, re-exportada en `services.py`.
 
-### Flujo del aliado
+### Flujos que preguntan sobre dificultad de parqueo (actualizado 2026-03-27)
 
-Al crear un cliente nuevo (agenda `ally_clientes_conv`), después de guardar la dirección el bot pregunta:
-- "Sí, hay dificultad para parquear" → `parking_status = ALLY_YES`, admin verifica
-- "No / No lo sé" → `parking_status = PENDING_REVIEW`, admin debe revisar
+La pregunta se hace en TODOS los flujos de creación de nueva dirección de entrega. Mensaje estándar:
+> "En ese punto de entrega hay dificultad para parquear moto o bicicleta? (zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)"
 
-Estado de conversación nuevo: `ALLY_CUST_PARKING = 1002`
-Callbacks: `allycust_parking_si` / `allycust_parking_no`
-Handler: `ally_clientes_parking_callback` en `handlers/customer_agenda.py`
+Botones estándar: `"Si, hay dificultad para parquear"` / `"No / No lo se"`
+
+| Flujo | ConversationHandler | Archivo | Estado | Callback (si) | Callback (no) | Handler |
+|-------|--------------------|---------|---------|----|---|---------|
+| Agenda aliado — nuevo cliente | `ally_clientes_conv` | `customer_agenda.py` | `ALLY_CUST_PARKING = 1005` | `allycust_parking_si` | `allycust_parking_no` | `ally_clientes_parking_callback` |
+| Agenda admin — nuevo cliente | `admin_clientes_conv` | `customer_agenda.py` | `ADMIN_CUST_PARKING = 1006` | `admincust_parking_si` | `admincust_parking_no` | `admin_clientes_parking_callback` |
+| Pedido aliado — guardar dir nueva | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_DIR_PARKING = 1007` | `pedido_guardar_dir_parking_si` | `pedido_guardar_dir_parking_no` | `pedido_guardar_dir_parking_callback` |
+| Pedido aliado — guardar cliente nuevo | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_CUST_PARKING = 1008` | `pedido_guardar_cust_parking_si` | `pedido_guardar_cust_parking_no` | `pedido_guardar_cust_parking_callback` |
+| Pedido especial admin | `admin_pedido_conv` | `order.py` | `ADMIN_PEDIDO_GUARDAR_PARKING = 1009` | `admin_ped_guardar_parking_si` | `admin_ped_guardar_parking_no` | `admin_pedido_guardar_parking_callback` |
+| Ruta — guardar cliente nueva parada | `nueva_ruta_conv` | `route.py` | `RUTA_GUARDAR_CUST_PARKING = 1010` | `ruta_guardar_cust_parking_si` | `ruta_guardar_cust_parking_no` | `ruta_guardar_cust_parking_callback` |
+
+**Respuestas:**
+- "Si, hay dificultad" → `parking_status = ALLY_YES`, admin debe verificar. El cobro $1.200 se activa.
+- "No / No lo se" → `parking_status = PENDING_REVIEW`, admin debe revisar. Sin cobro hasta revisión.
 
 ### Flujo del admin
 
@@ -2215,9 +2225,13 @@ Todas re-exportadas en `services.py`.
 
 ### Lo que NO hace este sistema (aún)
 
-- No aplica `parking_fee` automáticamente al crear el pedido desde la agenda (la lógica de crear el pedido con `parking_fee` está en `create_order` pero el handler `nuevo_pedido_conv` aún no lee el `parking_status` de la dirección seleccionada — implementación futura).
+- No aplica `parking_fee` automáticamente al crear el pedido desde la agenda (la lógica de crear el pedido con `parking_fee` está en `create_order` pero el handler `nuevo_pedido_conv` aún no lee el `parking_status` de la dirección seleccionada al seleccionar una dirección existente — implementación futura).
 - No notifica al aliado por Telegram cuando el admin cambia el estado de una dirección.
-- No aplica a `admin_customer_addresses` (solo `ally_customer_addresses` tiene el flujo completo de pregunta al aliado).
+
+### Fecha de implementación completa
+
+- Implementación inicial: 2026-03-26
+- Extensión a todos los flujos + reencuadre del concepto: 2026-03-27
 
 ---
 
