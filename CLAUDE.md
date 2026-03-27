@@ -326,9 +326,11 @@ Separador operativo actual: guion bajo (`_`).
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤100m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤100m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
-| `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos. Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
-| `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas. Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤150m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_pickup_pinissue_{id}` (courier reporta pin de **recogida** mal ubicado — disponible cuando courier está lejos del pickup ≥150m), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤150m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
+| `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos (entrega). Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
+| `admin_pickup_` | Panel de soporte de pin mal ubicado — pedidos (recogida). Incluye: `admin_pickup_confirm_{order_id}_{support_id}` (admin confirma llegada del courier), `admin_pickup_release_{order_id}_{support_id}` (admin libera el pedido para re-oferta) |
+| `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas (entrega). Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
+| `admin_ruta_pickup_` | Panel de soporte de pin mal ubicado — rutas (recogida). Incluye: `admin_ruta_pickup_confirm_{route_id}_{support_id}` (admin confirma llegada del courier), `admin_ruta_pickup_release_{route_id}_{support_id}` (admin libera la ruta para re-oferta) |
 | `pagos_` | Sistema de pagos |
 | `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente) |
 | `perfil_` | Cambios de perfil |
@@ -1007,7 +1009,7 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Job T+5 — algoritmo direccional |
 | `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Job T+15 — notificación a aliado y opciones al courier |
 | `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Job T+20 — liberación automática dura |
-| `ARRIVAL_RADIUS_KM` | 0.1 (100 m) | Radio máximo para confirmar llegada manual |
+| `ARRIVAL_RADIUS_KM` | 0.15 (150 m) | Radio máximo para confirmar llegada manual |
 | `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.15 (15%) | Umbral de alejamiento para liberación inmediata en T+5 |
 | `ARRIVAL_PROGRESS_THRESHOLD` | 0.20 (20%) | Progreso mínimo hacia pickup para considerar al courier en camino en T+5 |
 
@@ -1669,7 +1671,7 @@ Courier intenta finalizar el servicio:
 
 | Constante | Valor | Descripción |
 |-----------|-------|-------------|
-| `DELIVERY_RADIUS_KM` | 0.1 (100 m) | Radio máximo para finalizar entrega |
+| `DELIVERY_RADIUS_KM` | 0.15 (150 m) | Radio máximo para finalizar entrega |
 | `DELIVERY_REMINDER_SECONDS` | 1800 (30 min) | Job recordatorio al courier en PICKED_UP |
 | `DELIVERY_ADMIN_ALERT_SECONDS` | 3600 (60 min) | Job alerta al admin si courier no finaliza |
 | `GPS_INACTIVE_MSG` | (constante texto) | Mensaje estándar cuando GPS está inactivo |
@@ -1730,13 +1732,22 @@ Courier reporta pin malo en parada (ruta_pinissue_{route_id}_{seq})
   → Al finalizar la ruta: si hay paradas canceladas → resumen de devoluciones al courier
 ```
 
-### Tabla de fees por resolución
+### Tabla de fees por resolución — pin de ENTREGA (delivery, PICKED_UP)
 
 | Acción admin | Aliado | Courier | Estado orden |
 |---|:---:|:---:|---|
 | Finalizar | $300 | $300 | DELIVERED |
 | Cancelar falla courier | $0 | $300 | CANCELLED |
 | Cancelar falla aliado | $300 | $300 | CANCELLED |
+
+### Tabla de acciones por resolución — pin de RECOGIDA (pickup, ACCEPTED)
+
+| Acción admin | Efecto | `resolution` en BD |
+|---|---|---|
+| Confirmar llegada | `set_courier_arrived` + notifica al aliado (o auto-revela datos si admin order) | `CONFIRMED_ARRIVAL` |
+| Liberar pedido/ruta | Re-oferta a otros couriers | `RELEASED` |
+
+**Nota:** en resoluciones de pin de recogida **no se cobran fees** (el servicio aún no fue recogido).
 
 ### Funciones nuevas en `order_delivery.py`
 
@@ -1750,10 +1761,16 @@ Courier reporta pin malo en parada (ruta_pinissue_{route_id}_{seq})
 | `_handle_admin_pinissue_action(update, context, order_id, action)` | Admin resuelve: fin/cancel_courier/cancel_ally |
 | `_do_deliver_order(context, order, courier_id)` | Aplica fees y marca DELIVERED (usado por admin al finalizar) |
 | `_notify_courier_support_resolved(context, courier_id, order_id, resolution)` | Notifica al courier el resultado |
-| `_handle_route_pin_issue(update, context, route_id, seq)` | Equivalente para rutas |
+| `_handle_route_pin_issue(update, context, route_id, seq)` | Equivalente para rutas (entrega) |
 | `_notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id)` | Alerta al admin con datos de la parada |
 | `_handle_admin_route_pinissue_action(update, context, route_id, seq, action)` | Admin resuelve parada de ruta |
 | `_notify_courier_route_stop_resolved(context, courier_id, route_id, seq, resolution)` | Notifica al courier resultado de parada |
+| `_handle_order_pickup_pinissue(update, context, order_id)` | Courier reporta pin de recogida malo (pedido/admin, ACCEPTED) |
+| `_notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)` | Alerta al admin con link al pin de recogida y botones |
+| `_handle_admin_pickup_pinissue_action(update, context, order_id, support_id, action)` | Admin confirma llegada (`confirm`) o libera (`release`) |
+| `_handle_route_pickup_pinissue(update, context, route_id)` | Equivalente para rutas (recogida) |
+| `_notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id)` | Alerta al admin con link al pin de recogida de la ruta |
+| `_handle_admin_route_pickup_pinissue_action(update, context, route_id, support_id, action)` | Admin confirma llegada o libera ruta |
 | `_cancel_delivery_reminder_jobs(context, order_id)` | Cancela jobs T+30 y T+60 |
 | `_delivery_reminder_job(context)` | Job T+30: recordatorio al courier en PICKED_UP |
 | `_delivery_admin_alert_job(context)` | Job T+60: alerta al admin si courier no finaliza |

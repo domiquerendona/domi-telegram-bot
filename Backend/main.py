@@ -2239,6 +2239,8 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pinissue_(fin|cancel_courier|cancel_ally)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickup_pinissue_\d+$"))  # pin recogida pedido
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pickup_(confirm|release)_\d+_\d+$"))  # admin resuelve pin recogida pedido
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
@@ -2309,6 +2311,8 @@ def main():
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^order_(arrived_pickup|arrival_enroute|arrival_release)_\d+$"))  # llegada al pickup (pedidos normales)
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_pickup_pinissue_\d+$"))  # pin recogida ruta
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pickup_(confirm|release)_\d+_\d+$"))  # admin resuelve pin recogida ruta
     dp.add_handler(CallbackQueryHandler(preview_callback, pattern=r"^preview_"))  # preview oferta
     dp.add_handler(CallbackQueryHandler(ally_block_callback, pattern=r"^ally_block_(block|unblock)_\d+$"))  # bloqueo couriers por aliado
     dp.add_handler(CallbackQueryHandler(handle_rating_callback, pattern=r"^rating_(star|block|skip)_"))  # calificacion post-entrega

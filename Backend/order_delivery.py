@@ -133,12 +133,12 @@ MAX_CYCLE_SECONDS = 600  # 10 minutos
 ARRIVAL_INACTIVITY_SECONDS = 5 * 60    # 5 min: Rappi-style
 ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
 ARRIVAL_DEADLINE_SECONDS = 20 * 60     # 20 min: auto-liberar
-ARRIVAL_RADIUS_KM = 0.1                # 100 metros
+ARRIVAL_RADIUS_KM = 0.15               # 150 metros
 ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia pickup
 OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
 DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repartidor
 DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
-DELIVERY_RADIUS_KM = 0.1               # 100 metros para validar entrega GPS
+DELIVERY_RADIUS_KM = 0.15              # 150 metros para validar entrega GPS
 
 GPS_INACTIVE_MSG = (
     "Tu ubicacion GPS no esta activa.\n\n"
@@ -1805,6 +1805,18 @@ def order_courier_callback(update, context):
     if data.startswith("admin_pinissue_cancel_ally_"):
         order_id = int(data.replace("admin_pinissue_cancel_ally_", ""))
         return _handle_admin_pinissue_action(update, context, order_id, "cancel_ally")
+    # pickup pin issue — pedido (punto de recogida)
+    if data.startswith("order_pickup_pinissue_"):
+        order_id = int(data.replace("order_pickup_pinissue_", ""))
+        return _handle_order_pickup_pinissue(update, context, order_id)
+    if data.startswith("admin_pickup_confirm_"):
+        parts = data.replace("admin_pickup_confirm_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_pickup_pinissue_action(update, context, int(parts[0]), int(parts[1]), "confirm")
+    if data.startswith("admin_pickup_release_"):
+        parts = data.replace("admin_pickup_release_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_pickup_pinissue_action(update, context, int(parts[0]), int(parts[1]), "release")
     return None
 
 
@@ -2167,7 +2179,7 @@ def _arrival_deadline_job(context):
 
 
 def _handle_courier_arrival_button(update, context, order_id):
-    """Courier presiona 'Confirmar llegada'. Valida GPS <= 100m del pickup."""
+    """Courier presiona 'Confirmar llegada'. Valida GPS <= 150m del pickup."""
     query = update.callback_query
     order = get_order_by_id(order_id)
     if not order or order["status"] != "ACCEPTED":
@@ -2197,7 +2209,14 @@ def _handle_courier_arrival_button(update, context, order_id):
             query.answer()
             query.message.reply_text(
                 "Segun tu ubicacion estas a {:.0f} metros del punto de recogida.\n"
-                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.".format(dist_km * 1000)
+                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.\n\n"
+                "Si ya estas en el lugar pero el pin de recogida esta mal ubicado, usa el boton de ayuda.".format(dist_km * 1000),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Estoy aqui pero el pin de recogida esta mal",
+                        callback_data="order_pickup_pinissue_{}".format(order_id)
+                    )
+                ]]),
             )
             return
 
@@ -2760,10 +2779,15 @@ def _handle_pickup(update, context, order_id):
         pickup_lat, pickup_lng = _get_pickup_coords(order)
         keyboard = []
         keyboard.extend(_build_navigation_rows(pickup_lat, pickup_lng))
+        keyboard.append([InlineKeyboardButton(
+            "Estoy aqui pero el pin de recogida esta mal",
+            callback_data="order_pickup_pinissue_{}".format(order_id)
+        )])
         keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
         query.edit_message_text(
             "Aun no podemos confirmar tu llegada al pedido #{}.\n\n"
-            "Acercate mas al punto de recogida y vuelve a presionar \"Confirmar llegada\" cuando estes alli."
+            "Acercate mas al punto de recogida y vuelve a presionar \"Confirmar llegada\" cuando estes alli.\n\n"
+            "Si ya estas en el lugar pero el pin de recogida esta mal, usa el boton de ayuda."
             .format(order_id),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
@@ -3313,7 +3337,7 @@ def _notify_courier_pickup_approved(context, order):
                 "Cliente: {}\n"
                 "Telefono: {}{}\n\n"
                 "Dirigete al punto de entrega. Solo podras finalizar el servicio cuando estes "
-                "a menos de 100 metros del lugar de entrega."
+                "a menos de 150 metros del lugar de entrega."
             ).format(
                 order["id"],
                 order["customer_address"] or "No disponible",
@@ -4082,7 +4106,7 @@ def _cancel_route_arrival_jobs(context, route_id):
 
 
 def _handle_route_pickup_confirm(update, context, route_id):
-    """Courier confirma llegada al punto de recogida. Valida GPS <= 100m."""
+    """Courier confirma llegada al punto de recogida. Valida GPS <= 150m."""
     query = update.callback_query
     route = get_route_by_id(route_id)
     if not route or route["status"] != "ACCEPTED":
@@ -4114,7 +4138,14 @@ def _handle_route_pickup_confirm(update, context, route_id):
             query.answer()
             query.message.reply_text(
                 "Segun tu ubicacion estas a {:.0f} metros del punto de recogida.\n"
-                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.".format(dist_km * 1000)
+                "Dirigete al lugar e intenta confirmar cuando estes mas cerca.\n\n"
+                "Si ya estas en el lugar pero el pin de recogida esta mal ubicado, usa el boton de ayuda.".format(dist_km * 1000),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Estoy aqui pero el pin de recogida esta mal",
+                        callback_data="ruta_pickup_pinissue_{}".format(route_id)
+                    )
+                ]]),
             )
             return
 
@@ -4489,7 +4520,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         if dist > DELIVERY_RADIUS_KM:
             query.edit_message_text(
                 "No puedes finalizar esta parada porque no estas cerca del punto de entrega.\n"
-                "Distancia actual: {:.0f} metros. Debes estar a menos de 100 metros.\n\n"
+                "Distancia actual: {:.0f} metros. Debes estar a menos de 150 metros.\n\n"
                 "Si ya estas en el lugar pero el pin esta mal ubicado, usa el boton de ayuda.".format(dist * 1000),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
@@ -4732,6 +4763,19 @@ def handle_route_callback(update, context):
     if data.startswith("ruta_cancelar_aliado_"):
         route_id = int(data.replace("ruta_cancelar_aliado_", ""))
         return _handle_cancel_ally_route(update, context, route_id)
+
+    # pickup pin issue — ruta (punto de recogida)
+    if data.startswith("ruta_pickup_pinissue_"):
+        route_id = int(data.replace("ruta_pickup_pinissue_", ""))
+        return _handle_route_pickup_pinissue(update, context, route_id)
+    if data.startswith("admin_ruta_pickup_confirm_"):
+        parts = data.replace("admin_ruta_pickup_confirm_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_route_pickup_pinissue_action(update, context, int(parts[0]), int(parts[1]), "confirm")
+    if data.startswith("admin_ruta_pickup_release_"):
+        parts = data.replace("admin_ruta_pickup_release_", "").split("_")
+        if len(parts) == 2:
+            return _handle_admin_route_pickup_pinissue_action(update, context, int(parts[0]), int(parts[1]), "release")
 
     return None
 
@@ -4986,7 +5030,7 @@ def _handle_delivered_confirm(update, context, order_id):
         if dist > DELIVERY_RADIUS_KM:
             query.edit_message_text(
                 "No puedes finalizar el servicio porque no estas cerca del punto de entrega.\n"
-                "Distancia actual: {:.0f} metros. Debes estar a menos de 100 metros.\n\n"
+                "Distancia actual: {:.0f} metros. Debes estar a menos de 150 metros.\n\n"
                 "Si ya estas en el lugar pero el pin esta mal ubicado, usa el boton de ayuda.".format(dist * 1000),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
@@ -5545,3 +5589,310 @@ def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, reso
         )
     except Exception as e:
         print("[WARN] No se pudo notificar resolucion de parada al courier {}: {}".format(courier_id, e))
+
+
+# ---------------------------------------------------------------------------
+# Flujo pin mal ubicado — punto de RECOGIDA (pedidos normales y admin)
+# ---------------------------------------------------------------------------
+
+def _handle_order_pickup_pinissue(update, context, order_id):
+    """Courier reporta que el pin de recogida esta mal (estado ACCEPTED). Notifica al admin."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido no esta disponible para esta accion.")
+        return
+    courier = get_courier_by_telegram_id(update.effective_user.id)
+    if not courier or courier["id"] != order["courier_id"]:
+        query.edit_message_text("No tienes permiso para esta accion.")
+        return
+
+    existing = get_pending_support_request(order_id=order_id)
+    if existing:
+        query.edit_message_text(
+            "Ya enviaste una solicitud de ayuda para este pedido.\n"
+            "Tu administrador fue notificado y respondera pronto."
+        )
+        return
+
+    admin_id = get_approved_admin_id_for_courier(courier["id"])
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id = create_order_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        order_id=order_id,
+    )
+    query.edit_message_text(
+        "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar el pedido.\n"
+        "Permanece en el lugar hasta recibir respuesta."
+    )
+    _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
+
+
+def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id):
+    """Envia al admin la alerta de pin de recogida mal ubicado con opciones de accion."""
+    try:
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user["telegram_id"]:
+            return
+
+        pickup_lat, pickup_lng = _get_pickup_coords(order)
+        courier_lat = _row_value(courier, "live_lat")
+        courier_lng = _row_value(courier, "live_lng")
+
+        maps_pickup = ""
+        if pickup_lat is not None and pickup_lng is not None:
+            maps_pickup = "https://maps.google.com/?q={},{}".format(pickup_lat, pickup_lng)
+        maps_courier = ""
+        if courier_lat is not None and courier_lng is not None:
+            maps_courier = "https://maps.google.com/?q={},{}".format(courier_lat, courier_lng)
+
+        courier_user = get_user_by_id(courier["user_id"])
+        courier_tg = ""
+        if courier_user and courier_user["telegram_id"]:
+            courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
+
+        lines = [
+            "AYUDA - Pin de recogida - Pedido #{}".format(order["id"]),
+            "",
+            "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
+            "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
+            "Punto de recogida: {}".format(order["pickup_address"] or "N/D"),
+        ]
+        if maps_pickup:
+            lines.append("Pin de recogida: {}".format(maps_pickup))
+        if maps_courier:
+            lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+
+        keyboard = [
+            [InlineKeyboardButton(
+                "Confirmar llegada del repartidor",
+                callback_data="admin_pickup_confirm_{}_{}".format(order["id"], support_id)
+            )],
+            [InlineKeyboardButton(
+                "Liberar pedido",
+                callback_data="admin_pickup_release_{}_{}".format(order["id"], support_id)
+            )],
+        ]
+        if courier_tg:
+            keyboard.append([InlineKeyboardButton("Chatear con el repartidor", url=courier_tg)])
+
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text="\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar pickup pin issue al admin (pedido {}): {}".format(order["id"], e))
+
+
+def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, action):
+    """Admin confirma llegada del courier o libera el pedido (pin de recogida mal ubicado)."""
+    query = update.callback_query
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        query.edit_message_text("Este pedido ya no esta activo.")
+        return
+
+    support = get_pending_support_request(order_id=order_id)
+    if not support or support["id"] != support_id:
+        query.edit_message_text("Esta solicitud ya fue resuelta.")
+        return
+
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["id"] != support["admin_id"]:
+        query.edit_message_text("No tienes permiso para resolver esta solicitud.")
+        return
+
+    resolution = "CONFIRMED_ARRIVAL" if action == "confirm" else "RELEASED"
+    ok = resolve_support_request(support["id"], resolution, admin["id"])
+    if not ok:
+        query.edit_message_text("Esta solicitud ya fue resuelta.")
+        return
+
+    courier_id = support["courier_id"]
+    courier = get_courier_by_id(courier_id)
+
+    if action == "confirm":
+        _cancel_arrival_jobs(context, order_id)
+        set_courier_arrived(order_id)
+        query.edit_message_text("Llegada confirmada para pedido #{}.".format(order_id))
+        if not order["ally_id"]:
+            _notify_courier_pickup_approved(context, order)
+        else:
+            courier_name = courier["full_name"] if courier else "El repartidor"
+            upsert_order_pickup_confirmation(order_id, courier_id, order["ally_id"], "PENDING")
+            _notify_ally_courier_arrived(context, order, courier_name)
+        try:
+            if courier:
+                cu = get_user_by_id(courier["user_id"])
+                if cu and cu["telegram_id"]:
+                    context.bot.send_message(
+                        chat_id=cu["telegram_id"],
+                        text="Tu administrador confirmo tu llegada al punto de recogida del pedido #{}.".format(order_id)
+                    )
+        except Exception:
+            pass
+    else:
+        query.edit_message_text("Pedido #{} liberado para re-oferta.".format(order_id))
+        _release_order_by_timeout(order_id, courier_id, context,
+                                   reason="pin de recogida incorrecto — liberado por admin")
+
+
+# ---------------------------------------------------------------------------
+# Flujo pin mal ubicado — punto de RECOGIDA (rutas)
+# ---------------------------------------------------------------------------
+
+def _handle_route_pickup_pinissue(update, context, route_id):
+    """Courier reporta que el pin de recogida de la ruta esta mal (estado ACCEPTED). Notifica al admin."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta activa.")
+        return
+    courier = get_courier_by_telegram_id(update.effective_user.id)
+    if not courier or courier["id"] != route["courier_id"]:
+        query.edit_message_text("No tienes permiso para esta accion.")
+        return
+
+    # route_seq=0 representa el pickup (secuencias de paradas empiezan en 1)
+    existing = get_pending_support_request(route_id=route_id, route_seq=0)
+    if existing:
+        query.edit_message_text(
+            "Ya enviaste una solicitud de ayuda para esta ruta.\n"
+            "Tu administrador fue notificado y respondera pronto."
+        )
+        return
+
+    admin_id = get_approved_admin_id_for_courier(courier["id"])
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id = create_order_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        route_id=route_id,
+        route_seq=0,
+    )
+    query.edit_message_text(
+        "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar la ruta.\n"
+        "Permanece en el lugar hasta recibir respuesta."
+    )
+    _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id)
+
+
+def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id):
+    """Envia al admin la alerta de pin de recogida de ruta mal ubicado con opciones de accion."""
+    try:
+        admin = get_admin_by_id(admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user["telegram_id"]:
+            return
+
+        pickup_lat = route["pickup_lat"]
+        pickup_lng = route["pickup_lng"]
+        courier_lat = _row_value(courier, "live_lat")
+        courier_lng = _row_value(courier, "live_lng")
+
+        maps_pickup = ""
+        if pickup_lat is not None and pickup_lng is not None:
+            maps_pickup = "https://maps.google.com/?q={},{}".format(pickup_lat, pickup_lng)
+        maps_courier = ""
+        if courier_lat is not None and courier_lng is not None:
+            maps_courier = "https://maps.google.com/?q={},{}".format(courier_lat, courier_lng)
+
+        courier_user = get_user_by_id(courier["user_id"])
+        courier_tg = ""
+        if courier_user and courier_user["telegram_id"]:
+            courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
+
+        lines = [
+            "AYUDA - Pin de recogida - Ruta #{}".format(route["id"]),
+            "",
+            "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
+            "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
+            "Punto de recogida: {}".format(route["pickup_address"] or "N/D"),
+        ]
+        if maps_pickup:
+            lines.append("Pin de recogida: {}".format(maps_pickup))
+        if maps_courier:
+            lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+
+        keyboard = [
+            [InlineKeyboardButton(
+                "Confirmar llegada del repartidor",
+                callback_data="admin_ruta_pickup_confirm_{}_{}".format(route["id"], support_id)
+            )],
+            [InlineKeyboardButton(
+                "Liberar ruta",
+                callback_data="admin_ruta_pickup_release_{}_{}".format(route["id"], support_id)
+            )],
+        ]
+        if courier_tg:
+            keyboard.append([InlineKeyboardButton("Chatear con el repartidor", url=courier_tg)])
+
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text="\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        print("[WARN] No se pudo notificar pickup pin issue al admin (ruta {}): {}".format(route["id"], e))
+
+
+def _handle_admin_route_pickup_pinissue_action(update, context, route_id, support_id, action):
+    """Admin confirma llegada del courier o libera la ruta (pin de recogida mal ubicado)."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta activa.")
+        return
+
+    support = get_pending_support_request(route_id=route_id, route_seq=0)
+    if not support or support["id"] != support_id:
+        query.edit_message_text("Esta solicitud ya fue resuelta.")
+        return
+
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["id"] != support["admin_id"]:
+        query.edit_message_text("No tienes permiso para resolver esta solicitud.")
+        return
+
+    resolution = "CONFIRMED_ARRIVAL" if action == "confirm" else "RELEASED"
+    ok = resolve_support_request(support["id"], resolution, admin["id"])
+    if not ok:
+        query.edit_message_text("Esta solicitud ya fue resuelta.")
+        return
+
+    courier_id = support["courier_id"]
+    courier = get_courier_by_id(courier_id)
+
+    if action == "confirm":
+        _cancel_route_arrival_jobs(context, route_id)
+        context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+        query.edit_message_text("Llegada confirmada para ruta #{}.".format(route_id))
+        courier_name = courier["full_name"] if courier else "El repartidor"
+        _notify_ally_route_courier_arrived(context, route, courier_name)
+        try:
+            if courier:
+                cu = get_user_by_id(courier["user_id"])
+                if cu and cu["telegram_id"]:
+                    context.bot.send_message(
+                        chat_id=cu["telegram_id"],
+                        text="Tu administrador confirmo tu llegada al punto de recogida de la ruta #{}.".format(route_id)
+                    )
+        except Exception:
+            pass
+    else:
+        query.edit_message_text("Ruta #{} liberada para re-oferta.".format(route_id))
+        _release_route_by_timeout(route_id, courier_id, context,
+                                   reason="pin de recogida incorrecto — liberado por admin")
