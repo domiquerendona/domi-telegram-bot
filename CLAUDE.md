@@ -938,17 +938,22 @@ Oferta publicada → courier acepta
   T+20: _release_order_by_timeout automático (hard deadline)
 
   Courier pulsa "Confirmar llegada al pickup" (order_arrived_pickup_{id}):
-    → Valida GPS activo + distancia ≤ ARRIVAL_RADIUS_KM (100m)
-    → Si GPS inactivo o >100m: muestra distancia real y pide acercarse
+    → Valida GPS activo + distancia ≤ ARRIVAL_RADIUS_KM (150m)
+    → Si GPS inactivo o >150m: muestra distancia real y opción "pin mal ubicado"
     → Si válido:
         → set_courier_arrived (idempotente)
         → _cancel_arrival_jobs (cancela T+5/T+15/T+20)
         → upsert_order_pickup_confirmation(PENDING)
-        → _notify_ally_courier_arrived (botones: Confirmar / No ha llegado)
+        → _notify_ally_courier_arrived (botones: "Confirmar ya" / "Hay un problema")
+        → Programa job pickup_autoconfirm_{id} T+2 min
 
-  Aliado confirma (order_pickupconfirm_approve_):
-    → _handle_pickup_confirmation_by_ally(approve=True)
-    → status = PICKED_UP
+  Aliado confirma manualmente (order_pickupconfirm_approve_) o T+2 auto-confirma:
+    → _cancel_pickup_autoconfirm_job (cancela job T+2)
+    → _handle_pickup_confirmation_by_ally(approve=True) / _pickup_autoconfirm_job
+    → _notify_courier_awaiting_pickup_confirm → courier recibe botón "Confirmar recogida"
+
+  Courier confirma recogida (order_confirm_pickup_{id}):
+    → set_order_status(PICKED_UP)
     → _notify_courier_pickup_approved → courier recibe customer_name/phone/address exacta
 ```
 
@@ -1009,9 +1014,11 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `ARRIVAL_INACTIVITY_SECONDS` | 300 (5 min) | Job T+5 — algoritmo direccional |
 | `ARRIVAL_WARN_SECONDS` | 900 (15 min) | Job T+15 — notificación a aliado y opciones al courier |
 | `ARRIVAL_DEADLINE_SECONDS` | 1200 (20 min) | Job T+20 — liberación automática dura |
-| `ARRIVAL_RADIUS_KM` | 0.15 (150 m) | Radio máximo para confirmar llegada manual |
-| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.15 (15%) | Umbral de alejamiento para liberación inmediata en T+5 |
+| `ARRIVAL_RADIUS_KM` | 0.15 (150 m) | Radio máximo para confirmar llegada manual al pickup |
+| `DELIVERY_RADIUS_KM` | 0.15 (150 m) | Radio máximo para confirmar entrega |
+| `ARRIVAL_MOVEMENT_THRESHOLD_KM` | 0.05 (50 m) | Umbral mínimo de movimiento hacia pickup en T+5 |
 | `ARRIVAL_PROGRESS_THRESHOLD` | 0.20 (20%) | Progreso mínimo hacia pickup para considerar al courier en camino en T+5 |
+| `PICKUP_AUTOCONFIRM_SECONDS` | 120 (2 min) | Job T+2 — auto-confirmar llegada al pickup si el aliado no responde |
 
 ### Funciones en order_delivery.py
 
@@ -1020,6 +1027,8 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `check_courier_arrival_at_pickup(courier_id, lat, lng, context)` | Stub — ya no dispara notificaciones automáticas |
 | `_cancel_arrival_jobs(context, order_id)` | Cancela los 3 jobs de pedido por nombre |
 | `_cancel_route_arrival_jobs(context, route_id)` | Cancela los 3 jobs de ruta por nombre |
+| `_cancel_pickup_autoconfirm_job(context, order_id)` | Cancela job auto-confirm T+2 de pedido |
+| `_cancel_route_pickup_autoconfirm_job(context, route_id)` | Cancela job auto-confirm T+2 de ruta |
 | `_release_order_by_timeout(order_id, courier_id, context, reason)` | Liberación centralizada (T+5 alejamiento y T+20) |
 | `_release_route_by_timeout(route_id, courier_id, context, reason)` | Liberación de ruta (T+5 y T+20) |
 | `_arrival_inactivity_job(context)` | Job T+5 pedido — algoritmo direccional |
@@ -1028,7 +1037,9 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `_route_arrival_inactivity_job(context)` | Job T+5 ruta |
 | `_route_arrival_warn_job(context)` | Job T+15 ruta |
 | `_route_arrival_deadline_job(context)` | Job T+20 ruta |
-| `_handle_courier_arrival_button(update, context, order_id)` | Valida GPS ≤100m → confirma llegada manual |
+| `_pickup_autoconfirm_job(context)` | Job T+2 pedido — auto-confirma llegada si aliado no responde |
+| `_route_pickup_autoconfirm_job(context)` | Job T+2 ruta — auto-confirma llegada si aliado no responde |
+| `_handle_courier_arrival_button(update, context, order_id)` | Valida GPS ≤150m → confirma llegada manual |
 | `_handle_courier_arrival_enroute(update, context, order_id)` | Courier: "Sigo en camino" — notifica al aliado |
 | `_handle_courier_arrival_release(update, context, order_id)` | Courier: "No puedo llegar" — libera inmediatamente |
 | `_handle_route_arrival_enroute(update, context, route_id)` | Equivalente de enroute para rutas |

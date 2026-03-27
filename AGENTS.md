@@ -1674,3 +1674,28 @@ en el bloque re-exports de services.py). Ignorarlos — no son funciones reales.
 **Causa raiz del error:** al extraer una funcion de main.py a un handler, se copia el cuerpo
 pero no se revisan sistematicamente todas las dependencias. La solucion es ejecutar este script
 antes de cada push, no despues.
+
+---
+
+## Sección 19 — Uniformidad de flujos de pedido
+
+**REGLA OBLIGATORIA:** Todo ajuste de comportamiento (UX, validaciones, timers, GPS, botones,
+textos) aplicado a cualquiera de los tres flujos de pedido DEBE aplicarse a los otros dos.
+
+Los tres flujos que siempre viajan juntos:
+
+| Flujo | Archivo | Handler principal |
+|-------|---------|-------------------|
+| Pedido de aliado | `handlers/order.py` + `order_delivery.py` | `nuevo_pedido_conv` |
+| Pedido especial de admin | `handlers/order.py` + `order_delivery.py` | `admin_pedido_conv` |
+| Ruta multi-parada | `handlers/route.py` + `order_delivery.py` | `nueva_ruta_conv` |
+
+**Aplica especialmente a:**
+- Radios GPS (ARRIVAL_RADIUS_KM, DELIVERY_RADIUS_KM)
+- Timers de tracking (T+5, T+15, T+20, auto-confirm T+2)
+- Botones de ayuda al admin (pin de recogida mal ubicado, pin de entrega mal ubicado)
+- Flujo de confirmación de llegada al pickup
+- Mensajes de estado al courier y al aliado
+
+**Antes de cerrar cualquier cambio a flujos de pedido:** verificar los 3 flujos y documentar
+en CLAUDE.md si se agregan constantes, funciones o callbacks nuevos.

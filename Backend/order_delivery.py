@@ -1,3 +1,4 @@
+import json
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -78,8 +79,32 @@ from db import (
     get_pending_support_request,
     resolve_support_request,
     cancel_route_stop,
+    upsert_scheduled_job,
+    cancel_scheduled_job,
+    mark_job_executed,
+    get_pending_scheduled_jobs,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription
+
+
+def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
+    """Programa un job y lo persiste en BD para recuperacion tras reinicio."""
+    fire_at = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=when_seconds)).isoformat()
+    try:
+        upsert_scheduled_job(name, callback.__name__, fire_at, json.dumps(job_data or {}))
+    except Exception as e:
+        logger.warning("_schedule_persistent_job: no se pudo persistir job %s: %s", name, e)
+    context.job_queue.run_once(callback, when=when_seconds, context=job_data or {}, name=name)
+
+
+def _cancel_persistent_job(context, name):
+    """Cancela un job del queue y lo marca cancelado en BD."""
+    for job in context.job_queue.get_jobs_by_name(name):
+        job.schedule_removal()
+    try:
+        cancel_scheduled_job(name)
+    except Exception as e:
+        logger.warning("_cancel_persistent_job: no se pudo cancelar job %s: %s", name, e)
 
 
 def _format_duration(seconds):
@@ -143,6 +168,7 @@ OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incenti
 DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repartidor
 DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
 DELIVERY_RADIUS_KM = 0.15              # 150 metros para validar entrega GPS
+PICKUP_AUTOCONFIRM_SECONDS = 120        # 2 min → auto-confirmar llegada al pickup si aliado no responde
 
 GPS_INACTIVE_MSG = (
     "Tu ubicacion GPS no esta activa.\n\n"
@@ -189,8 +215,7 @@ def _cancel_arrival_jobs(context, order_id):
         "arr_warn_{}".format(order_id),
         "arr_deadline_{}".format(order_id),
     ]:
-        for job in context.job_queue.get_jobs_by_name(name):
-            job.schedule_removal()
+        _cancel_persistent_job(context, name)
     context.bot_data.get("arrival_manual_prompted", {}).pop(order_id, None)
 
 
@@ -200,12 +225,12 @@ def _cancel_delivery_reminder_jobs(context, order_id):
         "delivery_reminder_{}".format(order_id),
         "delivery_admin_alert_{}".format(order_id),
     ]:
-        for job in context.job_queue.get_jobs_by_name(name):
-            job.schedule_removal()
+        _cancel_persistent_job(context, name)
 
 
 def _delivery_reminder_job(context):
     """T+30: recuerda al repartidor que tiene un pedido en curso sin finalizar."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -262,20 +287,27 @@ def _delivery_admin_alert_job(context):
 
 def _cancel_no_response_job(context, order_id):
     """Cancela el job de sugerencia de incentivo T+5 para un pedido."""
-    for job in context.job_queue.get_jobs_by_name("offer_no_response_{}".format(order_id)):
-        job.schedule_removal()
+    _cancel_persistent_job(context, "offer_no_response_{}".format(order_id))
+
+
+def _cancel_pickup_autoconfirm_job(context, order_id):
+    """Cancela el job de auto-confirmacion de llegada al pickup (pedido)."""
+    _cancel_persistent_job(context, "pickup_autoconfirm_{}".format(order_id))
+
+
+def _cancel_route_pickup_autoconfirm_job(context, route_id):
+    """Cancela el job de auto-confirmacion de llegada al pickup (ruta)."""
+    _cancel_persistent_job(context, "route_pickup_autoconfirm_{}".format(route_id))
 
 
 def _cancel_route_no_response_job(context, route_id):
     """Cancela el job de sugerencia de incentivo T+5 para una ruta."""
-    for job in context.job_queue.get_jobs_by_name("route_no_response_{}".format(route_id)):
-        job.schedule_removal()
+    _cancel_persistent_job(context, "route_no_response_{}".format(route_id))
 
 
 def _cancel_order_expire_job(context, order_id):
     """Cancela el job de expiración automática T+10 para un pedido."""
-    for job in context.job_queue.get_jobs_by_name("order_expire_{}".format(order_id)):
-        job.schedule_removal()
+    _cancel_persistent_job(context, "order_expire_{}".format(order_id))
 
 
 def _courier_is_within_pickup_radius(order, courier):
@@ -402,11 +434,9 @@ def _schedule_order_expire_job(context, order_id):
         _expire_order(order_id, cycle_info, context)
         return
 
-    context.job_queue.run_once(
-        _order_expire_job,
-        remaining,
-        context={"order_id": order_id},
-        name="order_expire_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _order_expire_job, remaining,
+        "order_expire_{}".format(order_id), {"order_id": order_id},
     )
 
 
@@ -825,11 +855,9 @@ def publish_order_to_couriers(
 
     # Programar sugerencia de incentivo si nadie acepta en T+5
     _cancel_no_response_job(context, order_id)
-    context.job_queue.run_once(
-        _offer_no_response_job,
-        OFFER_NO_RESPONSE_SECONDS,
-        context={"order_id": order_id},
-        name="offer_no_response_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _offer_no_response_job, OFFER_NO_RESPONSE_SECONDS,
+        "offer_no_response_{}".format(order_id), {"order_id": order_id},
     )
 
     # Programar expiración automática T+10 (desde created_at)
@@ -2227,9 +2255,23 @@ def _handle_courier_arrival_button(update, context, order_id):
     _cancel_arrival_jobs(context, order_id)
     set_courier_arrived(order_id)
     courier_name = courier["full_name"] or "Repartidor"
+
+    # Pedido de admin (sin aliado): auto-confirmar directamente
+    if not order["ally_id"]:
+        query.edit_message_text("Pedido #{} - Llegada confirmada.".format(order_id))
+        _notify_courier_pickup_approved(context, order)
+        return
+
+    upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
     _notify_ally_courier_arrived(context, order, courier_name)
+    context.job_queue.run_once(
+        _pickup_autoconfirm_job,
+        PICKUP_AUTOCONFIRM_SECONDS,
+        context={"order_id": order_id},
+        name="pickup_autoconfirm_{}".format(order_id),
+    )
     query.edit_message_text(
-        "Llegada confirmada. El aliado debe confirmar antes de entregarte los datos del cliente."
+        "Llegada confirmada. Avisamos al aliado — se confirmara automaticamente en 2 minutos si no hay novedad."
     )
 
 
@@ -2400,23 +2442,17 @@ def _handle_accept(update, context, order_id):
         pass
 
     # Programar 3 timers de llegada
-    context.job_queue.run_once(
-        _arrival_inactivity_job,
-        ARRIVAL_INACTIVITY_SECONDS,
-        context={"order_id": order_id},
-        name="arr_inactive_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _arrival_inactivity_job, ARRIVAL_INACTIVITY_SECONDS,
+        "arr_inactive_{}".format(order_id), {"order_id": order_id},
     )
-    context.job_queue.run_once(
-        _arrival_warn_ally_job,
-        ARRIVAL_WARN_SECONDS,
-        context={"order_id": order_id},
-        name="arr_warn_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _arrival_warn_ally_job, ARRIVAL_WARN_SECONDS,
+        "arr_warn_{}".format(order_id), {"order_id": order_id},
     )
-    context.job_queue.run_once(
-        _arrival_deadline_job,
-        ARRIVAL_DEADLINE_SECONDS,
-        context={"order_id": order_id},
-        name="arr_deadline_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _arrival_deadline_job, ARRIVAL_DEADLINE_SECONDS,
+        "arr_deadline_{}".format(order_id), {"order_id": order_id},
     )
 
     # Limpiar bot_data del ciclo de ofertas
@@ -2809,12 +2845,17 @@ def _handle_pickup(update, context, order_id):
 
     upsert_order_pickup_confirmation(order_id, courier["id"], order["ally_id"], "PENDING")
     _notify_ally_courier_arrived(context, order, courier_name)
+    context.job_queue.run_once(
+        _pickup_autoconfirm_job,
+        PICKUP_AUTOCONFIRM_SECONDS,
+        context={"order_id": order_id},
+        name="pickup_autoconfirm_{}".format(order_id),
+    )
 
     keyboard = [[InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))]]
     query.edit_message_text(
         "Pedido #{} - Llegada confirmada.\n\n"
-        "Avisamos al aliado para que confirme tu llegada al punto de recogida.\n"
-        "Cuando confirme, te enviaremos la ruta al punto de entrega.".format(order_id),
+        "Avisamos al aliado — se confirmara automaticamente en 2 minutos si no hay novedad.".format(order_id),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return
@@ -2833,6 +2874,8 @@ def _handle_pickup_confirmation_by_ally(update, context, order_id, approve):
     if not ally or ally["id"] != order["ally_id"]:
         query.edit_message_text("No tienes permiso para confirmar esta recogida.")
         return
+
+    _cancel_pickup_autoconfirm_job(context, order_id)
 
     confirmation = get_order_pickup_confirmation(order_id)
     if not confirmation:
@@ -3228,11 +3271,11 @@ def _notify_ally_courier_arrived(context, order, courier_name):
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "Confirmar llegada",
+                    "Confirmar ya",
                     callback_data="order_pickupconfirm_approve_{}".format(order_id),
                 ),
                 InlineKeyboardButton(
-                    "No ha llegado",
+                    "Hay un problema",
                     callback_data="order_pickupconfirm_reject_{}".format(order_id),
                 ),
             ]
@@ -3241,7 +3284,7 @@ def _notify_ally_courier_arrived(context, order, courier_name):
             chat_id=ally_user["telegram_id"],
             text=(
                 "El repartidor {} confirmo su llegada al punto de recogida (pedido #{}).\n\n"
-                "Confirma su llegada para que reciba los datos del cliente y proceda a entregar."
+                "Se confirmara automaticamente en 2 minutos si no hay novedad."
             ).format(courier_name, order_id),
             reply_markup=keyboard,
         )
@@ -3295,17 +3338,13 @@ def _handle_confirm_pickup(update, context, order_id):
     set_order_status(order_id, "PICKED_UP", "pickup_confirmed_at")
     query.edit_message_text("Recogida confirmada. A continuacion encontraras los datos de entrega.")
     _notify_courier_pickup_approved(context, get_order_by_id(order_id))
-    context.job_queue.run_once(
-        _delivery_reminder_job,
-        DELIVERY_REMINDER_SECONDS,
-        context={"order_id": order_id},
-        name="delivery_reminder_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _delivery_reminder_job, DELIVERY_REMINDER_SECONDS,
+        "delivery_reminder_{}".format(order_id), {"order_id": order_id},
     )
-    context.job_queue.run_once(
-        _delivery_admin_alert_job,
-        DELIVERY_ADMIN_ALERT_SECONDS,
-        context={"order_id": order_id},
-        name="delivery_admin_alert_{}".format(order_id),
+    _schedule_persistent_job(
+        context, _delivery_admin_alert_job, DELIVERY_ADMIN_ALERT_SECONDS,
+        "delivery_admin_alert_{}".format(order_id), {"order_id": order_id},
     )
 
 
@@ -3834,11 +3873,9 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
 
     # Programar sugerencia de incentivo T+5 si nadie acepta la ruta
     _cancel_route_no_response_job(context, route_id)
-    context.job_queue.run_once(
-        _route_no_response_job,
-        OFFER_NO_RESPONSE_SECONDS,
-        context={"route_id": route_id},
-        name="route_no_response_{}".format(route_id),
+    _schedule_persistent_job(
+        context, _route_no_response_job, OFFER_NO_RESPONSE_SECONDS,
+        "route_no_response_{}".format(route_id), {"route_id": route_id},
     )
 
     return len(courier_ids)
@@ -3970,23 +4007,17 @@ def _handle_route_accept(update, context, route_id):
         pass
 
     # Programar timers de llegada al pickup (igual que pedidos)
-    context.job_queue.run_once(
-        _route_arrival_inactivity_job,
-        ARRIVAL_INACTIVITY_SECONDS,
-        context={"route_id": route_id, "courier_id": courier_id},
-        name="ruta_arr_inactive_{}".format(route_id),
+    _schedule_persistent_job(
+        context, _route_arrival_inactivity_job, ARRIVAL_INACTIVITY_SECONDS,
+        "ruta_arr_inactive_{}".format(route_id), {"route_id": route_id, "courier_id": courier_id},
     )
-    context.job_queue.run_once(
-        _route_arrival_warn_job,
-        ARRIVAL_WARN_SECONDS,
-        context={"route_id": route_id, "courier_id": courier_id},
-        name="ruta_arr_warn_{}".format(route_id),
+    _schedule_persistent_job(
+        context, _route_arrival_warn_job, ARRIVAL_WARN_SECONDS,
+        "ruta_arr_warn_{}".format(route_id), {"route_id": route_id, "courier_id": courier_id},
     )
-    context.job_queue.run_once(
-        _route_arrival_deadline_job,
-        ARRIVAL_DEADLINE_SECONDS,
-        context={"route_id": route_id, "courier_id": courier_id},
-        name="ruta_arr_deadline_{}".format(route_id),
+    _schedule_persistent_job(
+        context, _route_arrival_deadline_job, ARRIVAL_DEADLINE_SECONDS,
+        "ruta_arr_deadline_{}".format(route_id), {"route_id": route_id, "courier_id": courier_id},
     )
 
     _notify_ally_route_accepted(context, route, courier["full_name"] or "Repartidor")
@@ -4102,10 +4133,93 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
             pass
 
 
+def _pickup_autoconfirm_job(context):
+    """Job T+2: auto-confirma la llegada al pickup si el aliado no respondio."""
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+    # Si ya fue respondida manualmente, no hacer nada
+    confirmation = get_order_pickup_confirmation(order_id)
+    if confirmation and confirmation["status"] != "PENDING":
+        return
+    # Marcar como aprobada en BD si existe el registro
+    if confirmation:
+        review_order_pickup_confirmation(order_id, "APPROVED", 0)
+    # Notificar al courier
+    _notify_courier_awaiting_pickup_confirm(context, order)
+    # Notificar al aliado que se auto-confirmo
+    try:
+        ally = get_ally_by_id(order["ally_id"])
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user["telegram_id"]:
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text="Llegada del repartidor al pedido #{} confirmada automaticamente.".format(order_id),
+                )
+    except Exception as e:
+        logger.warning("No se pudo notificar auto-confirmacion al aliado (pedido %s): %s", order_id, e)
+
+
+def _route_pickup_autoconfirm_job(context):
+    """Job T+2: auto-confirma la llegada al pickup de la ruta si el aliado no respondio."""
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    if not route_id:
+        return
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        return
+    courier_id = _row_value(route, "courier_id")
+    courier = get_courier_by_id(courier_id) if courier_id else None
+    if not courier:
+        return
+    courier_user = get_user_by_id(courier["user_id"])
+    if not courier_user or not courier_user["telegram_id"]:
+        return
+    # Replicar rama "approve" de _handle_route_pickupconfirm_by_ally
+    destinations = get_route_destinations(route_id)
+    pending = [d for d in destinations if d["status"] == "PENDING"]
+    if not pending:
+        try:
+            context.bot.send_message(
+                chat_id=courier_user["telegram_id"],
+                text="Llegada confirmada automaticamente. No hay paradas pendientes en la ruta #{}.".format(route_id),
+            )
+        except Exception:
+            pass
+        return
+    try:
+        context.bot.send_message(
+            chat_id=courier_user["telegram_id"],
+            text="Llegada confirmada automaticamente. Aqui van los detalles de la primera parada:",
+        )
+        _send_route_stop_to_courier(context, courier_user["telegram_id"], route, pending[0])
+    except Exception as e:
+        logger.warning("No se pudo enviar parada al courier en auto-confirm ruta %s: %s", route_id, e)
+    # Notificar al aliado
+    try:
+        ally_id = route["ally_id"]
+        if ally_id:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                ally_user = get_user_by_id(ally["user_id"])
+                if ally_user and ally_user["telegram_id"]:
+                    context.bot.send_message(
+                        chat_id=ally_user["telegram_id"],
+                        text="Llegada del repartidor a la ruta #{} confirmada automaticamente.".format(route_id),
+                    )
+    except Exception as e:
+        logger.warning("No se pudo notificar auto-confirmacion al aliado (ruta %s): %s", route_id, e)
+
+
 def _cancel_route_arrival_jobs(context, route_id):
     for suffix in ("inactive", "warn", "deadline"):
-        for job in context.job_queue.get_jobs_by_name("ruta_arr_{}_{}".format(suffix, route_id)):
-            job.schedule_removal()
+        _cancel_persistent_job(context, "ruta_arr_{}_{}".format(suffix, route_id))
 
 
 def _handle_route_pickup_confirm(update, context, route_id):
@@ -4156,10 +4270,16 @@ def _handle_route_pickup_confirm(update, context, route_id):
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
 
     courier_name = courier["full_name"] or "El repartidor"
-    query.edit_message_text(
-        "Llegada confirmada. Esperando que el aliado confirme para recibir los detalles de la primera parada."
-    )
     _notify_ally_route_courier_arrived(context, route, courier_name)
+    context.job_queue.run_once(
+        _route_pickup_autoconfirm_job,
+        PICKUP_AUTOCONFIRM_SECONDS,
+        context={"route_id": route_id},
+        name="route_pickup_autoconfirm_{}".format(route_id),
+    )
+    query.edit_message_text(
+        "Llegada confirmada. Avisamos al aliado — se confirmara automaticamente en 2 minutos si no hay novedad."
+    )
 
 
 def _notify_ally_route_courier_arrived(context, route, courier_name):
@@ -4178,11 +4298,11 @@ def _notify_ally_route_courier_arrived(context, route, courier_name):
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "Confirmar llegada",
+                    "Confirmar ya",
                     callback_data="ruta_pickupconfirm_approve_{}".format(route_id),
                 ),
                 InlineKeyboardButton(
-                    "No ha llegado",
+                    "Hay un problema",
                     callback_data="ruta_pickupconfirm_reject_{}".format(route_id),
                 ),
             ]
@@ -4191,7 +4311,7 @@ def _notify_ally_route_courier_arrived(context, route, courier_name):
             chat_id=ally_user["telegram_id"],
             text=(
                 "{} confirmo su llegada al punto de recogida de la ruta #{}.\n\n"
-                "Confirma su llegada para que reciba los detalles de la primera parada."
+                "Se confirmara automaticamente en 2 minutos si no hay novedad."
             ).format(courier_name, route_id),
             reply_markup=keyboard,
         )
@@ -4202,6 +4322,7 @@ def _notify_ally_route_courier_arrived(context, route, courier_name):
 def _handle_route_pickupconfirm_by_ally(update, context, route_id, approve):
     """Aliado confirma o rechaza la llegada del courier al pickup de la ruta."""
     query = update.callback_query
+    _cancel_route_pickup_autoconfirm_job(context, route_id)
     route = get_route_by_id(route_id)
     if not route or route["status"] != "ACCEPTED":
         query.edit_message_text("Esta ruta ya no esta activa.")
@@ -5732,6 +5853,12 @@ def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, 
             courier_name = courier["full_name"] if courier else "El repartidor"
             upsert_order_pickup_confirmation(order_id, courier_id, order["ally_id"], "PENDING")
             _notify_ally_courier_arrived(context, order, courier_name)
+            context.job_queue.run_once(
+                _pickup_autoconfirm_job,
+                PICKUP_AUTOCONFIRM_SECONDS,
+                context={"order_id": order_id},
+                name="pickup_autoconfirm_{}".format(order_id),
+            )
         try:
             if courier:
                 cu = get_user_by_id(courier["user_id"])
@@ -5885,6 +6012,12 @@ def _handle_admin_route_pickup_pinissue_action(update, context, route_id, suppor
         query.edit_message_text("Llegada confirmada para ruta #{}.".format(route_id))
         courier_name = courier["full_name"] if courier else "El repartidor"
         _notify_ally_route_courier_arrived(context, route, courier_name)
+        context.job_queue.run_once(
+            _route_pickup_autoconfirm_job,
+            PICKUP_AUTOCONFIRM_SECONDS,
+            context={"route_id": route_id},
+            name="route_pickup_autoconfirm_{}".format(route_id),
+        )
         try:
             if courier:
                 cu = get_user_by_id(courier["user_id"])
