@@ -63,6 +63,7 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         os.environ["DB_PATH"] = self.db_path
         os.environ.pop("DATABASE_URL", None)
         db.init_db()
+        db.ensure_platform_sociedad()
 
         self.platform_admin_id, self.local_admin_id = self._seed_admins()
         self.ally_id = self._seed_ally()
@@ -171,6 +172,11 @@ class OrderDeliveryFeeTests(unittest.TestCase):
             customer_city="Pereira",
             customer_barrio="Centro",
             total_fee=5000,
+            pickup_lat=4.81333,
+            pickup_lng=-75.69611,
+            dropoff_lat=4.82000,
+            dropoff_lng=-75.70000,
+            ally_admin_id_snapshot=self.local_admin_id,
         )
         db.assign_order_to_courier(order_id, self.courier_id, self.local_admin_id)
         if status == "PICKED_UP":
