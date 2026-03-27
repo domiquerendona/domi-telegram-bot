@@ -1220,6 +1220,76 @@ Excluidos del barrido (estos .get() son seguros):
     - bloques con isinstance(obj, dict) — ya tienen guard correcto
 
 
+14E. query.answer() prematuro silencia alertas en callbacks
+
+Sintoma:
+    El boton de Telegram deja de girar (parece que funciono) pero no aparece ningun mensaje de error.
+    El usuario ve que "no pasa nada". El error de negocio ocurrio pero fue silenciado.
+
+Causa:
+    Telegram solo permite llamar query.answer() UNA sola vez por callback query.
+    Si se llama query.answer() al inicio del handler (patron comun para desactivar el spinner)
+    y luego se intenta llamar query.answer("mensaje de error", show_alert=True) en un caso de error,
+    la segunda llamada es silenciosamente ignorada por la API de Telegram.
+
+    Patron incorrecto:
+        def mi_callback(update, context):
+            query = update.callback_query
+            query.answer()                          # <- primer answer: OK
+            ...
+            if error:
+                query.answer("Error", show_alert=True)  # <- IGNORADO por Telegram
+                return
+
+    Patron correcto:
+        def mi_callback(update, context):
+            query = update.callback_query
+            if error_temprano:
+                query.answer("Error", show_alert=True)  # <- unico answer, muestra alerta
+                return
+            ...
+            query.answer()                          # <- answer al exito (una sola vez)
+            query.edit_message_text("Exito")
+
+Regla obligatoria:
+    NUNCA llamar query.answer() al inicio de un handler si ese handler puede necesitar
+    mostrar show_alert=True en rutas de error. Llamar query.answer() SOLO UNA VEZ,
+    al final del camino exitoso. Los caminos de error llaman query.answer(msg, show_alert=True)
+    directamente como su unico answer.
+
+Detectado en (2026-03-26):
+    handlers/recharges.py — ally_approval_callback: query.answer() en linea 2119 silenciaba
+    todos los mensajes de error de approve_role_registration y validaciones previas.
+    Fix: eliminar query.answer() prematuro; agregar query.answer() justo antes de
+    query.edit_message_text() en el camino exitoso.
+
+
+14F. Admin Plataforma debe poder aprobar cualquier aliado o repartidor pendiente
+
+Regla de negocio:
+    El Admin de Plataforma es el administrador global del sistema. Puede aprobar o rechazar
+    CUALQUIER aliado o repartidor pendiente, sin importar a que equipo de admin local
+    haya sido asignado ese usuario durante su registro.
+
+Error corregido (2026-03-26):
+    services.py — approve_role_registration: existia un bloqueo que impedia al admin plataforma
+    aprobar registros cuyo selected_admin_id difiriera del propio admin_id de plataforma.
+    El mensaje de error ("La aprobacion operativa debe hacerla ese admin") nunca era visible
+    porque ademas estaba silenciado por el query.answer() prematuro (ver 14E).
+
+    Codigo eliminado:
+        if is_platform_actor:
+            if selected_admin_id != actor_admin_id:
+                return {"ok": False, "message": "..."}
+
+    Comportamiento correcto:
+        - Admin Plataforma: puede aprobar cualquier registro PENDING (sin restriccion de equipo).
+        - Admin Local: solo puede aprobar registros de su propio equipo (restriccion intacta).
+
+    Al aprobar, el link se crea bajo el selected_admin_id original (el equipo que el usuario eligio),
+    no bajo el admin_id de plataforma. Esto preserva la asignacion de equipo correcta.
+
+
 15. Colaboración entre agentes IA (Claude Code y Codex)
 
 Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
