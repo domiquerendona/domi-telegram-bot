@@ -2649,13 +2649,13 @@ def admin_config_callback(update, context):
 
 
 def _parking_status_label(status):
-    """Etiqueta legible para el estado de parqueadero."""
+    """Etiqueta legible para el estado de dificultad de parqueo."""
     return {
         "NOT_ASKED": "Sin revisar",
-        "ALLY_YES": "Aliado dice SI (pendiente verificacion)",
-        "PENDING_REVIEW": "Aliado dice NO (pendiente revision)",
-        "ADMIN_YES": "Confirmado: SI tiene parqueadero",
-        "ADMIN_NO": "Confirmado: NO tiene parqueadero",
+        "ALLY_YES": "Aliado reporta dificultad (pendiente verificacion)",
+        "PENDING_REVIEW": "Aliado no sabe (pendiente revision)",
+        "ADMIN_YES": "Confirmado: punto con dificultad de parqueo",
+        "ADMIN_NO": "Confirmado: sin dificultad de parqueo",
     }.get(status, status)
 
 
@@ -2686,13 +2686,13 @@ def admin_parking_review(update, context, show_all=False):
     if not rows:
         keyboard = [[InlineKeyboardButton("Ver todas (incluyendo revisadas)", callback_data="parking_ver_todas")]]
         send_fn(
-            "No hay direcciones pendientes de revision de parqueadero.\n\n"
-            "Puedes ver tambien las ya revisadas para corregirlas si es necesario.",
+            "No hay puntos de entrega pendientes de revision de parqueo.\n\n"
+            "Puedes ver tambien los ya revisados para corregirlos si es necesario.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    title = "REVISION DE PARQUEADEROS\n\n" if not show_all else "TODAS LAS DIRECCIONES (parqueadero)\n\n"
+    title = "PUNTOS CON DIFICULTAD DE PARQUEO\n\n" if not show_all else "TODOS LOS PUNTOS (parqueo)\n\n"
     lines = []
     keyboard = []
     for row in rows:
@@ -2710,8 +2710,8 @@ def admin_parking_review(update, context, show_all=False):
             )
         )
         keyboard.append([
-            InlineKeyboardButton("SI parqueadero", callback_data="parking_rev_yes_{}".format(addr_id)),
-            InlineKeyboardButton("NO parqueadero", callback_data="parking_rev_no_{}".format(addr_id)),
+            InlineKeyboardButton("SI, dificultad", callback_data="parking_rev_yes_{}".format(addr_id)),
+            InlineKeyboardButton("NO, sin problema", callback_data="parking_rev_no_{}".format(addr_id)),
         ])
 
     if not show_all:
@@ -2750,12 +2750,12 @@ def admin_parking_review_callback(update, context):
         if data.startswith("parking_rev_yes_"):
             set_address_parking_status(address_id, "ADMIN_YES", reviewed_by=admin_id)
             query.answer(
-                "Confirmado: SI tiene parqueadero. Se aplicaran ${:,} en pedidos a esta direccion.".format(PARKING_FEE_AMOUNT),
+                "Confirmado: punto con dificultad de parqueo. Se aplicaran ${:,} en pedidos a esta direccion.".format(PARKING_FEE_AMOUNT),
                 show_alert=True
             )
         else:
             set_address_parking_status(address_id, "ADMIN_NO", reviewed_by=admin_id)
-            query.answer("Confirmado: NO tiene parqueadero.", show_alert=True)
+            query.answer("Confirmado: sin dificultad de parqueo en este punto.", show_alert=True)
 
         admin_parking_review(update, context, show_all=False)
 

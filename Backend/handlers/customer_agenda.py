@@ -2294,14 +2294,15 @@ def _ally_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
         address_id = create_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
         context.user_data["allycust_parking_address_id"] = address_id
         keyboard = [
-            [InlineKeyboardButton("Si, hay parqueadero", callback_data="allycust_parking_si")],
+            [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="allycust_parking_si")],
             [InlineKeyboardButton("No / No lo se", callback_data="allycust_parking_no")],
         ]
         text = (
             "Cliente '{}' guardado.\n\n"
             "Telefono: {}\n"
             "Direccion: {}\n\n"
-            "Sabes si en ese lugar se debe pagar parqueadero?"
+            "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+            "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)"
         ).format(name, phone, address_text)
         if hasattr(msg_or_query, 'reply_text'):
             msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2604,12 +2605,13 @@ def ally_clientes_dir_barrio_handler(update, context):
             address_id = create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
             context.user_data["allycust_parking_address_id"] = address_id
             keyboard = [
-                [InlineKeyboardButton("Si, hay parqueadero", callback_data="allycust_parking_si")],
+                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="allycust_parking_si")],
                 [InlineKeyboardButton("No / No lo se", callback_data="allycust_parking_no")],
             ]
             update.message.reply_text(
                 "Cliente '{}' creado exitosamente.\n\nTelefono: {}\nDireccion ({}): {}\n\n"
-                "Sabes si en ese lugar se debe pagar parqueadero?".format(
+                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(
                     name, phone, label, address_text
                 ),
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -3421,16 +3423,15 @@ def ally_clientes_parking_callback(update, context):
     if query.data == "allycust_parking_si":
         set_address_parking_status(address_id, "ALLY_YES")
         query.edit_message_text(
-            "Parqueadero registrado. Se agregaran ${:,} al domicilio cuando hagas "
-            "pedidos a esta direccion.\n\n"
+            "Registrado. Se agregaran ${:,} al domicilio para ayudar al repartidor "
+            "con el parqueo en ese punto.\n\n"
             "Tu administrador verificara el dato para confirmarlo.".format(PARKING_FEE_AMOUNT)
         )
     else:
         set_address_parking_status(address_id, "PENDING_REVIEW")
         query.edit_message_text(
-            "Entendido. La direccion queda pendiente de revision de parqueadero.\n\n"
-            "Tu administrador revisara si aplica cobro. Por ahora no se agrega "
-            "tarifa de parqueadero a esta direccion."
+            "Entendido. Tu administrador revisara si hay dificultad de parqueo en esa "
+            "direccion. Por ahora no se agrega ningun cobro adicional."
         )
 
     return ALLY_CUST_MENU
