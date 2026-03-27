@@ -38,6 +38,7 @@ from handlers.states import (
     ALLY_CUST_DIR_CIUDAD,
     ALLY_CUST_DIR_CORREGIR,
     ALLY_CUST_PARKING,
+    ADMIN_CUST_PARKING,
     ALLY_CUST_DIR_EDITAR_LABEL,
     ALLY_CUST_DIR_EDITAR_NOTA,
     ALLY_CUST_DIR_EDITAR_TEXT,
@@ -1405,15 +1406,23 @@ def admin_clientes_ver_callback(update, context):
 
 
 def _admin_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng):
-    """Crea cliente + direccion 'Principal' directamente. Limpia claves temporales."""
+    """Crea cliente + direccion 'Principal' directamente. Luego pregunta sobre parqueo."""
     admin_id = context.user_data.get("acust_admin_id")
     name = context.user_data.get("acust_new_customer_name")
     phone = context.user_data.get("acust_new_customer_phone")
     try:
         customer_id = create_admin_customer(admin_id, name, phone, None)
-        create_admin_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
-        keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")]]
-        text = "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}".format(name, phone, address_text)
+        address_id = create_admin_customer_address(customer_id, "Principal", address_text, city="", barrio="", lat=lat, lng=lng)
+        context.user_data["acust_parking_address_id"] = address_id
+        keyboard = [
+            [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="acust_parking_si")],
+            [InlineKeyboardButton("No / No lo se", callback_data="acust_parking_no")],
+        ]
+        text = (
+            "Cliente '{}' guardado.\n\nTelefono: {}\nDireccion: {}\n\n"
+            "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+            "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)"
+        ).format(name, phone, address_text)
         if hasattr(msg_or_query, 'reply_text'):
             msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         else:
@@ -1424,6 +1433,15 @@ def _admin_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng)
             msg_or_query.reply_text(err_text)
         else:
             msg_or_query.edit_message_text(err_text)
+        for key in [
+            "acust_new_customer_name", "acust_new_customer_phone",
+            "acust_geo_mode", "acust_geo_address_input", "acust_geo_formatted",
+            "acust_pending_mode", "acust_pending_address_text",
+            "acust_pending_lat", "acust_pending_lng",
+            "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+        ]:
+            context.user_data.pop(key, None)
+        return ADMIN_CUST_MENU
     for key in [
         "acust_new_customer_name", "acust_new_customer_phone",
         "acust_geo_mode", "acust_geo_address_input", "acust_geo_formatted",
@@ -1432,7 +1450,7 @@ def _admin_clientes_guardar_nuevo(msg_or_query, context, address_text, lat, lng)
         "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
     ]:
         context.user_data.pop(key, None)
-    return ADMIN_CUST_MENU
+    return ADMIN_CUST_PARKING
 
 
 def admin_clientes_nuevo_nombre(update, context):
@@ -1733,16 +1751,30 @@ def admin_clientes_dir_barrio_handler(update, context):
         label = context.user_data.get("acust_new_address_label")
         try:
             customer_id = create_admin_customer(admin_id, name, phone, customer_notes)
-            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
-            keyboard = [[InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")]]
+            address_id = create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
+            context.user_data["acust_parking_address_id"] = address_id
+            keyboard = [
+                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="acust_parking_si")],
+                [InlineKeyboardButton("No / No lo se", callback_data="acust_parking_no")],
+            ]
             update.message.reply_text(
-                "Cliente '{}' creado exitosamente.\n\n"
-                "Telefono: {}\n"
-                "Direccion ({}): {}".format(name, phone, label, address_text),
+                "Cliente '{}' creado exitosamente.\n\nTelefono: {}\nDireccion ({}): {}\n\n"
+                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(
+                    name, phone, label, address_text
+                ),
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
         except Exception as e:
             update.message.reply_text("Error al crear cliente: {}".format(str(e)))
+            for key in [
+                "acust_new_customer_name", "acust_new_customer_phone", "acust_new_customer_notes",
+                "acust_new_address_label", "acust_geo_mode", "acust_geo_address_input",
+                "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
+                "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+            ]:
+                context.user_data.pop(key, None)
+            return ADMIN_CUST_MENU
 
         for key in [
             "acust_new_customer_name", "acust_new_customer_phone", "acust_new_customer_notes",
@@ -1751,7 +1783,7 @@ def admin_clientes_dir_barrio_handler(update, context):
             "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
         ]:
             context.user_data.pop(key, None)
-        return ADMIN_CUST_MENU
+        return ADMIN_CUST_PARKING
 
     if mode == "dir_nueva":
         customer_id = context.user_data.get("acust_current_customer_id")
@@ -3342,6 +3374,30 @@ clientes_conv = ConversationHandler(
     name="clientes_conv",
     persistent=True,
 )
+def admin_clientes_parking_callback(update, context):
+    """Maneja la respuesta del admin sobre dificultad de parqueo al crear cliente en agenda."""
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("acust_parking_address_id", None)
+    if not address_id:
+        query.edit_message_text("Error: no se pudo identificar la direccion. Intenta de nuevo.")
+        return ADMIN_CUST_MENU
+    if query.data == "acust_parking_si":
+        set_address_parking_status(address_id, "ALLY_YES")
+        query.edit_message_text(
+            "Registrado. Se agregaran ${:,} al domicilio para ayudar al repartidor "
+            "con el parqueo en ese punto.\n\n"
+            "Tu administrador puede verificar y corregir el dato.".format(PARKING_FEE_AMOUNT)
+        )
+    else:
+        set_address_parking_status(address_id, "PENDING_REVIEW")
+        query.edit_message_text(
+            "Entendido. El administrador revisara si hay dificultad de parqueo en esa "
+            "direccion. Por ahora no se agrega ningun cobro adicional."
+        )
+    return ADMIN_CUST_MENU
+
+
 admin_clientes_conv = ConversationHandler(
     entry_points=[
         CallbackQueryHandler(admin_clientes_cmd, pattern=r"^admin_mis_clientes$"),
@@ -3401,6 +3457,9 @@ admin_clientes_conv = ConversationHandler(
             CallbackQueryHandler(admin_clientes_geo_callback, pattern=r"^acust_geo_(si|no)$"),
             MessageHandler(Filters.location, admin_clientes_dir_corregir_location_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_dir_corregir_handler),
+        ],
+        ADMIN_CUST_PARKING: [
+            CallbackQueryHandler(admin_clientes_parking_callback, pattern=r"^acust_parking_(si|no)$"),
         ],
     },
     fallbacks=[

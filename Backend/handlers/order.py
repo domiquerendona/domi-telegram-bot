@@ -28,6 +28,7 @@ from handlers.states import (
     PEDIDO_DEDUP_CONFIRM, PEDIDO_GUARDAR_DIR_EXISTENTE,
     ADMIN_PEDIDO_SEL_CUST_BUSCAR, ADMIN_PEDIDO_CUST_DEDUP, ADMIN_PEDIDO_GUARDAR_CUST,
     PEDIDO_PARADA_EXTRA_NOMBRE, PEDIDO_PARADA_EXTRA_TELEFONO, PEDIDO_PARADA_EXTRA_DIRECCION,
+    PEDIDO_GUARDAR_DIR_PARKING, PEDIDO_GUARDAR_CUST_PARKING, ADMIN_PEDIDO_GUARDAR_PARKING,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
@@ -68,7 +69,7 @@ from services import (
     increment_customer_address_usage, increment_admin_customer_address_usage,
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
-    get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT,
+    get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT, set_address_parking_status,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
 )
@@ -402,7 +403,7 @@ def pedido_seleccionar_direccion_callback(update, context):
             )
             return PEDIDO_UBICACION
         if customer_id and address_text:
-            create_customer_address(
+            address_id = create_customer_address(
                 customer_id=customer_id,
                 label=address_text[:30],
                 address_text=address_text,
@@ -411,7 +412,18 @@ def pedido_seleccionar_direccion_callback(update, context):
                 lat=lat,
                 lng=lng
             )
-            query.edit_message_text("Direccion guardada.")
+            context.user_data["pedido_parking_address_id"] = address_id
+            keyboard = [
+                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
+                [InlineKeyboardButton("No / No lo se", callback_data="pedido_dir_parking_no")],
+            ]
+            query.edit_message_text(
+                "Direccion guardada.\n\n"
+                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return PEDIDO_GUARDAR_DIR_PARKING
         else:
             query.edit_message_text("OK, continuamos.")
         return mostrar_selector_pickup(query, context, edit=False)
@@ -3445,27 +3457,94 @@ def admin_pedido_guardar_cust_callback(update, context):
     lng = context.user_data.get("admin_ped_dropoff_lng")
     label = barrio or city or "Principal"
     data = query.data
-    msg = ""
+    parking_address_id = None
     if data == "admin_ped_guardar_cust_si":
         try:
             new_id = create_admin_customer(admin_id, cust_name, cust_phone)
-            create_admin_customer_address(new_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
-            msg = "Cliente {} guardado en tu agenda.".format(cust_name)
+            parking_address_id = create_admin_customer_address(new_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
         except Exception as e:
-            msg = "No se pudo guardar el cliente: {}".format(e)
+            query.edit_message_text("No se pudo guardar el cliente: {}".format(e))
+            for key in list(context.user_data.keys()):
+                if key.startswith("admin_ped_"):
+                    del context.user_data[key]
+            return ConversationHandler.END
     elif data == "admin_ped_guardar_dir_si":
         existing_id = context.user_data.get("admin_ped_guardar_existing_id")
         try:
-            create_admin_customer_address(existing_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
-            msg = "Direccion agregada a la agenda del cliente."
+            parking_address_id = create_admin_customer_address(existing_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
         except Exception as e:
-            msg = "No se pudo agregar la direccion: {}".format(e)
+            query.edit_message_text("No se pudo agregar la direccion: {}".format(e))
+            for key in list(context.user_data.keys()):
+                if key.startswith("admin_ped_"):
+                    del context.user_data[key]
+            return ConversationHandler.END
     else:
-        msg = "OK, no se guardo."
-    query.edit_message_text(msg)
+        query.edit_message_text("OK, no se guardo.")
+        for key in list(context.user_data.keys()):
+            if key.startswith("admin_ped_"):
+                del context.user_data[key]
+        return ConversationHandler.END
+
+    context.user_data["admin_ped_parking_address_id"] = parking_address_id
+    keyboard = [
+        [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="admin_ped_guardar_parking_si")],
+        [InlineKeyboardButton("No / No lo se", callback_data="admin_ped_guardar_parking_no")],
+    ]
+    query.edit_message_text(
+        "Guardado.\n\n"
+        "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+        "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_GUARDAR_PARKING
+
+
+def pedido_guardar_dir_parking_callback(update, context):
+    """Respuesta de parqueo al guardar nueva direccion para cliente existente mid-pedido."""
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("pedido_parking_address_id", None)
+    if address_id:
+        if query.data == "pedido_dir_parking_si":
+            set_address_parking_status(address_id, "ALLY_YES")
+        else:
+            set_address_parking_status(address_id, "PENDING_REVIEW")
+    return mostrar_selector_pickup(query, context, edit=False)
+
+
+def pedido_guardar_cust_parking_callback(update, context):
+    """Respuesta de parqueo al guardar cliente nuevo tras crear pedido."""
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("pedido_guardar_parking_address_id", None)
+    customer_name = context.user_data.get("customer_name", "")
+    if address_id:
+        if query.data == "pedido_guardar_cust_parking_si":
+            set_address_parking_status(address_id, "ALLY_YES")
+        else:
+            set_address_parking_status(address_id, "PENDING_REVIEW")
+    context.user_data.clear()
+    show_main_menu(
+        update, context,
+        "Pedido creado exitosamente.\nCliente '{}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.".format(customer_name)
+    )
+    return ConversationHandler.END
+
+
+def admin_pedido_guardar_parking_callback(update, context):
+    """Respuesta de parqueo al guardar cliente tras pedido especial del admin."""
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("admin_ped_parking_address_id", None)
+    if address_id:
+        if query.data == "admin_ped_guardar_parking_si":
+            set_address_parking_status(address_id, "ALLY_YES")
+        else:
+            set_address_parking_status(address_id, "PENDING_REVIEW")
     for key in list(context.user_data.keys()):
         if key.startswith("admin_ped_"):
             del context.user_data[key]
+    show_main_menu(update, context)
     return ConversationHandler.END
 
 
@@ -4185,7 +4264,7 @@ def pedido_guardar_cliente_callback(update, context):
             else:
                 customer_id = create_ally_customer(ally_id, customer_name, customer_phone)
             # Crear direccion
-            create_customer_address(
+            address_id = create_customer_address(
                 customer_id,
                 "Principal",
                 customer_address,
@@ -4194,12 +4273,21 @@ def pedido_guardar_cliente_callback(update, context):
                 lat=context.user_data.get("dropoff_lat"),
                 lng=context.user_data.get("dropoff_lng"),
             )
-            context.user_data.clear()
-            show_main_menu(update, context, f"Pedido creado exitosamente.\nCliente '{customer_name}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.")
-            return ConversationHandler.END
+            context.user_data["pedido_guardar_parking_address_id"] = address_id
+            keyboard = [
+                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_guardar_cust_parking_si")],
+                [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
+            ]
+            query.edit_message_text(
+                "Cliente '{}' guardado.\n\n"
+                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return PEDIDO_GUARDAR_CUST_PARKING
         except Exception as e:
             context.user_data.clear()
-            show_main_menu(update, context, f"Pedido creado exitosamente.\nError al guardar cliente: {str(e)}\nPronto un repartidor sera asignado.")
+            show_main_menu(update, context, "Pedido creado exitosamente.\nError al guardar cliente: {}\nPronto un repartidor sera asignado.".format(str(e)))
             return ConversationHandler.END
 
     elif data == "pedido_guardar_no":
@@ -4715,6 +4803,12 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_extra_direccion_handler),
         ],
+        PEDIDO_GUARDAR_DIR_PARKING: [
+            CallbackQueryHandler(pedido_guardar_dir_parking_callback, pattern=r"^pedido_dir_parking_(si|no)$"),
+        ],
+        PEDIDO_GUARDAR_CUST_PARKING: [
+            CallbackQueryHandler(pedido_guardar_cust_parking_callback, pattern=r"^pedido_guardar_cust_parking_(si|no)$"),
+        ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel_conversacion),
@@ -4841,6 +4935,9 @@ admin_pedido_conv = ConversationHandler(
         ],
         ADMIN_PEDIDO_GUARDAR_CUST: [
             CallbackQueryHandler(admin_pedido_guardar_cust_callback, pattern=r"^admin_ped_guardar_(cust|dir)_(si|no)$"),
+        ],
+        ADMIN_PEDIDO_GUARDAR_PARKING: [
+            CallbackQueryHandler(admin_pedido_guardar_parking_callback, pattern=r"^admin_ped_guardar_parking_(si|no)$"),
         ],
     },
     fallbacks=[

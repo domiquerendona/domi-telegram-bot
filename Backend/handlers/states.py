@@ -379,6 +379,11 @@ PEDIDO_PARADA_EXTRA_NOMBRE    = 1002  # Nombre del cliente de la parada adiciona
 PEDIDO_PARADA_EXTRA_TELEFONO  = 1003  # Telefono del cliente de la parada adicional
 PEDIDO_PARADA_EXTRA_DIRECCION = 1004  # Direccion (texto, GPS, geo confirm) de la parada adicional
 
-# Estados para flujo de parqueadero (2026-03-26)
+# Estados para flujo de dificultad de parqueo (2026-03-26/27)
 # =========================
-ALLY_CUST_PARKING = 1002  # Pregunta al aliado si el punto de entrega tiene parqueadero
+ALLY_CUST_PARKING          = 1005  # Pregunta al aliado (agenda) si hay dificultad de parqueo
+ADMIN_CUST_PARKING         = 1006  # Pregunta al admin (agenda) si hay dificultad de parqueo
+PEDIDO_GUARDAR_DIR_PARKING = 1007  # Dificultad de parqueo al guardar nueva dir para cliente existente mid-pedido
+PEDIDO_GUARDAR_CUST_PARKING = 1008 # Dificultad de parqueo al guardar cliente nuevo tras crear pedido
+ADMIN_PEDIDO_GUARDAR_PARKING = 1009 # Dificultad de parqueo al guardar cliente tras pedido especial admin
+RUTA_GUARDAR_CUST_PARKING  = 1010  # Dificultad de parqueo al guardar cliente de parada en ruta

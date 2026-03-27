@@ -36,6 +36,7 @@ from handlers.states import (
     RUTA_INCENTIVO_MONTO,
     RUTA_PARADA_BUSCAR,
     RUTA_PARADA_DEDUP,
+    RUTA_GUARDAR_CUST_PARKING,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -79,6 +80,8 @@ from services import (
     get_approved_admin_link_for_ally,
     get_ally_link_balance,
     add_route_incentive,
+    set_address_parking_status,
+    PARKING_FEE_AMOUNT,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -1082,16 +1085,44 @@ def ruta_guardar_cust_callback(update, context):
                 customer_id = existing["id"]
             else:
                 customer_id = create_ally_customer(ally_id, name, phone)
+            address_id = None
             if address:
-                create_customer_address(customer_id, "Principal", address,
-                                        city="", barrio="", lat=lat, lng=lng)
-            query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
+                address_id = create_customer_address(customer_id, "Principal", address,
+                                                     city="", barrio="", lat=lat, lng=lng)
+            if address_id:
+                context.user_data["ruta_parking_address_id"] = address_id
+                keyboard = [
+                    [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="ruta_guardar_cust_parking_si")],
+                    [InlineKeyboardButton("No / No lo se", callback_data="ruta_guardar_cust_parking_no")],
+                ]
+                query.edit_message_text(
+                    "Cliente {} guardado.\n\n"
+                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(name),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return RUTA_GUARDAR_CUST_PARKING
+            else:
+                query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
         except Exception as e:
             logger.warning("Error guardando cliente de ruta: %s", e)
             query.edit_message_text("No se pudo guardar el cliente.")
     else:
         query.edit_message_text("OK, no se guardo el cliente.")
 
+    return _ruta_mostrar_mas_paradas(query, context)
+
+
+def ruta_guardar_cust_parking_callback(update, context):
+    """Respuesta de parqueo al guardar cliente de parada de ruta."""
+    query = update.callback_query
+    query.answer()
+    address_id = context.user_data.pop("ruta_parking_address_id", None)
+    if address_id:
+        if query.data == "ruta_guardar_cust_parking_si":
+            set_address_parking_status(address_id, "ALLY_YES")
+        else:
+            set_address_parking_status(address_id, "PENDING_REVIEW")
     return _ruta_mostrar_mas_paradas(query, context)
 
 
@@ -1259,6 +1290,9 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_PARADA_DEDUP: [
             CallbackQueryHandler(ruta_parada_dedup_callback, pattern=r"^ruta_dedup_(si|no)$"),
+        ],
+        RUTA_GUARDAR_CUST_PARKING: [
+            CallbackQueryHandler(ruta_guardar_cust_parking_callback, pattern=r"^ruta_guardar_cust_parking_(si|no)$"),
         ],
     },
     fallbacks=[
