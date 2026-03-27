@@ -2872,16 +2872,7 @@ def approve_role_registration(actor_telegram_id: int, role_type: str, target_id:
     if not selected_admin_id:
         return {"ok": False, "message": "No se encontró el admin responsable del registro."}
 
-    if is_platform_actor:
-        if selected_admin_id != actor_admin_id:
-            return {
-                "ok": False,
-                "message": (
-                    "Este registro fue enviado al equipo {} ({}). "
-                    "La aprobación operativa debe hacerla ese admin."
-                ).format(selected_team_name or "Sin nombre", selected_team_code or "-"),
-            }
-    else:
+    if not is_platform_actor:
         if selected_admin_id != actor_admin_id:
             return {
                 "ok": False,

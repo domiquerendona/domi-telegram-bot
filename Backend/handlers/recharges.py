@@ -2116,7 +2116,6 @@ def ally_approval_callback(update, context):
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
-    query.answer()
 
     if user_id != ADMIN_USER_ID:
         query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
@@ -2181,6 +2180,7 @@ def ally_approval_callback(update, context):
         print("Error notificando aliado:", e)
 
 
+    query.answer()
     if nuevo_estado == "APPROVED":
         query.edit_message_text("✅ El aliado '{}' ha sido APROBADO.".format(business_name))
     else:
