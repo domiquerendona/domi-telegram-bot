@@ -1,6 +1,6 @@
+import logging
 import os
 import hashlib
-import os
 import time
 import traceback
 from datetime import datetime, timezone
@@ -492,10 +492,17 @@ from handlers.ally_bandeja import (
 load_dotenv()
 ENV = os.getenv("ENV", "PROD").upper()
 
+logging.basicConfig(
+    level=logging.DEBUG if ENV == "LOCAL" else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 if ENV == "LOCAL":
-    print(f"[ENV] Ambiente: {ENV} - .env cargado")
+    logger.info("Ambiente: %s - .env cargado", ENV)
 else:
-    print(f"[ENV] Ambiente: {ENV} - usando variables de entorno del sistema (Railway/PROD)")
+    logger.info("Ambiente: %s - usando variables de entorno del sistema (Railway/PROD)", ENV)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
@@ -527,7 +534,7 @@ def start(update, context):
     try:
         admin_local = get_admin_by_user_id(user_db_id)
     except Exception as e:
-        print("ERROR get_admin_by_user_id en /start:", e)
+        logger.exception("Error en get_admin_by_user_id en /start")
         admin_local = None
 
     es_admin_plataforma_flag = es_admin_plataforma(user_tg.id)
@@ -1618,7 +1625,7 @@ def courier_approval_callback(update, context):
         try:
             update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print(f"[ERROR] update_courier_status: {e}")
+            logger.error("update_courier_status: %s", e)
             query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
             return
     _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
@@ -1647,20 +1654,20 @@ def courier_approval_callback(update, context):
 
         context.bot.send_message(chat_id=courier_telegram_id, text=msg)
     except Exception as e:
-        print("Error notificando repartidor:", e)
+        logger.warning("Error notificando repartidor: %s", e)
 
     if nuevo_estado == "APPROVED":
         query.edit_message_text("✅ El repartidor '{}' ha sido APROBADO.".format(full_name))
     else:
         query.edit_message_text("❌ El repartidor '{}' ha sido RECHAZADO.".format(full_name))
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
-    print(
-        f"[DEBUG][terms][ensure] role={role} telegram_id={telegram_id} via_callback={bool(getattr(update, 'callback_query', None))}",
-        flush=True,
+    logger.debug(
+        "[terms][ensure] role=%s telegram_id=%s via_callback=%s",
+        role, telegram_id, bool(getattr(update, 'callback_query', None)),
     )
     tv = get_active_terms_version(role)
     if not tv:
-        print(f"[DEBUG][terms][ensure] no_terms_config role={role}", flush=True)
+        logger.debug("[terms][ensure] no_terms_config role=%s", role)
         context.bot.send_message(
             chat_id=telegram_id,
             text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
@@ -1668,15 +1675,15 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         return False
 
     version, url, sha256 = tv
-    print(f"[DEBUG][terms][ensure] version={version!r} url={url!r}", flush=True)
+    logger.debug("[terms][ensure] version=%r url=%r", version, url)
 
     accepted = has_accepted_terms(telegram_id, role, version, sha256)
-    print(f"[DEBUG][terms][ensure] already_accepted={accepted}", flush=True)
+    logger.debug("[terms][ensure] already_accepted=%s", accepted)
     if accepted:
         try:
             save_terms_session_ack(telegram_id, role, version)
         except Exception as e:
-            print("[WARN] save_terms_session_ack:", e)
+            logger.warning("[terms] save_terms_session_ack: %s", e)
         return True
 
     text = (
@@ -1691,7 +1698,7 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     if valid_terms_url:
         keyboard.append([InlineKeyboardButton("Leer términos", url=url)])
     else:
-        print(f"[WARN][terms] URL invalida para role={role}, version={version}: {url!r}", flush=True)
+        logger.warning("[terms] URL invalida para role=%s, version=%s: %r", role, version, url)
     keyboard.append(
         [
             InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
@@ -1700,10 +1707,10 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     )
 
     if update.callback_query:
-        print("[DEBUG][terms][ensure] prompt_sent_via=callback_edit", flush=True)
+        logger.debug("[terms][ensure] prompt_sent_via=callback_edit")
         update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        print("[DEBUG][terms][ensure] prompt_sent_via=send_message", flush=True)
+        logger.debug("[terms][ensure] prompt_sent_via=send_message")
         context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return False
@@ -1714,31 +1721,31 @@ def terms_callback(update, context):
     data = query.data
     telegram_id = query.from_user.id
     query.answer()
-    print(
-        f"[DEBUG][terms][callback] data={data!r} telegram_id={telegram_id} message_id={getattr(query.message, 'message_id', None)}",
-        flush=True,
+    logger.debug(
+        "[terms][callback] data=%r telegram_id=%s message_id=%s",
+        data, telegram_id, getattr(query.message, 'message_id', None),
     )
 
     if data.startswith("terms_accept_"):
         role = data.split("_", 2)[-1]
         tv = get_active_terms_version(role)
-        print(f"[DEBUG][terms][callback] accept role={role} tv_found={bool(tv)}", flush=True)
+        logger.debug("[terms][callback] accept role=%s tv_found=%s", role, bool(tv))
         if not tv:
             query.edit_message_text("Términos no configurados. Contacta soporte.")
             return
 
         version, url, sha256 = tv
         save_terms_acceptance(telegram_id, role, version, sha256, query.message.message_id)
-        print(f"[DEBUG][terms][callback] acceptance_saved role={role} version={version!r}", flush=True)
+        logger.debug("[terms][callback] acceptance_saved role=%s version=%r", role, version)
         if role == "ALLY":
             query.edit_message_text("Aceptación registrada. Ya puedes continuar con Nuevo pedido.")
-            print("[DEBUG][terms][callback] awaiting_manual_nuevo_pedido", flush=True)
+            logger.debug("[terms][callback] awaiting_manual_nuevo_pedido")
             return
         query.edit_message_text("Aceptación registrada. Ya puedes continuar.")
         return
 
     if data.startswith("terms_decline_"):
-        print("[DEBUG][terms][callback] decline", flush=True)
+        logger.debug("[terms][callback] decline")
         query.edit_message_text(
             "No puedes usar la plataforma sin aceptar los Términos y Condiciones.\n"
             "Si cambias de decisión, vuelve a intentar y acepta los términos."
@@ -1804,7 +1811,7 @@ def courier_live_location_handler(update, context):
     try:
         check_courier_arrival_at_pickup(courier["id"], lat, lng, context)
     except Exception as e:
-        print("[WARN] check_courier_arrival_at_pickup: {}".format(e))
+        logger.warning("check_courier_arrival_at_pickup: %s", e)
 
     # Solo notificar la primera vez (cuando pasa a ONLINE visible)
     was_online = (
@@ -1846,7 +1853,7 @@ def courier_live_location_expired_check(context):
                              "Para volver a recibir pedidos, ve a tu menu y presiona Activarme."
                     )
         except Exception as e:
-            print(f"[WARN] No se pudo notificar expiracion a courier {cid}: {e}")
+            logger.warning("No se pudo notificar expiracion a courier %s: %s", cid, e)
 
 
 def _courier_activate_common(update, context, reply_func):
@@ -1998,22 +2005,20 @@ def courier_base_amount_handler(update, context):
 
 def global_error_handler(update, context):
     """Registra errores no capturados para diagnostico en Railway."""
-    print("[ERROR][telegram] Excepcion no capturada", flush=True)
     try:
         if update and getattr(update, "effective_user", None):
-            print(
-                f"[ERROR][telegram] user_id={update.effective_user.id} "
-                f"chat_id={getattr(getattr(update, 'effective_chat', None), 'id', None)}",
-                flush=True,
+            logger.error(
+                "Excepcion no capturada user_id=%s chat_id=%s",
+                update.effective_user.id,
+                getattr(getattr(update, 'effective_chat', None), 'id', None),
             )
+        else:
+            logger.error("Excepcion no capturada (sin update)")
         if update and getattr(update, "effective_message", None):
-            print(
-                f"[ERROR][telegram] text={getattr(update.effective_message, 'text', None)!r}",
-                flush=True,
-            )
+            logger.error("text=%r", getattr(update.effective_message, 'text', None))
     except Exception as meta_err:
-        print(f"[ERROR][telegram] meta_log_failed={meta_err}", flush=True)
-    print(traceback.format_exc(), flush=True)
+        logger.error("meta_log_failed=%s", meta_err)
+    logger.error(traceback.format_exc())
 
 
 def solequipo_start_callback(update, context):
@@ -2144,8 +2149,7 @@ def main():
     # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
     # Desactivar: eliminar la variable o ponerla en "false".
     if os.getenv("PAUSE_BOT_DEV", "").lower() in ("1", "true", "yes"):
-        print("[PAUSED] PAUSE_BOT_DEV activo. Bot en modo sleep. "
-              "Elimina o pon 'false' en PAUSE_BOT_DEV para reactivar.")
+        logger.warning("PAUSE_BOT_DEV activo. Bot en modo sleep. Elimina o pon 'false' en PAUSE_BOT_DEV para reactivar.")
         while True:
             time.sleep(60)
 
@@ -2162,8 +2166,8 @@ def main():
     # Log seguro: fingerprint del token para verificar separación DEV/PROD
     token_hash = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:8]
     token_suffix = BOT_TOKEN[-6:] if len(BOT_TOKEN) >= 6 else "***"
-    print(f"[BOT] TOKEN fingerprint: hash={token_hash} suffix=...{token_suffix}")
-    print(f"[BOT] Ambiente: {ENV}")
+    logger.info("TOKEN fingerprint: hash=%s suffix=...%s", token_hash, token_suffix)
+    logger.info("Ambiente: %s", ENV)
 
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -2374,14 +2378,13 @@ def main():
                 text="Bot iniciado correctamente."
             )
         except Exception as e:
-         print(f"[WARN] No se pudo notificar al admin: {e}")
+            logger.warning("No se pudo notificar al admin: %s", e)
     else:
-        print("[INFO] ADMIN_USER_ID=0, se omite notificación.")
-
+        logger.info("ADMIN_USER_ID=0, se omite notificacion de arranque.")
 
     # Iniciar el bot
     updater.start_polling(drop_pending_updates=True)
-    print("[BOOT] Polling iniciado. Bot activo.")
+    logger.info("Polling iniciado. Bot activo.")
     updater.idle()
 
 

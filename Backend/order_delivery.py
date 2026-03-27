@@ -1,4 +1,8 @@
+import logging
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+logger = logging.getLogger(__name__)
 
 from db import (
     assign_order_to_courier,
@@ -222,7 +226,7 @@ def _delivery_reminder_job(context):
                  "Presiona \"Pedidos en curso\" cuando hayas entregado.".format(order_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo enviar recordatorio de entrega al repartidor (pedido {}): {}".format(order_id, e))
+        logger.warning("No se pudo enviar recordatorio de entrega al repartidor (pedido %s): %s", order_id, e)
 
 
 def _delivery_admin_alert_job(context):
@@ -253,7 +257,7 @@ def _delivery_admin_alert_job(context):
                  "Verifica que haya finalizado la entrega.".format(courier_name, order_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo enviar alerta de entrega al admin (pedido {}): {}".format(order_id, e))
+        logger.warning("No se pudo enviar alerta de entrega al admin (pedido %s): %s", order_id, e)
 
 
 def _cancel_no_response_job(context, order_id):
@@ -450,7 +454,7 @@ def _offer_no_response_job(context):
                 if user:
                     creator_chat_id = int(user["telegram_id"])
     except Exception as e:
-        print("[T+5] Error obteniendo creador para pedido {}: {}".format(order_id, e))
+        logger.warning("Error obteniendo creador para pedido %s: %s", order_id, e)
         return
 
     if not creator_chat_id:
@@ -487,7 +491,7 @@ def _offer_no_response_job(context):
             reply_markup=keyboard,
         )
     except Exception as e:
-        print("[T+5] Error enviando sugerencia para pedido {}: {}".format(order_id, e))
+        logger.warning("Error enviando sugerencia para pedido %s: %s", order_id, e)
 
 
 def repost_order_to_couriers(order_id, context):
@@ -543,7 +547,7 @@ def _route_no_response_job(context):
                 if user:
                     creator_chat_id = int(user["telegram_id"])
     except Exception as e:
-        print("[T+5 ruta] Error obteniendo creador para ruta {}: {}".format(route_id, e))
+        logger.warning("Error obteniendo creador para ruta %s: %s", route_id, e)
         return
 
     if not creator_chat_id:
@@ -579,7 +583,7 @@ def _route_no_response_job(context):
             reply_markup=keyboard,
         )
     except Exception as e:
-        print("[T+5 ruta] Error enviando sugerencia para ruta {}: {}".format(route_id, e))
+        logger.warning("Error enviando sugerencia para ruta %s: %s", route_id, e)
 
 
 def repost_route_to_couriers(route_id, context):
@@ -621,7 +625,7 @@ def _notify_recharge_needed_to_ally(context, ally_id):
             text="No se puede ofrecer el servicio porque tu saldo es insuficiente. Recarga para continuar operando.",
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar saldo insuficiente al aliado {}: {}".format(ally_id, e))
+        logger.warning("No se pudo notificar saldo insuficiente al aliado %s: %s", ally_id, e)
 
 
 def _notify_recharge_needed_to_admin(context, admin_id):
@@ -637,7 +641,7 @@ def _notify_recharge_needed_to_admin(context, admin_id):
             text="No se puede ofrecer servicio porque tu saldo de administrador es insuficiente. Recarga para seguir operando.",
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar saldo insuficiente al admin {}: {}".format(admin_id, e))
+        logger.warning("No se pudo notificar saldo insuficiente al admin %s: %s", admin_id, e)
 
 
 def _notify_recharge_needed_to_courier(context, courier_id):
@@ -653,7 +657,7 @@ def _notify_recharge_needed_to_courier(context, courier_id):
             text="No recibiste oferta porque tu saldo es insuficiente. Recarga para volver a operar.",
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar saldo insuficiente al courier {}: {}".format(courier_id, e))
+        logger.warning("No se pudo notificar saldo insuficiente al courier %s: %s", courier_id, e)
 
 
 def publish_order_to_couriers(
@@ -683,7 +687,7 @@ def publish_order_to_couriers(
     elif ally_id is not None:
         admin_link = get_approved_admin_link_for_ally(ally_id)
         if not admin_link:
-            print("[WARN] Aliado sin admin aprobado, no se puede publicar pedido")
+            logger.warning("Aliado sin admin aprobado, no se puede publicar pedido")
             return 0
         admin_id = admin_link["admin_id"]
     order = get_order_by_id(order_id)
@@ -699,7 +703,7 @@ def publish_order_to_couriers(
             admin_id=admin_id,
         )
         if not ally_ok:
-            print("[WARN] Pedido {} sin oferta por saldo aliado/admin: {}".format(order_id, ally_code))
+            logger.warning("Pedido %s sin oferta por saldo aliado/admin: %s", order_id, ally_code)
             _notify_recharge_needed_to_ally(context, ally_id)
             if ally_code == "ADMIN_SIN_SALDO":
                 _notify_recharge_needed_to_admin(context, admin_id)
@@ -745,7 +749,7 @@ def publish_order_to_couriers(
         order_distance_km=_order_distance_km,
     )
     if not eligible:
-        print("[WARN] No hay couriers elegibles para pedido {}".format(order_id))
+        logger.warning("No hay couriers elegibles para pedido %s", order_id)
         return 0
 
     # Verificacion previa de saldo por courier usando el admin PROPIO de cada courier.
@@ -771,7 +775,7 @@ def publish_order_to_couriers(
         _notify_recharge_needed_to_courier(context, courier_id)
 
     if not filtered:
-        print("[WARN] Pedido {} sin oferta: todos los couriers sin saldo operativo".format(order_id))
+        logger.warning("Pedido %s sin oferta: todos los couriers sin saldo operativo", order_id)
         if ally_id is not None:
             _notify_recharge_needed_to_ally(context, ally_id)
         return 0
@@ -886,7 +890,7 @@ def _send_next_offer(order_id, context):
             "message_id": msg.message_id,
         }
     except Exception as e:
-        print("[WARN] No se pudo enviar oferta a courier {}: {}".format(next_offer["courier_id"], e))
+        logger.warning("No se pudo enviar oferta a courier %s: %s", next_offer["courier_id"], e)
         mark_offer_response(next_offer["queue_id"], "EXPIRED")
         _send_next_offer(order_id, context)
         return
@@ -1010,7 +1014,7 @@ def _expire_order(order_id, cycle_info, context):
                         ).format(order_id),
                     )
         except Exception as e:
-            print("[WARN] No se pudo notificar expiracion al aliado: {}".format(e))
+            logger.warning("No se pudo notificar expiracion al aliado: %s", e)
     else:
         # Notificar al admin creador (pedido especial)
         try:
@@ -1028,7 +1032,7 @@ def _expire_order(order_id, cycle_info, context):
                             ),
                         )
         except Exception as e:
-            print("[WARN] No se pudo notificar expiración al admin creador: {}".format(e))
+            logger.warning("No se pudo notificar expiración al admin creador: %s", e)
 
 
 _DIAS_ES = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"]
@@ -1693,7 +1697,7 @@ def _admin_order_cancel(update, context, data):
                     text="Tu pedido #{} fue cancelado por el administrador.".format(order_id),
                 )
     except Exception as e:
-        print("[WARN] No se pudo notificar cancelacion al aliado: {}".format(e))
+        logger.warning("No se pudo notificar cancelacion al aliado: %s", e)
 
     if had_courier:
         _notify_courier_order_cancelled(context, order)
@@ -2135,7 +2139,7 @@ def _arrival_warn_ally_job(context):
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
     except Exception as e:
-        print("[WARN] _arrival_warn_ally_job: {}".format(e))
+        logger.warning("_arrival_warn_ally_job: %s", e)
 
     # Notificar al courier con botones de respuesta
     if courier_tg_id:
@@ -2588,7 +2592,7 @@ def _handle_release(update, context, order_id, reason_code=None):
         admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
 
     if not admin_id:
-        print("[WARN] No se pudo reofertar pedido {}: sin admin operativo".format(order_id))
+        logger.warning("No se pudo reofertar pedido %s: sin admin operativo", order_id)
         return
 
     # Preservar couriers excluidos del ciclo anterior y agregar el que libero el pedido
@@ -2743,7 +2747,7 @@ def _handle_cancel_ally_route(update, context, route_id):
                         text="La ruta #{} fue cancelada por el aliado.".format(route_id),
                     )
         except Exception as e:
-            print("[WARN] No se pudo notificar cancelacion de ruta al courier: {}".format(e))
+            logger.warning("No se pudo notificar cancelacion de ruta al courier: %s", e)
 
 
 def _handle_pickup(update, context, order_id):
@@ -2900,7 +2904,7 @@ def _handle_delivered(update, context, order_id):
         if ally_ok:
             fee_ally_ok = True
         else:
-            print("[WARN] No se pudo cobrar fee al aliado: {}".format(ally_msg))
+            logger.warning("No se pudo cobrar fee al aliado: %s", ally_msg)
     elif ally_admin_id:
         fee_ally_ok = True  # suscripcion activa — sin cobro
 
@@ -2936,7 +2940,7 @@ def _handle_delivered(update, context, order_id):
                     except Exception:
                         pass
             except Exception as e:
-                print("[WARN] No se pudo verificar saldo post-fee del courier {}: {}".format(courier_id, e))
+                logger.warning("No se pudo verificar saldo post-fee del courier %s: %s", courier_id, e)
         else:
             if courier_msg == "ADMIN_SIN_SALDO":
                 try:
@@ -2952,8 +2956,8 @@ def _handle_delivered(update, context, order_id):
                                 ),
                             )
                 except Exception as e:
-                    print("[WARN] No se pudo notificar al admin: {}".format(e))
-            print("[WARN] No se pudo cobrar fee al courier: {}".format(courier_msg))
+                    logger.warning("No se pudo notificar al admin: %s", e)
+            logger.warning("No se pudo cobrar fee al courier: %s", courier_msg)
 
     try:
         ally_fee_charged = 300 if fee_ally_ok else 0
@@ -2979,7 +2983,7 @@ def _handle_delivered(update, context, order_id):
             delivered_at=None,
         )
     except Exception as e:
-        print("[WARN] No se pudo registrar liquidacion contable de pedido {}: {}".format(order_id, e))
+        logger.warning("No se pudo registrar liquidacion contable de pedido %s: %s", order_id, e)
 
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)
@@ -3208,7 +3212,7 @@ def _notify_ally_order_accepted(context, order, courier_name):
             ]]),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar al aliado: {}".format(e))
+        logger.warning("No se pudo notificar al aliado: %s", e)
 
 
 def _notify_ally_courier_arrived(context, order, courier_name):
@@ -3242,7 +3246,7 @@ def _notify_ally_courier_arrived(context, order, courier_name):
             reply_markup=keyboard,
         )
     except Exception as e:
-        print("[WARN] _notify_ally_courier_arrived: {}".format(e))
+        logger.warning("_notify_ally_courier_arrived: %s", e)
 
 
 def _notify_courier_awaiting_pickup_confirm(context, order):
@@ -3270,7 +3274,7 @@ def _notify_courier_awaiting_pickup_confirm(context, order):
             ]]),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar confirmacion pendiente al courier: {}".format(e))
+        logger.warning("No se pudo notificar confirmacion pendiente al courier: %s", e)
 
 
 def _handle_confirm_pickup(update, context, order_id):
@@ -3353,7 +3357,7 @@ def _notify_courier_pickup_approved(context, order):
                 longitude=float(dropoff_lng),
             )
     except Exception as e:
-        print("[WARN] No se pudo notificar confirmacion de recogida al courier: {}".format(e))
+        logger.warning("No se pudo notificar confirmacion de recogida al courier: %s", e)
 
 
 def _notify_courier_pickup_rejected(context, order):
@@ -3381,7 +3385,7 @@ def _notify_courier_pickup_rejected(context, order):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar rechazo de recogida al courier: {}".format(e))
+        logger.warning("No se pudo notificar rechazo de recogida al courier: %s", e)
 
 
 def _notify_ally_delivered(context, order, durations=None):
@@ -3424,7 +3428,7 @@ def _notify_ally_delivered(context, order, durations=None):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar entrega al aliado: {}".format(e))
+        logger.warning("No se pudo notificar entrega al aliado: %s", e)
 
 def handle_rating_callback(update, context):
     """Maneja la calificacion del servicio por parte del aliado tras la entrega."""
@@ -3446,7 +3450,7 @@ def handle_rating_callback(update, context):
         try:
             add_courier_rating(order_id, courier_id, stars)
         except Exception as e:
-            print("[WARN] No se pudo registrar calificacion orden {}: {}".format(order_id, e))
+            logger.warning("No se pudo registrar calificacion orden %s: %s", order_id, e)
 
         if stars >= 4:
             query.edit_message_text(
@@ -3495,7 +3499,7 @@ def handle_rating_callback(update, context):
         try:
             block_courier_for_ally(ally["id"], courier_id)
         except Exception as e:
-            print("[WARN] No se pudo bloquear courier {}: {}".format(courier_id, e))
+            logger.warning("No se pudo bloquear courier %s: %s", courier_id, e)
 
         courier = get_courier_by_id(courier_id)
         courier_name = (courier["full_name"] if courier else None) or "el repartidor"
@@ -3526,7 +3530,7 @@ def _notify_courier_order_cancelled(context, order):
             text="El pedido #{} fue cancelado por el aliado.".format(order["id"]),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar cancelacion al courier: {}".format(e))
+        logger.warning("No se pudo notificar cancelacion al courier: %s", e)
 
 
 def _notify_ally_order_released(context, order, reason_label=None):
@@ -3549,7 +3553,7 @@ def _notify_ally_order_released(context, order, reason_label=None):
             ).format(order["id"], reason_line),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar liberacion al aliado: {}".format(e))
+        logger.warning("No se pudo notificar liberacion al aliado: %s", e)
 
 
 def _notify_admin_order_released(context, order, courier, reason_label, arrived_flag):
@@ -3585,7 +3589,7 @@ def _notify_admin_order_released(context, order, courier, reason_label, arrived_
             ),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar liberacion al admin: {}".format(e))
+        logger.warning("No se pudo notificar liberacion al admin: %s", e)
 
 
 # ===== FLUJO DE RUTAS MULTI-PARADA =====
@@ -3727,7 +3731,7 @@ def _expire_route(route_id, cycle_info, context):
                     ).format(route_id),
                 )
     except Exception as e:
-        print("[WARN] No se pudo notificar expiracion de ruta al aliado: {}".format(e))
+        logger.warning("No se pudo notificar expiracion de ruta al aliado: %s", e)
 
 
 def _send_next_route_offer(route_id, context):
@@ -3758,7 +3762,7 @@ def _send_next_route_offer(route_id, context):
             "message_id": msg.message_id,
         }
     except Exception as e:
-        print("[WARN] No se pudo enviar oferta de ruta a courier {}: {}".format(next_offer["courier_id"], e))
+        logger.warning("No se pudo enviar oferta de ruta a courier %s: %s", next_offer["courier_id"], e)
         mark_route_offer_response(next_offer["queue_id"], "EXPIRED")
         _send_next_route_offer(route_id, context)
         return
@@ -4192,7 +4196,7 @@ def _notify_ally_route_courier_arrived(context, route, courier_name):
             reply_markup=keyboard,
         )
     except Exception as e:
-        print("[WARN] _notify_ally_route_courier_arrived: {}".format(e))
+        logger.warning("_notify_ally_route_courier_arrived: %s", e)
 
 
 def _handle_route_pickupconfirm_by_ally(update, context, route_id, approve):
@@ -4390,7 +4394,7 @@ def _release_route_by_timeout(route_id, courier_id, context):
             ally_id = route["ally_id"]
             publish_route_to_couriers(route_id, ally_id, context)
     except Exception as e:
-        print("[WARN] _release_route_by_timeout: {}".format(e))
+        logger.warning("_release_route_by_timeout: %s", e)
 
 
 def _handle_route_arrival_enroute(update, context, route_id):
@@ -4552,7 +4556,7 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
                 total_fee=route["total_fee"],
             )
             if not ally_ok:
-                print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg))
+                logger.warning("No se pudo cobrar fee base al aliado en ruta %s: %s", route_id, ally_msg)
         # Fee base al repartidor: $300 (igual que pedido individual — $200 admin + $100 plataforma)
         courier_id_route = route["courier_id"]
         courier_admin_id_route = _row_value(route, "courier_admin_id_snapshot")
@@ -4564,11 +4568,11 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
                 admin_id=courier_admin_id_route, ref_type="ROUTE", ref_id=route_id,
             )
             if not courier_ok:
-                print("[WARN] No se pudo cobrar fee base al repartidor en ruta {}: {}".format(route_id, courier_msg))
+                logger.warning("No se pudo cobrar fee base al repartidor en ruta %s: %s", route_id, courier_msg)
         # Fee adicional por paradas extra: $200 c/u (split 50/50 admin/plataforma)
         ok, msg = liquidate_route_additional_stops_fee(route_id)
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
-            print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))
+            logger.warning("No se pudo liquidar additional_stops_fee de ruta %s: %s", route_id, msg)
         context.bot.send_message(
             chat_id=query.message.chat_id,
             text="Ruta #{} completada. Todas las paradas fueron entregadas.".format(route_id),
@@ -4593,7 +4597,7 @@ def _notify_ally_route_accepted(context, route, courier_name):
             ),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar aceptacion de ruta al aliado: {}".format(e))
+        logger.warning("No se pudo notificar aceptacion de ruta al aliado: %s", e)
 
 
 def _notify_ally_route_delivered(context, route):
@@ -4635,7 +4639,7 @@ def _notify_ally_route_delivered(context, route):
             text="\n".join(lines),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar entrega de ruta al aliado: {}".format(e))
+        logger.warning("No se pudo notificar entrega de ruta al aliado: %s", e)
 
 
 def handle_route_callback(update, context):
@@ -4904,7 +4908,7 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
             admin_id=courier_admin_id_release, ref_type="ROUTE", ref_id=route_id,
         )
         if not fee_ok:
-            print("[WARN] No se pudo cobrar fee al courier por liberacion de ruta {}: {}".format(route_id, fee_msg))
+            logger.warning("No se pudo cobrar fee al courier por liberacion de ruta %s: %s", route_id, fee_msg)
 
     delete_route_offer_queue(route_id)
     release_route_from_courier(route_id)
@@ -5164,7 +5168,7 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar pin issue al admin (pedido {}): {}".format(order["id"], e))
+        logger.warning("No se pudo notificar pin issue al admin (pedido %s): %s", order["id"], e)
 
 
 def _handle_admin_pinissue_action(update, context, order_id, action):
@@ -5306,7 +5310,7 @@ def _notify_courier_support_resolved(context, courier_id, order_id, resolution):
             text=messages.get(resolution, "El pedido #{} fue resuelto por tu administrador.".format(order_id)),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar resolucion al courier {}: {}".format(courier_id, e))
+        logger.warning("No se pudo notificar resolucion al courier %s: %s", courier_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -5431,7 +5435,7 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar pin issue de ruta al admin: {}".format(e))
+        logger.warning("No se pudo notificar pin issue de ruta al admin: %s", e)
 
 
 def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
@@ -5479,7 +5483,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                         ref_type="ROUTE", ref_id=route_id,
                     )
                     if not pi_ally_ok:
-                        print("[WARN] No se pudo cobrar fee al aliado (cancel_ally) en ruta {}: {}".format(route_id, pi_ally_msg))
+                        logger.warning("No se pudo cobrar fee al aliado (cancel_ally) en ruta %s: %s", route_id, pi_ally_msg)
         # Siempre fee al courier en cancel_courier; en cancel_ally también
         courier_admin_id = get_approved_admin_id_for_courier(courier_id)
         if courier_admin_id:
@@ -5489,7 +5493,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                 ref_type="ROUTE", ref_id=route_id,
             )
             if not pi_courier_ok:
-                print("[WARN] No se pudo cobrar fee al repartidor (pin issue) en ruta {}: {}".format(route_id, pi_courier_msg))
+                logger.warning("No se pudo cobrar fee al repartidor (pin issue) en ruta %s: %s", route_id, pi_courier_msg)
 
         label = "falla del repartidor" if action == "cancel_courier" else "falla del aliado"
         query.edit_message_text(
@@ -5523,7 +5527,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                 total_fee=route["total_fee"],
             )
             if not ally_ok_r:
-                print("[WARN] No se pudo cobrar fee base al aliado en ruta {}: {}".format(route_id, ally_msg_r))
+                logger.warning("No se pudo cobrar fee base al aliado en ruta %s: %s", route_id, ally_msg_r)
         # Fee base al repartidor: $300 (igual que pedido individual — $200 admin + $100 plataforma)
         courier_admin_id_r = _row_value(route, "courier_admin_id_snapshot")
         if not courier_admin_id_r and courier_id:
@@ -5534,11 +5538,11 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                 admin_id=courier_admin_id_r, ref_type="ROUTE", ref_id=route_id,
             )
             if not courier_ok_r:
-                print("[WARN] No se pudo cobrar fee base al repartidor en ruta {}: {}".format(route_id, courier_msg_r))
+                logger.warning("No se pudo cobrar fee base al repartidor en ruta %s: %s", route_id, courier_msg_r)
         # Fee adicional por paradas extra: $200 c/u (split 50/50 admin/plataforma)
         ok, msg = liquidate_route_additional_stops_fee(route_id)
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
-            print("[WARN] No se pudo liquidar additional_stops_fee de ruta {}: {}".format(route_id, msg))
+            logger.warning("No se pudo liquidar additional_stops_fee de ruta %s: %s", route_id, msg)
         _notify_ally_route_delivered(context, route)
         # Notificar al courier si hay devoluciones pendientes
         cancelled = [s for s in get_route_destinations(route_id)
@@ -5559,7 +5563,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                         ).format(route_id, len(cancelled), "\n".join("- " + n for n in names)),
                     )
             except Exception as e:
-                print("[WARN] No se pudo notificar devoluciones al courier: {}".format(e))
+                logger.warning("No se pudo notificar devoluciones al courier: %s", e)
 
 
 def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, resolution):
@@ -5587,7 +5591,7 @@ def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, reso
             text=messages.get(resolution, "Parada {} resuelta por tu administrador.".format(seq)),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar resolucion de parada al courier {}: {}".format(courier_id, e))
+        logger.warning("No se pudo notificar resolucion de parada al courier %s: %s", courier_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -5688,7 +5692,7 @@ def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar pickup pin issue al admin (pedido {}): {}".format(order["id"], e))
+        logger.warning("No se pudo notificar pickup pin issue al admin (pedido %s): %s", order["id"], e)
 
 
 def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, action):
@@ -5845,7 +5849,7 @@ def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, suppo
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar pickup pin issue al admin (ruta {}): {}".format(route["id"], e))
+        logger.warning("No se pudo notificar pickup pin issue al admin (ruta %s): %s", route["id"], e)
 
 
 def _handle_admin_route_pickup_pinissue_action(update, context, route_id, support_id, action):

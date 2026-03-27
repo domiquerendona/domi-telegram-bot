@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Filters, ConversationHandler
 
@@ -82,7 +85,7 @@ def _debug_admin_registration_state(context, step, **extra):
         "admin_selfie_file_id": bool(data.get("admin_selfie_file_id")),
         "_back_step": data.get("_back_step"),
     }
-    print(f"[DEBUG][admin_reg] step={step} snapshot={snapshot} extra={extra}", flush=True)
+    logger.debug("[admin_reg] step=%s snapshot=%s extra=%s", step, snapshot, extra)
 
 
 _OPTIONS_HINT = (
@@ -366,7 +369,7 @@ def _get_user_roles(update):
     try:
         admin_local = get_admin_by_user_id(user_db_id)
     except Exception as e:
-        print("ERROR get_admin_by_user_id en menu:", e)
+        logger.warning("ERROR get_admin_by_user_id en menu: %s", e)
         admin_local = None
     return ally, courier, admin_local
 
@@ -506,7 +509,7 @@ def _important_alert_job(context):
     try:
         context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     except Exception as e:
-        print("[WARN] No se pudo enviar recordatorio importante {}: {}".format(alert_key, e))
+        logger.warning("No se pudo enviar recordatorio importante %s: %s", alert_key, e)
 
 
 def _schedule_important_alerts(context, alert_key, chat_id, reminder_text, reply_markup=None):
@@ -632,13 +635,13 @@ def _fmt_pesos(amount: int) -> str:
 # ---------- TÉRMINOS Y CONDICIONES ----------
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
-    print(
-        f"[DEBUG][terms][ensure] role={role} telegram_id={telegram_id} via_callback={bool(getattr(update, 'callback_query', None))}",
-        flush=True,
+    logger.debug(
+        "[terms][ensure] role=%s telegram_id=%s via_callback=%s",
+        role, telegram_id, bool(getattr(update, 'callback_query', None)),
     )
     tv = get_active_terms_version(role)
     if not tv:
-        print(f"[DEBUG][terms][ensure] no_terms_config role={role}", flush=True)
+        logger.debug("[terms][ensure] no_terms_config role=%s", role)
         context.bot.send_message(
             chat_id=telegram_id,
             text="Términos no configurados para este rol. Contacta al soporte de la plataforma."
@@ -646,15 +649,15 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         return False
 
     version, url, sha256 = tv
-    print(f"[DEBUG][terms][ensure] version={version!r} url={url!r}", flush=True)
+    logger.debug("[terms][ensure] version=%r url=%r", version, url)
 
     accepted = has_accepted_terms(telegram_id, role, version, sha256)
-    print(f"[DEBUG][terms][ensure] already_accepted={accepted}", flush=True)
+    logger.debug("[terms][ensure] already_accepted=%s", accepted)
     if accepted:
         try:
             save_terms_session_ack(telegram_id, role, version)
         except Exception as e:
-            print("[WARN] save_terms_session_ack:", e)
+            logger.warning("save_terms_session_ack: %s", e)
         return True
 
     text = (
@@ -669,7 +672,7 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     if valid_terms_url:
         keyboard.append([InlineKeyboardButton("Leer términos", url=url)])
     else:
-        print(f"[WARN][terms] URL invalida para role={role}, version={version}: {url!r}", flush=True)
+        logger.warning("[terms] URL invalida para role=%s, version=%s: %r", role, version, url)
     keyboard.append(
         [
             InlineKeyboardButton("Acepto", callback_data="terms_accept_{}".format(role)),
@@ -678,10 +681,10 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     )
 
     if update.callback_query:
-        print("[DEBUG][terms][ensure] prompt_sent_via=callback_edit", flush=True)
+        logger.debug("[terms][ensure] prompt_sent_via=callback_edit")
         update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        print("[DEBUG][terms][ensure] prompt_sent_via=send_message", flush=True)
+        logger.debug("[terms][ensure] prompt_sent_via=send_message")
         context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return False

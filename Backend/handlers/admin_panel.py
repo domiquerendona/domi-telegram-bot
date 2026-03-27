@@ -3,6 +3,9 @@
 # Extraído de main.py
 # =============================================================================
 
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -460,7 +463,7 @@ def aliados_pendientes(update, context):
     try:
         allies = get_pending_allies()
     except Exception as e:
-        print(f"[ERROR] get_pending_allies(): {e}")
+        logger.error("get_pending_allies(): %s", e)
         message.reply_text("⚠️ Error interno al consultar aliados pendientes.")
         return
 
@@ -548,7 +551,7 @@ def repartidores_pendientes(update, context):
         else:
             pendientes = get_pending_couriers_by_admin(admin_id)  # por equipo (tabla admin_couriers)
     except Exception as e:
-        print(f"[ERROR] repartidores_pendientes: {e}")
+        logger.error("repartidores_pendientes: %s", e)
         message.reply_text("Error consultando repartidores pendientes. Revisa logs del servidor.")
         return
 
@@ -614,7 +617,7 @@ def repartidores_pendientes(update, context):
                     if selfie:
                         context.bot.send_photo(chat_id=message.chat_id, photo=selfie, caption="Selfie")
                 except Exception as e:
-                    print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
+                    logger.warning("No se pudieron enviar fotos del repartidor %s: %s", courier_id, e)
 
         
 def admin_menu(update, context):
@@ -749,7 +752,7 @@ def admin_menu_callback(update, context):
         try:
             admins_pendientes(update, context)
         except Exception as e:
-            print("[ERROR] admins_pendientes:", e)
+            logger.error("admins_pendientes: %s", e)
             query.edit_message_text(
                 "Error mostrando administradores pendientes. Revisa logs.",
                 reply_markup=InlineKeyboardMarkup([
@@ -790,7 +793,7 @@ def admin_menu_callback(update, context):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except Exception as e:
-            print("[ERROR] admin_admins_registrados:", e)
+            logger.error("admin_admins_registrados: %s", e)
             query.edit_message_text(
                 "Error al cargar administradores. Revisa los logs.",
                 reply_markup=InlineKeyboardMarkup([
@@ -993,7 +996,7 @@ def admin_menu_callback(update, context):
             try:
                 _notify_admin_local_welcome(context, adm_id, reactivated=was_reactivated)
             except Exception as e:
-                print("[WARN] No se pudo notificar onboarding de admin local:", e)
+                logger.warning("No se pudo notificar onboarding de admin local: %s", e)
         query.answer("Estado actualizado a {}".format(nuevo_status))
 
         # Recargar el detalle
@@ -1521,7 +1524,7 @@ def admin_menu_callback(update, context):
         try:
             _notify_admin_local_welcome(context, admin_id, reactivated=False)
         except Exception as e:
-            print("[WARN] No se pudo notificar al admin aprobado:", e)
+            logger.warning("No se pudo notificar al admin aprobado: %s", e)
 
         query.edit_message_text(
             "✅ Administrador aprobado correctamente.",
@@ -1593,7 +1596,7 @@ def courier_pick_admin_callback(update, context):
             courier_id = courier_data["courier_id"]
             create_admin_courier_link(platform_admin_id, courier_id)
         except Exception as e:
-            print("[ERROR] create_admin_courier_link PLATFORM:", e)
+            logger.error("create_admin_courier_link PLATFORM: %s", e)
             query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
             context.user_data.clear()
             return
@@ -1633,7 +1636,7 @@ def courier_pick_admin_callback(update, context):
                 ).format(courier_id),
             )
         except Exception as e:
-            print("[WARN] No se pudo notificar al admin plataforma:", e)
+            logger.warning("No se pudo notificar al admin plataforma: %s", e)
 
         query.edit_message_text(
             "Perfecto. Quedaste vinculado al equipo de Plataforma.\n"
@@ -1668,7 +1671,7 @@ def courier_pick_admin_callback(update, context):
         courier_id = courier_data["courier_id"]
         create_admin_courier_link(admin_id, courier_id)
     except Exception as e:
-        print("[ERROR] create_admin_courier_link:", e)
+        logger.error("create_admin_courier_link: %s", e)
         query.edit_message_text("Ocurrió un error creando la solicitud. Intenta más tarde.")
         context.user_data.clear()
         return
@@ -1697,7 +1700,7 @@ def courier_pick_admin_callback(update, context):
             admin_team_code = admin.get("team_code") or admin_team_code
 
     except Exception as e:
-        print("[WARN] No se pudo leer admin para notificación:", e)
+        logger.warning("No se pudo leer admin para notificación: %s", e)
 
     try:
         context.bot.send_message(
@@ -1736,7 +1739,7 @@ def courier_pick_admin_callback(update, context):
             ).format(courier_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
+        logger.warning("No se pudo notificar al admin plataforma: %s", e)
 
     if admin_telegram_id:
         try:
@@ -1759,7 +1762,7 @@ def courier_pick_admin_callback(update, context):
                 ),
             )
         except Exception as e:
-            print("[WARN] No se pudo notificar al admin local:", e)
+            logger.warning("No se pudo notificar al admin local: %s", e)
 
     query.edit_message_text(
         "Listo. Tu solicitud fue enviada. Quedas PENDIENTE de aprobación."
@@ -1782,7 +1785,7 @@ def admins_pendientes(update, context):
     try:
         admins = get_pending_admins()
     except Exception as e:
-        print("[ERROR] get_pending_admins:", e)
+        logger.error("get_pending_admins: %s", e)
         query.edit_message_text(
             "Error consultando administradores pendientes. Revisa logs.",
             reply_markup=InlineKeyboardMarkup([
@@ -1888,7 +1891,7 @@ def admin_ver_pendiente(update, context):
             if selfie:
                 context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
         except Exception as e:
-            print(f"[WARN] No se pudieron enviar fotos del admin {admin_id}: {e}")
+            logger.warning("No se pudieron enviar fotos del admin %s: %s", admin_id, e)
 
 def admin_aprobar_rechazar_callback(update, context):
     query = update.callback_query
@@ -1920,14 +1923,14 @@ def admin_aprobar_rechazar_callback(update, context):
         try:
             update_admin_status_by_id(admin_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] update_admin_status_by_id APPROVED:", e)
+            logger.error("update_admin_status_by_id APPROVED: %s", e)
             query.edit_message_text("Error aprobando administrador. Revisa logs.")
             return
 
         try:
             _notify_admin_local_welcome(context, admin_id, reactivated=was_reactivated)
         except Exception as e:
-            print("[WARN] No se pudo notificar onboarding de admin local:", e)
+            logger.warning("No se pudo notificar onboarding de admin local: %s", e)
 
         _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
         query.edit_message_text("✅ Administrador aprobado (APPROVED).")
@@ -1937,7 +1940,7 @@ def admin_aprobar_rechazar_callback(update, context):
         try:
             update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] update_admin_status_by_id REJECTED:", e)
+            logger.error("update_admin_status_by_id REJECTED: %s", e)
             query.edit_message_text("Error rechazando administrador. Revisa logs.")
             return
 
@@ -2045,7 +2048,7 @@ def admin_config_callback(update, context):
             ally_id = int(data.split("_")[-1])
             _render_platform_ally_detail(query, ally_id)
         except Exception as e:
-            print("[ERROR] config_ver_ally_{}: {}".format(data, e))
+            logger.error("config_ver_ally_%s: %s", data, e)
             query.answer("No pude abrir el detalle del aliado.", show_alert=True)
         return
 
@@ -2123,7 +2126,7 @@ def admin_config_callback(update, context):
             if link_status == "APPROVED":
                 deactivate_other_approved_admin_ally_links(ally_id, target_admin_id)
         except Exception as e:
-            print("[ERROR] config_ally_assign_team ally_id={}: {}".format(ally_id, e))
+            logger.error("config_ally_assign_team ally_id=%s: %s", ally_id, e)
             query.edit_message_text("No se pudo actualizar el equipo del aliado.")
             return
 
@@ -2397,7 +2400,7 @@ def admin_config_callback(update, context):
             if link:
                 upsert_admin_ally_link(link["admin_id"], ally_id, "INACTIVE")
         except Exception as e:
-            print(f"[ERROR] config_ally_disable_ upsert link: {e}")
+            logger.error("config_ally_disable_ upsert link: %s", e)
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado desactivado (INACTIVE).", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -2422,7 +2425,7 @@ def admin_config_callback(update, context):
                     reactivated=False,
                 )
             except Exception as e:
-                print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
+                logger.warning("No se pudo enviar onboarding al aliado %s: %s", ally_id, e)
             kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
             query.edit_message_text("Aliado aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
             return
@@ -2433,13 +2436,13 @@ def admin_config_callback(update, context):
             keep_admin_id = link["admin_id"] if link else get_platform_admin_id()
             upsert_admin_ally_link(keep_admin_id, ally_id, "APPROVED")
         except Exception as e:
-            print(f"[ERROR] config_ally_enable_ upsert link: {e}")
+            logger.error("config_ally_enable_ upsert link: %s", e)
         try:
             ally = get_ally_by_id(ally_id)
             ally_telegram_id = get_ally_approval_notification_chat_id(ally_id)
             _send_role_welcome_message(context, "ALLY", ally_telegram_id, profile=ally, reactivated=was_reactivated)
         except Exception as e:
-            print(f"[WARN] No se pudo enviar onboarding al aliado {ally_id}: {e}")
+            logger.warning("No se pudo enviar onboarding al aliado %s: %s", ally_id, e)
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -2548,7 +2551,7 @@ def admin_config_callback(update, context):
                     reactivated=False,
                 )
             except Exception as e:
-                print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
+                logger.warning("No se pudo enviar onboarding al repartidor %s: %s", courier_id, e)
             kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
             query.edit_message_text("Repartidor aprobado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
             return
@@ -2559,7 +2562,7 @@ def admin_config_callback(update, context):
             courier_telegram_id = get_courier_approval_notification_chat_id(courier_id)
             _send_role_welcome_message(context, "COURIER", courier_telegram_id, profile=courier, reactivated=was_reactivated)
         except Exception as e:
-            print(f"[WARN] No se pudo enviar onboarding al repartidor {courier_id}: {e}")
+            logger.warning("No se pudo enviar onboarding al repartidor %s: %s", courier_id, e)
         kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
         query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return

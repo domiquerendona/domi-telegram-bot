@@ -3,7 +3,9 @@
 # Extraído de main.py (Fase 2e)
 # =============================================================================
 
-import traceback
+import logging
+logger = logging.getLogger(__name__)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ConversationHandler,
@@ -133,19 +135,16 @@ def nuevo_pedido(update, context):
     user = update.effective_user
     message = update.effective_message
     try:
-        print(
-            f"[DEBUG][nuevo_pedido] entry user_id={getattr(user, 'id', None)} "
-            f"chat_id={getattr(getattr(message, 'chat', None), 'id', None)} "
-            f"text={getattr(message, 'text', None)!r}",
-            flush=True,
+        logger.debug(
+            "[nuevo_pedido] entry user_id=%s chat_id=%s text=%r",
+            getattr(user, 'id', None),
+            getattr(getattr(message, 'chat', None), 'id', None),
+            getattr(message, 'text', None),
         )
 
         ensure_user(user.id, user.username)
         db_user = get_user_by_telegram_id(user.id)
-        print(
-            f"[DEBUG][nuevo_pedido] db_user_found={bool(db_user)} user_id={getattr(user, 'id', None)}",
-            flush=True,
-        )
+        logger.debug("[nuevo_pedido] db_user_found=%s user_id=%s", bool(db_user), getattr(user, 'id', None))
 
         if not db_user:
             if message:
@@ -153,10 +152,7 @@ def nuevo_pedido(update, context):
             return ConversationHandler.END
 
         ally = get_ally_by_user_id(db_user["id"])
-        print(
-            f"[DEBUG][nuevo_pedido] ally_found={bool(ally)} ally_status={ally['status'] if ally else None}",
-            flush=True,
-        )
+        logger.debug("[nuevo_pedido] ally_found=%s ally_status=%s", bool(ally), ally['status'] if ally else None)
         if not ally:
             if message:
                 message.reply_text(
@@ -198,7 +194,7 @@ def nuevo_pedido(update, context):
                         )
                 return ConversationHandler.END
         if not ensure_terms(update, context, user.id, role="ALLY"):
-            print("[DEBUG][nuevo_pedido] blocked_by_terms=True", flush=True)
+            logger.debug("[nuevo_pedido] blocked_by_terms=True")
             return ConversationHandler.END
 
         context.user_data.clear()
@@ -228,8 +224,7 @@ def nuevo_pedido(update, context):
             )
         return PEDIDO_SELECTOR_CLIENTE
     except Exception as e:
-        print(f"[ERROR][nuevo_pedido] {type(e).__name__}: {e}", flush=True)
-        print(traceback.format_exc(), flush=True)
+        logger.exception("[nuevo_pedido] %s: %s", type(e).__name__, e)
         if message:
             message.reply_text("Se produjo un error al iniciar el pedido. Intenta /nuevo_pedido.")
         return ConversationHandler.END
@@ -2083,8 +2078,8 @@ def construir_resumen_pedido(context):
                 subsidio_efectivo_cache = compute_ally_subsidy(delivery_subsidy, min_purchase_sub, purchase_amount)
                 customer_delivery_fee_cache = max(subtotal_servicio - subsidio_efectivo_cache, 0)
         except Exception as _e:
-            print("[WARN] construir_resumen_pedido: error calculando subsidio ally={} err={}".format(
-                ally_id_ctx, _e), flush=True)
+            logger.warning("construir_resumen_pedido: error calculando subsidio ally=%s err=%s", 
+                ally_id_ctx, _e)
     # Persistir en user_data para que pedido_confirmacion_callback los pase a create_order
     context.user_data["pedido_subsidio_efectivo"] = subsidio_efectivo_cache
     context.user_data["pedido_customer_delivery_fee"] = customer_delivery_fee_cache
@@ -2917,7 +2912,7 @@ def admin_pedido_save_pickup_callback(update, context):
             )
             context.user_data["admin_ped_pickup_id"] = loc_id
         except Exception as e:
-            print("[WARN] admin_pedido_save_pickup_callback:", e)
+            logger.warning("admin_pedido_save_pickup_callback: %s", e)
     keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
     query.edit_message_text(
         "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
@@ -3294,7 +3289,7 @@ def admin_pedido_confirmar_callback(update, context):
             ally_admin_id_snapshot=admin_id,
         )
     except Exception as e:
-        print("[ERROR] admin_pedido_confirmar_callback create_order:", e)
+        logger.error("admin_pedido_confirmar_callback create_order: %s", e)
         query.edit_message_text("Error al crear el pedido. Intenta de nuevo.")
         return ConversationHandler.END
     if pickup_location_id:
@@ -3313,7 +3308,7 @@ def admin_pedido_confirmar_callback(update, context):
             skip_fee_check=True,
         )
     except Exception as e:
-        print("[WARN] admin_pedido_confirmar_callback publish:", e)
+        logger.warning("admin_pedido_confirmar_callback publish: %s", e)
     success_msg = (
         "Pedido especial publicado.\n"
         "ID: #{}\n"
@@ -3760,9 +3755,9 @@ def pedido_confirmacion_callback(update, context):
                 if ok_cov:
                     platform_admin = get_platform_admin()
                     admin_id_for_publish = platform_admin["id"] if platform_admin else None
-                    print("[INFO] Cobertura temporal plataforma aplicada para ally_id={} couriers_migrados={}".format(
+                    logger.info("Cobertura temporal plataforma aplicada para ally_id=%s couriers_migrados=%s", 
                         ally_id, migrated_couriers
-                    ))
+                    )
                     context.bot.send_message(
                         chat_id=chat_id,
                         text=(
@@ -3782,7 +3777,7 @@ def pedido_confirmacion_callback(update, context):
                 platform_admin = get_platform_admin()
                 if platform_admin:
                     admin_id_for_publish = platform_admin["id"]
-                    print("[INFO] Platform bypass aplicado: aliado sin link APPROVED, pedido publicado con admin plataforma.")
+                    logger.info("Platform bypass aplicado: aliado sin link APPROVED, pedido publicado con admin plataforma.")
                 else:
                     context.bot.send_message(
                         chat_id=chat_id,
@@ -3829,7 +3824,7 @@ def pedido_confirmacion_callback(update, context):
                                      "Recarga con plataforma para que tu equipo siga generando ganancias."
                             )
                 except Exception as e:
-                    print("[WARN] No se pudo notificar al admin:", e)
+                    logger.warning("No se pudo notificar al admin: %s", e)
             else:
                 context.bot.send_message(
                     chat_id=chat_id,
@@ -3943,8 +3938,8 @@ def pedido_confirmacion_callback(update, context):
                 try:
                     mark_ally_form_request_converted(_form_req_id, _ally_id_ctx, order_id)
                 except Exception as _e:
-                    print("[WARN] mark_ally_form_request_converted failed: req={} ally={} order={} err={}".format(
-                        _form_req_id, _ally_id_ctx, order_id, _e))
+                    logger.warning("mark_ally_form_request_converted failed: req=%s ally=%s order=%s err=%s", 
+                        _form_req_id, _ally_id_ctx, order_id, _e)
 
             # Publicar pedido a couriers del equipo
             published_count = 0
@@ -3960,7 +3955,7 @@ def pedido_confirmacion_callback(update, context):
                     dropoff_barrio=context.user_data.get("customer_barrio"),
                 )
             except Exception as e:
-                print("[WARN] Error al publicar pedido a couriers:", e)
+                logger.warning("Error al publicar pedido a couriers: %s", e)
 
             # Incrementar contador de uso del pickup
             if pickup_location_id:

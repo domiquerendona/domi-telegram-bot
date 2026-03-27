@@ -3,6 +3,9 @@
 # Extraído de main.py (Fase 2f)
 # =============================================================================
 
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
@@ -471,7 +474,7 @@ def ally_confirm(update, context):
         ally_id = ally_data["ally_id"]
         upsert_admin_ally_link(selected_admin_id, ally_id, status="PENDING")
     except Exception as e:
-        print(f"[ERROR] ally_confirm: no se pudo crear el registro: {e}")
+        logger.error("ally_confirm: no se pudo crear el registro: %s", e)
         update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
@@ -483,7 +486,7 @@ def ally_confirm(update, context):
             admin_user = get_user_by_id(admin_row["user_id"]) if admin_row and admin_row.get("user_id") else None
             admin_telegram_id = admin_user["telegram_id"] if admin_user else None
         except Exception as e:
-            print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
+            logger.warning("No se pudo resolver telegram_id del admin local %s: %s", selected_admin_id, e)
 
     try:
         context.bot.send_message(
@@ -512,7 +515,7 @@ def ally_confirm(update, context):
             ).format(ally_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
+        logger.warning("No se pudo notificar al admin plataforma: %s", e)
 
     try:
         if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
@@ -536,7 +539,7 @@ def ally_confirm(update, context):
                 ),
             )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin local sobre aliado:", e)
+        logger.warning("No se pudo notificar al admin local sobre aliado: %s", e)
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
@@ -590,7 +593,7 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
 def ally_team_callback(update, context):
     query = update.callback_query
     data = (query.data or "").strip()
-    print(f"[DEBUG] ally_team_callback recibió data={data}")
+    logger.debug("ally_team_callback recibió data=%s", data)
     query.answer()
 
     selected = parse_team_selection_callback(data, "ally_team")
@@ -1175,7 +1178,7 @@ def courier_confirm(update, context):
         courier_id = courier_data["courier_id"]
         create_admin_courier_link(selected_admin_id, courier_id)
     except Exception as e:
-        print(f"[ERROR] courier_confirm: no se pudo crear el registro: {e}")
+        logger.error("courier_confirm: no se pudo crear el registro: %s", e)
         update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
         context.user_data.clear()
         return ConversationHandler.END
@@ -1187,7 +1190,7 @@ def courier_confirm(update, context):
             admin_user = get_user_by_id(admin_row["user_id"]) if admin_row and admin_row.get("user_id") else None
             admin_telegram_id = admin_user["telegram_id"] if admin_user else None
         except Exception as e:
-            print(f"[WARN] No se pudo resolver telegram_id del admin local {selected_admin_id}: {e}")
+            logger.warning("No se pudo resolver telegram_id del admin local %s: %s", selected_admin_id, e)
 
     try:
         context.bot.send_message(
@@ -1226,7 +1229,7 @@ def courier_confirm(update, context):
             ).format(courier_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
+        logger.warning("No se pudo notificar al admin plataforma: %s", e)
 
     try:
         if admin_telegram_id and selected_team_code != PLATFORM_TEAM_CODE:
@@ -1251,7 +1254,7 @@ def courier_confirm(update, context):
                 ),
             )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin local:", e)
+        logger.warning("No se pudo notificar al admin local: %s", e)
 
     update.message.reply_text(
         "Listo. Tu solicitud fue enviada.\n"
@@ -1785,7 +1788,7 @@ def admin_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
     except Exception as e:
-        print("[ERROR] admin_confirm:", e)
+        logger.error("admin_confirm: %s", e)
         _debug_admin_registration_state(context, "admin_confirm_exception", error=str(e))
         update.message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
         context.user_data.clear()
@@ -1818,7 +1821,7 @@ def admin_confirm(update, context):
             ).format(admin_id),
         )
     except Exception as e:
-        print("[WARN] No se pudo notificar al admin plataforma:", e)
+        logger.warning("No se pudo notificar al admin plataforma: %s", e)
 
     update.message.reply_text(
         "Registro de Administrador Local recibido.\n"

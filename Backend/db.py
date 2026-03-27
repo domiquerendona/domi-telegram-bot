@@ -2462,7 +2462,7 @@ def ensure_platform_sociedad():
 
     conn.commit()
     conn.close()
-    print(f"[BOOT] ensure_platform_sociedad: sociedad_id={sociedad_id}")
+    logger.info("ensure_platform_sociedad: sociedad_id=%s", sociedad_id)
     return sociedad_id
 
 
@@ -2875,7 +2875,7 @@ def update_courier_live_location(courier_id: int, lat: float, lng: float, live_p
                 time.sleep(0.15 * (attempt + 1))
                 continue
             if "database is locked" in message:
-                print("[WARN] update_courier_live_location: database is locked tras reintentos")
+                logger.warning("update_courier_live_location: database is locked tras reintentos")
                 return False
             raise
         finally:
@@ -2969,7 +2969,7 @@ def expire_stale_live_locations(stale_timeout_seconds: int = 900):
                 time.sleep(0.15 * (attempt + 1))
                 continue
             if "database is locked" in message:
-                print("[WARN] expire_stale_live_locations: database is locked tras reintentos")
+                logger.warning("expire_stale_live_locations: database is locked tras reintentos")
                 return []
             raise
         finally:
@@ -3504,7 +3504,7 @@ def sync_all_courier_link_statuses():
         fixed += 1
     conn.commit()
     conn.close()
-    print(f"[BOOT] sync_all_courier_link_statuses: {fixed} couriers procesados")
+    logger.info("sync_all_courier_link_statuses: %s couriers procesados", fixed)
 
 
 def ensure_pricing_defaults():
@@ -3655,7 +3655,7 @@ def ensure_web_admin():
         return
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     create_web_user(username, hashed, role="ADMIN_PLATFORM")
-    print(f"[BOOT] web_user creado: {username} (ADMIN_PLATFORM)")
+    logger.info("web_user creado: %s (ADMIN_PLATFORM)", username)
 
 
 # ---------- REFERENCIAS LOCALES (CATALOGO + VALIDACION) ----------
@@ -3891,15 +3891,10 @@ def create_ally(
     cur = conn.cursor()
 
     # DEBUG opcional (puedes dejarlo)
-    print("[DEBUG] create_ally() datos recibidos:")
-    print(f"  user_id={user_id}")
-    print(f"  business_name={business_name!r}")
-    print(f"  owner_name={owner_name!r}")
-    print(f"  address={address!r}")
-    print(f"  city={city!r}")
-    print(f"  barrio={barrio!r}")
-    print(f"  phone={phone!r}")
-    print(f"  document_number={document_number!r}")
+    logger.debug(
+        "create_ally() datos: user_id=%s business_name=%r owner_name=%r address=%r city=%r barrio=%r phone=%r document_number=%r",
+        user_id, business_name, owner_name, address, city, barrio, phone, document_number,
+    )
 
     try:
         ally_id = _insert_returning_id(cur, f"""
@@ -8566,7 +8561,7 @@ def credit_welcome_balance(user_type: str, target_id: int, admin_id: int, amount
             conn.rollback()
         except Exception:
             pass
-        print("[ERROR] credit_welcome_balance:", e)
+        logger.error("credit_welcome_balance: %s", e)
         return False
     finally:
         conn.close()
@@ -10497,7 +10492,7 @@ def expire_old_ally_subscriptions():
     conn.commit()
     conn.close()
     if changed:
-        print(f"[SUBS] {changed} suscripcion(es) marcadas como EXPIRED.")
+        logger.info("%s suscripcion(es) marcadas como EXPIRED.", changed)
     return changed
 
 

@@ -3,6 +3,9 @@
 # Extraído de main.py (Fase 2g)
 # =============================================================================
 
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -658,7 +661,7 @@ def recargar_comprobante(update, context):
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
     except Exception as e:
-        print(f"[WARN] No se pudo notificar al admin: {e}")
+        logger.warning("No se pudo notificar al admin: %s", e)
 
     context.user_data.pop("recargar_target_type", None)
     context.user_data.pop("recargar_target_id", None)
@@ -808,7 +811,7 @@ def recharge_proof_callback(update, context):
         )
         query.answer("Comprobante enviado.")
     except Exception as e:
-        print(f"[WARN] No se pudo enviar comprobante: {e}")
+        logger.warning("No se pudo enviar comprobante: %s", e)
         query.answer("No se pudo enviar el comprobante.", show_alert=True)
 
 
@@ -874,7 +877,7 @@ def recharge_callback(update, context):
                         text="Tu recarga #{} fue exitosa.".format(request_id),
                     )
             except Exception as e:
-                print("[WARN] No se pudo notificar al solicitante de la recarga #{}: {}".format(request_id, e))
+                logger.warning("No se pudo notificar al solicitante de la recarga #%s: %s", request_id, e)
 
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Recarga aprobada.")
@@ -912,7 +915,7 @@ def recharge_callback(update, context):
                         ).format(request_id),
                     )
             except Exception as e:
-                print("[WARN] No se pudo notificar rechazo al solicitante de la recarga #{}: {}".format(request_id, e))
+                logger.warning("No se pudo notificar rechazo al solicitante de la recarga #%s: %s", request_id, e)
 
             _resolve_important_alert(context, "recharge_request_{}".format(request_id))
             query.answer("Solicitud rechazada.")
@@ -1099,7 +1102,7 @@ def plat_recargas_callback(update, context):
             context.bot.send_message(chat_id=telegram_id, text="\n\n".join(partes))
             query.answer("Notificacion enviada a {}.".format(admin_name))
         except Exception as e:
-            print("[WARN] plat_rec_notify admin_id={}: {}".format(admin_id, e))
+            logger.warning("plat_rec_notify admin_id=%s: %s", admin_id, e)
             query.answer("No se pudo enviar la notificacion.", show_alert=True)
         return
 
@@ -1603,7 +1606,7 @@ def admin_local_callback(update, context):
         try:
             pendientes = get_pending_couriers_by_admin(admin_id)
         except Exception as e:
-            print("[ERROR] get_pending_couriers_by_admin:", e)
+            logger.error("get_pending_couriers_by_admin: %s", e)
             query.edit_message_text("Error consultando pendientes de tu equipo.")
             return
 
@@ -1695,7 +1698,7 @@ def admin_local_callback(update, context):
                 if selfie:
                     context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
             except Exception as e:
-                print(f"[WARN] No se pudieron enviar fotos del repartidor {courier_id}: {e}")
+                logger.warning("No se pudieron enviar fotos del repartidor %s: %s", courier_id, e)
 
         return
 
@@ -1725,7 +1728,7 @@ def admin_local_callback(update, context):
                     bonus_granted=bool(result.get("bonus_granted")),
                 )
         except Exception as e:
-            print("[WARN] Error notificando repartidor (local approve):", e)
+            logger.warning("Error notificando repartidor (local approve): %s", e)
 
         _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
         query.edit_message_text(
@@ -1741,7 +1744,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] update_admin_courier_status REJECTED:", e)
+            logger.error("update_admin_courier_status REJECTED: %s", e)
             query.edit_message_text("Error rechazando repartidor. Revisa logs.")
             return
 
@@ -1759,7 +1762,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] update_admin_courier_status INACTIVE:", e)
+            logger.error("update_admin_courier_status INACTIVE: %s", e)
             query.edit_message_text("Error bloqueando repartidor. Revisa logs.")
             return
 
@@ -1778,7 +1781,7 @@ def admin_local_callback(update, context):
         try:
             pendientes = get_pending_allies_by_admin(admin_id)
         except Exception as e:
-            print("[ERROR] get_pending_allies_by_admin:", e)
+            logger.error("get_pending_allies_by_admin: %s", e)
             query.edit_message_text("Error consultando aliados pendientes de tu equipo.")
             return
 
@@ -1851,7 +1854,7 @@ def admin_local_callback(update, context):
                 if selfie:
                     context.bot.send_photo(chat_id=query.message.chat_id, photo=selfie, caption="Selfie")
             except Exception as e:
-                print(f"[WARN] No se pudieron enviar fotos del aliado {ally_id_val}: {e}")
+                logger.warning("No se pudieron enviar fotos del aliado %s: %s", ally_id_val, e)
         return
 
     if data.startswith("local_ally_approve_") or data.startswith("local_ally_reject_"):
@@ -1879,7 +1882,7 @@ def admin_local_callback(update, context):
                         bonus_granted=bool(result.get("bonus_granted")),
                     )
             except Exception as e:
-                print("[WARN] Error notificando aliado (local approve):", e)
+                logger.warning("Error notificando aliado (local approve): %s", e)
 
             _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
             query.edit_message_text(
@@ -1892,7 +1895,7 @@ def admin_local_callback(update, context):
             try:
                 upsert_admin_ally_link(admin_id, ally_id_val, "REJECTED")
             except Exception as e:
-                print("[ERROR] local_ally_reject:", e)
+                logger.error("local_ally_reject: %s", e)
                 query.edit_message_text("Error rechazando aliado. Revisa logs.")
                 return
             _resolve_important_alert(context, "team_ally_pending_{}_{}".format(admin_id, ally_id_val))
@@ -2050,7 +2053,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "APPROVED", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] local_courier_activate:", e)
+            logger.error("local_courier_activate: %s", e)
             query.edit_message_text("Error activando repartidor.")
             return
         query.edit_message_text(
@@ -2066,7 +2069,7 @@ def admin_local_callback(update, context):
         try:
             update_admin_courier_status(admin_id, courier_id, "INACTIVE", changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print("[ERROR] local_courier_inactivate:", e)
+            logger.error("local_courier_inactivate: %s", e)
             query.edit_message_text("Error inactivando repartidor.")
             return
         query.edit_message_text(
@@ -2082,7 +2085,7 @@ def admin_local_callback(update, context):
         try:
             upsert_admin_ally_link(admin_id, ally_id_val, "APPROVED")
         except Exception as e:
-            print("[ERROR] local_ally_activate:", e)
+            logger.error("local_ally_activate: %s", e)
             query.edit_message_text("Error activando aliado.")
             return
         query.edit_message_text(
@@ -2098,7 +2101,7 @@ def admin_local_callback(update, context):
         try:
             upsert_admin_ally_link(admin_id, ally_id_val, "INACTIVE")
         except Exception as e:
-            print("[ERROR] local_ally_inactivate:", e)
+            logger.error("local_ally_inactivate: %s", e)
             query.edit_message_text("Error inactivando aliado.")
             return
         query.edit_message_text(
@@ -2150,7 +2153,7 @@ def ally_approval_callback(update, context):
         try:
             update_ally_status(ally_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
         except Exception as e:
-            print(f"[ERROR] ally_approval_callback: {e}")
+            logger.error("ally_approval_callback: %s", e)
             query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
             return
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
@@ -2177,7 +2180,7 @@ def ally_approval_callback(update, context):
             ).format(business_name)
         context.bot.send_message(chat_id=ally_telegram_id, text=msg)
     except Exception as e:
-        print("Error notificando aliado:", e)
+        logger.warning("Error notificando aliado: %s", e)
 
 
     query.answer()
@@ -2285,7 +2288,7 @@ def ingreso_nota_handler(update, context):
     try:
         register_platform_income(admin_id=admin_id, amount=monto, method=metodo, note=nota)
     except Exception as e:
-        print("[ERROR] register_platform_income: {}".format(e))
+        logger.error("register_platform_income: %s", e)
         update.message.reply_text("Error al registrar el ingreso. Revisa los logs.")
         return ConversationHandler.END
     context.user_data.pop("ingreso_monto", None)

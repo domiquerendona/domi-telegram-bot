@@ -3,6 +3,9 @@
 # Extraído de main.py
 # =============================================================================
 
+import logging
+logger = logging.getLogger(__name__)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackQueryHandler,
@@ -1084,7 +1087,7 @@ def ruta_guardar_cust_callback(update, context):
                                         city="", barrio="", lat=lat, lng=lng)
             query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
         except Exception as e:
-            print("[WARN] Error guardando cliente de ruta: {}".format(e))
+            logger.warning("Error guardando cliente de ruta: %s", e)
             query.edit_message_text("No se pudo guardar el cliente.")
     else:
         query.edit_message_text("OK, no se guardo el cliente.")
