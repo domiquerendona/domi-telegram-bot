@@ -149,6 +149,8 @@ def _get_order_durations(order, delivered_now=False):
     result = {}
     if accepted and arrived:
         result["llegada_aliado"] = (arrived - accepted).total_seconds()
+    if arrived and pickup_conf:
+        result["espera_recogida"] = (pickup_conf - arrived).total_seconds()
     if pickup_conf and delivered:
         result["entrega_cliente"] = (delivered - pickup_conf).total_seconds()
     if accepted and delivered:
@@ -1588,7 +1590,9 @@ def _admin_order_detail(update, context, data):
     durations = _get_order_durations(order)
     dur_lines = []
     if "llegada_aliado" in durations:
-        dur_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+        dur_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "espera_recogida" in durations:
+        dur_lines.append("  Espera en recogida: {}".format(_format_duration(durations["espera_recogida"])))
     if "entrega_cliente" in durations:
         dur_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
     if "tiempo_total" in durations:
@@ -3046,7 +3050,9 @@ def _handle_delivered(update, context, order_id):
 
     time_lines = []
     if "llegada_aliado" in durations:
-        time_lines.append("  Llegada al aliado: {}".format(_format_duration(durations["llegada_aliado"])))
+        time_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
+    if "espera_recogida" in durations:
+        time_lines.append("  Espera en recogida: {}".format(_format_duration(durations["espera_recogida"])))
     if "entrega_cliente" in durations:
         time_lines.append("  Entrega al cliente: {}".format(_format_duration(durations["entrega_cliente"])))
     if "tiempo_total" in durations:
@@ -3066,6 +3072,11 @@ def _handle_delivered(update, context, order_id):
     query.edit_message_text(courier_msg)
 
     _notify_ally_delivered(context, order, durations)
+
+    # Pedidos especiales de admin (ally_id=None): notificar al admin creador
+    creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
+    if creator_admin_id and not order["ally_id"]:
+        _notify_admin_order_delivered(context, order, durations, int(creator_admin_id))
 
 
 def _build_offer_text(
@@ -3455,9 +3466,13 @@ def _notify_ally_delivered(context, order, durations=None):
         time_lines = []
         if durations:
             if "llegada_aliado" in durations:
-                time_lines.append("  Llegada del repartidor: {}".format(_format_duration(durations["llegada_aliado"])))
+                time_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
+            if "espera_recogida" in durations:
+                time_lines.append("  Espera en recogida: {}".format(_format_duration(durations["espera_recogida"])))
             if "entrega_cliente" in durations:
                 time_lines.append("  Tiempo de entrega: {}".format(_format_duration(durations["entrega_cliente"])))
+            if "tiempo_total" in durations:
+                time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
         time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
 
 
@@ -3479,6 +3494,46 @@ def _notify_ally_delivered(context, order, durations=None):
         )
     except Exception as e:
         logger.warning("No se pudo notificar entrega al aliado: %s", e)
+
+
+def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
+    """
+    Notifica al admin creador de un pedido especial (ally_id=None) que fue entregado.
+    Equivalente a _notify_ally_delivered pero dirigido al admin creador.
+    """
+    try:
+        admin = get_admin_by_id(creator_admin_id)
+        if not admin:
+            return
+        admin_user = get_user_by_id(admin["user_id"])
+        if not admin_user or not admin_user["telegram_id"]:
+            return
+
+        courier = get_courier_by_id(order["courier_id"]) if order["courier_id"] else None
+        courier_name = (courier["full_name"] if courier else None) or "el repartidor"
+        order_id = order["id"]
+
+        time_lines = []
+        if durations:
+            if "llegada_aliado" in durations:
+                time_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
+            if "espera_recogida" in durations:
+                time_lines.append("  Espera en recogida: {}".format(_format_duration(durations["espera_recogida"])))
+            if "entrega_cliente" in durations:
+                time_lines.append("  Tiempo de entrega: {}".format(_format_duration(durations["entrega_cliente"])))
+            if "tiempo_total" in durations:
+                time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+        time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+
+        context.bot.send_message(
+            chat_id=admin_user["telegram_id"],
+            text=(
+                "Pedido #{} entregado por {}.{}"
+            ).format(order_id, courier_name, time_block),
+        )
+    except Exception as e:
+        logger.warning("No se pudo notificar entrega de pedido especial al admin %s: %s", creator_admin_id, e)
+
 
 def handle_rating_callback(update, context):
     """Maneja la calificacion del servicio por parte del aliado tras la entrega."""
@@ -4790,6 +4845,31 @@ def _notify_ally_route_delivered(context, route):
         if n_cancelled > 0:
             lines.append("")
             lines.append("{} parada(s) no se entregaron.".format(n_cancelled))
+
+        # Tiempos de la ruta: accepted_at → now (delivered_at se acaba de fijar)
+        try:
+            accepted_val = _row_value(route, "accepted_at")
+            if accepted_val is not None:
+                def _parse_ts(val):
+                    if hasattr(val, 'timetuple'):
+                        return val
+                    s = str(val).strip()
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"):
+                        try:
+                            return datetime.strptime(s[:len(fmt)], fmt)
+                        except ValueError:
+                            continue
+                    return None
+                accepted_dt = _parse_ts(accepted_val)
+                delivered_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+                if accepted_dt and delivered_dt:
+                    total_secs = (delivered_dt - accepted_dt).total_seconds()
+                    lines.append("")
+                    lines.append("Tiempo total del servicio: {}".format(_format_duration(total_secs)))
+        except Exception:
+            pass
+
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text="\n".join(lines),
@@ -5456,6 +5536,20 @@ def _do_deliver_order(context, order, courier_id):
         )
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)
+
+    # Notificar al aliado (o admin creador en pedidos especiales) con tiempos
+    try:
+        fresh_order = get_order_by_id(order_id)
+        if fresh_order:
+            durations = _get_order_durations(fresh_order)
+            if ally_id:
+                _notify_ally_delivered(context, fresh_order, durations)
+            else:
+                creator_admin_id = fresh_order["creator_admin_id"] if "creator_admin_id" in fresh_order.keys() else None
+                if creator_admin_id:
+                    _notify_admin_order_delivered(context, fresh_order, durations, int(creator_admin_id))
+    except Exception as e:
+        logger.warning("No se pudo notificar entrega en _do_deliver_order pedido %s: %s", order_id, e)
 
 
 def _notify_courier_support_resolved(context, courier_id, order_id, resolution):

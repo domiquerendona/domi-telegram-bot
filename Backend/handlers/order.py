@@ -68,7 +68,7 @@ from services import (
     increment_customer_address_usage, increment_admin_customer_address_usage,
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
-    get_ally_by_id, compute_ally_subsidy,
+    get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
 )
@@ -382,6 +382,7 @@ def pedido_seleccionar_direccion_callback(update, context):
     data = query.data
 
     if data == "pedido_nueva_dir":
+        context.user_data["pedido_parking_fee"] = 0
         query.edit_message_text(
             "Escribe la nueva direccion de entrega (nombre del lugar o calle),\n"
             "o envia un pin de ubicacion de Telegram."
@@ -441,6 +442,12 @@ def pedido_seleccionar_direccion_callback(update, context):
             increment_customer_address_usage(address_id, customer_id)
         except Exception:
             pass
+
+        try:
+            parking_status = address["parking_status"]
+        except (KeyError, IndexError):
+            parking_status = "NOT_ASKED"
+        context.user_data["pedido_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
 
         if not has_valid_coords(address["lat"], address["lng"]):
             query.edit_message_text(
@@ -2054,6 +2061,10 @@ def construir_resumen_pedido(context):
     if incentivo > 0:
         resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
     resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
+
+    pedido_parking_fee = int(context.user_data.get("pedido_parking_fee") or 0)
+    if pedido_parking_fee > 0:
+        resumen += "Punto con parqueo dificil: +" + _fmt_pesos(pedido_parking_fee) + "\n"
 
     if requires_cash and cash_amount > 0:
         resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
@@ -3900,6 +3911,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         purchase_amount=context.user_data.get("pedido_purchase_amount"),
         delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
         customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
+        parking_fee=int(context.user_data.get("pedido_parking_fee") or 0),
     )
     context.user_data["order_id"] = order_id
 

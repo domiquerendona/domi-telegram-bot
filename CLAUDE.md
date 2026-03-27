@@ -1064,6 +1064,11 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `_notify_ally_courier_arrived(context, order, courier_name)` | Notificación al aliado con botones |
 | `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
 | `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
+| `_get_order_durations(order, delivered_now)` | Calcula duraciones de cada etapa del pedido. Claves: `llegada_aliado` (accepted→arrived), `espera_recogida` (arrived→pickup_confirmed), `entrega_cliente` (pickup_confirmed→delivered), `tiempo_total` (accepted→delivered). Solo incluye claves con ambos extremos disponibles. |
+| `_format_duration(seconds)` | Convierte segundos a texto legible: "X min" o "Xh Ymin". Retorna "N/D" si es None. |
+| `_notify_ally_delivered(context, order, durations)` | Notifica al aliado la entrega con bloque de tiempos (los 4 campos cuando disponibles). Si `ally_id=None` no hace nada — usar `_notify_admin_order_delivered`. |
+| `_notify_admin_order_delivered(context, order, durations, creator_admin_id)` | Notifica al admin creador de un pedido especial (ally_id=None) que fue entregado, con bloque de tiempos completo. |
+| `_do_deliver_order(context, order, courier_id)` | Aplica fees, marca DELIVERED y notifica al aliado/admin creador con tiempos (via `_notify_ally_delivered` o `_notify_admin_order_delivered`). |
 
 ### Nuevas columnas en `orders`
 
@@ -2215,6 +2220,37 @@ Todas re-exportadas en `services.py`.
 - No aplica a `admin_customer_addresses` (solo `ally_customer_addresses` tiene el flujo completo de pregunta al aliado).
 
 ---
+
+---
+
+## Tracking de tiempos por etapa del servicio (IMPLEMENTADO 2026-03-27)
+
+### Métricas calculadas por `_get_order_durations`
+
+| Clave | Cálculo | Disponible cuando |
+|-------|---------|-------------------|
+| `llegada_aliado` | `courier_arrived_at − accepted_at` | Courier usó botón "Confirmar llegada al pickup" |
+| `espera_recogida` | `pickup_confirmed_at − courier_arrived_at` | Courier llegó Y confirmó recogida |
+| `entrega_cliente` | `delivered_at − pickup_confirmed_at` | Pedido entregado después de recogida confirmada |
+| `tiempo_total` | `delivered_at − accepted_at` | Pedido entregado |
+
+La función está en `order_delivery.py` y es pura (sin dependencias externas). Se exporta también en `handlers/ally_bandeja.py` vía import directo.
+
+### Dónde se muestran los tiempos
+
+| Contexto | Función | Tiempos mostrados |
+|----------|---------|-------------------|
+| Courier al entregar | `_handle_delivered` | Los 4 campos cuando disponibles |
+| Aliado — notificación de entrega | `_notify_ally_delivered` | Los 4 campos cuando disponibles |
+| Admin creador — pedido especial entregado | `_notify_admin_order_delivered` | Los 4 campos cuando disponibles |
+| Admin — panel de pedido (`admpedidos_`) | `_admin_order_detail` | Los 4 campos cuando disponibles |
+| Aliado — bandeja de pedidos procesados | `_ally_bandeja_mostrar_pedido` | Los 4 campos (solo en DELIVERED) |
+| Aliado — ruta completada | `_notify_ally_route_delivered` | `tiempo_total` (accepted→delivered) |
+| Pin issue resuelto por admin | `_do_deliver_order` | Igual que `_notify_ally_delivered` |
+
+### Flujo para pedidos especiales de admin (ally_id=NULL)
+
+`_handle_delivered` detecta `creator_admin_id` y llama `_notify_admin_order_delivered` cuando `ally_id` es None. `_do_deliver_order` (resolución pin issue) también notifica correctamente usando la misma lógica.
 
 *Última actualización: 2026-03-27*
 

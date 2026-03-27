@@ -18,6 +18,7 @@ from services import (
     update_ally_form_request_status,
 )
 from handlers.order import _ally_bandeja_guardar_en_agenda
+from order_delivery import _get_order_durations, _format_duration
 
 
 def ally_bandeja_solicitudes(update, context):
@@ -363,6 +364,23 @@ def _ally_bandeja_mostrar_pedido(query, ally_id, order_id):
         pass
     if order["instructions"]:
         lines.append("Instrucciones: {}".format(order["instructions"]))
+
+    # Bloque de tiempos (solo para pedidos entregados)
+    if order["status"] == "DELIVERED":
+        durations = _get_order_durations(order)
+        dur_lines = []
+        if "llegada_aliado" in durations:
+            dur_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
+        if "espera_recogida" in durations:
+            dur_lines.append("  Espera en recogida: {}".format(_format_duration(durations["espera_recogida"])))
+        if "entrega_cliente" in durations:
+            dur_lines.append("  Tiempo de entrega: {}".format(_format_duration(durations["entrega_cliente"])))
+        if "tiempo_total" in durations:
+            dur_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
+        if dur_lines:
+            lines.append("")
+            lines.append("Tiempos del servicio:")
+            lines.extend(dur_lines)
 
     query.edit_message_text(
         "\n".join(lines),

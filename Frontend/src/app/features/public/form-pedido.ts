@@ -904,7 +904,7 @@ export class FormPedidoComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.zone.run(() => {
           this.quotedPrice = res.quoted_price ?? null;
-          this.subsidioAliado = res.subsidio_aliado ?? this.subsidioAliado;
+          this.subsidioAliado = res.subsidio_aliado ?? 0;
           this.subsidyConditional = res.subsidy_conditional ?? false;
           this.totalBase = res.total_base ?? null;
           this.totalCliente = this.totalBase;
