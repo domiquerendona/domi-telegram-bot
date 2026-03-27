@@ -608,4 +608,6 @@ profile_change_conv = ConversationHandler(
         MessageHandler(Filters.regex(r'(?i)^\s*[\W_]*\s*(cancelar|volver al men[uú])\s*$'), _cancel_text_wrapper),
     ],
     allow_reentry=True,
+    name="profile_change_conv",
+    persistent=True,
 )

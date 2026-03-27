@@ -1266,4 +1266,6 @@ nueva_ruta_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="nueva_ruta_conv",
+    persistent=True,
 )

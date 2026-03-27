@@ -137,7 +137,10 @@ domi-telegram-bot/
 │
 └── tests/
     ├── test_recharge_idempotency.py   # Tests de idempotencia en recargas
-    └── test_status_validation.py      # Tests de validación de estados
+    ├── test_status_validation.py      # Tests de validación de estados
+    ├── test_pricing.py                # Tests de pricing: calcular_precio_distancia, build_order_pricing_breakdown, calcular_precio_ruta, compute_ally_subsidy
+    ├── test_order_lifecycle.py        # Tests de ciclo de vida de pedidos: create_order, set_order_status, apply_service_fee, cancel_order
+    └── test_subscription.py          # Tests de suscripciones: set/get precio, pay_ally_subscription, check_ally_active_subscription, exencion de fee
 ```
 
 ---
@@ -282,6 +285,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
 | `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
 | `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. |
+| `scheduled_jobs` | Persistencia de timers del bot para recuperación tras reinicios. Campos: `job_name` (TEXT PRIMARY KEY), `callback_name` (TEXT — nombre de la función en `JOB_REGISTRY` de `order_delivery.py`), `fire_at` (TIMESTAMP — momento programado de disparo), `job_data` (TEXT JSON — contexto serializado del job), `status` (TEXT: `PENDING`\|`EXECUTED`\|`CANCELLED`), `created_at`, `updated_at`. Funciones en `db.py`: `schedule_job`, `cancel_scheduled_job`, `mark_job_executed`, `get_pending_scheduled_jobs` (re-exportadas en `services.py`). |
 
 ---
 
@@ -443,6 +447,8 @@ Archivo de referencia: `Backend/.env.example`
 | `DATABASE_URL` | URL de conexión PostgreSQL | DEV y PROD (Railway) |
 | `WEB_ADMIN_USER` | Username del admin inicial del panel web | Opcional (default: `admin`) |
 | `WEB_ADMIN_PASSWORD` | Contraseña del admin inicial del panel web | Opcional (default: `changeme`) |
+| `WEB_SECRET_KEY` | Clave secreta para firma de sesiones web | Opcional (cambiar en PROD) |
+| `PERSISTENCE_PATH` | Ruta del archivo de persistencia del bot (`PicklePersistence`). En Railway con volumen persistente usar `/data/bot_persistence.pkl`. Default: `bot_persistence.pkl`. | Opcional |
 | `PAUSE_BOT_DEV` | Si es `1`, `true` o `yes`: el bot entra en bucle infinito de sleep sin procesar mensajes. Útil para pausar Railway DEV sin detener el servicio (evita cobro de llamadas Google Maps en periodos de no uso). Solo aplica en DEV; PROD nunca debe tener esta variable. | DEV (opcional) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
@@ -510,15 +516,22 @@ Los tests están en `tests/` y usan `unittest`:
 
 ```bash
 cd Backend/
-python -m unittest tests/test_recharge_idempotency.py tests/test_status_validation.py
+# Suite completa de los 5 archivos estables
+python -m unittest discover -s ../tests -p "test_pricing.py" -v
+python -m unittest discover -s ../tests -p "test_order_lifecycle.py" -v
+python -m unittest discover -s ../tests -p "test_subscription.py" -v
+python -m unittest discover -s ../tests -p "test_recharge_idempotency.py" -v
+python -m unittest discover -s ../tests -p "test_status_validation.py" -v
 
-# Output esperado:
-# Ran 7 tests in ~2s → OK
+# Output esperado: 50 + 7 tests → OK
 ```
 
 **Cobertura actual:**
 - `test_recharge_idempotency.py`: idempotencia y concurrencia en aprobar/rechazar recargas, carrera approve vs reject.
 - `test_status_validation.py`: normalización de estados válidos, rechazo de estados inválidos, protección de `update_recharge_status`.
+- `test_pricing.py` (23 tests): `calcular_precio_distancia` (tiers, monotonía, extras), `build_order_pricing_breakdown`, `calcular_precio_ruta`, `compute_ally_subsidy`.
+- `test_order_lifecycle.py` (14 tests): `create_order` (estados, campos, validaciones), transiciones PENDING→DELIVERED, `cancel_order`, `apply_service_fee` (aliado, courier, saldo insuficiente).
+- `test_subscription.py` (13 tests): `set/get_ally_subscription_price`, `pay_ally_subscription`, `check_ally_active_subscription`, exención de fee con suscripción activa.
 
 ### Verificación de Compilación (obligatorio tras cambios)
 
@@ -1083,10 +1096,26 @@ Re-exportadas en `services.py`.
 | `route_accepted_pos[route_id]` | `{"lat": float, "lng": float}` — posición del courier al aceptar ruta, base para T+5 |
 | `excluded_couriers[order_id]` | Set de courier_ids excluidos de re-oferta |
 
+### Persistencia de jobs ante reinicios (IMPLEMENTADO 2026-03-27)
+
+Los 11 jobs críticos del bot se persisten en la tabla `scheduled_jobs` y se recuperan automáticamente al arrancar.
+
+**`JOB_REGISTRY`** (dict al final de `order_delivery.py`): mapea nombre de callback (string) → función, usado por `recover_scheduled_jobs` para reanudar jobs sin importar por qué se reinició el proceso.
+
+**`recover_scheduled_jobs(job_queue)`** (al final de `order_delivery.py`): lee `get_pending_scheduled_jobs()`, recalcula el delay respecto a `fire_at`, y reprograma con `job_queue.run_once`. Llamado en `main.py` antes de `updater.start_polling()`.
+
+**`mark_job_executed(job_name)`**: primera línea de cada callback persistido; actualiza `status = EXECUTED` en BD para que no se vuelva a programar tras un reinicio posterior.
+
+Jobs persistidos: `_order_expire_job`, `_offer_no_response_job`, `_arrival_inactivity_job`, `_arrival_warn_ally_job`, `_arrival_deadline_job`, `_delivery_reminder_job`, `_delivery_admin_alert_job`, `_route_no_response_job`, `_route_arrival_inactivity_job`, `_route_arrival_warn_job`, `_route_arrival_deadline_job`.
+
+Jobs NO persistidos (demasiado cortos): `offer_timeout_` y `route_offer_timeout_` (30 s).
+
+**`PicklePersistence`** (`main.py`): persiste `user_data`, `chat_data`, `bot_data` y estados de ConversationHandlers entre reinicios. Todos los 26 ConversationHandlers tienen `name="<varname>"` y `persistent=True`. Ruta configurable con `PERSISTENCE_PATH` (default: `bot_persistence.pkl`; en Railway con volumen persistente: `/data/bot_persistence.pkl`).
+
 ### Pendientes (NO implementado aún)
 
 - Cuenta regresiva visible (countdown) en la oferta/estado post-aceptación.
-- Persistencia fuerte ante reinicios: los jobs T+5/T+15/T+20 y `excluded_couriers` viven en memoria (`context.bot_data`) y se pierden si el proceso se reinicia.
+- `excluded_couriers[order_id]` en `bot_data` se recupera vía `PicklePersistence` si el archivo pkl existe; si el proceso se reinicia sin pkl previo, la exclusión se pierde para pedidos en vuelo.
 
 ---
 
@@ -2187,5 +2216,5 @@ Todas re-exportadas en `services.py`.
 
 ---
 
-*Última actualización: 2026-03-26*
+*Última actualización: 2026-03-27*
 

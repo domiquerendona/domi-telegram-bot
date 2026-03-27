@@ -3273,6 +3273,8 @@ agenda_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="agenda_conv",
+    persistent=True,
 )
 
 # ConversationHandler para /clientes — entrada unificada, redirige a ally_clientes_conv via ally_clientes_cmd
@@ -3337,6 +3339,8 @@ clientes_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="clientes_conv",
+    persistent=True,
 )
 admin_clientes_conv = ConversationHandler(
     entry_points=[
@@ -3404,6 +3408,8 @@ admin_clientes_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="admin_clientes_conv",
+    persistent=True,
 )
 def ally_clientes_parking_callback(update, context):
     """Maneja la respuesta del aliado sobre parqueadero al crear cliente.
@@ -3508,4 +3514,6 @@ ally_clientes_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="ally_clientes_conv",
+    persistent=True,
 )

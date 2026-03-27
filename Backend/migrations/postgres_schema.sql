@@ -845,3 +845,14 @@ CREATE TABLE IF NOT EXISTS order_support_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status);
+
+-- Scheduled jobs (persistencia de timers del bot ante reinicios)
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    job_name TEXT PRIMARY KEY,
+    callback_name TEXT NOT NULL,
+    fire_at TIMESTAMP NOT NULL,
+    job_data TEXT DEFAULT '{}',
+    status TEXT DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);

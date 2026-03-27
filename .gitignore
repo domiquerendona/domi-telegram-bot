@@ -28,3 +28,6 @@ Frontend/.angular/cache 2/
 # Artefactos locales
 .claude/
 package-lock.json
+
+# Pickle persistence (bot state)
+*.pkl

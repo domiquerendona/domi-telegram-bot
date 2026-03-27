@@ -534,6 +534,8 @@ tarifas_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="tarifas_conv",
+    persistent=True,
 )
 
 config_alertas_oferta_conv = ConversationHandler(
@@ -548,6 +550,8 @@ config_alertas_oferta_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="config_alertas_oferta_conv",
+    persistent=True,
 )
 
 config_ally_minpurchase_conv = ConversationHandler(
@@ -561,6 +565,8 @@ config_ally_minpurchase_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="config_ally_minpurchase_conv",
+    persistent=True,
 )
 
 config_ally_subsidy_conv = ConversationHandler(
@@ -574,6 +580,8 @@ config_ally_subsidy_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="config_ally_subsidy_conv",
+    persistent=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -658,4 +666,6 @@ config_subs_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="config_subs_conv",
+    persistent=True,
 )

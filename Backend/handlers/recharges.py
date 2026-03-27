@@ -2333,6 +2333,8 @@ recargar_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="recargar_conv",
+    persistent=True,
 )
 
 configurar_pagos_conv = ConversationHandler(
@@ -2351,6 +2353,8 @@ configurar_pagos_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="configurar_pagos_conv",
+    persistent=True,
 )
 
 ingreso_conv = ConversationHandler(
@@ -2367,6 +2371,8 @@ ingreso_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="ingreso_conv",
+    persistent=True,
 )
 
 
@@ -2587,4 +2593,6 @@ ally_suscripcion_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="ally_suscripcion_conv",
+    persistent=True,
 )

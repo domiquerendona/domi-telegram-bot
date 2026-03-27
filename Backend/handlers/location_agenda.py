@@ -577,6 +577,8 @@ admin_dirs_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="admin_dirs_conv",
+    persistent=True,
 )
 
 # Conversación para "Otro monto" de la sugerencia T+5 (aplica a aliados y admins)
@@ -611,6 +613,8 @@ ally_locs_conv = ConversationHandler(
         ),
     ],
     allow_reentry=True,
+    name="ally_locs_conv",
+    persistent=True,
 )
 
 

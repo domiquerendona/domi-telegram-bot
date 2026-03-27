@@ -15,6 +15,7 @@ from telegram.ext import (
     MessageHandler,
     Filters,
     CallbackQueryHandler,
+    PicklePersistence,
 )
 
 from services import (
@@ -261,7 +262,7 @@ from services import (
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs
 from db import (
     init_db,
     force_platform_admin,
@@ -2169,7 +2170,11 @@ def main():
     logger.info("TOKEN fingerprint: hash=%s suffix=...%s", token_hash, token_suffix)
     logger.info("Ambiente: %s", ENV)
 
-    updater = Updater(BOT_TOKEN, use_context=True)
+    persistence_path = os.getenv("PERSISTENCE_PATH", "bot_persistence.pkl")
+    persistence = PicklePersistence(filename=persistence_path)
+    logger.info("Persistencia: %s", persistence_path)
+
+    updater = Updater(BOT_TOKEN, use_context=True, persistence=persistence)
     dp = updater.dispatcher
     dp.add_error_handler(global_error_handler)
 
@@ -2381,6 +2386,9 @@ def main():
             logger.warning("No se pudo notificar al admin: %s", e)
     else:
         logger.info("ADMIN_USER_ID=0, se omite notificacion de arranque.")
+
+    # Recuperar jobs persistidos tras reinicio
+    recover_scheduled_jobs(updater.job_queue)
 
     # Iniciar el bot
     updater.start_polling(drop_pending_updates=True)

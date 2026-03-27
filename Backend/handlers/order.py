@@ -3713,27 +3713,331 @@ def _pedido_confirmar_como_ruta(query, context):
     return ConversationHandler.END
 
 
+
+def _resolve_ally_admin_id(ally_id, chat_id, context, from_user_id):
+    """Resuelve el admin_id para publicar el pedido de un aliado.
+
+    Retorna (admin_id, True) en exito.
+    Retorna (None, False) en error (el mensaje de error ya fue enviado al aliado).
+    """
+    admin_link = get_approved_admin_link_for_ally(ally_id)
+    if admin_link:
+        return admin_link["admin_id"], True
+
+    latest_admin_link = get_admin_link_for_ally(ally_id)
+    latest_link_status = (latest_admin_link["link_status"] or "").upper() if latest_admin_link else ""
+
+    if latest_admin_link and latest_link_status in ("PENDING", "REJECTED", "INACTIVE"):
+        ok_cov, cov_msg, migrated_couriers = ensure_platform_temp_coverage_for_ally(ally_id)
+        if ok_cov:
+            platform_admin = get_platform_admin()
+            admin_id = platform_admin["id"] if platform_admin else None
+            logger.info(
+                "Cobertura temporal plataforma aplicada para ally_id=%s couriers_migrados=%s",
+                ally_id, migrated_couriers,
+            )
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Tu administracion local aun no esta aprobada. "
+                    "Activamos cobertura temporal con Plataforma para que puedas operar.\n"
+                    "Te recomendamos solicitar migracion a un admin APPROVED desde \'Solicitar cambio\'."
+                ),
+            )
+            return admin_id, True
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="No se pudo activar cobertura temporal: {}".format(cov_msg),
+        )
+        return None, False
+
+    if user_has_platform_admin(from_user_id):
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            logger.info("Platform bypass aplicado: aliado sin link APPROVED, pedido con admin plataforma.")
+            return platform_admin["id"], True
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "No se encontro Admin Plataforma activo para continuar.\n"
+                "Contacta soporte de plataforma."
+            ),
+        )
+        return None, False
+
+    context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "No tienes un administrador APPROVED vinculado.\n"
+            "No se puede crear ni publicar el pedido hasta tener un vinculo aprobado."
+        ),
+    )
+    return None, False
+
+
+def _check_ally_fee_for_order(ally_id, admin_id, chat_id, context):
+    """Verifica saldo antes de crear pedido. Retorna True si puede proceder.
+
+    Si retorna False el mensaje de error ya fue enviado al aliado.
+    """
+    fee_ok, fee_code = check_service_fee_available(
+        target_type="ALLY",
+        target_id=ally_id,
+        admin_id=admin_id,
+    )
+    if fee_ok:
+        return True
+
+    if fee_code == "ADMIN_SIN_SALDO":
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Tu administrador no tiene saldo suficiente para operar. "
+                "Contacta a tu administrador o recarga directamente con plataforma."
+            ),
+        )
+        try:
+            admin_row = get_admin_by_id(admin_id)
+            if admin_row:
+                admin_user = get_user_by_id(admin_row["user_id"])
+                if admin_user:
+                    context.bot.send_message(
+                        chat_id=admin_user["telegram_id"],
+                        text=(
+                            "Tu equipo no puede operar porque no tienes saldo. "
+                            "Recarga con plataforma para que tu equipo siga generando ganancias."
+                        ),
+                    )
+        except Exception as e:
+            logger.warning("No se pudo notificar al admin: %s", e)
+    else:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="No tienes saldo suficiente para este servicio. Recarga para continuar.",
+        )
+    return False
+
+
+def _create_and_publish_order(ally_id, admin_id, context):
+    """Crea el pedido en BD y lo publica a couriers.
+
+    Retorna (order_id, published_count, pricing, pickup_text).
+    Lanza Exception en caso de error de BD.
+    """
+    pickup_location = context.user_data.get("pickup_location")
+    pickup_text = context.user_data.get("pickup_address", "")
+    if pickup_location:
+        pickup_location_id = pickup_location["id"]
+    else:
+        default_location = get_default_ally_location(ally_id)
+        pickup_location_id = default_location["id"] if default_location else None
+        if not pickup_text and default_location:
+            pickup_text = default_location["address"] or "No definida"
+    if not pickup_text:
+        pickup_text = "No definida"
+
+    customer_name = context.user_data.get("customer_name", "")
+    customer_phone = context.user_data.get("customer_phone", "")
+    customer_address = context.user_data.get("customer_address", "")
+    customer_city = context.user_data.get("customer_city", "")
+    customer_barrio = context.user_data.get("customer_barrio", "")
+    service_type = context.user_data.get("service_type", "")
+    distance_km = context.user_data.get("quote_distance_km", 0.0)
+    requires_cash = context.user_data.get("requires_cash", False)
+    cash_required_amount = context.user_data.get("cash_required_amount", 0)
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    dropoff_lat = context.user_data.get("dropoff_lat")
+    dropoff_lng = context.user_data.get("dropoff_lng")
+    quote_source = context.user_data.get("quote_source", "text")
+
+    base_instructions = context.user_data.get("instructions", "")
+    buy_products_list = context.user_data.get("buy_products_list", "")
+    if service_type == "Compras" and buy_products_list:
+        instructions_final = "[Lista Compras: {}]".format(buy_products_list)
+        if base_instructions:
+            instructions_final += "\n{}".format(base_instructions)
+    else:
+        instructions_final = base_instructions
+
+    pedido_incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    if pedido_incentivo < 0:
+        pedido_incentivo = 0
+    pricing = build_order_pricing_breakdown(
+        distance_km=distance_km,
+        service_type=service_type,
+        buy_products_count=context.user_data.get("buy_products_count", 0),
+        additional_incentive=pedido_incentivo,
+    )
+
+    order_id = create_order(
+        ally_id=ally_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        customer_address=customer_address,
+        customer_city=customer_city,
+        customer_barrio=customer_barrio,
+        pickup_location_id=pickup_location_id,
+        pay_at_store_required=False,
+        pay_at_store_amount=0,
+        base_fee=pricing["base_fee"],
+        distance_km=pricing["distance_km"],
+        buy_surcharge=pricing["buy_surcharge"],
+        rain_extra=0,
+        high_demand_extra=0,
+        night_extra=0,
+        additional_incentive=pricing["additional_incentive"],
+        total_fee=pricing["total_fee"],
+        instructions=instructions_final,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_required_amount,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        dropoff_lat=dropoff_lat,
+        dropoff_lng=dropoff_lng,
+        quote_source=quote_source,
+        ally_admin_id_snapshot=admin_id,
+        purchase_amount=context.user_data.get("pedido_purchase_amount"),
+        delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
+        customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
+    )
+    context.user_data["order_id"] = order_id
+
+    published_count = 0
+    try:
+        published_count = publish_order_to_couriers(
+            order_id,
+            ally_id,
+            context,
+            admin_id_override=admin_id,
+            pickup_city=context.user_data.get("pickup_city"),
+            pickup_barrio=context.user_data.get("pickup_barrio"),
+            dropoff_city=context.user_data.get("customer_city"),
+            dropoff_barrio=context.user_data.get("customer_barrio"),
+        )
+    except Exception as e:
+        logger.warning("Error al publicar pedido a couriers: %s", e)
+
+    if pickup_location_id:
+        increment_pickup_usage(pickup_location_id, ally_id)
+
+    return order_id, published_count, pricing, pickup_text
+
+
+def _handle_post_order_ui(query, update, context, order_id, ally_id, published_count, pricing, pickup_text):
+    """UI post-creacion: preview, oferta guardar cliente/direccion, menu de exito.
+
+    Retorna el estado de ConversationHandler correspondiente.
+    """
+    service_type = context.user_data.get("service_type", "")
+    requires_cash = context.user_data.get("requires_cash", False)
+    cash_required_amount = context.user_data.get("cash_required_amount", 0)
+    customer_address = context.user_data.get("customer_address", "")
+    customer_city = context.user_data.get("customer_city", "")
+    customer_barrio = context.user_data.get("customer_barrio", "")
+    customer_phone = context.user_data.get("customer_phone", "")
+    customer_id_ctx = context.user_data.get("customer_id")
+    is_new_customer = context.user_data.get("is_new_customer", False)
+    dropoff_lat = context.user_data.get("dropoff_lat")
+    dropoff_lng = context.user_data.get("dropoff_lng")
+
+    preview = construir_preview_oferta(
+        order_id, service_type, pickup_text, customer_address,
+        pricing["distance_km"], pricing["total_fee"], requires_cash, cash_required_amount,
+        products_list=context.user_data.get("buy_products_list", ""),
+    )
+
+    try:
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\nPedido: #{}".format(order_id),
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
+            ),
+        )
+    except Exception:
+        pass
+
+    existing_customer = get_ally_customer_by_phone(ally_id, customer_phone) if customer_phone else None
+    should_offer_save_customer = bool((is_new_customer or not customer_id_ctx) and not existing_customer)
+
+    if should_offer_save_customer:
+        query.edit_message_text(
+            "Pedido #{} creado exitosamente.\n\n".format(order_id)
+            + ("No hay repartidores elegibles en este momento. El pedido quedo registrado pero sin publicar.\n\n"
+               if published_count == 0 else "")
+            + "Quieres guardar este cliente para futuros pedidos?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
+                [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
+            ]),
+        )
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=preview,
+            reply_markup=get_preview_buttons(),
+        )
+        return PEDIDO_GUARDAR_CLIENTE
+
+    addr_already_saved = False
+    if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng):
+        addr_match = find_matching_customer_address(
+            existing_customer["id"], customer_address, customer_city, customer_barrio
+        )
+        addr_already_saved = bool(addr_match)
+        if not addr_already_saved:
+            context.user_data["guardar_dir_existing_cust_id"] = existing_customer["id"]
+
+    if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng) and not addr_already_saved:
+        success_text = (
+            "Pedido #{} creado exitosamente.\n".format(order_id)
+            + ("No hay repartidores elegibles en este momento. El pedido quedo sin publicar.\n\n"
+               if published_count == 0 else "\n")
+            + "Deseas agregar esta direccion a la agenda de {}?".format(
+                existing_customer["name"] or "este cliente"
+            )
+        )
+        query.edit_message_text(
+            success_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Si, agregar", callback_data="pedido_guardar_dir_si")],
+                [InlineKeyboardButton("No", callback_data="pedido_guardar_dir_no")],
+            ]),
+        )
+        return PEDIDO_GUARDAR_DIR_EXISTENTE
+
+    context.user_data.clear()
+    if published_count == 0:
+        show_main_menu(
+            update, context,
+            "Pedido #{} creado exitosamente.\n"
+            "No hay repartidores elegibles en este momento. "
+            "El pedido quedo registrado pero sin publicar.".format(order_id),
+        )
+    else:
+        show_main_menu(
+            update, context,
+            "Pedido #{} creado exitosamente.\nPronto un repartidor sera asignado.".format(order_id),
+        )
+    return ConversationHandler.END
+
+
 def pedido_confirmacion_callback(update, context):
     """Maneja la confirmacion/cancelacion del pedido por botones."""
     query = update.callback_query
     query.answer()
     data = query.data
 
-    # Anti doble-click: verificar si ya fue procesado
     if context.user_data.get("pedido_processed"):
         query.edit_message_text("Este pedido ya fue procesado.")
         return ConversationHandler.END
 
     if data == "pedido_confirmar":
-        # Marcar como procesado ANTES de crear el pedido
         context.user_data["pedido_processed"] = True
 
-        # Si hay paradas extra, crear ruta en lugar de pedido individual
-        paradas_extra = context.user_data.get("pedido_paradas_extra", [])
-        if paradas_extra:
+        if context.user_data.get("pedido_paradas_extra"):
             return _pedido_confirmar_como_ruta(query, context)
 
-        # Obtener datos del usuario y ally
         ally_id = context.user_data.get("ally_id")
         if not ally_id:
             query.edit_message_text("Error: sesion expirada. Usa /nuevo_pedido de nuevo.")
@@ -3741,135 +4045,17 @@ def pedido_confirmacion_callback(update, context):
             return ConversationHandler.END
         chat_id = query.message.chat_id
 
-        admin_link = get_approved_admin_link_for_ally(ally_id)
-        admin_id_for_publish = None
-
-        if admin_link:
-            admin_id_for_publish = admin_link["admin_id"]
-        else:
-            latest_admin_link = get_admin_link_for_ally(ally_id)
-            latest_link_status = (latest_admin_link["link_status"] or "").upper() if latest_admin_link else ""
-
-            if latest_admin_link and latest_link_status in ("PENDING", "REJECTED", "INACTIVE"):
-                ok_cov, cov_msg, migrated_couriers = ensure_platform_temp_coverage_for_ally(ally_id)
-                if ok_cov:
-                    platform_admin = get_platform_admin()
-                    admin_id_for_publish = platform_admin["id"] if platform_admin else None
-                    logger.info("Cobertura temporal plataforma aplicada para ally_id=%s couriers_migrados=%s", 
-                        ally_id, migrated_couriers
-                    )
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "Tu administracion local aun no esta aprobada. "
-                            "Activamos cobertura temporal con Plataforma para que puedas operar.\n"
-                            "Te recomendamos solicitar migracion a un admin APPROVED desde 'Solicitar cambio'."
-                        ),
-                    )
-                else:
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text="No se pudo activar cobertura temporal: {}".format(cov_msg),
-                    )
-                    context.user_data.clear()
-                    return ConversationHandler.END
-            elif user_has_platform_admin(query.from_user.id):
-                platform_admin = get_platform_admin()
-                if platform_admin:
-                    admin_id_for_publish = platform_admin["id"]
-                    logger.info("Platform bypass aplicado: aliado sin link APPROVED, pedido publicado con admin plataforma.")
-                else:
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "No se encontro Admin Plataforma activo para continuar.\n"
-                            "Contacta soporte de plataforma."
-                        ),
-                    )
-                    context.user_data.clear()
-                    return ConversationHandler.END
-            else:
-                context.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        "No tienes un administrador APPROVED vinculado.\n"
-                        "No se puede crear ni publicar el pedido hasta tener un vinculo aprobado."
-                    ),
-                )
-                context.user_data.clear()
-                return ConversationHandler.END
-
-        # Verificacion final obligatoria de saldo ANTES de crear pedido,
-        # incluyendo cobertura temporal con plataforma.
-        fee_ok, fee_code = check_service_fee_available(
-            target_type="ALLY",
-            target_id=ally_id,
-            admin_id=admin_id_for_publish,
-        )
-        if not fee_ok:
-            if fee_code == "ADMIN_SIN_SALDO":
-                context.bot.send_message(
-                    chat_id=chat_id,
-                    text="Tu administrador no tiene saldo suficiente para operar. "
-                         "Contacta a tu administrador o recarga directamente con plataforma."
-                )
-                try:
-                    admin_row = get_admin_by_id(admin_id_for_publish)
-                    if admin_row:
-                        admin_user = get_user_by_id(admin_row["user_id"])
-                        if admin_user:
-                            context.bot.send_message(
-                                chat_id=admin_user["telegram_id"],
-                                text="Tu equipo no puede operar porque no tienes saldo. "
-                                     "Recarga con plataforma para que tu equipo siga generando ganancias."
-                            )
-                except Exception as e:
-                    logger.warning("No se pudo notificar al admin: %s", e)
-            else:
-                context.bot.send_message(
-                    chat_id=chat_id,
-                    text="No tienes saldo suficiente para este servicio. Recarga para continuar."
-                )
+        admin_id, ok = _resolve_ally_admin_id(ally_id, chat_id, context, query.from_user.id)
+        if not ok:
             context.user_data.clear()
             return ConversationHandler.END
 
-        # Obtener pickup del selector (o default si no existe)
-        pickup_location = context.user_data.get("pickup_location")
-        pickup_text = context.user_data.get("pickup_address", "")
-        if pickup_location:
-            pickup_location_id = pickup_location["id"]
-        else:
-            # Fallback: usar default si no se selecciono ninguno
-            default_location = get_default_ally_location(ally_id)
-            pickup_location_id = default_location["id"] if default_location else None
-            if not pickup_text and default_location:
-                pickup_text = default_location["address"] or "No definida"
+        if not _check_ally_fee_for_order(ally_id, admin_id, chat_id, context):
+            context.user_data.clear()
+            return ConversationHandler.END
 
-        if not pickup_text:
-            pickup_text = "No definida"
-
-        # Obtener datos del pedido de context.user_data
-        customer_name = context.user_data.get("customer_name", "")
-        customer_phone = context.user_data.get("customer_phone", "")
-        customer_address = context.user_data.get("customer_address", "")
-        customer_city = context.user_data.get("customer_city", "")
-        customer_barrio = context.user_data.get("customer_barrio", "")
-        service_type = context.user_data.get("service_type", "")
-
-        # Obtener datos de cotizacion
-        distance_km = context.user_data.get("quote_distance_km", 0.0)
-        quote_price = context.user_data.get("quote_price", 0)
-        requires_cash = context.user_data.get("requires_cash", False)
-        cash_required_amount = context.user_data.get("cash_required_amount", 0)
-
-        # Obtener coords y quote_source
-        pickup_lat = context.user_data.get("pickup_lat")
-        pickup_lng = context.user_data.get("pickup_lng")
-        dropoff_lat = context.user_data.get("dropoff_lat")
-        dropoff_lng = context.user_data.get("dropoff_lng")
-        quote_source = context.user_data.get("quote_source", "text")
-
-        if not has_valid_coords(pickup_lat, pickup_lng) or not has_valid_coords(dropoff_lat, dropoff_lng):
+        if not has_valid_coords(context.user_data.get("pickup_lat"), context.user_data.get("pickup_lng")) or \
+           not has_valid_coords(context.user_data.get("dropoff_lat"), context.user_data.get("dropoff_lng")):
             context.user_data.pop("pedido_processed", None)
             query.edit_message_text(
                 "El pedido requiere ubicacion confirmada en recogida y entrega.\n\n"
@@ -3877,209 +4063,29 @@ def pedido_confirmacion_callback(update, context):
             )
             return PEDIDO_UBICACION
 
-        # Preparar instrucciones (para Compras, incluir lista de productos)
-        base_instructions = context.user_data.get("instructions", "")
-        buy_products_list = context.user_data.get("buy_products_list", "")
-        if service_type == "Compras" and buy_products_list:
-            instructions_final = f"[Lista Compras: {buy_products_list}]"
-            if base_instructions:
-                instructions_final += f"\n{base_instructions}"
-        else:
-            instructions_final = base_instructions
-
-        # Crear pedido en BD
         try:
-            pedido_incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
-            if pedido_incentivo < 0:
-                pedido_incentivo = 0
-            pricing = build_order_pricing_breakdown(
-                distance_km=distance_km,
-                service_type=service_type,
-                buy_products_count=context.user_data.get("buy_products_count", 0),
-                additional_incentive=pedido_incentivo,
+            order_id, published_count, pricing, pickup_text = _create_and_publish_order(
+                ally_id, admin_id, context
             )
-            order_id = create_order(
-                ally_id=ally_id,
-                customer_name=customer_name,
-                customer_phone=customer_phone,
-                customer_address=customer_address,
-                customer_city=customer_city,
-                customer_barrio=customer_barrio,
-                pickup_location_id=pickup_location_id,
-                pay_at_store_required=False,
-                pay_at_store_amount=0,
-                base_fee=pricing["base_fee"],
-                distance_km=pricing["distance_km"],
-                buy_surcharge=pricing["buy_surcharge"],
-                rain_extra=0,
-                high_demand_extra=0,
-                night_extra=0,
-                additional_incentive=pricing["additional_incentive"],
-                total_fee=pricing["total_fee"],
-                instructions=instructions_final,
-                requires_cash=requires_cash,
-                cash_required_amount=cash_required_amount,
-                pickup_lat=pickup_lat,
-                pickup_lng=pickup_lng,
-                dropoff_lat=dropoff_lat,
-                dropoff_lng=dropoff_lng,
-                quote_source=quote_source,
-                ally_admin_id_snapshot=admin_id_for_publish,
-                purchase_amount=context.user_data.get("pedido_purchase_amount"),
-                delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
-                customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
-            )
-            context.user_data["order_id"] = order_id
-
-            # Vincular solicitud de bandeja al pedido creado si aplica
-            _form_req_id = context.user_data.get("bandeja_form_request_id")
-            if _form_req_id:
-                _ally_id_ctx = context.user_data.get("ally_id")
-                try:
-                    mark_ally_form_request_converted(_form_req_id, _ally_id_ctx, order_id)
-                except Exception as _e:
-                    logger.warning("mark_ally_form_request_converted failed: req=%s ally=%s order=%s err=%s", 
-                        _form_req_id, _ally_id_ctx, order_id, _e)
-
-            # Publicar pedido a couriers del equipo
-            published_count = 0
-            try:
-                published_count = publish_order_to_couriers(
-                    order_id,
-                    ally_id,
-                    context,
-                    admin_id_override=admin_id_for_publish,
-                    pickup_city=context.user_data.get("pickup_city"),
-                    pickup_barrio=context.user_data.get("pickup_barrio"),
-                    dropoff_city=context.user_data.get("customer_city"),
-                    dropoff_barrio=context.user_data.get("customer_barrio"),
-                )
-            except Exception as e:
-                logger.warning("Error al publicar pedido a couriers: %s", e)
-
-            # Incrementar contador de uso del pickup
-            if pickup_location_id:
-                increment_pickup_usage(pickup_location_id, ally_id)
-
-            # Construir preview de oferta para repartidor
-            total_fee = pricing["total_fee"]
-            preview = construir_preview_oferta(
-                order_id, service_type, pickup_text, customer_address,
-                distance_km, total_fee, requires_cash, cash_required_amount,
-                products_list=context.user_data.get("buy_products_list", "")
-            )
-
-            # Preguntar guardar cliente cuando el telefono no exista en recurrentes.
-            is_new_customer = context.user_data.get("is_new_customer", False)
-            customer_phone = context.user_data.get("customer_phone", "")
-            customer_id_ctx = context.user_data.get("customer_id")
-            existing_customer = get_ally_customer_by_phone(ally_id, customer_phone) if customer_phone else None
-            should_offer_save_customer = bool((is_new_customer or not customer_id_ctx) and not existing_customer)
-
-            if should_offer_save_customer:
-                keyboard = [
-                    [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
-                    [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                query.edit_message_text(
-                    f"Pedido #{order_id} creado exitosamente.\n\n"
-                    + ("No hay repartidores elegibles en este momento. "
-                       "El pedido quedo registrado pero sin publicar.\n\n" if published_count == 0 else "")
-                    +
-                    "Quieres guardar este cliente para futuros pedidos?",
-                    reply_markup=reply_markup
-                )
-                # Enviar preview como mensaje separado
-                context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=preview,
-                    reply_markup=get_preview_buttons()
-                )
-                try:
-                    context.bot.send_message(
-                        chat_id=query.message.chat_id,
-                        text=(
-                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
-                            "Pedido: #{}".format(order_id)
-                        ),
-                        reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
-                        ),
-                    )
-                except Exception:
-                    pass
-                return PEDIDO_GUARDAR_CLIENTE
-            else:
-                # Cliente existente: ofrecer agregar nueva direccion si no existe ya
-                dropoff_lat = context.user_data.get("dropoff_lat")
-                dropoff_lng = context.user_data.get("dropoff_lng")
-                customer_address = context.user_data.get("customer_address", "")
-                customer_city = context.user_data.get("customer_city", "")
-                customer_barrio = context.user_data.get("customer_barrio", "")
-                addr_already_saved = False
-                if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng):
-                    addr_match = find_matching_customer_address(
-                        existing_customer["id"], customer_address, customer_city, customer_barrio
-                    )
-                    addr_already_saved = bool(addr_match)
-                    if not addr_already_saved:
-                        context.user_data["guardar_dir_existing_cust_id"] = existing_customer["id"]
-                try:
-                    context.bot.send_message(
-                        chat_id=query.message.chat_id,
-                        text=(
-                            "Si quieres, puedes agregar o aumentar el incentivo cuando quieras.\n"
-                            "Pedido: #{}".format(order_id)
-                        ),
-                        reply_markup=InlineKeyboardMarkup(
-                            [[InlineKeyboardButton("Aumentar incentivo", callback_data="pedido_inc_menu_{}".format(order_id))]]
-                        ),
-                    )
-                except Exception:
-                    pass
-                if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng) and not addr_already_saved:
-                    success_text = (
-                        "Pedido #{} creado exitosamente.\n".format(order_id)
-                        + ("No hay repartidores elegibles en este momento. El pedido quedo sin publicar.\n\n"
-                           if published_count == 0 else "\n")
-                        + "Deseas agregar esta direccion a la agenda de {}?".format(
-                            existing_customer["name"] or "este cliente"
-                        )
-                    )
-                    query.edit_message_text(
-                        success_text,
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Si, agregar", callback_data="pedido_guardar_dir_si")],
-                            [InlineKeyboardButton("No", callback_data="pedido_guardar_dir_no")],
-                        ]),
-                    )
-                    return PEDIDO_GUARDAR_DIR_EXISTENTE
-                context.user_data.clear()
-                if published_count == 0:
-                    show_main_menu(
-                        update,
-                        context,
-                        f"Pedido #{order_id} creado exitosamente.\n"
-                        "No hay repartidores elegibles en este momento. "
-                        "El pedido quedo registrado pero sin publicar.",
-                    )
-                else:
-                    show_main_menu(
-                        update,
-                        context,
-                        f"Pedido #{order_id} creado exitosamente.\nPronto un repartidor sera asignado.",
-                    )
-                return ConversationHandler.END
-
         except Exception as e:
             query.edit_message_text(
-                f"Error al crear el pedido: {str(e)}\n\n"
-                "Por favor intenta nuevamente mas tarde."
+                "Error al crear el pedido: {}\n\nPor favor intenta nuevamente mas tarde.".format(e)
             )
             context.user_data.clear()
             show_main_menu(update, context)
             return ConversationHandler.END
+
+        _form_req_id = context.user_data.get("bandeja_form_request_id")
+        if _form_req_id:
+            try:
+                mark_ally_form_request_converted(_form_req_id, ally_id, order_id)
+            except Exception as e:
+                logger.warning("mark_ally_form_request_converted failed: req=%s order=%s err=%s",
+                               _form_req_id, order_id, e)
+
+        return _handle_post_order_ui(
+            query, update, context, order_id, ally_id, published_count, pricing, pickup_text
+        )
 
     elif data == "pedido_cancelar":
         query.edit_message_text("Pedido cancelado.")
@@ -4088,7 +4094,6 @@ def pedido_confirmacion_callback(update, context):
         return ConversationHandler.END
 
     return PEDIDO_CONFIRMACION
-
 
 def construir_preview_oferta(order_id, service_type, pickup_text, customer_address,
                               distance_km, price, requires_cash, cash_amount,
@@ -4704,6 +4709,8 @@ nuevo_pedido_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="nuevo_pedido_conv",
+    persistent=True,
 )
 
 
@@ -4722,6 +4729,8 @@ pedido_incentivo_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="pedido_incentivo_conv",
+    persistent=True,
 )
 
 offer_suggest_inc_conv = ConversationHandler(
@@ -4739,6 +4748,8 @@ offer_suggest_inc_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="offer_suggest_inc_conv",
+    persistent=True,
 )
 
 route_suggest_inc_conv = ConversationHandler(
@@ -4756,6 +4767,8 @@ route_suggest_inc_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="route_suggest_inc_conv",
+    persistent=True,
 )
 
 # Conversación para crear pedido especial del Admin Local/Plataforma
@@ -4823,5 +4836,7 @@ admin_pedido_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="admin_pedido_conv",
+    persistent=True,
 )
 

@@ -1377,6 +1377,8 @@ ally_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="ally_conv",
+    persistent=True,
 )
 
 courier_conv = ConversationHandler(
@@ -1439,6 +1441,8 @@ courier_conv = ConversationHandler(
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
     allow_reentry=True,
+    name="courier_conv",
+    persistent=True,
 )
 
 
@@ -1876,4 +1880,6 @@ admin_conv = ConversationHandler(
         MessageHandler(Filters.regex(r'(?i)^\s*volver\s*$'), volver_paso_anterior),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="admin_conv",
+    persistent=True,
 )

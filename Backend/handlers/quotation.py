@@ -551,6 +551,8 @@ cotizar_conv = ConversationHandler(
         CommandHandler("cancel", cancel_conversacion),
         MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
     ],
+    name="cotizar_conv",
+    persistent=True,
 )
 
 

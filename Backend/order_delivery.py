@@ -256,6 +256,7 @@ def _delivery_reminder_job(context):
 
 def _delivery_admin_alert_job(context):
     """T+60: notifica al admin del equipo que el pedido lleva mucho tiempo en curso."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -442,6 +443,7 @@ def _schedule_order_expire_job(context, order_id):
 
 def _order_expire_job(context):
     """Job T+10: si el pedido sigue PUBLISHED, expira automáticamente."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -457,6 +459,7 @@ def _order_expire_job(context):
 
 def _offer_no_response_job(context):
     """Job T+5: si el pedido sigue PUBLISHED, sugiere al creador que agregue incentivo."""
+    mark_job_executed(context.job.name)
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     data = context.job.context or {}
     order_id = data.get("order_id")
@@ -557,6 +560,7 @@ def repost_order_to_couriers(order_id, context):
 
 def _route_no_response_job(context):
     """Job T+5: si la ruta sigue PUBLISHED, sugiere al aliado que agregue incentivo."""
+    mark_job_executed(context.job.name)
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     data = context.job.context or {}
     route_id = data.get("route_id")
@@ -2048,6 +2052,7 @@ def _arrival_inactivity_job(context):
     - Sin progreso o poco movimiento: avisa al courier.
     - Alejandose del pickup (>15% mas lejos que al aceptar): libera inmediatamente.
     """
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -2122,6 +2127,7 @@ def _arrival_inactivity_job(context):
 
 def _arrival_warn_ally_job(context):
     """T+15: notifica al aliado que el courier no ha llegado y le da opciones."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -2197,6 +2203,7 @@ def _arrival_warn_ally_job(context):
 
 def _arrival_deadline_job(context):
     """T+20: libera automáticamente el pedido si el courier no llegó."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     order_id = data.get("order_id")
     if not order_id:
@@ -4367,6 +4374,7 @@ def _handle_route_pickupconfirm_by_ally(update, context, route_id, approve):
 
 def _route_arrival_inactivity_job(context):
     """T+5 ruta: algoritmo direccional — misma logica que pedidos."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     route_id = data.get("route_id")
     courier_id = data.get("courier_id")
@@ -4436,6 +4444,7 @@ def _route_arrival_inactivity_job(context):
 
 def _route_arrival_warn_job(context):
     """T+15 ruta: avisa al aliado y pregunta al courier."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     route_id = data.get("route_id")
     courier_id = data.get("courier_id")
@@ -4493,6 +4502,7 @@ def _route_arrival_warn_job(context):
 
 def _route_arrival_deadline_job(context):
     """T+20 ruta: libera la ruta si el courier no llego."""
+    mark_job_executed(context.job.name)
     data = context.job.context or {}
     route_id = data.get("route_id")
     courier_id = data.get("courier_id")
@@ -6032,3 +6042,73 @@ def _handle_admin_route_pickup_pinissue_action(update, context, route_id, suppor
         query.edit_message_text("Ruta #{} liberada para re-oferta.".format(route_id))
         _release_route_by_timeout(route_id, courier_id, context,
                                    reason="pin de recogida incorrecto — liberado por admin")
+
+
+# ---------------------------------------------------------------------------
+# Job recovery after restart
+# ---------------------------------------------------------------------------
+
+JOB_REGISTRY = {
+    "_order_expire_job": _order_expire_job,
+    "_offer_no_response_job": _offer_no_response_job,
+    "_arrival_inactivity_job": _arrival_inactivity_job,
+    "_arrival_warn_ally_job": _arrival_warn_ally_job,
+    "_arrival_deadline_job": _arrival_deadline_job,
+    "_delivery_reminder_job": _delivery_reminder_job,
+    "_delivery_admin_alert_job": _delivery_admin_alert_job,
+    "_route_no_response_job": _route_no_response_job,
+    "_route_arrival_inactivity_job": _route_arrival_inactivity_job,
+    "_route_arrival_warn_job": _route_arrival_warn_job,
+    "_route_arrival_deadline_job": _route_arrival_deadline_job,
+}
+
+
+def recover_scheduled_jobs(job_queue):
+    """Al arrancar, reprograma en memoria los jobs persistidos que no fueron ejecutados.
+
+    Llama a esta funcion justo despues de crear el Updater y antes de start_polling().
+    Los jobs cuyo fire_at ya paso se disparan inmediatamente (when=0).
+    """
+    from datetime import datetime, timezone
+    try:
+        pending = get_pending_scheduled_jobs()
+    except Exception as e:
+        logger.warning("recover_scheduled_jobs: no se pudo leer scheduled_jobs: %s", e)
+        return
+
+    recovered = 0
+    skipped = 0
+    for row in pending:
+        job_name = row["job_name"]
+        callback_name = row["callback_name"]
+        fire_at_str = row["fire_at"]
+        job_data_json = row["job_data"] or "{}"
+
+        callback = JOB_REGISTRY.get(callback_name)
+        if callback is None:
+            logger.warning("recover_scheduled_jobs: callback desconocido %s (job %s) - omitido", callback_name, job_name)
+            skipped += 1
+            continue
+
+        try:
+            job_data = json.loads(job_data_json)
+        except Exception:
+            job_data = {}
+
+        try:
+            fire_at = datetime.fromisoformat(fire_at_str)
+        except Exception:
+            fire_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        delay = max(0, (fire_at - now).total_seconds())
+
+        try:
+            job_queue.run_once(callback, when=delay, context=job_data, name=job_name)
+            recovered += 1
+            logger.info("recover_scheduled_jobs: reprogramado %s en %.0fs", job_name, delay)
+        except Exception as e:
+            logger.warning("recover_scheduled_jobs: error al reprogramar %s: %s", job_name, e)
+            skipped += 1
+
+    logger.info("recover_scheduled_jobs: %d jobs recuperados, %d omitidos", recovered, skipped)

@@ -683,12 +683,6 @@ def init_db():
     if "selfie_file_id" not in couriers_cols:
         cur.execute("ALTER TABLE couriers ADD COLUMN selfie_file_id TEXT")
 
-    # admin_allies: subscription_price (precio mensual configurado por el admin para este aliado)
-    cur.execute("PRAGMA table_info(admin_allies)")
-    admin_allies_cols = [r[1] for r in cur.fetchall()]
-    if "subscription_price" not in admin_allies_cols:
-        cur.execute("ALTER TABLE admin_allies ADD COLUMN subscription_price INTEGER DEFAULT NULL")
-
     # ============================================================
     # D) ÍNDICES (después de asegurar columnas)
     # ============================================================
@@ -959,6 +953,12 @@ def init_db():
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_ally_subscriptions_ally ON ally_subscriptions(ally_id, status)")
+
+    # admin_allies: columnas de migracion
+    cur.execute("PRAGMA table_info(admin_allies)")
+    admin_allies_cols = [r[1] for r in cur.fetchall()]
+    if "subscription_price" not in admin_allies_cols:
+        cur.execute("ALTER TABLE admin_allies ADD COLUMN subscription_price INTEGER DEFAULT NULL")
 
     # Tabla: admin_couriers (relación admin-repartidor)
     cur.execute("""
@@ -1782,6 +1782,19 @@ def init_db():
         cur.execute("ALTER TABLE couriers ADD COLUMN vehicle_type TEXT DEFAULT 'MOTO';")
     except Exception:
         pass
+
+    # Tabla: scheduled_jobs (persistencia de timers del bot)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            job_name TEXT PRIMARY KEY,
+            callback_name TEXT NOT NULL,
+            fire_at TEXT NOT NULL,
+            job_data TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
 
     conn.commit()
     conn.close()
@@ -10511,3 +10524,75 @@ def get_ally_subscription_info(ally_id: int):
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ============================================================
+# SCHEDULED JOBS — persistencia de timers del bot
+# ============================================================
+
+def upsert_scheduled_job(job_name: str, callback_name: str, fire_at: str, job_data_json: str):
+    """Inserta o reemplaza un job programado. fire_at es ISO timestamp string."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    if DB_ENGINE == "postgres":
+        cur.execute(
+            """
+            INSERT INTO scheduled_jobs (job_name, callback_name, fire_at, job_data, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, 'PENDING', %s, %s)
+            ON CONFLICT (job_name) DO UPDATE SET
+                callback_name = EXCLUDED.callback_name,
+                fire_at = EXCLUDED.fire_at,
+                job_data = EXCLUDED.job_data,
+                status = 'PENDING',
+                updated_at = EXCLUDED.updated_at
+            """,
+            (job_name, callback_name, fire_at, job_data_json, now, now),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO scheduled_jobs
+                (job_name, callback_name, fire_at, job_data, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+            """,
+            (job_name, callback_name, fire_at, job_data_json, now, now),
+        )
+    conn.commit()
+    conn.close()
+
+
+def cancel_scheduled_job(job_name: str):
+    """Marca un job como CANCELLED en la BD."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    cur.execute(
+        f"UPDATE scheduled_jobs SET status = 'CANCELLED', updated_at = {P} WHERE job_name = {P}",
+        (now, job_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_job_executed(job_name: str):
+    """Marca un job como EXECUTED en la BD."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    cur.execute(
+        f"UPDATE scheduled_jobs SET status = 'EXECUTED', updated_at = {P} WHERE job_name = {P}",
+        (now, job_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_scheduled_jobs():
+    """Retorna todos los jobs en estado PENDING para reprogramar tras reinicio."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM scheduled_jobs WHERE status = 'PENDING'")
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
