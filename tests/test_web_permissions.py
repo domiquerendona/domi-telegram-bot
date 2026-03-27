@@ -91,7 +91,7 @@ class WebPermissionsTests(unittest.TestCase):
         with patch("web.api.dashboard.get_dashboard_stats", return_value={"ok": True}) as mocked:
             response = dashboard_stats(current_user=user)
 
-        mocked.assert_called_once_with()
+        mocked.assert_called_once_with(admin_id=None)
         self.assertEqual({"ok": True}, response)
 
 

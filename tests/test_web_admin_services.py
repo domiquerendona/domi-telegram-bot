@@ -14,6 +14,8 @@ class WebAdminServicesTests(unittest.TestCase):
         os.environ["DB_PATH"] = self.db_path
         os.environ.pop("DATABASE_URL", None)
         db.init_db()
+        db.ensure_platform_sociedad()
+        self.sociedad_id = db.get_platform_sociedad_id()
 
         self.platform_admin_id, self.local_admin_id = self._seed_admins()
         self.ally_id = self._seed_ally()
@@ -188,7 +190,8 @@ class WebAdminServicesTests(unittest.TestCase):
         self.assertEqual(700, db.get_ally_link_balance(self.ally_id, self.local_admin_id))
         self.assertEqual(700, db.get_courier_link_balance(self.courier_id, self.local_admin_id))
         self.assertEqual(400, db.get_admin_balance(self.local_admin_id))
-        self.assertEqual(200, db.get_admin_balance(self.platform_admin_id))
+        # PLATFORM_FEE ($100 x 2 fees) va a la sociedad, no al platform_admin
+        self.assertEqual(200, db.get_admin_balance(self.sociedad_id))
 
 
 if __name__ == "__main__":
