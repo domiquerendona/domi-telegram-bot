@@ -4097,6 +4097,10 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
         )
         return PEDIDO_GUARDAR_DIR_EXISTENTE
 
+    try:
+        query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     context.user_data.clear()
     if published_count == 0:
         show_main_menu(
