@@ -3852,9 +3852,9 @@ def _build_route_offer_text(route, destinations):
     total_fee = int(route["total_fee"] or 0)
     additional_incentive = int(route["additional_incentive"] or 0)
 
-    # Barrio/ciudad de recogida
-    pickup_city = route["pickup_city"] or ""
-    pickup_barrio = route["pickup_barrio"] or ""
+    # Barrio/ciudad de recogida (columnas opcionales — fallback a pickup_address)
+    pickup_city = route.get("pickup_city") or ""
+    pickup_barrio = route.get("pickup_barrio") or ""
     if not pickup_city and not pickup_barrio:
         pickup_area = route["pickup_address"] or "No disponible"
     elif pickup_barrio and pickup_city:
