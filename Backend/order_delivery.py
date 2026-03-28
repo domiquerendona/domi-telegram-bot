@@ -704,6 +704,56 @@ def repost_route_to_couriers(route_id, context):
     return count
 
 
+def _handle_repost_ally_route(update, context, route_id):
+    """Aliado re-oferta una ruta PUBLISHED desde sus pedidos activos."""
+    query = update.callback_query
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.answer("Usuario no encontrado.", show_alert=True)
+        return
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        query.answer("Perfil de aliado no encontrado.", show_alert=True)
+        return
+
+    route = get_route_by_id(route_id)
+    if not route or route.get("ally_id") != ally["id"]:
+        query.answer("No tienes permiso para esta accion.", show_alert=True)
+        return
+
+    if route["status"] != "PUBLISHED":
+        query.answer("Esta ruta ya no puede re-ofertarse.", show_alert=True)
+        return
+
+    # Cancelar job de sugerencia y limpiar cola existente
+    _cancel_route_no_response_job(context, route_id)
+    delete_route_offer_queue(route_id)
+    context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+    context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+
+    admin_id_override = _row_value(route, "ally_admin_id_snapshot")
+    if admin_id_override:
+        admin_id_override = int(admin_id_override)
+
+    count = publish_route_to_couriers(
+        route_id=route_id,
+        ally_id=ally["id"],
+        context=context,
+        admin_id_override=admin_id_override,
+    )
+
+    if count > 0:
+        query.edit_message_text(
+            "Ruta #{} re-ofertada. Se notifico a {} repartidor(es).".format(route_id, count)
+        )
+    else:
+        query.answer(
+            "No hay repartidores disponibles en este momento.",
+            show_alert=True,
+        )
+
+
 def _notify_recharge_needed_to_ally(context, ally_id):
     try:
         ally = get_ally_by_id(ally_id)
@@ -1316,7 +1366,19 @@ def ally_active_orders(update, context):
             text = "Ruta #{}\nEstado: {}\nParadas: {}".format(
                 route["id"], status_label, n_stops
             )
-            if route["status"] in ("PUBLISHED", "ACCEPTED"):
+            if route["status"] == "PUBLISHED":
+                keyboard = [
+                    [InlineKeyboardButton(
+                        "Re-ofrecer",
+                        callback_data="ruta_repost_{}".format(route["id"]),
+                    )],
+                    [InlineKeyboardButton(
+                        "Cancelar ruta",
+                        callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
+                    )],
+                ]
+                update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            elif route["status"] == "ACCEPTED":
                 keyboard = [[InlineKeyboardButton(
                     "Cancelar ruta",
                     callback_data="ruta_cancelar_aliado_{}".format(route["id"]),
@@ -5073,6 +5135,9 @@ def handle_route_callback(update, context):
     if data.startswith("ruta_cancelar_aliado_"):
         route_id = int(data.replace("ruta_cancelar_aliado_", ""))
         return _handle_cancel_ally_route(update, context, route_id)
+    if data.startswith("ruta_repost_"):
+        route_id = int(data.replace("ruta_repost_", ""))
+        return _handle_repost_ally_route(update, context, route_id)
 
     # pickup pin issue — ruta (punto de recogida)
     if data.startswith("ruta_pickup_pinissue_"):
