@@ -4119,7 +4119,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
     ])
     keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
-    stop_instructions = stop["instructions"] or ""
+    stop_instructions = stop.get("instructions") or ""
     instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
 
     context.bot.send_message(
