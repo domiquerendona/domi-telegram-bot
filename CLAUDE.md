@@ -2201,9 +2201,19 @@ Botón **"🅿️ Puntos difícil parqueo"** en el menú del admin local y del a
 
 **PRIVACIDAD OBLIGATORIA:** las funciones `get_addresses_pending_parking_review` y `get_all_addresses_parking_review` en `db.py` hacen JOIN con `ally_customer_addresses`, `ally_customers`, `allies` y `admin_allies`, pero **SOLO retornan**: `address_text`, `city`, `barrio`, `parking_status`, `ally_name`. **Nunca se expone** `name` ni `phone` del cliente.
 
-Callbacks: `parking_review_list` / `parking_rev_yes_{id}` / `parking_rev_no_{id}` / `parking_ver_todas`
+Callbacks: `parking_review_list` / `parking_rev_yes_{id}` / `parking_rev_no_{id}` / `parking_ver_todas` / `parking_noop_{id}` (encabezado no accionable de cada registro)
 Funciones: `admin_parking_review`, `admin_parking_review_callback` en `handlers/admin_panel.py`
 Registrados en `main.py` con `dp.add_handler(CallbackQueryHandler(...))`
+
+**Scoping por rol (2026-03-27):**
+- Admin de plataforma → `admin_id = None` → ve **todos** los aliados del sistema sin filtro de equipo.
+- Admin local → `admin_id = su_id` → ve solo los aliados de su equipo (`admin_allies.status = APPROVED`).
+- `get_addresses_pending_parking_review` y `get_all_addresses_parking_review` en `db.py` aceptan `admin_id=None` para omitir el JOIN con `admin_allies`.
+
+**Formato del panel (2026-03-27):** cada registro ocupa 3 filas en el teclado inline:
+1. Encabezado: `{n}. {aliado} | {dirección} | {barrio}, {ciudad}` (no accionable)
+2. Estado actual del punto
+3. Botones `[SI, dificultad]` / `[NO, sin problema]`
 
 ### Aviso al courier (order_delivery.py)
 
@@ -2232,6 +2242,7 @@ Todas re-exportadas en `services.py`.
 
 - Implementación inicial: 2026-03-26
 - Extensión a todos los flujos + reencuadre del concepto: 2026-03-27
+- Fix scoping plataforma + mejora UX panel: 2026-03-27
 
 ---
 
