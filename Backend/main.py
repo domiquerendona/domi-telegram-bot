@@ -166,6 +166,7 @@ from services import (
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_pending_route_stops,
+    get_route_destinations,
     ally_get_order_for_incentive,
     ally_increment_order_incentive,
     admin_get_order_for_incentive,
@@ -1061,6 +1062,27 @@ def courier_pedidos_en_curso(update, context):
                     callback_data="order_delivered_confirm_{}".format(order_id),
                 ),
             ])
+            dropoff_lat = _row_value(active_order, "dropoff_lat")
+            dropoff_lng = _row_value(active_order, "dropoff_lng")
+            customer_name = _row_value(active_order, "customer_name") or "Sin nombre"
+            customer_phone = _row_value(active_order, "customer_phone") or "Sin telefono"
+            customer_address = _row_value(active_order, "customer_address") or "Sin direccion"
+            msg += (
+                "\n\nENTREGA:\n"
+                "Cliente: {}\n"
+                "Telefono: {}\n"
+                "Direccion: {}"
+            ).format(customer_name, customer_phone, customer_address)
+            if dropoff_lat and dropoff_lng:
+                dest = "{},{}".format(float(dropoff_lat), float(dropoff_lng))
+                kb.append([InlineKeyboardButton(
+                    "Abrir en Google Maps",
+                    url="https://www.google.com/maps/dir/?api=1&destination={}&travelmode=driving".format(dest)
+                )])
+                kb.append([InlineKeyboardButton(
+                    "Abrir en Waze",
+                    url="https://waze.com/ul?ll={}&navigate=yes".format(dest)
+                )])
         update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
     if active_route:
@@ -1075,24 +1097,68 @@ def courier_pedidos_en_curso(update, context):
 
         pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
         next_seq = None
+        next_stop = None
         if pending_stops:
             try:
-                next_seq = min(int(s["sequence"]) for s in pending_stops if s["sequence"] is not None)
+                next_stop = min(pending_stops, key=lambda s: int(s["sequence"]) if s["sequence"] is not None else 9999)
+                next_seq = int(next_stop["sequence"]) if next_stop else None
             except Exception:
                 next_seq = None
+
+        total_stops = len(get_route_destinations(int(route_id))) if route_id != "-" else 0
+        completed_stops = total_stops - len(pending_stops)
 
         msg = (
             "Ruta #{}\n"
             "Estado: {}\n"
             "Recoge en: {}\n"
-            "Pago: ${:,}"
-        ).format(route_id, st, pickup_address, total_fee)
+            "Pago: ${:,}\n"
+            "Paradas: {}/{} completadas"
+        ).format(route_id, st, pickup_address, total_fee, completed_stops, total_stops)
+
+        if next_stop:
+            stop_name = next_stop.get("customer_name") or "Sin nombre"
+            stop_phone = next_stop.get("customer_phone") or "Sin telefono"
+            stop_addr = next_stop.get("customer_address") or "Sin direccion"
+            stop_city = next_stop.get("customer_city") or ""
+            stop_barrio = next_stop.get("customer_barrio") or ""
+            area = ", ".join(p for p in [stop_barrio, stop_city] if p)
+            msg += (
+                "\n\nSIGUIENTE PARADA (#{}):\n"
+                "Cliente: {}\n"
+                "Telefono: {}\n"
+                "Direccion: {}"
+            ).format(next_seq, stop_name, stop_phone, stop_addr)
+            if area:
+                msg += "\nZona: {}".format(area)
+
+        if len(pending_stops) > 1:
+            msg += "\n\nPROXIMAS PARADAS:"
+            for s in pending_stops[1:]:
+                s_seq = s.get("sequence", "?")
+                s_addr = s.get("customer_address") or "Sin direccion"
+                s_barrio = s.get("customer_barrio") or ""
+                s_city = s.get("customer_city") or ""
+                s_area = ", ".join(p for p in [s_barrio, s_city] if p)
+                msg += "\n{}. {} ({})".format(s_seq, s_addr, s_area) if s_area else "\n{}. {}".format(s_seq, s_addr)
 
         kb = []
-        if next_seq is not None:
+        if next_stop:
+            drop_lat = next_stop.get("dropoff_lat")
+            drop_lng = next_stop.get("dropoff_lng")
+            if drop_lat and drop_lng:
+                dest = "{},{}".format(float(drop_lat), float(drop_lng))
+                kb.append([InlineKeyboardButton(
+                    "Google Maps - Parada {}".format(next_seq),
+                    url="https://www.google.com/maps/dir/?api=1&destination={}&travelmode=driving".format(dest)
+                )])
+                kb.append([InlineKeyboardButton(
+                    "Waze - Parada {}".format(next_seq),
+                    url="https://waze.com/ul?ll={}&navigate=yes".format(dest)
+                )])
             kb.append([
                 InlineKeyboardButton(
-                    "Entregar siguiente parada",
+                    "Confirmar entrega parada {}".format(next_seq),
                     callback_data="ruta_entregar_{}_{}".format(route_id, next_seq),
                 )
             ])
