@@ -1038,22 +1038,31 @@ def ruta_confirmacion_callback(update, context):
         query.edit_message_text("Error al crear la ruta. Intenta de nuevo.")
         show_main_menu(update, context)
         return ConversationHandler.END
-    for i, parada in enumerate(paradas, 1):
-        create_route_destination(
-            route_id=route_id,
-            sequence=i,
-            customer_name=parada.get("name") or "",
-            customer_phone=parada.get("phone") or "",
-            customer_address=parada.get("address") or "",
-            customer_city=parada.get("city") or "",
-            customer_barrio=parada.get("barrio") or "",
-            dropoff_lat=parada.get("lat"),
-            dropoff_lng=parada.get("lng"),
+    try:
+        for i, parada in enumerate(paradas, 1):
+            create_route_destination(
+                route_id=route_id,
+                sequence=i,
+                customer_name=parada.get("name") or "",
+                customer_phone=parada.get("phone") or "",
+                customer_address=parada.get("address") or "",
+                customer_city=parada.get("city") or "",
+                customer_barrio=parada.get("barrio") or "",
+                dropoff_lat=parada.get("lat"),
+                dropoff_lng=parada.get("lng"),
+            )
+        incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
+        if incentivo > 0:
+            add_route_incentive(route_id, incentivo)
+        count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
+    except Exception as e:
+        logger.error("Error publicando ruta %s: %s", route_id, e, exc_info=True)
+        query.edit_message_text(
+            "Error al publicar la ruta. Intenta de nuevo desde 'Nueva ruta'."
         )
-    incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
-    if incentivo > 0:
-        add_route_incentive(route_id, incentivo)
-    count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
+        context.user_data.clear()
+        show_main_menu(update, context)
+        return ConversationHandler.END
     if count > 0:
         base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
     else:
