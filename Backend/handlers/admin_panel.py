@@ -2683,7 +2683,9 @@ def admin_parking_review(update, context, show_all=False):
         send_fn("No tienes un perfil de administrador activo.")
         return
 
-    admin_id = admin["id"]
+    # Admin de plataforma (ADMIN_USER_ID) ve todos los aliados sin filtro de equipo.
+    # Admin local solo ve los aliados de su equipo.
+    admin_id = None if user_id == ADMIN_USER_ID else admin["id"]
     rows = get_all_addresses_parking_review(admin_id) if show_all else get_addresses_pending_parking_review(admin_id)
 
     if not rows:

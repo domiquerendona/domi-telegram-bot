@@ -7457,8 +7457,11 @@ def set_address_parking_status(address_id: int, status: str, reviewed_by: int = 
     return updated
 
 
-def get_addresses_pending_parking_review(admin_id: int) -> list:
-    """Retorna direcciones de clientes aliados del admin que necesitan revision de parqueadero.
+def get_addresses_pending_parking_review(admin_id) -> list:
+    """Retorna direcciones de clientes aliados que necesitan revision de parqueadero.
+
+    admin_id=None: admin de plataforma — retorna todos los aliados sin filtro de equipo.
+    admin_id=int: admin local — solo aliados de su equipo (admin_allies.status=APPROVED).
 
     IMPORTANTE PRIVACIDAD: solo retorna datos geograficos (direccion, ciudad, barrio)
     y nombre del aliado. NO incluye nombre ni telefono del cliente.
@@ -7466,42 +7469,50 @@ def get_addresses_pending_parking_review(admin_id: int) -> list:
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
-        SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
-               aca.parking_reviewed_by, aca.parking_reviewed_at,
-               al.business_name AS ally_name
-        FROM ally_customer_addresses aca
-        JOIN ally_customers ac ON aca.customer_id = ac.id
-        JOIN allies al ON ac.ally_id = al.id
-        JOIN admin_allies aa ON aa.ally_id = al.id
-            AND aa.admin_id = {P} AND aa.status = 'APPROVED'
-        WHERE aca.status = 'ACTIVE'
-          AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
-        ORDER BY aca.created_at DESC
-        LIMIT 30
-    """, (admin_id,))
+    if admin_id is None:
+        cur.execute(f"""
+            SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+                   aca.parking_reviewed_by, aca.parking_reviewed_at,
+                   al.business_name AS ally_name
+            FROM ally_customer_addresses aca
+            JOIN ally_customers ac ON aca.customer_id = ac.id
+            JOIN allies al ON ac.ally_id = al.id
+            WHERE aca.status = 'ACTIVE'
+              AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
+            ORDER BY aca.created_at DESC
+            LIMIT 30
+        """)
+    else:
+        cur.execute(f"""
+            SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+                   aca.parking_reviewed_by, aca.parking_reviewed_at,
+                   al.business_name AS ally_name
+            FROM ally_customer_addresses aca
+            JOIN ally_customers ac ON aca.customer_id = ac.id
+            JOIN allies al ON ac.ally_id = al.id
+            JOIN admin_allies aa ON aa.ally_id = al.id
+                AND aa.admin_id = {P} AND aa.status = 'APPROVED'
+            WHERE aca.status = 'ACTIVE'
+              AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
+            ORDER BY aca.created_at DESC
+            LIMIT 30
+        """, (admin_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def get_all_addresses_parking_review(admin_id: int) -> list:
-    """Retorna todas las direcciones (pendientes y revisadas) del admin para consulta y correccion.
+def get_all_addresses_parking_review(admin_id) -> list:
+    """Retorna todas las direcciones (pendientes y revisadas) para consulta y correccion.
+
+    admin_id=None: admin de plataforma — todos los aliados sin filtro de equipo.
+    admin_id=int: admin local — solo aliados de su equipo.
 
     IMPORTANTE PRIVACIDAD: solo datos geograficos y nombre del aliado. Sin PII del cliente.
     """
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"""
-        SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
-               aca.parking_reviewed_by, aca.parking_reviewed_at,
-               al.business_name AS ally_name
-        FROM ally_customer_addresses aca
-        JOIN ally_customers ac ON aca.customer_id = ac.id
-        JOIN allies al ON ac.ally_id = al.id
-        JOIN admin_allies aa ON aa.ally_id = al.id
-            AND aa.admin_id = {P} AND aa.status = 'APPROVED'
-        WHERE aca.status = 'ACTIVE'
+    order_case = """
         ORDER BY
             CASE aca.parking_status
                 WHEN 'ALLY_YES' THEN 1
@@ -7511,7 +7522,31 @@ def get_all_addresses_parking_review(admin_id: int) -> list:
             END,
             aca.created_at DESC
         LIMIT 50
-    """, (admin_id,))
+    """
+    if admin_id is None:
+        cur.execute(f"""
+            SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+                   aca.parking_reviewed_by, aca.parking_reviewed_at,
+                   al.business_name AS ally_name
+            FROM ally_customer_addresses aca
+            JOIN ally_customers ac ON aca.customer_id = ac.id
+            JOIN allies al ON ac.ally_id = al.id
+            WHERE aca.status = 'ACTIVE'
+            {order_case}
+        """)
+    else:
+        cur.execute(f"""
+            SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
+                   aca.parking_reviewed_by, aca.parking_reviewed_at,
+                   al.business_name AS ally_name
+            FROM ally_customer_addresses aca
+            JOIN ally_customers ac ON aca.customer_id = ac.id
+            JOIN allies al ON ac.ally_id = al.id
+            JOIN admin_allies aa ON aa.ally_id = al.id
+                AND aa.admin_id = {P} AND aa.status = 'APPROVED'
+            WHERE aca.status = 'ACTIVE'
+            {order_case}
+        """, (admin_id,))
     rows = cur.fetchall()
     conn.close()
     return rows
