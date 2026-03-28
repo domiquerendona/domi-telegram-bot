@@ -2293,7 +2293,7 @@ def main():
         pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas|noop_\d+)$"
     ))
 
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_)"))
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_|ruta_pickup_)"))
 
     # Configuracion de tarifas (botones pricing_*)
     dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
