@@ -2289,7 +2289,7 @@ def main():
     ))
     dp.add_handler(CallbackQueryHandler(
         admin_parking_review_callback,
-        pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas)$"
+        pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas|noop_\d+)$"
     ))
 
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_)"))

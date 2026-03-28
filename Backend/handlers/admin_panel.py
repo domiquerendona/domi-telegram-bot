@@ -2697,10 +2697,9 @@ def admin_parking_review(update, context, show_all=False):
         )
         return
 
-    title = "PUNTOS CON DIFICULTAD DE PARQUEO\n\n" if not show_all else "TODOS LOS PUNTOS (parqueo)\n\n"
-    lines = []
+    title = "PUNTOS CON DIFICULTAD DE PARQUEO" if not show_all else "TODOS LOS PUNTOS (parqueo)"
     keyboard = []
-    for row in rows:
+    for i, row in enumerate(rows, 1):
         addr_id = row["id"] if "id" in row.keys() else row[0]
         address_text = row["address_text"] if "address_text" in row.keys() else row[1]
         city = row["city"] if "city" in row.keys() else row[2]
@@ -2709,11 +2708,20 @@ def admin_parking_review(update, context, show_all=False):
         ally_name = row["ally_name"] if "ally_name" in row.keys() else row[7]
 
         location_label = "{}, {}".format(barrio or "Sin barrio", city or "Sin ciudad")
-        lines.append(
-            "Aliado: {}\nDireccion: {}\nZona: {}\nEstado: {}".format(
-                ally_name, address_text[:40], location_label, _parking_status_label(status)
-            )
-        )
+        header = "{}. {} | {} | {}".format(i, ally_name, address_text[:30], location_label)
+        estado_label = _parking_status_label(status)
+
+        # Fila 1: encabezado del punto (no accionable, muestra info)
+        keyboard.append([InlineKeyboardButton(
+            header[:60],
+            callback_data="parking_noop_{}".format(addr_id)
+        )])
+        # Fila 2: estado actual
+        keyboard.append([InlineKeyboardButton(
+            "Estado: {}".format(estado_label),
+            callback_data="parking_noop_{}".format(addr_id)
+        )])
+        # Fila 3: botones de accion
         keyboard.append([
             InlineKeyboardButton("SI, dificultad", callback_data="parking_rev_yes_{}".format(addr_id)),
             InlineKeyboardButton("NO, sin problema", callback_data="parking_rev_no_{}".format(addr_id)),
@@ -2722,9 +2730,9 @@ def admin_parking_review(update, context, show_all=False):
     if not show_all:
         keyboard.append([InlineKeyboardButton("Ver todas (con revisadas)", callback_data="parking_ver_todas")])
 
-    text = title + "\n\n".join(lines)
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n... (hay mas registros)"
+    text = "{}\n\nToca SI o NO en cada punto para confirmar o descartar la dificultad de parqueo.".format(title)
+    if len(rows) == 30:
+        text += "\n\n(Mostrando los 30 mas recientes)"
 
     send_fn(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
