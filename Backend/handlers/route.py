@@ -1058,7 +1058,7 @@ def ruta_confirmacion_callback(update, context):
     except Exception as e:
         logger.error("Error publicando ruta %s: %s", route_id, e, exc_info=True)
         query.edit_message_text(
-            "Error al publicar la ruta: {}\n\nIntenta de nuevo desde 'Nueva ruta'.".format(str(e))
+            "Error al publicar la ruta. Intenta de nuevo desde 'Nueva ruta'."
         )
         context.user_data.clear()
         show_main_menu(update, context)

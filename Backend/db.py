@@ -1990,6 +1990,9 @@ def _init_db_postgres():
     _pg_add_col("admin_customer_addresses", "parking_reviewed_at", "TIMESTAMP")
     _pg_add_col("orders", "parking_fee", "INTEGER DEFAULT 0")
 
+    # routes: additional_incentive para incentivos agregados por el aliado
+    _pg_add_col("routes", "additional_incentive", "INTEGER DEFAULT 0")
+
     # web_users: tabla de usuarios del panel web (multiusuario real)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS web_users (
