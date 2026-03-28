@@ -560,6 +560,62 @@ def repost_order_to_couriers(order_id, context):
     return count
 
 
+def _handle_repost_ally(update, context, order_id):
+    """Aliado re-oferta un pedido PENDING o PUBLISHED desde sus pedidos activos."""
+    query = update.callback_query
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.answer("Usuario no encontrado.", show_alert=True)
+        return
+    ally = get_ally_by_user_id(user["id"])
+    if not ally:
+        query.answer("Perfil de aliado no encontrado.", show_alert=True)
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or _row_value(order, "ally_id") != ally["id"]:
+        query.answer("No tienes permiso para esta accion.", show_alert=True)
+        return
+
+    status = order["status"]
+    if status not in ("PENDING", "PUBLISHED"):
+        query.answer("Este pedido ya no puede re-ofertarse.", show_alert=True)
+        return
+
+    # Para PUBLISHED: cancelar jobs y cola existentes antes de republicar
+    if status == "PUBLISHED":
+        _cancel_no_response_job(context, order_id)
+        _cancel_order_expire_job(context, order_id)
+        current = get_current_offer_for_order(order_id)
+        if current:
+            _cancel_offer_jobs(context, order_id, current["queue_id"])
+        clear_offer_queue(order_id)
+        context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+        context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
+    creator_admin_id = _row_value(order, "creator_admin_id")
+    admin_id_override = int(creator_admin_id) if creator_admin_id else None
+
+    count = publish_order_to_couriers(
+        order_id=order_id,
+        ally_id=ally["id"],
+        context=context,
+        admin_id_override=admin_id_override,
+        skip_fee_check=True,
+    )
+
+    if count > 0:
+        query.edit_message_text(
+            "Pedido #{} re-ofertado. Se notifico a {} repartidor(es).".format(order_id, count)
+        )
+    else:
+        query.answer(
+            "No hay repartidores disponibles en este momento.",
+            show_alert=True,
+        )
+
+
 def _route_no_response_job(context):
     """Job T+5: si la ruta sigue PUBLISHED, sugiere al aliado que agregue incentivo."""
     mark_job_executed(context.job.name)
@@ -1279,12 +1335,24 @@ def ally_active_orders(update, context):
                 order["customer_name"] or "N/A",
                 order["customer_address"] or "N/A",
             )
-            if order["status"] in ("PENDING", "PUBLISHED", "ACCEPTED"):
+            if order["status"] in ("PENDING", "PUBLISHED"):
                 keyboard = [
                     [InlineKeyboardButton(
                         "Aumentar incentivo",
                         callback_data="pedido_inc_menu_{}".format(order["id"]),
                     )],
+                    [InlineKeyboardButton(
+                        "Re-ofrecer",
+                        callback_data="order_repost_{}".format(order["id"]),
+                    )],
+                    [InlineKeyboardButton(
+                        "Cancelar pedido",
+                        callback_data="order_cancel_{}".format(order["id"]),
+                    )],
+                ]
+                update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            elif order["status"] == "ACCEPTED":
+                keyboard = [
                     [InlineKeyboardButton(
                         "Cancelar pedido",
                         callback_data="order_cancel_{}".format(order["id"]),
@@ -1832,6 +1900,9 @@ def order_courier_callback(update, context):
     if data.startswith("order_cancel_"):
         order_id = int(data.replace("order_cancel_", ""))
         return _handle_cancel_ally(update, context, order_id)
+    if data.startswith("order_repost_"):
+        order_id = int(data.replace("order_repost_", ""))
+        return _handle_repost_ally(update, context, order_id)
     if data.startswith("order_confirm_pickup_"):
         order_id = int(data.replace("order_confirm_pickup_", ""))
         return _handle_confirm_pickup(update, context, order_id)

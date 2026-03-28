@@ -2248,6 +2248,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pinissue_(fin|cancel_courier|cancel_ally)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_repost_\d+$"))  # aliado re-oferta pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickup_pinissue_\d+$"))  # pin recogida pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pickup_(confirm|release)_\d+_\d+$"))  # admin resuelve pin recogida pedido
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
