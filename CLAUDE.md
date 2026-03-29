@@ -1179,6 +1179,10 @@ Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar 
 - Llama `ally_increment_order_incentive` o `admin_increment_order_incentive` según tipo de pedido
 - Llama `repost_order_to_couriers(order_id, context)` → re-oferta a todos los couriers activos + reinicia T+5
 
+#### Notificación de Incentivo Agregado (IMPLEMENTADO 2026-03-29)
+
+Cuando un aliado o administrador agrega un incentivo a un pedido o ruta **ya publicado** (sea desde el menú del pedido o desde la sugerencia T+5), recibirá un **mensaje de confirmación** en su chat. Esta notificación instantánea le informa del monto agregado, el nuevo total de incentivos y el nuevo pago total para el repartidor, asegurando que el creador del pedido esté siempre al tanto de la oferta vigente.
+
 **Re-oferta (`repost_order_to_couriers`):**
 - Limpia `excluded_couriers` del `bot_data` para ese pedido
 - Llama `clear_offer_queue(order_id)` (borra queue en BD)

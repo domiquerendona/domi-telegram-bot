@@ -2310,6 +2310,22 @@ def pedido_incentivo_existing_fixed_callback(update, context):
     # Usar siempre el pedido recargado para evitar textos con totals parciales.
     refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
 
+    # Notificar al aliado
+    try:
+        incentive = int(refreshed_order["additional_incentive"] or 0)
+        total_fee = int(refreshed_order["total_fee"] or 0)
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado al pedido #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}"
+            ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+        )
+    except Exception:
+        pass
+
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
         repost_order_to_couriers(order_id, context)
@@ -2394,6 +2410,22 @@ def pedido_incentivo_existing_monto_handler(update, context):
     context.user_data.pop("pedido_incentivo_edit_order_id", None)
     refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
 
+    # Notificar al aliado
+    try:
+        incentive = int(refreshed_order["additional_incentive"] or 0)
+        total_fee = int(refreshed_order["total_fee"] or 0)
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado al pedido #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}"
+            ).format(int(order_id), _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+        )
+    except Exception:
+        pass
+
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
         repost_order_to_couriers(int(order_id), context)
@@ -2460,6 +2492,19 @@ def offer_suggest_inc_fixed_callback(update, context):
 
     total_fee = int(refreshed_order["total_fee"] or 0)
     incentive = int(refreshed_order["additional_incentive"] or 0)
+    
+    # Notificar al creador (aliado o admin)
+    context.bot.send_message(
+        chat_id=telegram_id,
+        text=(
+            "Incentivo agregado al pedido #{}:\n"
+            "Incentivo adicional: +{}\n"
+            "Total incentivos: {}\n"
+            "Nuevo pago total: {}\n\n"
+            "Re-ofertando a {} repartidores activos."
+        ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+    )
+
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
         "Incentivo acumulado: ${:,}\n"
@@ -2535,6 +2580,19 @@ def offer_suggest_inc_monto_handler(update, context):
     repost_count = repost_order_to_couriers(int(order_id), context)
     total_fee = int(refreshed_order["total_fee"] or 0)
     incentive = int(refreshed_order["additional_incentive"] or 0)
+    
+    # Notificar al creador (aliado o admin)
+    context.bot.send_message(
+        chat_id=telegram_id,
+        text=(
+            "Incentivo agregado al pedido #{}:\n"
+            "Incentivo adicional: +{}\n"
+            "Total incentivos: {}\n"
+            "Nuevo pago total: {}\n\n"
+            "Re-ofertando a {} repartidores activos."
+        ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+    )
+    
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
         "Incentivo acumulado: ${:,}\n"
@@ -2576,6 +2634,22 @@ def route_suggest_inc_fixed_callback(update, context):
     route = get_route_by_id(route_id)
     total_fee = int(route["total_fee"] or 0) if route else 0
     incentive = int(route["additional_incentive"] or 0) if route else delta
+
+    # Notificar al creador
+    try:
+        telegram_id = update.effective_user.id
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado a la ruta #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}\n\n"
+                "Re-ofertando a {} repartidores activos."
+            ).format(route_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+        )
+    except Exception as e:
+        logger.warning("Error al notificar al creador de la ruta: %s", e)
 
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
@@ -2641,6 +2715,22 @@ def route_suggest_inc_monto_handler(update, context):
     route = get_route_by_id(route_id)
     total_fee = int(route["total_fee"] or 0) if route else 0
     incentive = int(route["additional_incentive"] or 0) if route else delta
+    
+    # Notificar al creador
+    try:
+        telegram_id = update.effective_user.id
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado a la ruta #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}\n\n"
+                "Re-ofertando a {} repartidores activos."
+            ).format(route_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+        )
+    except Exception as e:
+        logger.warning("Error al notificar al creador de la ruta: %s", e)
 
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
