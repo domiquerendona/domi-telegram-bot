@@ -70,6 +70,7 @@ from services import (
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
     get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT, set_address_parking_status,
+    get_ally_parking_fee_enabled,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
 )
@@ -325,8 +326,10 @@ def pedido_selector_cliente_callback(update, context):
         keyboard = []
         for addr in addresses:
             label = addr["label"] or "Sin etiqueta"
-            btn_text = f"{label}: {addr['address_text'][:30]}..."
-            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_addr_{addr['id']}")])
+            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
+            parking_tag = " [P]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
+            btn_text = "{}{}: {}...".format(label, parking_tag, addr["address_text"][:28])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="pedido_sel_addr_{}".format(addr["id"]))])
 
         keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
 
@@ -412,18 +415,23 @@ def pedido_seleccionar_direccion_callback(update, context):
                 lat=lat,
                 lng=lng
             )
-            context.user_data["pedido_parking_address_id"] = address_id
-            keyboard = [
-                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
-                [InlineKeyboardButton("No / No lo se", callback_data="pedido_dir_parking_no")],
-            ]
-            query.edit_message_text(
-                "Direccion guardada.\n\n"
-                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-            return PEDIDO_GUARDAR_DIR_PARKING
+            ally_id_ctx = context.user_data.get("ally_id")
+            parking_enabled = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+            if parking_enabled:
+                context.user_data["pedido_parking_address_id"] = address_id
+                keyboard = [
+                    [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
+                    [InlineKeyboardButton("No / No lo se", callback_data="pedido_dir_parking_no")],
+                ]
+                query.edit_message_text(
+                    "Direccion guardada.\n\n"
+                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return PEDIDO_GUARDAR_DIR_PARKING
+            else:
+                query.edit_message_text("Direccion guardada. Continuamos.")
         else:
             query.edit_message_text("OK, continuamos.")
         return mostrar_selector_pickup(query, context, edit=False)
@@ -455,11 +463,16 @@ def pedido_seleccionar_direccion_callback(update, context):
         except Exception:
             pass
 
-        try:
-            parking_status = address["parking_status"]
-        except (KeyError, IndexError):
-            parking_status = "NOT_ASKED"
-        context.user_data["pedido_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
+        ally_id_ctx = context.user_data.get("ally_id")
+        parking_enabled_ctx = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+        if parking_enabled_ctx:
+            try:
+                parking_status = address["parking_status"]
+            except (KeyError, IndexError):
+                parking_status = "NOT_ASKED"
+            context.user_data["pedido_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
+        else:
+            context.user_data["pedido_parking_fee"] = 0
 
         if not has_valid_coords(address["lat"], address["lng"]):
             query.edit_message_text(
@@ -2034,7 +2047,8 @@ def construir_resumen_pedido(context):
     subtotal_servicio = int(context.user_data.get("quote_price", 0) or 0)
     tarifa_distancia = int(context.user_data.get("quote_distance_fee", subtotal_servicio) or 0)
     incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
-    total = subtotal_servicio + incentivo
+    pedido_parking_fee = int(context.user_data.get("pedido_parking_fee") or 0)
+    total = subtotal_servicio + incentivo + pedido_parking_fee
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
     buy_products = context.user_data.get("buy_products_count", 0)
@@ -2072,11 +2086,9 @@ def construir_resumen_pedido(context):
     resumen += "Subtotal del servicio: " + _fmt_pesos(subtotal_servicio) + "\n"
     if incentivo > 0:
         resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
-    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
-
-    pedido_parking_fee = int(context.user_data.get("pedido_parking_fee") or 0)
     if pedido_parking_fee > 0:
         resumen += "Punto con parqueo dificil: +" + _fmt_pesos(pedido_parking_fee) + "\n"
+    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
 
     if requires_cash and cash_amount > 0:
         resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
@@ -2643,6 +2655,7 @@ def _admin_ped_preview_text(ctx):
     """Construye texto y teclado del preview del pedido especial del admin."""
     tarifa = int(ctx.get("admin_ped_tarifa") or 0)
     incentivo = int(ctx.get("admin_ped_incentivo") or 0)
+    parking_fee = int(ctx.get("admin_ped_parking_fee") or 0)
     total = tarifa + incentivo
     distancia_km = float(ctx.get("admin_ped_distance_km") or 0)
     instruc = ctx.get("admin_ped_instruc") or "Ninguna"
@@ -2663,6 +2676,7 @@ def _admin_ped_preview_text(ctx):
         "Tarifa calculada: ${:,}\n"
         "Fuente: {}\n"
         "{}"
+        "{}"
         "Instrucciones: {}\n\n"
         "Total oferta: ${:,}"
     ).format(
@@ -2674,6 +2688,7 @@ def _admin_ped_preview_text(ctx):
         tarifa,
         source_label,
         "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
+        "Punto con parqueo dificil: +${:,}\n".format(parking_fee) if parking_fee else "",
         instruc,
         total,
     )
@@ -3052,6 +3067,11 @@ def admin_pedido_addr_selected(update, context):
     context.user_data["admin_ped_dropoff_lng"] = address["lng"]
     context.user_data["admin_ped_dropoff_city"] = address["city"] or ""
     context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
+    try:
+        parking_status = address["parking_status"]
+    except (KeyError, IndexError):
+        parking_status = "NOT_ASKED"
+    context.user_data["admin_ped_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
     cust_id_for_inc = context.user_data.get("admin_ped_selected_cust_id")
     if cust_id_for_inc:
         try:
@@ -3140,6 +3160,7 @@ def admin_pedido_cust_gps_handler(update, context):
     context.user_data["admin_ped_dropoff_lng"] = lng
     context.user_data["admin_ped_dropoff_city"] = ""
     context.user_data["admin_ped_dropoff_barrio"] = ""
+    context.user_data["admin_ped_parking_fee"] = 0
     update.message.reply_text("Direccion de entrega registrada.\n\nCalculando tarifa...")
     return _admin_pedido_calcular_preview(update, context, edit=False)
 
@@ -3155,6 +3176,7 @@ def admin_pedido_geo_callback(update, context):
         context.user_data["admin_ped_dropoff_lng"] = pending.get("lng")
         context.user_data["admin_ped_dropoff_city"] = pending.get("city", "")
         context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
+        context.user_data["admin_ped_parking_fee"] = 0
         context.user_data.pop("admin_ped_geo_cust_pending", None)
         query.edit_message_text(
             "Entrega: {}\n\nCalculando tarifa...".format(
@@ -3259,7 +3281,8 @@ def admin_pedido_confirmar_callback(update, context):
         return ConversationHandler.END
     tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
     incentivo = int(context.user_data.get("admin_ped_incentivo") or 0)
-    total_fee = tarifa + incentivo
+    parking_fee = int(context.user_data.get("admin_ped_parking_fee") or 0)
+    total_fee = tarifa + incentivo + parking_fee
     pickup_location_id = context.user_data.get("admin_ped_pickup_id")
     pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
     pickup_lat = context.user_data.get("admin_ped_pickup_lat")
@@ -3310,6 +3333,7 @@ def admin_pedido_confirmar_callback(update, context):
             dropoff_lng=dropoff_lng,
             quote_source=quote_source,
             ally_admin_id_snapshot=admin_id,
+            parking_fee=parking_fee,
         )
     except Exception as e:
         logger.error("admin_pedido_confirmar_callback create_order: %s", e)
@@ -3538,9 +3562,9 @@ def admin_pedido_guardar_parking_callback(update, context):
     address_id = context.user_data.pop("admin_ped_parking_address_id", None)
     if address_id:
         if query.data == "admin_ped_guardar_parking_si":
-            set_address_parking_status(address_id, "ALLY_YES")
+            set_address_parking_status(address_id, "ALLY_YES", table="admin_customer_addresses")
         else:
-            set_address_parking_status(address_id, "PENDING_REVIEW")
+            set_address_parking_status(address_id, "PENDING_REVIEW", table="admin_customer_addresses")
     for key in list(context.user_data.keys()):
         if key.startswith("admin_ped_"):
             del context.user_data[key]
@@ -3959,6 +3983,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         buy_products_count=context.user_data.get("buy_products_count", 0),
         additional_incentive=pedido_incentivo,
     )
+    parking_fee_val = int(context.user_data.get("pedido_parking_fee") or 0)
 
     order_id = create_order(
         ally_id=ally_id,
@@ -3977,7 +4002,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         high_demand_extra=0,
         night_extra=0,
         additional_incentive=pricing["additional_incentive"],
-        total_fee=pricing["total_fee"],
+        total_fee=pricing["total_fee"] + parking_fee_val,
         instructions=instructions_final,
         requires_cash=requires_cash,
         cash_required_amount=cash_required_amount,
@@ -3990,7 +4015,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         purchase_amount=context.user_data.get("pedido_purchase_amount"),
         delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
         customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
-        parking_fee=int(context.user_data.get("pedido_parking_fee") or 0),
+        parking_fee=parking_fee_val,
     )
     context.user_data["order_id"] = order_id
 
@@ -4277,18 +4302,25 @@ def pedido_guardar_cliente_callback(update, context):
                 lat=context.user_data.get("dropoff_lat"),
                 lng=context.user_data.get("dropoff_lng"),
             )
-            context.user_data["pedido_guardar_parking_address_id"] = address_id
-            keyboard = [
-                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_guardar_cust_parking_si")],
-                [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
-            ]
-            query.edit_message_text(
-                "Cliente '{}' guardado.\n\n"
-                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-            return PEDIDO_GUARDAR_CUST_PARKING
+            ally_id_ctx = context.user_data.get("ally_id")
+            parking_enabled_save = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+            if parking_enabled_save:
+                context.user_data["pedido_guardar_parking_address_id"] = address_id
+                keyboard = [
+                    [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_guardar_cust_parking_si")],
+                    [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
+                ]
+                query.edit_message_text(
+                    "Cliente '{}' guardado.\n\n"
+                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return PEDIDO_GUARDAR_CUST_PARKING
+            else:
+                context.user_data.clear()
+                show_main_menu(update, context, "Pedido creado exitosamente.\nCliente '{}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.".format(customer_name))
+                return ConversationHandler.END
         except Exception as e:
             context.user_data.clear()
             show_main_menu(update, context, "Pedido creado exitosamente.\nError al guardar cliente: {}\nPronto un repartidor sera asignado.".format(str(e)))

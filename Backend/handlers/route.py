@@ -82,6 +82,7 @@ from services import (
     add_route_incentive,
     set_address_parking_status,
     PARKING_FEE_AMOUNT,
+    get_ally_parking_fee_enabled,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -130,7 +131,7 @@ def _ruta_limpiar_temp(context):
     """Limpia datos temporales de la parada actual."""
     for k in ["ruta_temp_name", "ruta_temp_phone", "ruta_temp_address",
               "ruta_temp_city", "ruta_temp_barrio", "ruta_temp_lat", "ruta_temp_lng",
-              "ruta_temp_customer_id"]:
+              "ruta_temp_customer_id", "ruta_temp_parking_fee"]:
         context.user_data.pop(k, None)
 
 
@@ -208,6 +209,7 @@ def _ruta_guardar_parada_actual(context):
         "lat": context.user_data.get("ruta_temp_lat"),
         "lng": context.user_data.get("ruta_temp_lng"),
         "customer_id": context.user_data.get("ruta_temp_customer_id"),
+        "parking_fee": int(context.user_data.get("ruta_temp_parking_fee") or 0),
     }
     paradas = context.user_data.get("ruta_paradas", [])
     paradas.append(parada)
@@ -299,9 +301,13 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     )
     distance_fee = precio_info["distance_fee"]
     additional_fee = precio_info["additional_stops_fee"]
-    total_fee = precio_info["total_fee"]
     stop_fee = precio_info.get("tarifa_parada_adicional", 0)
     mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
+    # Sumar parking fees al total_fee antes de almacenar en user_data
+    total_parking_fee = sum(int(p.get("parking_fee") or 0) for p in paradas)
+    if total_parking_fee > 0:
+        precio_info["total_fee"] += total_parking_fee
+    total_fee = precio_info["total_fee"]
     context.user_data["ruta_precio"] = precio_info
 
     distancia_estimada = context.user_data.get("ruta_distancia_estimada", False)
@@ -313,8 +319,11 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
         text += "(Distancia aproximada — sin datos de carretera exactos)\n"
     text += "\nRecoge en: {}\n\n".format(pickup_address)
     for i, p in enumerate(paradas, 1):
-        text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n".format(
-            i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion"
+        p_parking = int(p.get("parking_fee") or 0)
+        parking_line = "  Parqueo dificil: +${:,}\n".format(p_parking) if p_parking > 0 else ""
+        text += "Parada {}:\n  Cliente: {} - {}\n  Direccion: {}\n{}".format(
+            i, p.get("name") or "Sin nombre", p.get("phone") or "", p.get("address") or "Sin direccion",
+            parking_line
         )
     text += "\nDistancia total: {:.1f} km{}\n".format(
         total_km, " (aprox)" if distancia_estimada else ""
@@ -322,6 +331,8 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     text += "Precio base (distancia): ${:,}\n".format(distance_fee)
     if additional_fee > 0:
         text += "Paradas adicionales ({} x ${:,}): ${:,}\n".format(len(paradas) - 1, stop_fee, additional_fee)
+    if total_parking_fee > 0:
+        text += "Puntos con parqueo dificil: +${:,}\n".format(total_parking_fee)
     text += "TOTAL: ${:,}".format(total_fee)
     if mensaje_ahorro:
         text += "\n{}".format(mensaje_ahorro)
@@ -650,7 +661,9 @@ def ruta_parada_selector_callback(update, context):
             return RUTA_PARADA_DIRECCION
         keyboard = []
         for addr in activas[:6]:
-            label = (addr["label"] or addr["address_text"] or "Direccion")[:30]
+            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
+            parking_tag = " [P]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
+            label = (addr["label"] or addr["address_text"] or "Direccion")[:28] + parking_tag
             keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(addr["id"]))])
         keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
         query.edit_message_text(
@@ -691,6 +704,16 @@ def ruta_parada_sel_direccion_callback(update, context):
         context.user_data["ruta_temp_barrio"] = addr["barrio"] or ""
         context.user_data["ruta_temp_lat"] = addr["lat"]
         context.user_data["ruta_temp_lng"] = addr["lng"]
+        ally_id_ctx = context.user_data.get("ruta_ally_id")
+        parking_enabled_ctx = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+        if parking_enabled_ctx:
+            try:
+                parking_status = addr["parking_status"]
+            except (KeyError, IndexError):
+                parking_status = "NOT_ASKED"
+            context.user_data["ruta_temp_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
+        else:
+            context.user_data["ruta_temp_parking_fee"] = 0
         try:
             increment_customer_address_usage(addr_id, cust_id)
         except Exception:
@@ -1050,6 +1073,7 @@ def ruta_confirmacion_callback(update, context):
                 customer_barrio=parada.get("barrio") or "",
                 dropoff_lat=parada.get("lat"),
                 dropoff_lng=parada.get("lng"),
+                parking_fee=int(parada.get("parking_fee") or 0),
             )
         incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
         if incentivo > 0:
@@ -1098,7 +1122,8 @@ def ruta_guardar_cust_callback(update, context):
             if address:
                 address_id = create_customer_address(customer_id, "Principal", address,
                                                      city="", barrio="", lat=lat, lng=lng)
-            if address_id:
+            parking_enabled_ruta = get_ally_parking_fee_enabled(ally_id) if ally_id else False
+            if address_id and parking_enabled_ruta:
                 context.user_data["ruta_parking_address_id"] = address_id
                 keyboard = [
                     [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="ruta_guardar_cust_parking_si")],
@@ -1187,7 +1212,9 @@ def ruta_parada_dedup_callback(update, context):
             n = len(paradas) + 1
             keyboard = []
             for a in activos[:8]:
-                label = a["label"] or a["address_text"] or "Direccion"
+                parking_status = a["parking_status"] if "parking_status" in a.keys() else "NOT_ASKED"
+                parking_tag = " [P]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
+                label = (a["label"] or a["address_text"] or "Direccion")[:28] + parking_tag
                 keyboard.append([InlineKeyboardButton(label, callback_data="ruta_sel_addr_{}".format(a["id"]))])
             keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="ruta_addr_nueva")])
             query.edit_message_text(

@@ -284,7 +284,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
 | `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
 | `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
-| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. |
+| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. |
 | `scheduled_jobs` | Persistencia de timers del bot para recuperación tras reinicios. Campos: `job_name` (TEXT PRIMARY KEY), `callback_name` (TEXT — nombre de la función en `JOB_REGISTRY` de `order_delivery.py`), `fire_at` (TIMESTAMP — momento programado de disparo), `job_data` (TEXT JSON — contexto serializado del job), `status` (TEXT: `PENDING`\|`EXECUTED`\|`CANCELLED`), `created_at`, `updated_at`. Funciones en `db.py`: `schedule_job`, `cancel_scheduled_job`, `mark_job_executed`, `get_pending_scheduled_jobs` (re-exportadas en `services.py`). |
 
 ---
@@ -2157,6 +2157,7 @@ Permite registrar si una dirección de entrega tiene dificultad para estacionar 
 | `admin_customer_addresses` | `parking_reviewed_by` | `INTEGER` | Ídem |
 | `admin_customer_addresses` | `parking_reviewed_at` | `TEXT/TIMESTAMP` | Ídem |
 | `orders` | `parking_fee` | `INTEGER DEFAULT 0` | Snapshot de tarifa adicional por dificultad de parqueo aplicada al pedido |
+| `route_destinations` | `parking_fee` | `INTEGER DEFAULT 0` | Tarifa adicional por dificultad de parqueo en esa parada específica de ruta |
 
 ### Estados de `parking_status`
 
@@ -2170,21 +2171,35 @@ Permite registrar si una dirección de entrega tiene dificultad para estacionar 
 
 **Constante:** `PARKING_FEE_AMOUNT = 1200` en `db.py`, re-exportada en `services.py`.
 
-### Flujos que preguntan sobre dificultad de parqueo (actualizado 2026-03-27)
+### Toggle por aliado (IMPLEMENTADO 2026-03-28)
 
-La pregunta se hace en TODOS los flujos de creación de nueva dirección de entrega. Mensaje estándar:
+El cobro de parqueo es **opt-in por aliado**: el admin debe habilitarlo explícitamente para cada aliado.
+Si el toggle está desactivado (default), no se hace ninguna pregunta de parqueo ni se cobra nada, aunque la dirección tenga `parking_status = ALLY_YES` o `ADMIN_YES`.
+
+| Elemento | Descripción |
+|---|---|
+| `admin_allies.parking_fee_enabled` | `INTEGER DEFAULT 0` — 0 = inactivo (default), 1 = activo |
+| `get_ally_parking_fee_enabled(ally_id)` | Retorna bool. En `db.py`, re-exportada en `services.py` |
+| `toggle_ally_parking_fee(ally_id, admin_id, enabled)` | Activa/desactiva para el vínculo del admin. En `db.py`, re-exportada en `services.py` |
+| Botón en detalle del aliado | `"Activar / Desactivar Cobro parqueo dificil"` → `config_ally_parking_toggle_{ally_id}` |
+| Gate en ally flows | `ally_clientes_conv`, `nuevo_pedido_conv`, `nueva_ruta_conv` verifican el toggle antes de preguntar/cobrar |
+| Flows admin no tienen gate | `admin_pedido_conv`, `admin_clientes_conv` siempre disponibles (admin controla directamente) |
+
+### Flujos que preguntan sobre dificultad de parqueo (actualizado 2026-03-28)
+
+La pregunta se hace en flujos de creación de nueva dirección de entrega **solo cuando `parking_fee_enabled = 1`** para los flujos de aliado. Mensaje estándar:
 > "En ese punto de entrega hay dificultad para parquear moto o bicicleta? (zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)"
 
 Botones estándar: `"Si, hay dificultad para parquear"` / `"No / No lo se"`
 
-| Flujo | ConversationHandler | Archivo | Estado | Callback (si) | Callback (no) | Handler |
-|-------|--------------------|---------|---------|----|---|---------|
-| Agenda aliado — nuevo cliente | `ally_clientes_conv` | `customer_agenda.py` | `ALLY_CUST_PARKING = 1005` | `allycust_parking_si` | `allycust_parking_no` | `ally_clientes_parking_callback` |
-| Agenda admin — nuevo cliente | `admin_clientes_conv` | `customer_agenda.py` | `ADMIN_CUST_PARKING = 1006` | `admincust_parking_si` | `admincust_parking_no` | `admin_clientes_parking_callback` |
-| Pedido aliado — guardar dir nueva | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_DIR_PARKING = 1007` | `pedido_guardar_dir_parking_si` | `pedido_guardar_dir_parking_no` | `pedido_guardar_dir_parking_callback` |
-| Pedido aliado — guardar cliente nuevo | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_CUST_PARKING = 1008` | `pedido_guardar_cust_parking_si` | `pedido_guardar_cust_parking_no` | `pedido_guardar_cust_parking_callback` |
-| Pedido especial admin | `admin_pedido_conv` | `order.py` | `ADMIN_PEDIDO_GUARDAR_PARKING = 1009` | `admin_ped_guardar_parking_si` | `admin_ped_guardar_parking_no` | `admin_pedido_guardar_parking_callback` |
-| Ruta — guardar cliente nueva parada | `nueva_ruta_conv` | `route.py` | `RUTA_GUARDAR_CUST_PARKING = 1010` | `ruta_guardar_cust_parking_si` | `ruta_guardar_cust_parking_no` | `ruta_guardar_cust_parking_callback` |
+| Flujo | ConversationHandler | Archivo | Estado | Callback (si) | Callback (no) | Handler | Gate toggle |
+|-------|--------------------|---------|---------|----|---|---------|---|
+| Agenda aliado — nuevo cliente | `ally_clientes_conv` | `customer_agenda.py` | `ALLY_CUST_PARKING = 1005` | `allycust_parking_si` | `allycust_parking_no` | `ally_clientes_parking_callback` | Sí |
+| Agenda admin — nuevo cliente | `admin_clientes_conv` | `customer_agenda.py` | `ADMIN_CUST_PARKING = 1006` | `admincust_parking_si` | `admincust_parking_no` | `admin_clientes_parking_callback` | No |
+| Pedido aliado — guardar dir nueva | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_DIR_PARKING = 1007` | `pedido_guardar_dir_parking_si` | `pedido_guardar_dir_parking_no` | `pedido_guardar_dir_parking_callback` | Sí |
+| Pedido aliado — guardar cliente nuevo | `nuevo_pedido_conv` | `order.py` | `PEDIDO_GUARDAR_CUST_PARKING = 1008` | `pedido_guardar_cust_parking_si` | `pedido_guardar_cust_parking_no` | `pedido_guardar_cust_parking_callback` | Sí |
+| Pedido especial admin | `admin_pedido_conv` | `order.py` | `ADMIN_PEDIDO_GUARDAR_PARKING = 1009` | `admin_ped_guardar_parking_si` | `admin_ped_guardar_parking_no` | `admin_pedido_guardar_parking_callback` | No |
+| Ruta — guardar cliente nueva parada | `nueva_ruta_conv` | `route.py` | `RUTA_GUARDAR_CUST_PARKING = 1010` | `ruta_guardar_cust_parking_si` | `ruta_guardar_cust_parking_no` | `ruta_guardar_cust_parking_callback` | Sí |
 
 **Respuestas:**
 - "Si, hay dificultad" → `parking_status = ALLY_YES`, admin debe verificar. El cobro $1.200 se activa.
@@ -2217,32 +2232,59 @@ Registrados en `main.py` con `dp.add_handler(CallbackQueryHandler(...))`
 
 ### Aviso al courier (order_delivery.py)
 
-Si `orders.parking_fee > 0`:
+**Pedidos normales** — si `orders.parking_fee > 0`:
+- **En la oferta** (`_build_offer_text`): aviso claro antes de aceptar — el courier sabe que el punto tiene dificultad para parquear, que se incluyen $X para cubrir el parqueo o cualquier imprevisto, y que comparendos o inmovilizaciones son su responsabilidad.
+- **Al recibir datos del cliente** (`_notify_courier_pickup_approved`): recordatorio más corto al revelar la dirección exacta — que asegure su vehículo en lugar seguro y legal antes de entregar.
 
-**En la oferta** (`_build_offer_text`): aviso claro antes de aceptar — el courier sabe que el punto tiene dificultad para parquear, que se incluyen $X para cubrir el parqueo o cualquier imprevisto, y que comparendos o inmovilizaciones son su responsabilidad.
-
-**Al recibir datos del cliente** (`_notify_courier_pickup_approved`): recordatorio más corto al revelar la dirección exacta — que asegure su vehículo en lugar seguro y legal antes de entregar.
+**Rutas multi-parada** — si alguna parada tiene `route_destinations.parking_fee > 0`:
+- **En la oferta** (`_build_route_offer_text`): cada parada con parqueo difícil se marca `[parqueo dificil]` en la lista, y al final se muestra el aviso consolidado con el total de $X para todas las paradas afectadas.
+- **Al revelar cada parada** (`_send_route_stop_to_courier`): recordatorio al pie del mensaje de esa parada específica con el monto incluido para esa entrega.
 
 ### Funciones nuevas en `db.py`
 
 | Función | Descripción |
 |---|---|
-| `set_address_parking_status(address_id, status, reviewed_by)` | Actualiza parking_status; si reviewed_by no es None, registra quién y cuándo revisó |
+| `set_address_parking_status(address_id, status, reviewed_by, table)` | Actualiza parking_status. `table` puede ser `"ally_customer_addresses"` (default) o `"admin_customer_addresses"`. Si reviewed_by no es None, registra quién y cuándo revisó |
 | `get_addresses_pending_parking_review(admin_id)` | Solo pendientes. Sin PII del cliente. |
 | `get_all_addresses_parking_review(admin_id)` | Todas (pendientes + revisadas). Sin PII del cliente. |
+| `get_ally_parking_fee_enabled(ally_id)` | Retorna bool — True si el cobro de parqueo está activo para este aliado |
+| `toggle_ally_parking_fee(ally_id, admin_id, enabled)` | Activa/desactiva `parking_fee_enabled` en el vínculo admin_allies. Acepta `admin_id=None` (Platform Admin): actualiza el vínculo con `status='APPROVED'` sin filtrar por admin |
+| `get_ally_telegram_id_by_address_id(address_id)` | Retorna `telegram_id` del aliado dueño de una `ally_customer_address` (para notificaciones) |
+| `get_ally_telegram_id_by_ally_id(ally_id)` | Retorna `telegram_id` del aliado dado su `allies.id` (JOIN allies → users). Usado para notificar al aliado cuando el admin activa/desactiva el toggle de parqueo |
 
 Todas re-exportadas en `services.py`.
 
-### Lo que NO hace este sistema (aún)
+### Columna nueva en BD
 
-- No aplica `parking_fee` automáticamente al crear el pedido desde la agenda (la lógica de crear el pedido con `parking_fee` está en `create_order` pero el handler `nuevo_pedido_conv` aún no lee el `parking_status` de la dirección seleccionada al seleccionar una dirección existente — implementación futura).
-- No notifica al aliado por Telegram cuando el admin cambia el estado de una dirección.
+| Tabla | Columna | Tipo | Descripción |
+|---|---|---|---|
+| `admin_allies` | `parking_fee_enabled` | `INTEGER DEFAULT 0` | Toggle por aliado: 0 = inactivo (default), 1 = activo |
+
+### Lo que NO hace este sistema
+
+- (Completo) Notificación al aliado cuando el admin cambia el estado de una dirección — implementado 2026-03-28.
+- (Completo) Indicador `[P]` en teclados de selección de dirección (pedido y ruta) — implementado 2026-03-29.
+- (Completo) Desglose `"Tarifa al repartidor: $X (incluye $Y por parqueo dificil)"` en notificaciones de entrega al aliado y al admin creador — implementado 2026-03-29.
+- (Completo) Indicador `[parqueo dificil]` en listas de direcciones de la agenda de clientes (aliado, admin, clientes_conv) — implementado 2026-03-29.
+
+### Mejoras del panel de revisión de parqueo (2026-03-29)
+
+- `get_addresses_pending_parking_review`: excluye `NOT_ASKED`; ordena por urgencia (ALLY_YES primero, luego PENDING_REVIEW).
+- `get_all_addresses_parking_review`: excluye `NOT_ASKED`; ordena ALLY_YES → PENDING_REVIEW → ADMIN_YES → ADMIN_NO.
+- Panel UX: advertencia de toggle desactivado colapsada en la fila de estado como sufijo `" | COBRO DESACTIVADO"`.
+- `context.user_data["parking_show_all"]` preserva la vista (pendientes vs todas) tras revisar una dirección.
+- Callback `parking_close`: botón "Cerrar" disponible en todas las vistas del panel.
+- `toggle_ally_parking_fee` acepta `admin_id=None` para que Platform Admin pueda activar/desactivar el toggle en aliados de cualquier equipo.
+- Notificación al aliado vía `get_ally_telegram_id_by_ally_id` cuando el admin activa o desactiva el cobro de parqueo.
 
 ### Fecha de implementación completa
 
 - Implementación inicial: 2026-03-26
 - Extensión a todos los flujos + reencuadre del concepto: 2026-03-27
 - Fix scoping plataforma + mejora UX panel: 2026-03-27
+- Completar GAP admin_pedido_conv + GAP rutas multi-parada: 2026-03-28
+- Bugs críticos (total_fee + tabla) + toggle por aliado + notificación al aliado: 2026-03-28
+- Mejoras UX: tag [P] en teclados selección dirección, indicador agenda clientes, desglose parqueo en notificaciones de entrega; panel: Cerrar, show_all, orden urgencia, excluir NOT_ASKED, fix toggle Platform Admin: 2026-03-29
 
 ---
 
