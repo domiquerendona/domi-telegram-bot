@@ -347,6 +347,7 @@ from handlers.recharges import (
     ally_suscripcion_conv,
     admin_movimientos_callback,
     admin_movimientos_periodo_callback,
+    admin_mi_saldo_callback,
 )
 from handlers.registration import (
     soy_aliado,
@@ -1319,7 +1320,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
             [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
-            [InlineKeyboardButton("💰 Mis movimientos", callback_data="admin_movimientos")],
+            [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
@@ -1369,6 +1370,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
         [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
+        [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -2293,6 +2295,7 @@ def main():
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
     dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
     dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_mes|soc_todo)$"))
+    dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo$"))
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 

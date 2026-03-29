@@ -47,6 +47,7 @@ from services import (
     approve_recharge_request,
     get_admin_balance_breakdown,
     get_admin_ledger_movements,
+    get_admin_saldo_hoy,
     get_platform_sociedad,
     get_platform_sociedad_id,
     approve_role_registration,
@@ -2377,6 +2378,78 @@ ingreso_conv = ConversationHandler(
 
 
 # ---------------------------------------------------------------------------
+# admin_mi_saldo — Vista de saldo en tiempo real para cualquier admin
+# Entry: callback admin_mi_saldo
+# Muestra: saldo actual, resumen HOY (ingresos/egresos), alerta si saldo bajo
+# ---------------------------------------------------------------------------
+
+MIN_ADMIN_OPERATING_BALANCE_DISPLAY = 2000  # Umbral para alerta visual de saldo bajo
+
+
+def admin_mi_saldo_callback(update, context):
+    """Muestra el saldo actual del admin con resumen de movimientos de hoy."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No se encontro tu perfil de administrador.")
+        return
+
+    admin_id = admin["id"]
+    datos = get_admin_saldo_hoy(admin_id)
+    balance = datos["balance"]
+    alerta = balance < MIN_ADMIN_OPERATING_BALANCE_DISPLAY
+
+    # Indicador de estado del saldo
+    if alerta:
+        estado_icon = "SALDO BAJO"
+        alerta_line = "\nATENCION: Tu saldo esta por debajo del minimo operativo (${:,}). Recarga para poder crear pedidos especiales.\n".format(
+            MIN_ADMIN_OPERATING_BALANCE_DISPLAY)
+    else:
+        estado_icon = "OK"
+        alerta_line = ""
+
+    # Construir resumen de hoy
+    hoy_lines = []
+    if datos["fees_estandar_hoy"]:
+        hoy_lines.append("  Fees estandar recibidos:   +${:,}".format(datos["fees_estandar_hoy"]))
+    if datos["comisiones_hoy"]:
+        hoy_lines.append("  Comisiones especiales:     +${:,}".format(datos["comisiones_hoy"]))
+    if datos["subs_hoy"]:
+        hoy_lines.append("  Suscripciones:             +${:,}".format(datos["subs_hoy"]))
+    if datos["plat_fee_pagado_hoy"]:
+        hoy_lines.append("  Fee plataforma pagado:     -${:,}".format(datos["plat_fee_pagado_hoy"]))
+    if datos["tech_fee_pagado_hoy"]:
+        hoy_lines.append("  Desarrollo tecnologico:    -${:,}".format(datos["tech_fee_pagado_hoy"]))
+    if datos["recargas_salientes_hoy"]:
+        hoy_lines.append("  Recargas aprobadas:        -${:,}".format(datos["recargas_salientes_hoy"]))
+
+    if hoy_lines:
+        resumen_hoy = "\nMovimientos de hoy ({}):\n".format(datos["fecha"]) + "\n".join(hoy_lines)
+        neto = datos["total_ingresos_hoy"] - datos["total_egresos_hoy"]
+        signo = "+" if neto >= 0 else ""
+        resumen_hoy += "\n  Neto del dia:              {}${:,}".format(signo, neto)
+    else:
+        resumen_hoy = "\nMovimientos de hoy ({}): sin movimientos.".format(datos["fecha"])
+
+    texto = (
+        "Mi saldo — {}\n\n"
+        "Saldo actual: ${:,} [{}]{}{}"
+    ).format(
+        admin.get("team_name") or "Admin",
+        balance,
+        estado_icon,
+        alerta_line,
+        resumen_hoy,
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Ver historial de movimientos", callback_data="admin_movimientos")],
+    ])
+    query.edit_message_text(texto, reply_markup=keyboard)
+
+
 # admin_movimientos — Historial de movimientos del saldo master (PLATFORM)
 # Entry: callback admin_movimientos
 # Periodo: admin_movimientos_hoy / semana / mes / todo
@@ -2389,31 +2462,41 @@ _KIND_LABELS = {
     "RECHARGE": "Recarga aprobada",
     "SUBSCRIPTION_PLATFORM_SHARE": "Suscripcion (plataforma)",
     "SUBSCRIPTION_ADMIN_SHARE": "Suscripcion (admin)",
+    "SPECIAL_ORDER_COMMISSION": "Comision pedido especial",
+    "SPECIAL_ORDER_PLATFORM_FEE": "Fee plataforma pedido especial",
+    "TECH_DEV_FEE": "Desarrollo tecnologico (2%)",
 }
 
-_MOVIMIENTOS_KEYBOARD = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
-        InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
-    ],
-    [
-        InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
-        InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
-    ],
-    [
-        InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
-        InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
-    ],
-])
+def _movimientos_keyboard(is_platform=False):
+    rows = [
+        [
+            InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
+            InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
+        ],
+        [
+            InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
+            InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
+        ],
+    ]
+    if is_platform:
+        rows.append([
+            InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
+            InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_movimientos_callback(update, context):
     """Muestra selector de periodo para ver movimientos del saldo master."""
     query = update.callback_query
     query.answer()
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    admin = get_admin_by_user_id(user_row["id"])
+    is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
     query.edit_message_text(
         "Movimientos del saldo master — selecciona un periodo:",
-        reply_markup=_MOVIMIENTOS_KEYBOARD,
+        reply_markup=_movimientos_keyboard(is_platform=is_platform),
     )
 
 
@@ -2476,7 +2559,8 @@ def admin_movimientos_periodo_callback(update, context):
         if len(movimientos) == 30:
             texto += "\n(mostrando ultimos 30)"
 
-    query.edit_message_text(texto, reply_markup=_MOVIMIENTOS_KEYBOARD)
+    is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
+    query.edit_message_text(texto, reply_markup=_movimientos_keyboard(is_platform=is_platform))
 
 
 # ---------------------------------------------------------------------------

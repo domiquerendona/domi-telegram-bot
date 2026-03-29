@@ -1193,21 +1193,55 @@ Aplica a **todos los pedidos** (aliado y admin). 5 minutos después de publicar 
 
 ---
 
-## Pedido Especial del Admin (IMPLEMENTADO 2026-03-06)
+## Pedido Especial del Admin (IMPLEMENTADO 2026-03-06, actualizado 2026-03-29)
 
-Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con tarifa libre (sin cálculo automático) y sin débito de saldo.
+Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con tarifa libre (sin cálculo automático), comisión especial opcional al courier, y toggle de visibilidad por equipo.
 
 ### Características
 
-- **Sin fee al admin creador**: el admin no paga comisión por crear el pedido. El courier que lo entrega sí paga su fee normal ($300).
+- **Tarifa manual**: el admin ingresa libremente el monto que el courier cobrará al cliente.
+- **Comisión especial opcional** (`special_commission`): el admin puede cobrarle al courier una comisión adicional al entregar. Aplica a couriers de cualquier equipo (cross-team). Mínimo: `fee_platform_share` ($100) si se activa.
+- **Toggle de visibilidad** (`team_only`): el admin puede restringir la oferta solo a su equipo (0 = todos, 1 = solo equipo propio).
+- **Saldo mínimo para crear**: el admin necesita al menos `$2.000` en balance para iniciar el flujo (`MIN_ADMIN_OPERATING_BALANCE = 2000` en `handlers/order.py`).
 - **Sin fee check del aliado**: no hay aliado, `ally_id=NULL`, `skip_fee_check=True` omite la verificación de saldo.
-- **Tarifa manual**: el admin ingresa el monto que pagará al courier.
-- **Sin débito de saldo al admin**: el pago de la tarifa al courier se maneja fuera del sistema.
-- **`creator_admin_id`**: nueva columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
+- **`creator_admin_id`**: columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
 - **`ally_id = NULL`**: los pedidos especiales de admin no tienen `ally_id`.
 - **Direcciones de recogida**: el admin gestiona sus propias ubicaciones de pickup en `admin_locations`.
 - **Incentivos opcionales**: se pueden agregar incentivos (+$1.500/+$2.000/+$3.000/libre) antes de publicar.
 - **T+5 aplica igual**: si nadie acepta en 5 min, recibe la sugerencia de incentivo.
+
+### Modelo de fees al entregar un pedido especial
+
+#### Courier paga (sale de su saldo en `admin_couriers.balance`):
+
+| Concepto | Monto | Destino |
+|----------|-------|---------|
+| Fee estándar — admin share | `fee_admin_share` ($200) | Admin propio del courier |
+| Fee estándar — platform share | `fee_platform_share` ($100) | Plataforma |
+| Comisión especial (si `special_commission > 0`) | monto configurado | Creator admin (íntegro) |
+| **Total descuento courier** | $300 + comisión | |
+
+#### Creator admin paga (sale de `admins.balance` del admin creador):
+
+| Concepto | Cuándo aplica | Monto | Destino | Ledger kind |
+|----------|---------------|-------|---------|-------------|
+| Fee de plataforma | Siempre | `fee_platform_share` ($100) | Sociedad | `SPECIAL_ORDER_PLATFORM_FEE` |
+| Desarrollo tecnológico | Solo si `special_commission > 0` | `fee_special_order_tech_dev_pct`% de `total_fee` (default 2%) | Sociedad | `TECH_DEV_FEE` |
+
+**Ejemplo**: tarifa $20.000, comisión $2.000 → creator admin paga $100 + $400 = $500. Ganancia neta del admin: $2.000 − $500 = $1.500.
+
+**Ejemplo sin comisión**: tarifa $15.000, sin comisión → creator admin paga solo $100 (fee de plataforma).
+
+#### Implementación:
+- `apply_service_fee(COURIER)` — siempre (fee estándar $300)
+- `apply_special_order_commission(order_id, courier_id, commission, creator_admin_id)` — si `special_commission > 0`; courier paga monto completo → creator admin recibe monto completo
+- `apply_special_order_creator_fees(order_id, creator_admin_id, total_fee, has_commission)` — siempre para pedidos especiales; débita fees de plataforma del creator admin
+
+### Configuración en `settings`
+
+| Clave | Default | Descripción |
+|-------|---------|-------------|
+| `fee_special_order_tech_dev_pct` | `2` | % de la tarifa cobrado al admin creador cuando hay comisión especial. Va a la sociedad. |
 
 ### Tabla `admin_locations`
 
@@ -1281,9 +1315,10 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | `ADMIN_PEDIDO_CUST_PHONE` | 910 | Teléfono del cliente |
 | `ADMIN_PEDIDO_CUST_ADDR` | 911 | Dirección de entrega (con geocoding) |
 | `ADMIN_PEDIDO_TARIFA` | 912 | Tarifa manual al courier |
-| `ADMIN_PEDIDO_INSTRUC` | 913 | Instrucciones + preview final |
+| `ADMIN_PEDIDO_INSTRUC` | 913 | Instrucciones + preview final (con toggle visibilidad) |
 | `OFFER_SUGGEST_INC_MONTO` | 915 | Monto libre en sugerencia T+5 |
 | `ADMIN_PEDIDO_INC_MONTO` | 916 | Monto libre de incentivo en creación admin |
+| `ADMIN_PEDIDO_COMISION` | 1011 | Comisión especial que el admin cobra al courier |
 
 ### User data keys del flujo (prefijo `admin_ped_`)
 
@@ -1299,18 +1334,31 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | `admin_ped_dropoff_lat/lng` | Coordenadas de entrega |
 | `admin_ped_dropoff_city/barrio` | Ciudad/barrio de entrega |
 | `admin_ped_geo_cust_pending` | Dict con geo pendiente de confirmar (entrega) |
-| `admin_ped_tarifa` | Tarifa manual (int, COP) |
+| `admin_ped_tarifa` | Tarifa manual (int, COP) — lo que el courier cobra al cliente |
+| `admin_ped_comision` | Comisión especial (int, COP, default 0) — lo que el admin cobra al courier |
+| `admin_ped_team_only` | Toggle visibilidad (0 = todos, 1 = solo equipo propio) |
 | `admin_ped_incentivo` | Incentivo adicional (int, COP, default 0) |
 | `admin_ped_instruc` | Instrucciones para el courier |
 
 ### Publicación del pedido admin
 
 En `admin_pedido_confirmar_callback`:
-1. `create_order(ally_id=None, creator_admin_id=admin_id, ...)` — crea el pedido
-2. `publish_order_to_couriers(order_id, None, context, admin_id_override=admin_id, skip_fee_check=True)` — publica a todos los couriers activos
+1. `create_order(ally_id=None, creator_admin_id=admin_id, special_commission=comision, team_only=team_only, ...)` — crea el pedido
+2. `publish_order_to_couriers(order_id, None, context, admin_id_override=admin_id, skip_fee_check=True)` — publica a couriers (filtrado por equipo si `team_only=1`)
 3. `increment_admin_location_usage(pickup_location_id, admin_id)` — si ubicación guardada
 
-**Nota:** `skip_fee_check=True` omite la verificación previa de saldo del aliado (no hay aliado). El courier que acepta el pedido sí paga su fee normal al entregar ($300 → $200 a su admin, $100 a Plataforma). El admin creador no paga ninguna comisión.
+**Pre-check de couriers en `publish_order_to_couriers`**: si `special_commission > 0`, cada courier necesita `fee_service_total + special_commission` en balance para aparecer como elegible.
+
+**Al entregar**: se llaman las tres funciones en orden: `apply_service_fee(COURIER)` → `apply_special_order_commission` (si hay comisión) → `apply_special_order_creator_fees` (siempre).
+
+**Flujo de creación (actualizado):**
+```
+Pickup → Cliente → Dirección entrega
+  → Tarifa manual (ADMIN_PEDIDO_TARIFA=912)
+  → Comisión especial (ADMIN_PEDIDO_COMISION=1011, opcional)
+  → Instrucciones + preview con toggle visibilidad (ADMIN_PEDIDO_INSTRUC=913)
+  → Confirmar → publica
+```
 
 ---
 

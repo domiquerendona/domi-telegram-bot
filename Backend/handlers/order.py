@@ -23,7 +23,8 @@ from handlers.states import (
     OFFER_SUGGEST_INC_MONTO,
     ROUTE_SUGGEST_INC_MONTO,
     ADMIN_PEDIDO_PICKUP, ADMIN_PEDIDO_CUST_NAME, ADMIN_PEDIDO_CUST_PHONE,
-    ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
+    ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_TARIFA, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
+    ADMIN_PEDIDO_COMISION,
     ADMIN_PEDIDO_SEL_CUST, ADMIN_PEDIDO_SEL_CUST_ADDR, ADMIN_PEDIDO_SAVE_PICKUP,
     PEDIDO_DEDUP_CONFIRM, PEDIDO_GUARDAR_DIR_EXISTENTE,
     ADMIN_PEDIDO_SEL_CUST_BUSCAR, ADMIN_PEDIDO_CUST_DEDUP, ADMIN_PEDIDO_GUARDAR_CUST,
@@ -73,6 +74,7 @@ from services import (
     get_ally_parking_fee_enabled,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
+    get_fee_config,
 )
 
 
@@ -2656,6 +2658,8 @@ def _admin_ped_preview_text(ctx):
     tarifa = int(ctx.get("admin_ped_tarifa") or 0)
     incentivo = int(ctx.get("admin_ped_incentivo") or 0)
     parking_fee = int(ctx.get("admin_ped_parking_fee") or 0)
+    comision = int(ctx.get("admin_ped_comision") or 0)
+    team_only = int(ctx.get("admin_ped_team_only") or 0)
     total = tarifa + incentivo
     distancia_km = float(ctx.get("admin_ped_distance_km") or 0)
     instruc = ctx.get("admin_ped_instruc") or "Ninguna"
@@ -2667,28 +2671,48 @@ def _admin_ped_preview_text(ctx):
         source_label = "Ruta desde cache"
     elif "fallback" in quote_source:
         source_label = "Ruta estimada local"
+    visibilidad_label = "Solo mi equipo" if team_only else "Todos los equipos"
+    visibilidad_btn = "Cambiara: Todos los equipos" if team_only else "Cambiara: Solo mi equipo"
+    # Calcular lo que el admin pagara a plataforma al entregar
+    fee_cfg_prev = get_fee_config()
+    platform_share = fee_cfg_prev["fee_platform_share"]
+    tech_dev_pct = fee_cfg_prev["fee_special_order_tech_dev_pct"]
+    admin_fee_plat = platform_share
+    admin_fee_tech = round(tarifa * tech_dev_pct / 100) if (comision > 0 and tech_dev_pct > 0 and tarifa > 0) else 0
+    admin_fee_total = admin_fee_plat + admin_fee_tech
+    if admin_fee_tech > 0:
+        admin_fee_line = "Tus fees al entregar: -${:,} (plataforma ${:,} + desarrollo {}% ${:,})".format(
+            admin_fee_total, admin_fee_plat, tech_dev_pct, admin_fee_tech)
+    else:
+        admin_fee_line = "Tus fees al entregar: -${:,} (fee de plataforma)".format(admin_fee_plat)
+
     text = (
         "Resumen del pedido especial:\n\n"
         "Recogida: {}\n"
         "Cliente: {} / {}\n"
         "Entrega: {}\n"
-        "Distancia: {:.1f} km\n"
-        "Tarifa calculada: ${:,}\n"
-        "Fuente: {}\n"
+        "Distancia: {:.1f} km ({})\n"
+        "Tarifa al repartidor: ${:,}\n"
         "{}"
         "{}"
+        "Comision al repartidor: {}\n"
+        "{}\n"
+        "Visibilidad: {}\n"
         "Instrucciones: {}\n\n"
-        "Total oferta: ${:,}"
+        "Total oferta al courier: ${:,}"
     ).format(
         ctx.get("admin_ped_pickup_addr", ""),
         ctx.get("admin_ped_cust_name", ""),
         ctx.get("admin_ped_cust_phone", ""),
         ctx.get("admin_ped_cust_addr", ""),
         distancia_km,
-        tarifa,
         source_label,
+        tarifa,
         "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
         "Punto con parqueo dificil: +${:,}\n".format(parking_fee) if parking_fee else "",
+        "${:,}".format(comision) if comision > 0 else "Fee estandar al repartidor ($300)",
+        admin_fee_line,
+        visibilidad_label,
         instruc,
         total,
     )
@@ -2700,13 +2724,14 @@ def _admin_ped_preview_text(ctx):
             InlineKeyboardButton("+$3,000", callback_data="admin_pedido_inc_3000"),
         ],
         [InlineKeyboardButton("Otro incentivo", callback_data="admin_pedido_inc_otro")],
+        [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
         [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
-    """Calcula la cotizacion del pedido especial admin y pide instrucciones."""
+    """Calcula la distancia del pedido especial admin y pide la tarifa manual al admin."""
     pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
     pickup_city = context.user_data.get("admin_ped_pickup_city", "")
     pickup_lat = context.user_data.get("admin_ped_pickup_lat")
@@ -2727,14 +2752,9 @@ def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
         dropoff_lng=dropoff_lng,
     )
     context.user_data.setdefault("admin_ped_incentivo", 0)
-    pricing = build_order_pricing_breakdown(
-        distance_km=cotizacion["distance_km"],
-        additional_incentive=context.user_data.get("admin_ped_incentivo", 0),
-    )
-    context.user_data["admin_ped_distance_km"] = pricing["distance_km"]
-    context.user_data["admin_ped_tarifa"] = pricing["subtotal_fee"]
-    context.user_data["admin_ped_base_fee"] = pricing["base_fee"]
-    context.user_data["admin_ped_buy_surcharge"] = pricing["buy_surcharge"]
+    context.user_data.setdefault("admin_ped_comision", 0)
+    context.user_data.setdefault("admin_ped_team_only", 0)
+    context.user_data["admin_ped_distance_km"] = cotizacion["distance_km"]
     context.user_data["admin_ped_quote_source"] = cotizacion.get("quote_source", "text")
     source_label = "Ruta estimada"
     if cotizacion.get("quote_source") == "coords":
@@ -2744,34 +2764,99 @@ def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
     elif "fallback" in str(cotizacion.get("quote_source", "")):
         source_label = "Ruta estimada local"
     text = (
-        "Distancia: {:.1f} km\n"
-        "Tarifa calculada: ${:,}\n"
-        "Fuente: {}\n\n"
-        "Escribe instrucciones adicionales para el courier "
-        "o toca 'Sin instrucciones'."
-    ).format(
-        pricing["distance_km"],
-        pricing["subtotal_fee"],
-        source_label,
-    )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]])
+        "Distancia calculada: {:.1f} km ({})\n\n"
+        "Cual es la tarifa que le pagaras al repartidor?\n"
+        "Ingresa el monto en pesos (ej: 15000):"
+    ).format(cotizacion["distance_km"], source_label)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
     if edit and hasattr(update_or_query, "edit_message_text"):
         update_or_query.edit_message_text(text, reply_markup=markup)
     elif hasattr(update_or_query, "message") and update_or_query.message:
         update_or_query.message.reply_text(text, reply_markup=markup)
     else:
         update_or_query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_TARIFA
+
+
+def _admin_pedido_pedir_comision(update_or_query, context):
+    """Muestra la tarifa ingresada y pide la comision que cobrara al courier."""
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    fee_cfg = get_fee_config()
+    min_comision = fee_cfg["fee_platform_share"]
+    text = (
+        "Tarifa al repartidor: ${:,}\n\n"
+        "Comision al repartidor:\n"
+        "Es el monto que se le descontara al courier de su saldo operativo "
+        "al entregar este pedido (va al admin creador mas la cuota de plataforma).\n\n"
+        "Minimo si cobras: ${:,} (cuota de plataforma).\n"
+        "Escribe el monto o toca 'Sin comision':"
+    ).format(tarifa, min_comision)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sin comision (fee estandar)", callback_data="admin_pedido_sin_comision")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_COMISION
+
+
+def _admin_pedido_pedir_instruc(update_or_query, context):
+    """Muestra resumen de tarifa/comision/visibilidad y pide instrucciones al admin."""
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    comision = int(context.user_data.get("admin_ped_comision") or 0)
+    team_only = int(context.user_data.get("admin_ped_team_only") or 0)
+    fee_cfg = get_fee_config()
+    fee_estandar = fee_cfg["fee_service_total"]
+    if comision > 0:
+        comision_str = "Comision al repartidor: ${:,}".format(comision)
+    else:
+        comision_str = "Comision: fee estandar (${:,})".format(fee_estandar)
+    visibilidad_label = "Solo mi equipo" if team_only else "Todos los equipos"
+    text = (
+        "Tarifa al repartidor: ${:,}\n"
+        "{}\n"
+        "Visibilidad: {}\n\n"
+        "Escribe instrucciones adicionales para el courier "
+        "o toca 'Sin instrucciones'."
+    ).format(tarifa, comision_str, visibilidad_label)
+    visibilidad_btn = "Visibilidad: Solo mi equipo" if team_only else "Visibilidad: Todos los equipos"
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")],
+        [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
     return ADMIN_PEDIDO_INSTRUC
 
 
+MIN_ADMIN_OPERATING_BALANCE = 2000  # Saldo minimo para crear pedidos especiales
+
+
 def admin_nuevo_pedido_start(update, context):
-    """Entrada al flujo de pedido especial del admin. Verifica y muestra puntos de recogida."""
+    """Entrada al flujo de pedido especial del admin. Verifica saldo minimo y muestra puntos de recogida."""
     query = update.callback_query
     query.answer()
     telegram_id = update.effective_user.id
     admin = get_admin_by_telegram_id(telegram_id)
     if not admin or (admin["status"] or "").upper() != "APPROVED":
         query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
+        return ConversationHandler.END
+    admin_balance = int(admin["balance"] or 0) if admin.get("balance") is not None else 0
+    if admin_balance < MIN_ADMIN_OPERATING_BALANCE:
+        query.edit_message_text(
+            "Saldo insuficiente para crear un pedido especial.\n\n"
+            "Tu saldo actual: ${:,}\n"
+            "Saldo minimo requerido: ${:,}\n\n"
+            "Recarga tu saldo para poder crear pedidos especiales.".format(
+                admin_balance, MIN_ADMIN_OPERATING_BALANCE)
+        )
         return ConversationHandler.END
     admin_id = admin["id"]
     # Limpiar datos anteriores del flujo
@@ -3080,7 +3165,7 @@ def admin_pedido_addr_selected(update, context):
             pass
 
     query.edit_message_text(
-        "Cliente: {}\nEntrega: {}\n\nCalculando tarifa...".format(
+        "Cliente: {}\nEntrega: {}\n\nCalculando distancia...".format(
             cust_name, address["address_text"]
         )
     )
@@ -3216,6 +3301,67 @@ def admin_pedido_geo_callback(update, context):
             return ADMIN_PEDIDO_CUST_ADDR
 
 
+def admin_pedido_tarifa_handler(update, context):
+    """Captura la tarifa manual ingresada por el admin y pide la comision."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "").replace("$", "")
+    if not texto.isdigit() or int(texto) < 1000:
+        update.message.reply_text("Ingresa una tarifa valida en pesos (minimo $1,000).")
+        return ADMIN_PEDIDO_TARIFA
+    tarifa = int(texto)
+    if tarifa > 500000:
+        update.message.reply_text("La tarifa es demasiado alta (maximo $500,000).")
+        return ADMIN_PEDIDO_TARIFA
+    context.user_data["admin_ped_tarifa"] = tarifa
+    context.user_data["admin_ped_base_fee"] = tarifa
+    context.user_data["admin_ped_buy_surcharge"] = 0
+    return _admin_pedido_pedir_comision(update, context)
+
+
+def admin_pedido_comision_handler(update, context):
+    """Captura el monto de comision y pide instrucciones."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "").replace("$", "")
+    if not texto.isdigit() or int(texto) < 0:
+        update.message.reply_text("Ingresa un monto valido o toca 'Sin comision'.")
+        return ADMIN_PEDIDO_COMISION
+    comision = int(texto)
+    if comision > 0:
+        fee_cfg = get_fee_config()
+        min_comision = fee_cfg["fee_platform_share"]
+        if comision < min_comision:
+            update.message.reply_text(
+                "La comision minima es ${:,} (cuota de plataforma). "
+                "Ingresa ese monto o mas, o toca 'Sin comision'.".format(min_comision)
+            )
+            return ADMIN_PEDIDO_COMISION
+    if comision > 200000:
+        update.message.reply_text("La comision es demasiado alta (maximo $200,000).")
+        return ADMIN_PEDIDO_COMISION
+    context.user_data["admin_ped_comision"] = comision
+    return _admin_pedido_pedir_instruc(update, context)
+
+
+def admin_pedido_sin_comision_callback(update, context):
+    """Admin elige no cobrar comision especial (usa fee estandar)."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["admin_ped_comision"] = 0
+    return _admin_pedido_pedir_instruc(query, context)
+
+
+def admin_pedido_team_toggle_callback(update, context):
+    """Alterna visibilidad: todos los equipos / solo mi equipo."""
+    query = update.callback_query
+    query.answer()
+    actual = int(context.user_data.get("admin_ped_team_only") or 0)
+    context.user_data["admin_ped_team_only"] = 0 if actual else 1
+    # Mantener instrucciones si ya las habia y mostrar preview actualizado
+    if context.user_data.get("admin_ped_instruc") is not None:
+        text, markup = _admin_ped_preview_text(context.user_data)
+        query.edit_message_text(text, reply_markup=markup)
+        return ADMIN_PEDIDO_INSTRUC
+    return _admin_pedido_pedir_instruc(query, context)
+
+
 def admin_pedido_instruc_handler(update, context):
     """Guarda instrucciones y muestra preview del pedido."""
     context.user_data["admin_ped_instruc"] = update.message.text.strip()
@@ -3282,6 +3428,8 @@ def admin_pedido_confirmar_callback(update, context):
     tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
     incentivo = int(context.user_data.get("admin_ped_incentivo") or 0)
     parking_fee = int(context.user_data.get("admin_ped_parking_fee") or 0)
+    comision = int(context.user_data.get("admin_ped_comision") or 0)
+    team_only = int(context.user_data.get("admin_ped_team_only") or 0)
     total_fee = tarifa + incentivo + parking_fee
     pickup_location_id = context.user_data.get("admin_ped_pickup_id")
     pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
@@ -3334,6 +3482,8 @@ def admin_pedido_confirmar_callback(update, context):
             quote_source=quote_source,
             ally_admin_id_snapshot=admin_id,
             parking_fee=parking_fee,
+            special_commission=comision,
+            team_only=team_only,
         )
     except Exception as e:
         logger.error("admin_pedido_confirmar_callback create_order: %s", e)
@@ -3356,14 +3506,20 @@ def admin_pedido_confirmar_callback(update, context):
         )
     except Exception as e:
         logger.warning("admin_pedido_confirmar_callback publish: %s", e)
+    comision_str = " | Comision: ${:,}".format(comision) if comision > 0 else " | Comision: fee estandar"
+    visibilidad_str = "Solo equipo propio" if team_only else "Todos los equipos"
     success_msg = (
         "Pedido especial publicado.\n"
         "ID: #{}\n"
         "Tarifa: ${:,}{}\n"
+        "{}\n"
+        "Visibilidad: {}\n"
         "Ofertando a {} repartidores activos.".format(
             order_id,
             total_fee,
             " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
+            comision_str,
+            visibilidad_str,
             published_count,
         )
     )
@@ -4952,10 +5108,20 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
         ],
+        ADMIN_PEDIDO_TARIFA: [
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
+        ],
+        ADMIN_PEDIDO_COMISION: [
+            CallbackQueryHandler(admin_pedido_sin_comision_callback, pattern=r"^admin_pedido_sin_comision$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_comision_handler),
+        ],
         ADMIN_PEDIDO_INSTRUC: [
             CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
             CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
             CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
+            CallbackQueryHandler(admin_pedido_team_toggle_callback, pattern=r"^admin_pedido_team_toggle$"),
             CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_instruc_handler),

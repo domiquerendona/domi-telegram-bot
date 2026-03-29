@@ -1322,6 +1322,10 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN customer_delivery_fee INTEGER DEFAULT NULL")
     if 'parking_fee' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN parking_fee INTEGER DEFAULT 0")
+    if 'special_commission' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN special_commission INTEGER DEFAULT 0")
+    if 'team_only' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN team_only INTEGER DEFAULT 0")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -2011,6 +2015,8 @@ def _init_db_postgres():
     _pg_add_col("admin_customer_addresses", "parking_reviewed_by", "INTEGER DEFAULT NULL")
     _pg_add_col("admin_customer_addresses", "parking_reviewed_at", "TIMESTAMP")
     _pg_add_col("orders", "parking_fee", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "special_commission", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "team_only", "INTEGER DEFAULT 0")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
 
@@ -3588,6 +3594,10 @@ def ensure_pricing_defaults():
         # Piso minimo que la plataforma recibe por cada suscripcion, independiente del precio total.
         # El admin retiene: precio_total - subscription_platform_share
         "subscription_platform_share": "20000",
+        # Pedidos especiales del admin — fee de desarrollo tecnologico
+        # Porcentaje sobre la tarifa del servicio cobrado al admin creador cuando hay comision especial.
+        # Va 100% a la sociedad. 0 = desactivado.
+        "fee_special_order_tech_dev_pct": "2",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
@@ -5446,12 +5456,16 @@ def create_order(
     payment_confirmed_at: str = None,
     payment_confirmed_by: int = None,
     parking_fee: int = 0,
+    special_commission: int = 0,
+    team_only: int = 0,
 ):
     """Crea un pedido en estado PENDING y devuelve su id.
 
     Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
     Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
     parking_fee: tarifa de parqueadero incluida en este pedido (0 si no aplica).
+    special_commission: comision especial que el admin cobra al courier por este pedido (0 = usa fee estandar).
+    team_only: 1 = solo ofertar a couriers del equipo del admin creador; 0 = todos los equipos.
     """
     if not has_valid_coords(pickup_lat, pickup_lng):
         raise ValueError("El punto de recogida requiere ubicacion confirmada.")
@@ -5497,8 +5511,10 @@ def create_order(
             payment_method,
             payment_confirmed_at,
             payment_confirmed_by,
-            parking_fee
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+            parking_fee,
+            special_commission,
+            team_only
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -5535,6 +5551,8 @@ def create_order(
         payment_confirmed_at,
         payment_confirmed_by,
         parking_fee if parking_fee else 0,
+        special_commission if special_commission else 0,
+        1 if team_only else 0,
     ))
     conn.commit()
     conn.close()
@@ -9233,6 +9251,89 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
         "recargas_mes": recargas_mes,
         "subs_mes": subs_mes,
         "mes_inicio": mes_start_s[:7],
+    }
+
+
+def get_admin_saldo_hoy(admin_id: int) -> dict:
+    """
+    Resumen financiero del admin para HOY: ingresos, egresos y saldo actual.
+    Separa: fees estandar recibidos, comisiones especiales recibidas,
+    fees de plataforma pagados, tech dev fee pagados, recargas aprobadas salientes.
+    Retorna dict con todas las claves siempre presentes (0 si sin movimientos hoy).
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    hoy_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_start_s = hoy_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    def _sum(query, params):
+        cur.execute(query, params)
+        row = cur.fetchone()
+        val = row[0] if row else 0
+        return int(val) if val else 0
+
+    # Saldo actual
+    cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
+    row = cur.fetchone()
+    balance = int(row[0] if row else 0)
+
+    # Fees estandar recibidos hoy (FEE_INCOME: el admin es el destinatario)
+    fees_estandar_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind = 'FEE_INCOME' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Comisiones especiales recibidas hoy (SPECIAL_ORDER_COMMISSION: admin es destinatario)
+    comisiones_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind='SPECIAL_ORDER_COMMISSION' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Fees de plataforma pagados hoy por el admin (SPECIAL_ORDER_PLATFORM_FEE: admin es origen)
+    plat_fee_pagado_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind='SPECIAL_ORDER_PLATFORM_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Tech dev fee pagados hoy por el admin (TECH_DEV_FEE: admin es origen)
+    tech_fee_pagado_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind='TECH_DEV_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Recargas aprobadas salientes hoy (RECHARGE: admin es origen)
+    recargas_salientes_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind='RECHARGE' AND from_type IN ('ADMIN','PLATFORM') AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Suscripciones cobradas hoy (SUBSCRIPTION_ADMIN_SHARE: admin es destinatario)
+    subs_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f" WHERE kind='SUBSCRIPTION_ADMIN_SHARE' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    conn.close()
+    return {
+        "balance": balance,
+        "fees_estandar_hoy": fees_estandar_hoy,
+        "comisiones_hoy": comisiones_hoy,
+        "subs_hoy": subs_hoy,
+        "plat_fee_pagado_hoy": plat_fee_pagado_hoy,
+        "tech_fee_pagado_hoy": tech_fee_pagado_hoy,
+        "recargas_salientes_hoy": recargas_salientes_hoy,
+        "total_ingresos_hoy": fees_estandar_hoy + comisiones_hoy + subs_hoy,
+        "total_egresos_hoy": plat_fee_pagado_hoy + tech_fee_pagado_hoy + recargas_salientes_hoy,
+        "fecha": hoy_start_s[:10],
     }
 
 

@@ -273,6 +273,7 @@ from db import (
     get_admin_panel_earnings_data,
     get_admin_balance_breakdown,
     get_admin_ledger_movements,
+    get_admin_saldo_hoy,
     get_platform_sociedad,
     get_platform_sociedad_id,
     get_dashboard_stats_data,
@@ -1121,11 +1122,15 @@ def get_fee_config() -> dict:
     # Comision adicional al aliado (% sobre tarifa del domicilio al courier)
     commission_pct = _to_int(get_setting("fee_ally_commission_pct", "0"), 0)
 
+    # Fee de desarrollo tecnologico para pedidos especiales del admin (% sobre tarifa del servicio)
+    tech_dev_pct = _to_int(get_setting("fee_special_order_tech_dev_pct", "2"), 2)
+
     return {
         "fee_service_total": total,
         "fee_admin_share": admin_share,
         "fee_platform_share": platform_share,
         "fee_ally_commission_pct": commission_pct,
+        "fee_special_order_tech_dev_pct": tech_dev_pct,
     }
 
 
@@ -2452,6 +2457,142 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
         platform_admin_id=platform_admin["id"],
         amount=amount,
     )
+
+
+def apply_special_order_commission(order_id: int, courier_id: int, commission: int, creator_admin_id: int) -> Tuple[bool, str]:
+    """Aplica la comision especial de un pedido admin al courier (cross-team).
+
+    Descuenta `commission` del saldo del courier en su equipo (admin_couriers).
+    El admin creador recibe el monto COMPLETO de la comision.
+    Los fees de plataforma del admin creador se cobran por separado via apply_special_order_creator_fees.
+    El courier puede pertenecer a cualquier equipo; la comision siempre va al admin creador.
+    Retorna (success, message).
+    """
+    if commission <= 0:
+        return True, "OK"
+
+    # Resolver el admin actual del courier para identificar su vinculo
+    courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+    if courier_admin_id is None:
+        return False, "El courier no tiene admin aprobado."
+
+    balance = get_courier_link_balance(courier_id, courier_admin_id)
+    if balance < commission:
+        return False, "Saldo insuficiente del courier para cubrir la comision especial."
+
+    # Descontar del saldo del courier en su equipo
+    try:
+        update_courier_link_balance(courier_id, courier_admin_id, -commission)
+    except Exception as e:
+        return False, "No se pudo descontar saldo del courier: {}".format(e)
+
+    # Acreditar al admin creador del pedido (monto completo)
+    update_admin_balance_with_ledger(
+        admin_id=creator_admin_id,
+        delta=commission,
+        kind="SPECIAL_ORDER_COMMISSION",
+        note="Comision pedido especial #{} (courier_id={})".format(order_id, courier_id),
+        ref_type="ORDER",
+        ref_id=order_id,
+        from_type="COURIER",
+        from_id=courier_id,
+    )
+
+    return True, "OK"
+
+
+def apply_special_order_creator_fees(order_id: int, creator_admin_id: int, total_fee: int, has_commission: bool) -> Tuple[bool, str]:
+    """Cobra al admin creador de un pedido especial los fees de plataforma por el servicio.
+
+    Siempre:
+      fee_platform_share ($100) → sociedad (SPECIAL_ORDER_PLATFORM_FEE)
+
+    Solo si has_commission=True:
+      fee_special_order_tech_dev_pct% de total_fee → sociedad (TECH_DEV_FEE)
+
+    Retorna (success, message).
+    """
+    fee_cfg = get_fee_config()
+    platform_share = fee_cfg["fee_platform_share"]
+    tech_dev_pct = fee_cfg["fee_special_order_tech_dev_pct"]
+    sociedad_id = get_platform_sociedad_id()
+
+    # Fee de plataforma: siempre $100, deducido del creator admin
+    try:
+        update_admin_balance_with_ledger(
+            admin_id=creator_admin_id,
+            delta=-platform_share,
+            kind="SPECIAL_ORDER_PLATFORM_FEE",
+            note="Fee plataforma pedido especial #{}".format(order_id),
+            ref_type="ORDER",
+            ref_id=order_id,
+            from_type="ADMIN",
+            from_id=creator_admin_id,
+        )
+    except ValueError as e:
+        return False, "Saldo insuficiente del admin para fee de plataforma: {}".format(e)
+
+    if sociedad_id:
+        update_admin_balance_with_ledger(
+            admin_id=sociedad_id,
+            delta=platform_share,
+            kind="SPECIAL_ORDER_PLATFORM_FEE",
+            note="Ingreso plataforma pedido especial #{}".format(order_id),
+            ref_type="ORDER",
+            ref_id=order_id,
+            from_type="ADMIN",
+            from_id=creator_admin_id,
+        )
+
+    # Fee desarrollo tecnologico: 2% de total_fee, solo si hay comision especial
+    if has_commission and tech_dev_pct > 0 and total_fee and int(total_fee) > 0:
+        tech_fee = round(int(total_fee) * tech_dev_pct / 100)
+        if tech_fee > 0:
+            try:
+                update_admin_balance_with_ledger(
+                    admin_id=creator_admin_id,
+                    delta=-tech_fee,
+                    kind="TECH_DEV_FEE",
+                    note="Desarrollo tecnologico {}% pedido especial #{} (tarifa ${})".format(
+                        tech_dev_pct, order_id, total_fee),
+                    ref_type="ORDER",
+                    ref_id=order_id,
+                    from_type="ADMIN",
+                    from_id=creator_admin_id,
+                )
+            except ValueError:
+                pass  # Saldo insuficiente para tech fee: se omite pero el servicio prosigue
+
+            if sociedad_id:
+                update_admin_balance_with_ledger(
+                    admin_id=sociedad_id,
+                    delta=tech_fee,
+                    kind="TECH_DEV_FEE",
+                    note="Ingreso desarrollo tecnologico {}% pedido especial #{} (tarifa ${})".format(
+                        tech_dev_pct, order_id, total_fee),
+                    ref_type="ORDER",
+                    ref_id=order_id,
+                    from_type="ADMIN",
+                    from_id=creator_admin_id,
+                )
+
+    return True, "OK"
+
+
+def check_special_commission_available(courier_id: int, commission: int, fee_service_total: int = 300) -> Tuple[bool, str]:
+    """Verifica si el courier tiene saldo suficiente para cubrir fee estandar + comision especial.
+
+    El courier paga ambos al entregar: fee estandar ($300) mas la comision especial.
+    Retorna (can_operate, error_code). error_code: 'OK' o 'MEMBER_SIN_SALDO'.
+    """
+    admin_id = get_approved_admin_id_for_courier(courier_id)
+    if admin_id is None:
+        return False, "MEMBER_SIN_SALDO"
+    balance = get_courier_link_balance(courier_id, admin_id)
+    required = fee_service_total + (commission if commission > 0 else 0)
+    if balance < required:
+        return False, "MEMBER_SIN_SALDO"
+    return True, "OK"
 
 
 def check_service_fee_available(target_type: str, target_id: int, admin_id: int) -> Tuple[bool, str]:
