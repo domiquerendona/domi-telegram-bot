@@ -274,6 +274,12 @@ from db import (
     get_admin_balance_breakdown,
     get_admin_ledger_movements,
     get_admin_saldo_hoy,
+    # Re-exports plantillas de pedidos admin
+    save_order_template,
+    list_order_templates,
+    get_order_template_by_id,
+    increment_order_template_usage,
+    delete_order_template,
     get_platform_sociedad,
     get_platform_sociedad_id,
     get_dashboard_stats_data,

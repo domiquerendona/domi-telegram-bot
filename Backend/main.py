@@ -263,7 +263,7 @@ from services import (
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, admin_special_orders_history_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -1317,6 +1317,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+            [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
             [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
             [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
@@ -1367,6 +1368,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+        [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
         [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
         [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
@@ -2320,6 +2322,9 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_repost_\d+$"))  # aliado re-oferta pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickup_pinissue_\d+$"))  # pin recogida pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pickup_(confirm|release)_\d+_\d+$"))  # admin resuelve pin recogida pedido
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_retry_creator_fees_\d+$"))  # reintento cobro fees admin creador
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_fee_detail_\d+$"))  # detalle financiero oferta comision especial
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_commission_confirm_\d+$"))  # courier confirma comision alta
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
@@ -2329,6 +2334,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(ally_orders_history_callback, pattern=r"^allyhist_"))
+    dp.add_handler(CallbackQueryHandler(admin_special_orders_history_callback, pattern=r"^adminhist_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
     dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))

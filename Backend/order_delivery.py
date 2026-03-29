@@ -29,6 +29,7 @@ from db import (
     get_orders_by_ally,
     get_ally_orders_between,
     get_ally_routes_between,
+    get_admin_special_orders_between,
     get_orders_by_admin_team,
     get_setting,
     get_user_by_telegram_id,
@@ -203,6 +204,7 @@ ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
 ARRIVAL_DEADLINE_SECONDS = 20 * 60     # 20 min: auto-liberar
 ARRIVAL_RADIUS_KM = 0.15               # 150 metros
 ARRIVAL_MOVEMENT_THRESHOLD_KM = 0.05   # 50 metros de movimiento mínimo hacia pickup
+COMMISSION_CONFIRM_THRESHOLD = 5000    # Comisiones >= $5.000 requieren confirmación explícita del courier
 OFFER_NO_RESPONSE_SECONDS = 300        # 5 min sin respuesta → sugerir incentivo
 DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repartidor
 DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
@@ -1593,6 +1595,184 @@ def _ally_show_day(query, ally_id, date_key, parent_period):
     query.edit_message_text(text, reply_markup=full_kb)
 
 
+def _admin_history_period_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Hoy", callback_data="adminhist_periodo_hoy"),
+            InlineKeyboardButton("Ayer", callback_data="adminhist_periodo_ayer"),
+        ],
+        [
+            InlineKeyboardButton("Esta semana", callback_data="adminhist_periodo_semana"),
+            InlineKeyboardButton("Este mes", callback_data="adminhist_periodo_mes"),
+        ],
+    ])
+
+
+def _admin_history_flat_text(orders, label):
+    """Texto plano de pedidos especiales del admin para Hoy/Ayer."""
+    delivered = [o for o in orders if _row_value(o, "status", "") == "DELIVERED"]
+    cancelled = [o for o in orders if _row_value(o, "status", "") == "CANCELLED"]
+
+    total_fee = sum(int(_row_value(o, "total_fee", 0) or 0) for o in delivered)
+    total_commission = sum(
+        int(_row_value(o, "special_commission", 0) or 0) for o in delivered
+    )
+
+    STATUS_LABELS = {"DELIVERED": "Entregado", "CANCELLED": "Cancelado"}
+    lines = [
+        "Mis pedidos especiales — {} ({} pedidos)".format(label, len(orders)),
+        "Entregados: {} | Cancelados: {}".format(len(delivered), len(cancelled)),
+        "Total tarifas cobradas: {}".format(_fmt_pesos_ally(total_fee)),
+    ]
+    if total_commission > 0:
+        lines.append("Total comisiones: {}".format(_fmt_pesos_ally(total_commission)))
+    lines.append("")
+
+    items = []
+    for o in orders:
+        created = str(_row_value(o, "created_at", "") or "")
+        hour = created[11:16] if len(created) >= 16 else "--:--"
+        status = _row_value(o, "status", "") or ""
+        fee = int(_row_value(o, "total_fee", 0) or 0)
+        commission = int(_row_value(o, "special_commission", 0) or 0)
+        name = _row_value(o, "customer_name", "N/A") or "N/A"
+        commission_str = " (+comision ${:,})".format(commission) if commission > 0 else ""
+        items.append((created, "#{} {} — {} — {}{}  [{}]".format(
+            _row_value(o, "id", "?"), hour, name,
+            _fmt_pesos_ally(fee), commission_str,
+            STATUS_LABELS.get(status, status),
+        )))
+    items.sort(key=lambda x: x[0], reverse=True)
+    for _, line in items:
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _admin_history_grouped_text(orders, label):
+    """Texto agrupado por dia para semana/mes. Retorna (text, sorted_day_keys)."""
+    days = {}
+    for o in orders:
+        created = str(_row_value(o, "created_at", "") or "")
+        dk = created[:10] if len(created) >= 10 else "-"
+        d = days.setdefault(dk, {"total": 0, "delivered": 0, "cancelled": 0, "pesos": 0})
+        d["total"] += 1
+        if _row_value(o, "status", "") == "DELIVERED":
+            d["delivered"] += 1
+            d["pesos"] += int(_row_value(o, "total_fee", 0) or 0)
+        else:
+            d["cancelled"] += 1
+
+    grand_total = sum(d["total"] for d in days.values())
+    grand_delivered = sum(d["delivered"] for d in days.values())
+    grand_cancelled = sum(d["cancelled"] for d in days.values())
+    grand_pesos = sum(d["pesos"] for d in days.values())
+
+    lines = [
+        "Mis pedidos especiales — {} ({} pedidos)".format(label, grand_total),
+        "Entregados: {} | Cancelados: {}".format(grand_delivered, grand_cancelled),
+        "Total tarifas: {}".format(_fmt_pesos_ally(grand_pesos)),
+        "",
+        "Toca un dia para ver el detalle:",
+    ]
+    sorted_keys = sorted(days.keys(), reverse=True)
+    for dk in sorted_keys:
+        d = days[dk]
+        lines.append("{} — {} pedidos — {}".format(
+            _fmt_date_es(dk), d["total"], _fmt_pesos_ally(d["pesos"])
+        ))
+    return "\n".join(lines), sorted_keys
+
+
+def admin_special_orders_history_callback(update, context):
+    """Callback historial de pedidos especiales del admin.
+    Patrones: adminhist_periodo_{period} | adminhist_dia_{YYYYMMDD}_{period}
+    """
+    query = update.callback_query
+    query.answer()
+    data = query.data or ""
+    telegram_id = update.effective_user.id
+
+    user = get_user_by_telegram_id(telegram_id)
+    if not user:
+        query.edit_message_text("No se encontro tu usuario.")
+        return
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No tienes perfil de administrador.")
+        return
+
+    if data.startswith("adminhist_periodo_"):
+        period = data[len("adminhist_periodo_"):]
+        _admin_show_special_period(query, admin["id"], period)
+        return
+
+    if data.startswith("adminhist_dia_"):
+        rest = data[len("adminhist_dia_"):]
+        parts = rest.split("_", 1)
+        compact = parts[0]
+        parent = parts[1] if len(parts) > 1 else "semana"
+        if len(compact) == 8 and compact.isdigit():
+            date_key = "{}-{}-{}".format(compact[:4], compact[4:6], compact[6:8])
+            _admin_show_special_day(query, admin["id"], date_key, parent)
+        else:
+            query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard())
+        return
+
+    query.edit_message_text(
+        "Mis pedidos especiales\nSelecciona un periodo:",
+        reply_markup=_admin_history_period_keyboard(),
+    )
+
+
+def _admin_show_special_period(query, admin_id, period):
+    start_s, end_s, label = _ally_period_range(period)
+    if not start_s:
+        query.edit_message_text("Periodo invalido.", reply_markup=_admin_history_period_keyboard())
+        return
+
+    orders = get_admin_special_orders_between(admin_id, start_s, end_s)
+    if not orders:
+        query.edit_message_text(
+            "Mis pedidos especiales — {}\nNo hay pedidos en este periodo.".format(label),
+            reply_markup=_admin_history_period_keyboard(),
+        )
+        return
+
+    if period in ("hoy", "ayer"):
+        text = _admin_history_flat_text(orders, label)
+        query.edit_message_text(text, reply_markup=_admin_history_period_keyboard())
+    else:
+        text, sorted_keys = _admin_history_grouped_text(orders, label)
+        day_buttons = []
+        for dk in sorted_keys:
+            compact = dk.replace("-", "")
+            day_buttons.append([InlineKeyboardButton(
+                _fmt_date_es(dk),
+                callback_data="adminhist_dia_{}_{}".format(compact, period),
+            )])
+        full_kb = InlineKeyboardMarkup(day_buttons + _admin_history_period_keyboard().inline_keyboard)
+        query.edit_message_text(text, reply_markup=full_kb)
+
+
+def _admin_show_special_day(query, admin_id, date_key, parent_period):
+    try:
+        dt = datetime.strptime(date_key, "%Y-%m-%d")
+    except ValueError:
+        query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard())
+        return
+    start_s = dt.strftime("%Y-%m-%d 00:00:00")
+    end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    orders = get_admin_special_orders_between(admin_id, start_s, end_s)
+    text = _admin_history_flat_text(orders, _fmt_date_es(date_key))
+    back_label = "Volver a semana" if parent_period == "semana" else "Volver a mes"
+    full_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(back_label, callback_data="adminhist_periodo_{}".format(parent_period))]]
+        + _admin_history_period_keyboard().inline_keyboard
+    )
+    query.edit_message_text(text, reply_markup=full_kb)
+
+
 def admin_orders_panel(update, context, admin_id, is_platform=False):
     """
     Muestra submenú de pedidos para admin.
@@ -1976,6 +2156,9 @@ def order_courier_callback(update, context):
     if data.startswith("admin_retry_creator_fees_"):
         order_id = int(data.replace("admin_retry_creator_fees_", ""))
         return _handle_admin_retry_creator_fees(update, context, order_id)
+    if data.startswith("order_commission_confirm_"):
+        order_id = int(data.replace("order_commission_confirm_", ""))
+        return _handle_accept(update, context, order_id, commission_confirmed=True)
     if data.startswith("order_accept_"):
         order_id = int(data.replace("order_accept_", ""))
         return _handle_accept(update, context, order_id)
@@ -2598,7 +2781,7 @@ def _handle_offer_fee_detail(update, context, order_id):
 
 # ---------------------------------------------------------------------------
 
-def _handle_accept(update, context, order_id):
+def _handle_accept(update, context, order_id, commission_confirmed=False):
     query = update.callback_query
     order = get_order_by_id(order_id)
     if not order:
@@ -2639,6 +2822,38 @@ def _handle_accept(update, context, order_id):
         )
         return
 
+    # Confirmacion explícita para comisiones altas
+    special_commission = int(order["special_commission"] or 0) if order["special_commission"] else 0
+    if special_commission >= COMMISSION_CONFIRM_THRESHOLD and not commission_confirmed:
+        fee_cfg_ac = get_fee_config()
+        fee_std_ac = fee_cfg_ac["fee_service_total"]
+        total_descuento = fee_std_ac + special_commission
+        ganancia_neta = int(order["total_fee"] or 0) - total_descuento
+        confirm_text = (
+            "Confirmacion requerida — comision alta\n\n"
+            "Este pedido tiene una comision especial de ${:,}.\n\n"
+            "Al entregar se descontara de tu saldo:\n"
+            "  Fee estandar: -${:,}\n"
+            "  Comision del admin: -${:,}\n"
+            "  Total descuento: -${:,}\n\n"
+            "Tarifa que cobras al cliente: ${:,}\n"
+            "Ganancia neta: ${:,}\n\n"
+            "Confirmas que aceptas estos terminos?"
+        ).format(
+            special_commission, fee_std_ac, special_commission, total_descuento,
+            int(order["total_fee"] or 0), ganancia_neta,
+        )
+        query.edit_message_text(
+            confirm_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Si, acepto el pedido", callback_data="order_commission_confirm_{}".format(order_id))],
+                [InlineKeyboardButton("No, rechazar", callback_data="order_reject_{}".format(order_id))],
+            ]),
+        )
+        query.answer()
+        return
+
+    query.answer()
     # Cancelar jobs de timeout y sugerencia de incentivo
     _cancel_offer_jobs(context, order_id, current["queue_id"])
     _cancel_no_response_job(context, order_id)

@@ -1822,6 +1822,28 @@ def init_db():
         );
     """)
 
+    # Tabla: admin_order_templates (plantillas de pedidos frecuentes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_order_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            pickup_location_id INTEGER,
+            pickup_addr TEXT,
+            pickup_city TEXT,
+            pickup_barrio TEXT,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            tarifa INTEGER DEFAULT 0,
+            comision INTEGER DEFAULT 0,
+            team_only INTEGER DEFAULT 0,
+            instruc TEXT,
+            use_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
     conn.commit()
     conn.close()
 
@@ -2039,6 +2061,32 @@ def _init_db_postgres():
     _pg_add_col("web_users", "admin_id", "BIGINT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_username ON web_users(username)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_status ON web_users(status)")
+
+    # admin_order_templates: plantillas de pedidos frecuentes del admin
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_order_templates (
+            id BIGSERIAL PRIMARY KEY,
+            admin_id BIGINT NOT NULL,
+            name TEXT NOT NULL,
+            pickup_location_id BIGINT,
+            pickup_addr TEXT,
+            pickup_city TEXT,
+            pickup_barrio TEXT,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            tarifa INTEGER DEFAULT 0,
+            comision INTEGER DEFAULT 0,
+            team_only INTEGER DEFAULT 0,
+            instruc TEXT,
+            use_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_order_templates_admin_id
+        ON admin_order_templates(admin_id)
+    """)
 
     # 3) Migraciones de datos (idempotentes)
 
@@ -5722,6 +5770,93 @@ def get_ally_routes_between(ally_id: int, start_s: str, end_s: str):
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_admin_special_orders_between(admin_id: int, start_s: str, end_s: str):
+    """Pedidos especiales creados por un admin (DELIVERED o CANCELLED) entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM orders
+        WHERE creator_admin_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (admin_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def save_order_template(admin_id: int, name: str, pickup_location_id, pickup_addr: str,
+                         pickup_city: str, pickup_barrio: str, pickup_lat, pickup_lng,
+                         tarifa: int, comision: int, team_only: int, instruc: str) -> int:
+    """Guarda o actualiza una plantilla de pedido frecuente para el admin. Retorna el id."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(cur, conn, f"""
+        INSERT INTO admin_order_templates
+            (admin_id, name, pickup_location_id, pickup_addr, pickup_city, pickup_barrio,
+             pickup_lat, pickup_lng, tarifa, comision, team_only, instruc, created_at, updated_at)
+        VALUES ({P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P})
+    """, (admin_id, name, pickup_location_id, pickup_addr, pickup_city, pickup_barrio,
+          pickup_lat, pickup_lng, tarifa, comision, team_only, instruc, now, now))
+
+
+def list_order_templates(admin_id: int) -> list:
+    """Lista las plantillas del admin ordenadas por uso desc."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT * FROM admin_order_templates
+        WHERE admin_id = {P}
+        ORDER BY use_count DESC, created_at DESC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_order_template_by_id(template_id: int, admin_id: int):
+    """Retorna una plantilla por id verificando que pertenezca al admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT * FROM admin_order_templates
+        WHERE id = {P} AND admin_id = {P}
+    """, (template_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def increment_order_template_usage(template_id: int, admin_id: int):
+    """Incrementa el contador de uso de una plantilla."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_order_templates
+        SET use_count = use_count + 1, updated_at = {P}
+        WHERE id = {P} AND admin_id = {P}
+    """, (now, template_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_order_template(template_id: int, admin_id: int):
+    """Elimina una plantilla del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        DELETE FROM admin_order_templates
+        WHERE id = {P} AND admin_id = {P}
+    """, (template_id, admin_id))
+    conn.commit()
+    conn.close()
 
 
 def get_orders_by_courier(courier_id: int, limit: int = 50):
