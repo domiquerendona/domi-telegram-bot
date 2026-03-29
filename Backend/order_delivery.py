@@ -70,6 +70,7 @@ from db import (
     block_courier_for_ally,
     deactivate_courier,
     set_courier_arrived,
+    set_route_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
     get_active_route_for_courier,
@@ -159,12 +160,12 @@ def _get_order_durations(order, delivered_now=False):
     return result
 
 
-def _get_route_total_duration(route, delivered_now=False):
+def _get_route_durations(route, delivered_now=False):
     """
-    Calcula el tiempo total de una ruta (accepted_at -> delivered_at).
-    delivered_now=True: usa datetime.now() como delivered_at (ruta recien marcada DELIVERED,
-    el objeto route aun no tiene el campo actualizado).
-    Retorna segundos como float, o None si no se puede calcular.
+    Calcula duraciones por etapa de una ruta. Retorna dict con claves presentes segun datos disponibles:
+      llegada_aliado:  courier_arrived_at - accepted_at
+      tiempo_total:    delivered_at       - accepted_at
+    delivered_now=True: usa datetime.now() como delivered_at.
     """
     from db import _row_value as _rv
 
@@ -182,11 +183,16 @@ def _get_route_total_duration(route, delivered_now=False):
                 continue
         return None
 
-    accepted = _parse(_rv(route, "accepted_at"))
+    result = {}
+    accepted  = _parse(_rv(route, "accepted_at"))
+    arrived   = _parse(_rv(route, "courier_arrived_at"))
     delivered = datetime.now(timezone.utc).replace(tzinfo=None) if delivered_now else _parse(_rv(route, "delivered_at"))
+
+    if accepted and arrived:
+        result["llegada_aliado"] = (arrived - accepted).total_seconds()
     if accepted and delivered:
-        return (delivered - accepted).total_seconds()
-    return None
+        result["tiempo_total"] = (delivered - accepted).total_seconds()
+    return result
 
 
 OFFER_TIMEOUT_SECONDS = 30
@@ -3656,9 +3662,22 @@ def _notify_ally_delivered(context, order, durations=None):
                 ally_admin_link = get_approved_admin_link_for_ally(ally_id)
                 if ally_admin_link:
                     fee_cfg = get_fee_config()
-                    fee_cobrado = fee_cfg["fee_service_total"]
+                    fee_servicio = fee_cfg["fee_service_total"]
+                    commission_pct = fee_cfg.get("fee_ally_commission_pct", 0)
+                    total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+                    commission_amt = round(total_fee_val * commission_pct / 100) if commission_pct and total_fee_val else 0
+                    fee_total_cobrado = fee_servicio + commission_amt
                     ally_balance = get_ally_link_balance(ally_id, ally_admin_link["admin_id"])
-                    fee_block = "\n\nCobro aplicado: -${:,}\nSaldo actual: ${:,}".format(fee_cobrado, ally_balance)
+                    if commission_amt > 0:
+                        fee_block = (
+                            "\n\nCobros aplicados:"
+                            "\n  Servicio: -${:,}"
+                            "\n  Comision ({}%): -${:,}"
+                            "\n  Total: -${:,}"
+                            "\nSaldo actual: ${:,}"
+                        ).format(fee_servicio, commission_pct, commission_amt, fee_total_cobrado, ally_balance)
+                    else:
+                        fee_block = "\n\nCobro aplicado: -${:,}\nSaldo actual: ${:,}".format(fee_servicio, ally_balance)
         except Exception:
             pass
 
@@ -3717,6 +3736,21 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
                 time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
         time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
 
+        # Desglose de fee cobrado al courier
+        fee_block = ""
+        try:
+            if order["courier_id"]:
+                courier_admin_id_fee = _row_value(order, "courier_admin_id_snapshot")
+                if not courier_admin_id_fee:
+                    courier_admin_id_fee = get_approved_admin_id_for_courier(order["courier_id"])
+                if courier_admin_id_fee:
+                    fee_cfg = get_fee_config()
+                    fee_cobrado = fee_cfg["fee_service_total"]
+                    courier_balance = get_courier_link_balance(order["courier_id"], courier_admin_id_fee)
+                    fee_block = "\n\nFee al repartidor: -${:,}\nSaldo repartidor: ${:,}".format(fee_cobrado, courier_balance)
+        except Exception:
+            pass
+
         parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
         total_fee_order = int(order["total_fee"] or 0) if order.get("total_fee") else 0
         parking_block = (
@@ -3726,8 +3760,8 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
         context.bot.send_message(
             chat_id=admin_user["telegram_id"],
             text=(
-                "Pedido #{} entregado por {}.{}{}"
-            ).format(order_id, courier_name, time_block, parking_block),
+                "Pedido #{} entregado por {}.{}{}{}"
+            ).format(order_id, courier_name, time_block, fee_block, parking_block),
         )
     except Exception as e:
         logger.warning("No se pudo notificar entrega de pedido especial al admin %s: %s", creator_admin_id, e)
@@ -4574,6 +4608,7 @@ def _handle_route_pickup_confirm(update, context, route_id):
 
     _cancel_route_arrival_jobs(context, route_id)
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+    set_route_courier_arrived(route_id)
 
     courier_name = courier["full_name"] or "El repartidor"
     _notify_ally_route_courier_arrived(context, route, courier_name)
@@ -5029,8 +5064,13 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         ok, msg = liquidate_route_additional_stops_fee(route_id)
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
             logger.warning("No se pudo liquidar additional_stops_fee de ruta %s: %s", route_id, msg)
-        total_secs = _get_route_total_duration(route, delivered_now=True)
-        time_str = "\n\nTiempo total del servicio: {}".format(_format_duration(total_secs)) if total_secs is not None else ""
+        route_dur = _get_route_durations(route, delivered_now=True)
+        time_lines_c = []
+        if "llegada_aliado" in route_dur:
+            time_lines_c.append("  Llegada al pickup: {}".format(_format_duration(route_dur["llegada_aliado"])))
+        if "tiempo_total" in route_dur:
+            time_lines_c.append("  Tiempo total: {}".format(_format_duration(route_dur["tiempo_total"])))
+        time_str = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines_c)) if time_lines_c else ""
         context.bot.send_message(
             chat_id=query.message.chat_id,
             text="Ruta #{} completada. Todas las paradas fueron entregadas.{}".format(route_id, time_str),
@@ -5093,12 +5133,16 @@ def _notify_ally_route_delivered(context, route):
             lines.append("")
             lines.append("{} parada(s) no se entregaron.".format(n_cancelled))
 
-        # Tiempo total de la ruta
+        # Tiempos de la ruta
         try:
-            total_secs = _get_route_total_duration(route, delivered_now=True)
-            if total_secs is not None:
+            route_dur = _get_route_durations(route, delivered_now=True)
+            if route_dur:
                 lines.append("")
-                lines.append("Tiempo total del servicio: {}".format(_format_duration(total_secs)))
+                lines.append("Tiempos del servicio:")
+                if "llegada_aliado" in route_dur:
+                    lines.append("  Llegada al pickup: {}".format(_format_duration(route_dur["llegada_aliado"])))
+                if "tiempo_total" in route_dur:
+                    lines.append("  Tiempo total: {}".format(_format_duration(route_dur["tiempo_total"])))
         except Exception:
             pass
 
@@ -6099,13 +6143,18 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
         if not ok and "no tiene additional_stops_fee" not in msg and "ya tenia liquidado" not in msg and "incidencias/cancelaciones" not in msg:
             logger.warning("No se pudo liquidar additional_stops_fee de ruta %s: %s", route_id, msg)
         _notify_ally_route_delivered(context, route)
-        # Notificar al courier: ruta completada + tiempo total + devoluciones si aplica
+        # Notificar al courier: ruta completada + tiempos + devoluciones si aplica
         try:
             courier = get_courier_by_id(courier_id)
             courier_user = get_user_by_id(courier["user_id"]) if courier else None
             if courier_user and courier_user["telegram_id"]:
-                total_secs = _get_route_total_duration(route, delivered_now=True)
-                time_str = "\n\nTiempo total del servicio: {}".format(_format_duration(total_secs)) if total_secs is not None else ""
+                route_dur = _get_route_durations(route, delivered_now=True)
+                time_lines_c = []
+                if "llegada_aliado" in route_dur:
+                    time_lines_c.append("  Llegada al pickup: {}".format(_format_duration(route_dur["llegada_aliado"])))
+                if "tiempo_total" in route_dur:
+                    time_lines_c.append("  Tiempo total: {}".format(_format_duration(route_dur["tiempo_total"])))
+                time_str = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines_c)) if time_lines_c else ""
                 cancelled = [s for s in get_route_destinations(route_id)
                              if str(s["status"] or "").startswith("CANCELLED")]
                 if cancelled:

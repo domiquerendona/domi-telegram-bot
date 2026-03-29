@@ -1337,6 +1337,15 @@ def init_db():
     except Exception:
         pass
 
+    # Migración: agregar courier_arrived_at a routes
+    try:
+        cur.execute("PRAGMA table_info(routes)")
+        route_cols = [col[1] for col in cur.fetchall()]
+        if 'courier_arrived_at' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN courier_arrived_at TEXT")
+    except Exception:
+        pass
+
     # Migración: agregar parking_fee a route_destinations
     try:
         cur.execute("PRAGMA table_info(route_destinations)")
@@ -1730,7 +1739,8 @@ def init_db():
             published_at TEXT,
             accepted_at TEXT,
             delivered_at TEXT,
-            canceled_at TEXT
+            canceled_at TEXT,
+            courier_arrived_at TEXT
         );
     """)
     cur.execute("""
@@ -3142,6 +3152,19 @@ def set_courier_arrived(order_id: int):
     cur.execute(
         f"UPDATE orders SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
         (order_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_route_courier_arrived(route_id: int):
+    """Marca la llegada del courier al pickup de la ruta. Idempotente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE routes SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        (route_id,),
     )
     conn.commit()
     conn.close()

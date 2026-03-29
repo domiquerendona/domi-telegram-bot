@@ -1065,9 +1065,10 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `_handle_find_another_courier(update, context, order_id)` | Callback aliado busca otro |
 | `_handle_wait_courier(update, context, order_id)` | Callback aliado sigue esperando |
 | `_get_order_durations(order, delivered_now)` | Calcula duraciones de cada etapa del pedido. Claves: `llegada_aliado` (accepted→arrived), `espera_recogida` (arrived→pickup_confirmed), `entrega_cliente` (pickup_confirmed→delivered), `tiempo_total` (accepted→delivered). Solo incluye claves con ambos extremos disponibles. |
+| `_get_route_durations(route, delivered_now)` | Equivalente para rutas. Claves: `llegada_aliado` (accepted→courier_arrived_at, si disponible), `tiempo_total` (accepted→delivered). Reemplaza el antiguo `_get_route_total_duration` (eliminado 2026-03-29). |
 | `_format_duration(seconds)` | Convierte segundos a texto legible: "X min" o "Xh Ymin". Retorna "N/D" si es None. |
-| `_notify_ally_delivered(context, order, durations)` | Notifica al aliado la entrega con bloque de tiempos (los 4 campos cuando disponibles). Si `ally_id=None` no hace nada — usar `_notify_admin_order_delivered`. |
-| `_notify_admin_order_delivered(context, order, durations, creator_admin_id)` | Notifica al admin creador de un pedido especial (ally_id=None) que fue entregado, con bloque de tiempos completo. |
+| `_notify_ally_delivered(context, order, durations)` | Notifica al aliado la entrega con bloque de tiempos (los 4 campos cuando disponibles) y desglose de fee. Si `fee_ally_commission_pct > 0` muestra desglose en 3 líneas (servicio + comisión % + total). Si `ally_id=None` no hace nada — usar `_notify_admin_order_delivered`. |
+| `_notify_admin_order_delivered(context, order, durations, creator_admin_id)` | Notifica al admin creador de un pedido especial (ally_id=None) que fue entregado, con bloque de tiempos completo y fee cobrado al courier (Fee al repartidor: -$X / Saldo repartidor: $Y). |
 | `_do_deliver_order(context, order, courier_id)` | Aplica fees, marca DELIVERED y notifica al aliado/admin creador con tiempos (via `_notify_ally_delivered` o `_notify_admin_order_delivered`). |
 
 ### Nuevas columnas en `orders`
@@ -1078,9 +1079,16 @@ El nombre, teléfono y dirección exacta del cliente se revelan únicamente tras
 | `courier_accepted_lat` | REAL | Latitud del courier al momento de aceptar (base para T+5) |
 | `courier_accepted_lng` | REAL | Longitud del courier al momento de aceptar (base para T+5) |
 
+### Nuevas columnas en `routes`
+
+| Columna | Tipo | Descripción |
+|---------|------|-------------|
+| `courier_arrived_at` | SQLite: TEXT / Postgres: TIMESTAMP | Timestamp de confirmación manual de llegada del courier al pickup de la ruta. Registrado por `set_route_courier_arrived(route_id)` al pulsar "Confirmar llegada". NULL = no llegó aún. Usado por `_get_route_durations` para calcular `llegada_aliado`. |
+
 ### Nuevas funciones en db.py
 
 - `set_courier_arrived(order_id)` — idempotente, solo actúa si `courier_arrived_at IS NULL`
+- `set_route_courier_arrived(route_id)` — idempotente, equivalente para rutas. Llamado en `_handle_route_pickup_confirm` tras cancelar los jobs de llegada.
 - `set_courier_accepted_location(order_id, lat, lng)` — guarda posición al aceptar
 - `get_active_order_for_courier(courier_id)` — retorna orden activa del courier (`ACCEPTED`/`PICKED_UP`)
 - `get_active_route_for_courier(courier_id)` — retorna ruta activa del courier (`ACCEPTED`)
@@ -2312,12 +2320,24 @@ La función está en `order_delivery.py` y es pura (sin dependencias externas). 
 | Admin creador — pedido especial entregado | `_notify_admin_order_delivered` | Los 4 campos cuando disponibles |
 | Admin — panel de pedido (`admpedidos_`) | `_admin_order_detail` | Los 4 campos cuando disponibles |
 | Aliado — bandeja de pedidos procesados | `_ally_bandeja_mostrar_pedido` | Los 4 campos (solo en DELIVERED) |
-| Aliado — ruta completada | `_notify_ally_route_delivered` | `tiempo_total` (accepted→delivered) |
+| Aliado — ruta completada | `_notify_ally_route_delivered` | `llegada_aliado` (si hay `courier_arrived_at`) + `tiempo_total` |
+| Courier — ruta completada (todas las paradas) | `_handle_route_deliver_stop` | `llegada_aliado` (si disponible) + `tiempo_total` |
+| Courier — ruta completada vía pin issue admin | `_handle_admin_route_pinissue_action` | `llegada_aliado` (si disponible) + `tiempo_total` |
 | Pin issue resuelto por admin | `_do_deliver_order` | Igual que `_notify_ally_delivered` |
 
 ### Flujo para pedidos especiales de admin (ally_id=NULL)
 
 `_handle_delivered` detecta `creator_admin_id` y llama `_notify_admin_order_delivered` cuando `ally_id` es None. `_do_deliver_order` (resolución pin issue) también notifica correctamente usando la misma lógica.
 
-*Última actualización: 2026-03-27*
+`_notify_admin_order_delivered` incluye además el desglose del fee cobrado al courier (Fee al repartidor + saldo resultante).
+
+### Tiempos en rutas (`_get_route_durations`)
+
+Función que reemplaza el antiguo `_get_route_total_duration` (eliminado 2026-03-29). Retorna dict con:
+- `llegada_aliado`: `courier_arrived_at − accepted_at` — disponible solo si el courier pulsó "Confirmar llegada" en la ruta.
+- `tiempo_total`: `delivered_at − accepted_at`
+
+Requiere la columna `routes.courier_arrived_at` (agregada 2026-03-29).
+
+*Última actualización: 2026-03-29*
 

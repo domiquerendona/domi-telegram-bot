@@ -228,6 +228,7 @@ from db import (
     unblock_courier_for_ally,
     get_blocked_courier_ids_for_ally,
     set_courier_arrived,
+    set_route_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
     get_active_route_for_courier,

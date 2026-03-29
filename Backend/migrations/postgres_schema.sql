@@ -684,7 +684,8 @@ CREATE TABLE IF NOT EXISTS routes (
     published_at TIMESTAMP,
     accepted_at TIMESTAMP,
     delivered_at TIMESTAMP,
-    canceled_at TIMESTAMP
+    canceled_at TIMESTAMP,
+    courier_arrived_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS route_destinations (
