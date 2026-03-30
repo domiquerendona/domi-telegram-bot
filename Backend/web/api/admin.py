@@ -41,6 +41,7 @@ from services import (
     create_web_user, update_web_user_status,
     get_admin_special_orders_between, get_fee_config,
     get_courier_by_id, get_admin_by_id, get_all_local_admins,
+    get_platform_admin,
 )
 
 
@@ -483,13 +484,14 @@ def get_pedidos_especiales_metricas(
     elif admin_filter:
         admin_ids = [admin_filter]
     else:
-        # PLATFORM_ADMIN sin filtro: todos los admins locales
+        # PLATFORM_ADMIN sin filtro: todos los admins locales + plataforma
         all_admins = get_all_local_admins()
         admin_ids = [a["id"] for a in all_admins]
-        # También incluir plataforma si aplica
-        platform_admin = get_admin_by_id(current_user.admin_id) if current_user.admin_id else None
-        if platform_admin and platform_admin["id"] not in admin_ids:
-            admin_ids.append(platform_admin["id"])
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            pa_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+            if pa_id not in admin_ids:
+                admin_ids.append(pa_id)
 
     orders_all = []
     for aid in admin_ids:
@@ -499,7 +501,18 @@ def get_pedidos_especiales_metricas(
             row["_creator_admin_id"] = aid
             orders_all.append(row)
 
-    # Enriquecer con nombre del courier y calcular métricas por pedido
+    # Batch-lookup de nombres de courier (1 query por courier único, no por pedido)
+    unique_courier_ids = {int(o["courier_id"]) for o in orders_all if o.get("courier_id")}
+    courier_names = {}
+    for cid in unique_courier_ids:
+        try:
+            c = get_courier_by_id(cid)
+            if c:
+                courier_names[cid] = c["full_name"] if isinstance(c, dict) else c[0]
+        except Exception:
+            pass
+
+    # Calcular métricas por pedido
     result_orders = []
     total_tarifas = 0
     total_comisiones = 0
@@ -525,15 +538,9 @@ def get_pedidos_especiales_metricas(
             fee_admin_pagado = 0
             ganancia_neta = 0
 
-        # Nombre del courier
-        courier_name = None
+        # Nombre del courier desde el dict pre-cargado
         courier_id = order.get("courier_id")
-        if courier_id:
-            try:
-                c = get_courier_by_id(int(courier_id))
-                courier_name = c["full_name"] if c else None
-            except Exception:
-                pass
+        courier_name = courier_names.get(int(courier_id)) if courier_id else None
 
         if status == "DELIVERED":
             total_tarifas += total_fee

@@ -11202,18 +11202,48 @@ def get_order_excluded_couriers(order_id: int) -> set:
 
 
 def add_order_excluded_courier(order_id: int, courier_id: int):
-    """Agrega un courier_id al set de excluidos del pedido en BD (idempotente)."""
-    excluded = get_order_excluded_couriers(order_id)
-    excluded.add(courier_id)
+    """Agrega un courier_id al set de excluidos del pedido en BD (atómico, idempotente)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     conn = get_connection()
     cur = conn.cursor()
-    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-    cur.execute(
-        f"UPDATE orders SET excluded_courier_ids = {P}, updated_at = {P} WHERE id = {P}",
-        (json.dumps(list(excluded)), now, order_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        if DB_ENGINE == "postgres":
+            # Atomic: append al array JSON en un solo UPDATE usando jsonb
+            cur.execute(
+                """
+                UPDATE orders
+                SET excluded_courier_ids = (
+                    SELECT jsonb_agg(DISTINCT elem::int)::text
+                    FROM (
+                        SELECT jsonb_array_elements_text(
+                            COALESCE(NULLIF(excluded_courier_ids, ''), '[]')::jsonb
+                        ) AS elem
+                        UNION ALL SELECT %s::text AS elem
+                    ) sub
+                ),
+                updated_at = %s
+                WHERE id = %s
+                """,
+                (str(courier_id), now, order_id),
+            )
+        else:
+            # SQLite: single-process, leer y escribir en la misma conexión/transacción
+            cur.execute("SELECT excluded_courier_ids FROM orders WHERE id = ?", (order_id,))
+            row = cur.fetchone()
+            excluded = set()
+            if row and row[0]:
+                try:
+                    excluded = set(json.loads(row[0]))
+                except Exception:
+                    pass
+            excluded.add(courier_id)
+            cur.execute(
+                "UPDATE orders SET excluded_courier_ids = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(list(excluded)), now, order_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def reset_order_excluded_couriers(order_id: int):
