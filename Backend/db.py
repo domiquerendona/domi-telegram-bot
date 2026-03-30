@@ -9490,47 +9490,47 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
 
     # Fees del mes (FEE_INCOME + PLATFORM_FEE como receptor)
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    fees_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    fees_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Fees acumulados totales
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}",
         (admin_id,),
     )
-    fees_total = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    fees_total = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Ingresos externos del mes
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind = 'INCOME' AND to_type = 'ADMIN' AND to_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    ingresos_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    ingresos_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
-    # Recargas aprobadas salidas del mes (el admin es el origen)
+    # Recargas aprobadas salidas del mes (el admin es el origen; incluye SOCIEDAD)
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
-        f" WHERE kind = 'RECHARGE' AND from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P}"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'RECHARGE' AND from_type IN ('ADMIN', 'PLATFORM', 'SOCIEDAD') AND from_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    recargas_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    recargas_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Ganancias por suscripciones del mes
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('SUBSCRIPTION_PLATFORM_SHARE', 'SUBSCRIPTION_ADMIN_SHARE')"
         f" AND to_type = 'ADMIN' AND to_id = {P} AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    subs_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    subs_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     conn.close()
     return {

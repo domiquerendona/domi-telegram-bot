@@ -2298,7 +2298,7 @@ def main():
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
     dp.add_handler(sociedad_retiro_conv)          # Admin Plataforma retira de Sociedad a saldo personal
     dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
-    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_mes|soc_todo)$"))
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_hoy|soc_semana|soc_mes|soc_todo)$"))
     dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo$"))
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))

@@ -155,11 +155,15 @@ def cmd_saldo(update, context):
                 mensaje += "\n💼 Sociedad Domiquerendona:\n"
                 mensaje += "   Saldo sociedad: ${:,}\n".format(soc_balance)
                 mensaje += "\n   Desglose del mes ({}):\n".format(mes)
+                if soc_bd["ingresos_mes"]:
+                    mensaje += "   Ingresos externos:   +${:,}\n".format(soc_bd["ingresos_mes"])
                 if soc_bd["fees_mes"]:
                     mensaje += "   Fees plataforma:     +${:,}\n".format(soc_bd["fees_mes"])
                 if soc_bd["subs_mes"]:
                     mensaje += "   Suscripciones:       +${:,}\n".format(soc_bd["subs_mes"])
-                if not any([soc_bd["fees_mes"], soc_bd["subs_mes"]]):
+                if soc_bd["recargas_mes"]:
+                    mensaje += "   Recargas aprobadas:  -${:,}\n".format(soc_bd["recargas_mes"])
+                if not any([soc_bd["ingresos_mes"], soc_bd["fees_mes"], soc_bd["subs_mes"], soc_bd["recargas_mes"]]):
                     mensaje += "   (sin movimientos este mes)\n"
                 mensaje += "   Acumulado total sociedad: ${:,}\n".format(soc_bd["fees_total"])
         mensaje += "\n"
@@ -2616,6 +2620,10 @@ def _movimientos_keyboard(is_platform=False):
         ],
     ]
     if is_platform:
+        rows.append([
+            InlineKeyboardButton("Sociedad — Hoy", callback_data="admin_movimientos_soc_hoy"),
+            InlineKeyboardButton("Sociedad — Semana", callback_data="admin_movimientos_soc_semana"),
+        ])
         rows.append([
             InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
             InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
