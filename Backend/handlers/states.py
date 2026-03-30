@@ -271,6 +271,9 @@ INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
 
+# Estado para el flujo de retiro de Sociedad → saldo personal (Admin Plataforma)
+SOCIEDAD_RETIRO_MONTO = 973
+
 OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5 (pedido)
 ROUTE_SUGGEST_INC_MONTO = 914  # Capturar monto libre en sugerencia T+5 (ruta)
 

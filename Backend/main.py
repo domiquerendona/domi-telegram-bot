@@ -348,6 +348,7 @@ from handlers.recharges import (
     admin_movimientos_callback,
     admin_movimientos_periodo_callback,
     admin_mi_saldo_callback,
+    sociedad_retiro_conv,
 )
 from handlers.registration import (
     soy_aliado,
@@ -2295,6 +2296,7 @@ def main():
     dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
     dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
+    dp.add_handler(sociedad_retiro_conv)          # Admin Plataforma retira de Sociedad a saldo personal
     dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
     dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_mes|soc_todo)$"))
     dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo$"))

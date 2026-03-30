@@ -288,6 +288,9 @@ from db import (
     get_courier_monthly_delivered_count,
     get_platform_sociedad,
     get_platform_sociedad_id,
+    transfer_sociedad_to_platform,
+    get_sociedad_balance,
+    get_sociedad_saldo_hoy,
     get_dashboard_stats_data,
     # Re-exports web_users (panel web multiusuario)
     create_web_user,
@@ -2108,6 +2111,11 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
     platform_admin = get_platform_admin()
     is_platform = bool(platform_admin and platform_admin["id"] == admin_id)
 
+    # Cuando el Admin Plataforma aprueba, el dinero sale de la SOCIEDAD, no de su saldo personal.
+    sociedad_id = get_platform_sociedad_id() if is_platform else None
+    debit_from_id = sociedad_id if (is_platform and sociedad_id) else admin_id
+    debit_from_type = "SOCIEDAD" if (is_platform and sociedad_id) else ("PLATFORM" if is_platform else "ADMIN")
+
     if target_type == "ADMIN":
         # Admin local recargando con plataforma: no necesita vínculo,
         # se acredita directamente el saldo master del admin
@@ -2141,24 +2149,24 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
             conn.rollback()
             return False, "Solicitud ya procesada."
 
-        cur.execute("SELECT balance FROM admins WHERE id = " + P + for_update, (admin_id,))
+        cur.execute("SELECT balance FROM admins WHERE id = " + P + for_update, (debit_from_id,))
         row = cur.fetchone()
         current_admin_balance = row["balance"] if row else 0
         if current_admin_balance < amount:
             conn.rollback()
-            return False, f"Saldo insuficiente. Tienes ${current_admin_balance:,} y se requieren ${amount:,}."
+            saldo_origen = "Sociedad" if is_platform else "tu saldo"
+            return False, f"Saldo insuficiente en {saldo_origen}. Disponible: ${current_admin_balance:,}. Requerido: ${amount:,}."
 
         cur.execute(
             "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
-            (amount, admin_id),
+            (amount, debit_from_id),
         )
-        from_type_label = "PLATFORM" if is_platform else "ADMIN"
         cur.execute(
             "INSERT INTO ledger"
             "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
             " VALUES (" + ", ".join([P] * 9) + ")",
             (
-                "RECHARGE", from_type_label, admin_id, from_type_label, admin_id, amount,
+                "RECHARGE", debit_from_type, debit_from_id, debit_from_type, debit_from_id, amount,
                 "RECHARGE_REQUEST", request_id,
                 f"Recarga aprobada por admin_id={decided_by_admin_id} a {target_type} id={target_id}",
             ),
@@ -2218,7 +2226,7 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
                 " VALUES (" + ", ".join([P] * 9) + ")",
                 (
-                    "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "COURIER", target_id, amount,
+                    "RECHARGE", debit_from_type, debit_from_id, "COURIER", target_id, amount,
                     "RECHARGE_REQUEST", request_id,
                     f"Recarga aprobada por admin_id={decided_by_admin_id}",
                 ),
@@ -2262,7 +2270,7 @@ def approve_recharge_request(request_id: int, decided_by_admin_id: int) -> Tuple
                 "    (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)"
                 " VALUES (" + ", ".join([P] * 9) + ")",
                 (
-                    "RECHARGE", "PLATFORM" if is_platform else "ADMIN", admin_id, "ALLY", target_id, amount,
+                    "RECHARGE", debit_from_type, debit_from_id, "ALLY", target_id, amount,
                     "RECHARGE_REQUEST", request_id,
                     f"Recarga aprobada por admin_id={decided_by_admin_id}",
                 ),

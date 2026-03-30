@@ -8619,17 +8619,21 @@ def update_admin_balance_with_ledger(
 
 def register_platform_income(admin_id: int, amount: int, method: str, note: str = None) -> int:
     """
-    Registra un ingreso externo recibido por el Admin de Plataforma
-    (efectivo, Nequi, transferencia bancaria, etc.).
-    Incrementa admins.balance y genera entrada en ledger:
-        kind=INCOME, from_type=EXTERNAL, from_id=0, to_type=ADMIN, to_id=admin_id
+    Registra un ingreso externo a la cuenta de la SOCIEDAD.
+    admin_id: admins.id del Admin Plataforma que registra (solo para la nota).
+    El dinero SIEMPRE va al balance de la Sociedad (team_code='SOCIEDAD'),
+    no al saldo personal del Admin Plataforma.
     Retorna: ledger_id
     """
-    full_note = "Ingreso externo registrado manualmente. Metodo: {}".format(method)
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        # fallback de seguridad: si la sociedad aun no existe, va al admin
+        sociedad_id = admin_id
+    full_note = "Ingreso externo registrado por admin_id={}. Metodo: {}".format(admin_id, method)
     if note:
         full_note += ". Nota: {}".format(note)
     return update_admin_balance_with_ledger(
-        admin_id=admin_id,
+        admin_id=sociedad_id,
         delta=amount,
         kind="INCOME",
         note=full_note,
@@ -8638,6 +8642,153 @@ def register_platform_income(admin_id: int, amount: int, method: str, note: str 
         from_type="EXTERNAL",
         from_id=0,
     )
+
+
+def transfer_sociedad_to_platform(platform_admin_id: int, amount: int, note: str = None) -> int:
+    """
+    Transfiere fondos de la Sociedad al saldo personal del Admin Plataforma.
+    Debita admins.balance de SOCIEDAD y acredita admins.balance de PLATFORM.
+    Registra dos entradas en ledger con kind='SOCIEDAD_ADVANCE'.
+    Retorna ledger_id del debito (o lanza excepcion si no hay saldo suficiente).
+    """
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        raise ValueError("La cuenta de la Sociedad no esta configurada.")
+
+    full_note = "Retiro de Sociedad a saldo personal. {}".format(note or "")
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT balance FROM admins WHERE id = " + P + for_update,
+            (sociedad_id,),
+        )
+        row = cur.fetchone()
+        soc_balance = _row_value(row, "balance", 0, 0) or 0
+        if soc_balance < amount:
+            conn.rollback()
+            raise ValueError(
+                "Saldo insuficiente en Sociedad. Disponible: ${:,}. Solicitado: ${:,}.".format(
+                    soc_balance, amount
+                )
+            )
+
+        # Debitar Sociedad
+        cur.execute(
+            "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
+            (amount, sociedad_id),
+        )
+        # Acreditar Admin Plataforma
+        cur.execute(
+            "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P,
+            (amount, platform_admin_id),
+        )
+        # Ledger: salida de Sociedad
+        ledger_id = _insert_returning_id(
+            cur,
+            "INSERT INTO ledger"
+            " (kind, from_type, from_id, to_type, to_id, amount, note, created_at)"
+            " VALUES (" + ", ".join([P] * 7) + ", " + now_sql + ")",
+            (
+                "SOCIEDAD_ADVANCE", "SOCIEDAD", sociedad_id,
+                "ADMIN", platform_admin_id, amount,
+                full_note,
+            ),
+        )
+        conn.commit()
+        return ledger_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_sociedad_balance() -> int:
+    """Retorna el saldo actual de la cuenta de la Sociedad."""
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM admins WHERE id = " + P, (sociedad_id,))
+    row = cur.fetchone()
+    conn.close()
+    return int(_row_value(row, "balance", 0, 0) or 0)
+
+
+def get_sociedad_saldo_hoy(sociedad_id: int) -> dict:
+    """
+    Resumen financiero de la Sociedad para HOY.
+    Separa: ingresos externos, fees de plataforma recibidos, suscripciones,
+    recargas pagadas, retiros al admin plataforma.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    hoy_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_start_s = hoy_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    def _sum(query, params):
+        cur.execute(query, params)
+        row = cur.fetchone()
+        if not row:
+            return 0
+        val = _row_value(row, "total", 0, 0)
+        return int(val) if val else 0
+
+    balance = get_sociedad_balance()
+
+    ingresos_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='INCOME' AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    plat_fees_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind IN ('PLATFORM_FEE','SPECIAL_ORDER_PLATFORM_FEE','TECH_DEV_FEE')"
+        " AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    subs_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='SUBSCRIPTION_PLATFORM_SHARE' AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    recargas_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='RECHARGE' AND from_type='SOCIEDAD' AND from_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    retiros_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='SOCIEDAD_ADVANCE' AND from_type='SOCIEDAD' AND from_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+
+    conn.close()
+    total_ingresos = ingresos_hoy + plat_fees_hoy + subs_hoy
+    total_egresos = recargas_hoy + retiros_hoy
+    return {
+        "balance": balance,
+        "ingresos_hoy": ingresos_hoy,
+        "plat_fees_hoy": plat_fees_hoy,
+        "subs_hoy": subs_hoy,
+        "recargas_hoy": recargas_hoy,
+        "retiros_hoy": retiros_hoy,
+        "total_ingresos_hoy": total_ingresos,
+        "total_egresos_hoy": total_egresos,
+        "fecha": hoy_start_s[:10],
+    }
 
 
 def settle_route_additional_stops_fee(
