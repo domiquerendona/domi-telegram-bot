@@ -9628,10 +9628,11 @@ def get_admin_saldo_hoy(admin_id: int) -> dict:
     }
 
 
-def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = None, limit: int = 30) -> list:
+def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = None, limit: int = 30, is_sociedad: bool = False) -> list:
     """
     Movimientos del ledger del admin: entradas donde el admin recibe (to_id)
     o envía (from_id) dinero. Ordenados por fecha DESC.
+    Para la cuenta Sociedad (is_sociedad=True) incluye salidas con from_type='SOCIEDAD'.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -9645,18 +9646,33 @@ def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = 
         date_filter += f" AND created_at < {P}"
         date_params.append(end_s)
 
-    params = [admin_id, admin_id] + date_params + [limit]
-    cur.execute(
-        f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
-        f" FROM ledger"
-        f" WHERE ("
-        f"   (to_type = 'ADMIN' AND to_id = {P})"
-        f"   OR (from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P})"
-        f" ){date_filter}"
-        f" ORDER BY created_at DESC"
-        f" LIMIT {P}",
-        params,
-    )
+    if is_sociedad:
+        # Sociedad: entradas (to_id) o salidas (from_type='SOCIEDAD')
+        params = [admin_id, admin_id] + date_params + [limit]
+        cur.execute(
+            f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
+            f" FROM ledger"
+            f" WHERE ("
+            f"   (to_type = 'ADMIN' AND to_id = {P})"
+            f"   OR (from_type = 'SOCIEDAD' AND from_id = {P})"
+            f" ){date_filter}"
+            f" ORDER BY created_at DESC"
+            f" LIMIT {P}",
+            params,
+        )
+    else:
+        params = [admin_id, admin_id] + date_params + [limit]
+        cur.execute(
+            f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
+            f" FROM ledger"
+            f" WHERE ("
+            f"   (to_type = 'ADMIN' AND to_id = {P})"
+            f"   OR (from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P})"
+            f" ){date_filter}"
+            f" ORDER BY created_at DESC"
+            f" LIMIT {P}",
+            params,
+        )
     rows = cur.fetchall()
     conn.close()
 

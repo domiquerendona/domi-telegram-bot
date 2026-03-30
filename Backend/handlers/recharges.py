@@ -2678,7 +2678,7 @@ def admin_movimientos_periodo_callback(update, context):
         periodo_label = "Todo el historial"
 
     start_s = start.strftime("%Y-%m-%d %H:%M:%S") if start else None
-    movimientos = get_admin_ledger_movements(target_id, start_s=start_s, limit=30)
+    movimientos = get_admin_ledger_movements(target_id, start_s=start_s, limit=30, is_sociedad=es_sociedad)
 
     label = "{} — {}".format(cuenta_label, periodo_label)
     if not movimientos:
