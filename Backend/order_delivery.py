@@ -3401,6 +3401,114 @@ def _handle_pickup_confirmation_by_ally(update, context, order_id, approve):
     return
 
 
+def _apply_delivery_fees(context, order, courier_id):
+    """Aplica todos los fees de un pedido entregado y retorna el resultado.
+
+    Usado por _handle_delivered (entrega manual) y _do_deliver_order (resolucion admin).
+
+    Retorna dict con:
+      ally_admin_id, courier_admin_id,
+      fee_ally_ok (bool), fee_courier_ok (bool),
+      fee_cobrado_courier (int, total descontado del courier).
+    """
+    order_id = order["id"]
+    ally_id = order["ally_id"]
+    special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
+    creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
+
+    # Red cooperativa: fee del aliado → su propio admin; fee del courier → su propio admin.
+    ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
+    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
+
+    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
+    if courier_admin_id is None:
+        courier_admin_link = get_approved_admin_link_for_courier(courier_id)
+        courier_admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
+
+    fee_ally_ok = False
+    fee_courier_ok = False
+    fee_cobrado_courier = None
+
+    if ally_admin_id and not check_ally_active_subscription(ally_id):
+        ally_ok, ally_msg = apply_service_fee(
+            target_type="ALLY", target_id=ally_id, admin_id=ally_admin_id,
+            ref_type="ORDER", ref_id=order_id, total_fee=order["total_fee"],
+        )
+        if ally_ok:
+            fee_ally_ok = True
+        else:
+            logger.warning("No se pudo cobrar fee al aliado: %s", ally_msg)
+    elif ally_admin_id:
+        fee_ally_ok = True  # suscripcion activa — sin cobro
+
+    if courier_admin_id:
+        courier_ok, courier_msg_raw = apply_service_fee(
+            target_type="COURIER", target_id=courier_id, admin_id=courier_admin_id,
+            ref_type="ORDER", ref_id=order_id,
+        )
+        fee_cobrado_courier = get_fee_config()["fee_service_total"] if courier_ok else 0
+
+        if courier_ok and ally_id is None and special_commission > 0 and creator_admin_id:
+            comm_ok, comm_msg = apply_special_order_commission(
+                order_id, courier_id, special_commission, int(creator_admin_id)
+            )
+            if comm_ok:
+                fee_cobrado_courier = (fee_cobrado_courier or 0) + special_commission
+            else:
+                logger.warning("No se pudo cobrar comision especial al courier %s: %s", courier_id, comm_msg)
+
+        if ally_id is None and creator_admin_id:
+            try:
+                apply_special_order_creator_fees(
+                    order_id, int(creator_admin_id),
+                    int(order["total_fee"] or 0),
+                    has_commission=(special_commission > 0),
+                )
+            except Exception as e:
+                logger.warning("No se pudo cobrar fees de plataforma al admin creador %s: %s", creator_admin_id, e)
+                _notify_admin_creator_fee_failed(
+                    context, order_id, int(creator_admin_id),
+                    int(order["total_fee"] or 0),
+                    has_commission=(special_commission > 0),
+                )
+
+        if courier_ok:
+            fee_courier_ok = True
+            try:
+                new_balance = get_courier_link_balance(courier_id, courier_admin_id)
+                if new_balance < 300:
+                    deactivate_courier(courier_id)
+                    try:
+                        courier_row = get_courier_by_id(courier_id)
+                        if courier_row:
+                            user = get_user_by_id(courier_row["user_id"])
+                            if user and user["telegram_id"]:
+                                context.bot.send_message(
+                                    chat_id=user["telegram_id"],
+                                    text=(
+                                        "Has sido desactivado automaticamente.\n\n"
+                                        "Tu saldo operativo quedo en ${:,} tras el cobro del servicio "
+                                        "y necesitas al menos ${:,} para seguir recibiendo pedidos.\n\n"
+                                        "Solicita una recarga a tu administrador y vuelve a activarte.".format(
+                                            new_balance, 300)
+                                    ),
+                                )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning("No se pudo verificar saldo post-fee del courier %s: %s", courier_id, e)
+        else:
+            logger.warning("No se pudo cobrar fee al courier: %s", courier_msg_raw)
+
+    return {
+        "ally_admin_id": ally_admin_id,
+        "courier_admin_id": courier_admin_id,
+        "fee_ally_ok": fee_ally_ok,
+        "fee_courier_ok": fee_courier_ok,
+        "fee_cobrado_courier": fee_cobrado_courier,
+    }
+
+
 def _handle_delivered(update, context, order_id):
     query = update.callback_query
     order = get_order_by_id(order_id)
@@ -3424,105 +3532,13 @@ def _handle_delivered(update, context, order_id):
     courier_id = courier["id"]
     ally_id = order["ally_id"]
 
-    # Red cooperativa: fee del aliado → su propio admin; fee del courier → su propio admin.
-    ally_admin_link = get_approved_admin_link_for_ally(ally_id)
-    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
-
-    # Usar snapshot guardado en _handle_accept; fallback al admin actual del courier
-    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
-    if courier_admin_id is None:
-        courier_admin_link = get_approved_admin_link_for_courier(courier_id)
-        courier_admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
-
-    fee_ally_ok = False
-    fee_courier_ok = False
-
-    if ally_admin_id and not check_ally_active_subscription(ally_id):
-        ally_ok, ally_msg = apply_service_fee(
-            target_type="ALLY",
-            target_id=ally_id,
-            admin_id=ally_admin_id,
-            ref_type="ORDER",
-            ref_id=order_id,
-            total_fee=order["total_fee"],
-        )
-        if ally_ok:
-            fee_ally_ok = True
-        else:
-            logger.warning("No se pudo cobrar fee al aliado: %s", ally_msg)
-    elif ally_admin_id:
-        fee_ally_ok = True  # suscripcion activa — sin cobro
-
-    special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
+    fees = _apply_delivery_fees(context, order, courier_id)
+    ally_admin_id = fees["ally_admin_id"]
+    courier_admin_id = fees["courier_admin_id"]
+    fee_ally_ok = fees["fee_ally_ok"]
+    fee_courier_ok = fees["fee_courier_ok"]
+    fee_cobrado_courier = fees["fee_cobrado_courier"]
     creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
-    fee_cobrado_courier = None
-
-    if courier_admin_id:
-        # Siempre cobrar fee estandar al courier
-        courier_ok, courier_msg_raw = apply_service_fee(
-            target_type="COURIER",
-            target_id=courier_id,
-            admin_id=courier_admin_id,
-            ref_type="ORDER",
-            ref_id=order_id,
-        )
-        fee_cobrado_courier = get_fee_config()["fee_service_total"] if courier_ok else 0
-
-        # Adicionalmente, cobrar comision especial si aplica (pedido especial del admin)
-        if courier_ok and ally_id is None and special_commission > 0 and creator_admin_id:
-            comm_ok, comm_msg = apply_special_order_commission(
-                order_id, courier_id, special_commission, int(creator_admin_id)
-            )
-            if comm_ok:
-                fee_cobrado_courier = (fee_cobrado_courier or 0) + special_commission
-            else:
-                logger.warning("No se pudo cobrar comision especial al courier %s: %s", courier_id, comm_msg)
-
-        # Cobrar fees de plataforma al admin creador del pedido especial
-        if ally_id is None and creator_admin_id:
-            try:
-                apply_special_order_creator_fees(
-                    order_id, int(creator_admin_id),
-                    int(order["total_fee"] or 0),
-                    has_commission=(special_commission > 0),
-                )
-            except Exception as e:
-                logger.warning("No se pudo cobrar fees de plataforma al admin creador %s: %s", creator_admin_id, e)
-                _notify_admin_creator_fee_failed(
-                    context, order_id, int(creator_admin_id),
-                    int(order["total_fee"] or 0),
-                    has_commission=(special_commission > 0),
-                )
-
-        if courier_ok:
-            fee_courier_ok = True
-            # Notificar al courier si su saldo quedo insuficiente para el proximo servicio
-            try:
-                new_balance = get_courier_link_balance(courier_id, courier_admin_id)
-                min_balance = 300
-                if new_balance < min_balance:
-                    deactivate_courier(courier_id)
-                    try:
-                        courier_row = get_courier_by_id(courier_id)
-                        if courier_row:
-                            user = get_user_by_id(courier_row["user_id"])
-                            if user and user["telegram_id"]:
-                                context.bot.send_message(
-                                    chat_id=user["telegram_id"],
-                                    text=(
-                                        "Has sido desactivado automaticamente.\n\n"
-                                        "Tu saldo operativo quedo en ${:,} tras el cobro del servicio "
-                                        "y necesitas al menos ${:,} para seguir recibiendo pedidos.\n\n"
-                                        "Solicita una recarga a tu administrador y vuelve a activarte.".format(
-                                            new_balance, min_balance)
-                                    ),
-                                )
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.warning("No se pudo verificar saldo post-fee del courier %s: %s", courier_id, e)
-        else:
-            logger.warning("No se pudo cobrar fee al courier: %s", courier_msg_raw)
 
     try:
         ally_fee_charged = 300 if fee_ally_ok else 0
@@ -6290,45 +6306,9 @@ def _do_deliver_order(context, order, courier_id):
     """Aplica fees y marca el pedido como DELIVERED (usado en resolucion de admin)."""
     order_id = order["id"]
     ally_id = order["ally_id"]
-    ally_admin_link = get_approved_admin_link_for_ally(ally_id) if ally_id else None
-    ally_admin_id = ally_admin_link["admin_id"] if ally_admin_link else None
-    courier_admin_id = order["courier_admin_id_snapshot"] if "courier_admin_id_snapshot" in order.keys() else None
-    if courier_admin_id is None:
-        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
 
-    special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
-    creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
+    _apply_delivery_fees(context, order, courier_id)
 
-    if ally_admin_id and not check_ally_active_subscription(ally_id):
-        apply_service_fee(
-            target_type="ALLY", target_id=ally_id, admin_id=ally_admin_id,
-            ref_type="ORDER", ref_id=order_id,
-            total_fee=order["total_fee"],
-        )
-    if courier_admin_id:
-        # Siempre cobrar fee estandar al courier
-        apply_service_fee(
-            target_type="COURIER", target_id=courier_id, admin_id=courier_admin_id,
-            ref_type="ORDER", ref_id=order_id,
-        )
-        # Comision especial si aplica
-        if ally_id is None and special_commission > 0 and creator_admin_id:
-            apply_special_order_commission(order_id, courier_id, special_commission, int(creator_admin_id))
-    # Fees de plataforma al admin creador del pedido especial
-    if ally_id is None and creator_admin_id:
-        try:
-            apply_special_order_creator_fees(
-                order_id, int(creator_admin_id),
-                int(order["total_fee"] or 0),
-                has_commission=(special_commission > 0),
-            )
-        except Exception as e:
-            logger.warning("No se pudo cobrar fees de plataforma al admin creador %s en _do_deliver_order: %s", creator_admin_id, e)
-            _notify_admin_creator_fee_failed(
-                context, order_id, int(creator_admin_id),
-                int(order["total_fee"] or 0),
-                has_commission=(special_commission > 0),
-            )
     set_order_status(order_id, "DELIVERED", "delivered_at")
     delete_offer_queue(order_id)
 
