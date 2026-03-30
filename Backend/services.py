@@ -280,6 +280,12 @@ from db import (
     get_order_template_by_id,
     increment_order_template_usage,
     delete_order_template,
+    # Re-exports pedidos especiales admin y couriers excluidos
+    get_admin_special_orders_between,
+    get_order_excluded_couriers,
+    reset_order_excluded_couriers,
+    add_order_excluded_courier,
+    get_courier_monthly_delivered_count,
     get_platform_sociedad,
     get_platform_sociedad_id,
     get_dashboard_stats_data,
@@ -2465,11 +2471,49 @@ def liquidate_route_additional_stops_fee(route_id: int) -> Tuple[bool, str]:
     )
 
 
+def apply_tiered_commission(commission: int, courier_id: int) -> Tuple[int, str]:
+    """Aplica descuento escalonado por volumen mensual al courier para comisiones especiales.
+
+    Lee los tiers configurados en settings:
+      commission_tier1_orders / commission_tier1_discount_pct
+      commission_tier2_orders / commission_tier2_discount_pct
+
+    Retorna (commission_efectiva, descripcion_del_descuento).
+    Si no aplica ningun tier, retorna (commission, "").
+    """
+    if commission <= 0:
+        return commission, ""
+
+    try:
+        count = get_courier_monthly_delivered_count(courier_id)
+    except Exception:
+        return commission, ""
+
+    fee_cfg = get_fee_config()
+    tier2_orders = int(fee_cfg.get("commission_tier2_orders", 40))
+    tier2_pct = int(fee_cfg.get("commission_tier2_discount_pct", 50))
+    tier1_orders = int(fee_cfg.get("commission_tier1_orders", 20))
+    tier1_pct = int(fee_cfg.get("commission_tier1_discount_pct", 25))
+
+    if count >= tier2_orders:
+        discount = round(commission * tier2_pct / 100)
+        effective = commission - discount
+        desc = "Descuento tier 2 (-{}% por {} entregas este mes): -${}".format(tier2_pct, count, discount)
+        return effective, desc
+    elif count >= tier1_orders:
+        discount = round(commission * tier1_pct / 100)
+        effective = commission - discount
+        desc = "Descuento tier 1 (-{}% por {} entregas este mes): -${}".format(tier1_pct, count, discount)
+        return effective, desc
+
+    return commission, ""
+
+
 def apply_special_order_commission(order_id: int, courier_id: int, commission: int, creator_admin_id: int) -> Tuple[bool, str]:
     """Aplica la comision especial de un pedido admin al courier (cross-team).
 
-    Descuenta `commission` del saldo del courier en su equipo (admin_couriers).
-    El admin creador recibe el monto COMPLETO de la comision.
+    Descuenta la comision efectiva (con descuento de tier si aplica) del saldo del courier.
+    El admin creador recibe el monto efectivo cobrado.
     Los fees de plataforma del admin creador se cobran por separado via apply_special_order_creator_fees.
     El courier puede pertenecer a cualquier equipo; la comision siempre va al admin creador.
     Retorna (success, message).
@@ -2477,34 +2521,42 @@ def apply_special_order_commission(order_id: int, courier_id: int, commission: i
     if commission <= 0:
         return True, "OK"
 
+    # Aplicar descuento escalonado por volumen mensual si corresponde
+    effective_commission, tier_desc = apply_tiered_commission(commission, courier_id)
+
     # Resolver el admin actual del courier para identificar su vinculo
     courier_admin_id = get_approved_admin_id_for_courier(courier_id)
     if courier_admin_id is None:
         return False, "El courier no tiene admin aprobado."
 
     balance = get_courier_link_balance(courier_id, courier_admin_id)
-    if balance < commission:
+    if balance < effective_commission:
         return False, "Saldo insuficiente del courier para cubrir la comision especial."
 
     # Descontar del saldo del courier en su equipo
     try:
-        update_courier_link_balance(courier_id, courier_admin_id, -commission)
+        update_courier_link_balance(courier_id, courier_admin_id, -effective_commission)
     except Exception as e:
         return False, "No se pudo descontar saldo del courier: {}".format(e)
 
-    # Acreditar al admin creador del pedido (monto completo)
+    note = "Comision pedido especial #{} (courier_id={})".format(order_id, courier_id)
+    if tier_desc:
+        note += " | " + tier_desc
+
+    # Acreditar al admin creador del pedido (monto efectivo cobrado)
     update_admin_balance_with_ledger(
         admin_id=creator_admin_id,
-        delta=commission,
+        delta=effective_commission,
         kind="SPECIAL_ORDER_COMMISSION",
-        note="Comision pedido especial #{} (courier_id={})".format(order_id, courier_id),
+        note=note,
         ref_type="ORDER",
         ref_id=order_id,
         from_type="COURIER",
         from_id=courier_id,
     )
 
-    return True, "OK"
+    result_msg = tier_desc if tier_desc else "OK"
+    return True, result_msg
 
 
 def apply_special_order_creator_fees(order_id: int, creator_admin_id: int, total_fee: int, has_commission: bool) -> Tuple[bool, str]:
