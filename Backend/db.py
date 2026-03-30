@@ -9407,52 +9407,54 @@ def get_admin_saldo_hoy(admin_id: int) -> dict:
     def _sum(query, params):
         cur.execute(query, params)
         row = cur.fetchone()
-        val = row[0] if row else 0
+        if not row:
+            return 0
+        val = _row_value(row, "total", 0, 0)
         return int(val) if val else 0
 
     # Saldo actual
     cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
     row = cur.fetchone()
-    balance = int(row[0] if row else 0)
+    balance = int(_row_value(row, "balance", 0, 0) or 0)
 
     # Fees estandar recibidos hoy (FEE_INCOME: el admin es el destinatario)
     fees_estandar_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind = 'FEE_INCOME' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
 
     # Comisiones especiales recibidas hoy (SPECIAL_ORDER_COMMISSION: admin es destinatario)
     comisiones_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind='SPECIAL_ORDER_COMMISSION' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
 
     # Fees de plataforma pagados hoy por el admin (SPECIAL_ORDER_PLATFORM_FEE: admin es origen)
     plat_fee_pagado_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind='SPECIAL_ORDER_PLATFORM_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
 
     # Tech dev fee pagados hoy por el admin (TECH_DEV_FEE: admin es origen)
     tech_fee_pagado_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind='TECH_DEV_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
 
     # Recargas aprobadas salientes hoy (RECHARGE: admin es origen)
     recargas_salientes_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind='RECHARGE' AND from_type IN ('ADMIN','PLATFORM') AND from_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
 
     # Suscripciones cobradas hoy (SUBSCRIPTION_ADMIN_SHARE: admin es destinatario)
     subs_hoy = _sum(
-        f"SELECT COALESCE(SUM(amount),0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
         f" WHERE kind='SUBSCRIPTION_ADMIN_SHARE' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
         (admin_id, hoy_start_s),
     )
