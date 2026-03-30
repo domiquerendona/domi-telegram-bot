@@ -11258,22 +11258,3 @@ def reset_order_excluded_couriers(order_id: int):
     conn.commit()
     conn.close()
 
-
-def get_courier_monthly_delivered_count(courier_id: int) -> int:
-    """Retorna el numero de pedidos entregados por el courier en el mes calendario actual."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-    next_month_raw = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
-    next_month = next_month_raw.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT COUNT(*) FROM orders
-        WHERE courier_id = {P}
-          AND status = 'DELIVERED'
-          AND delivered_at >= {P}
-          AND delivered_at < {P}
-    """, (courier_id, month_start, next_month))
-    row = cur.fetchone()
-    conn.close()
-    return int(row[0] or 0)

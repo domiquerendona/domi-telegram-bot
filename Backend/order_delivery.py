@@ -90,7 +90,7 @@ from db import (
     add_order_excluded_courier,
     reset_order_excluded_couriers,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, apply_tiered_commission
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -2839,28 +2839,21 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
     if special_commission >= COMMISSION_CONFIRM_THRESHOLD and not commission_confirmed:
         fee_cfg_ac = get_fee_config()
         fee_std_ac = fee_cfg_ac["fee_service_total"]
-        effective_comm, tier_desc = apply_tiered_commission(special_commission, courier["id"])
-        total_descuento = fee_std_ac + effective_comm
+        total_descuento = fee_std_ac + special_commission
         ganancia_neta = int(order["total_fee"] or 0) - total_descuento
-        tier_line = "\n  {}\n".format(tier_desc) if tier_desc else ""
-        if tier_desc:
-            comm_line = "  Comision del admin: ${:,} → ${:,} (con descuento)\n".format(special_commission, effective_comm)
-        else:
-            comm_line = "  Comision del admin: -${:,}\n".format(special_commission)
         confirm_text = (
             "Confirmacion requerida — comision alta\n\n"
             "Este pedido tiene una comision especial de ${:,}.\n\n"
             "Al entregar se descontara de tu saldo:\n"
             "  Fee estandar: -${:,}\n"
-            "{}"
-            "{}"
+            "  Comision del admin: -${:,}\n"
             "  Total descuento: -${:,}\n\n"
             "Tarifa que cobras al cliente: ${:,}\n"
             "Ganancia neta: ${:,}\n\n"
             "Confirmas que aceptas estos terminos?"
         ).format(
             special_commission, fee_std_ac,
-            comm_line, tier_line,
+            special_commission,
             total_descuento,
             int(order["total_fee"] or 0), ganancia_neta,
         )
@@ -3697,25 +3690,15 @@ def _build_offer_text(
     fee_std = fee_cfg_offer["fee_service_total"]
     total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
     if special_commission > 0:
-        effective_comm_offer = special_commission
-        tier_desc_offer = ""
-        if courier_id is not None:
-            effective_comm_offer, tier_desc_offer = apply_tiered_commission(special_commission, courier_id)
-        total_descuento = fee_std + effective_comm_offer
+        total_descuento = fee_std + special_commission
         ganancia_neta = total_fee_val - total_descuento
-        comm_line_offer = "  Comision del admin: -${:,}".format(effective_comm_offer)
-        if tier_desc_offer and effective_comm_offer != special_commission:
-            comm_line_offer = "  Comision del admin: ${:,} → ${:,} (descuento por volumen)".format(
-                special_commission, effective_comm_offer)
         text += (
             "\nDESCUENTOS AL ACEPTAR:"
             "\n  Fee estandar: -${:,} (admin ${:,} + plataforma ${:,})".format(
                 fee_std, fee_cfg_offer["fee_admin_share"], fee_cfg_offer["fee_platform_share"])
-            + "\n" + comm_line_offer
+            + "\n  Comision del admin: -${:,}".format(special_commission)
             + "\n  Total descuentos: -${:,}".format(total_descuento)
         )
-        if tier_desc_offer:
-            text += "\n  ({})".format(tier_desc_offer)
         if total_fee_val > 0:
             text += "\n  Ganancia neta: ${:,}".format(ganancia_neta)
         text += "\n"
