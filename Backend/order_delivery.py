@@ -86,6 +86,9 @@ from db import (
     cancel_scheduled_job,
     mark_job_executed,
     get_pending_scheduled_jobs,
+    get_order_excluded_couriers,
+    add_order_excluded_courier,
+    reset_order_excluded_couriers,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, apply_tiered_commission
 
@@ -584,9 +587,13 @@ def repost_order_to_couriers(order_id, context):
     if not order or order["status"] != "PUBLISHED":
         return 0
 
-    # Limpiar cola existente y excluded_couriers en memoria
+    # Limpiar cola existente, excluded_couriers en memoria y en BD
     clear_offer_queue(order_id)
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+    try:
+        reset_order_excluded_couriers(order_id)
+    except Exception:
+        pass
 
     ally_id = order["ally_id"]
     creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
@@ -1024,7 +1031,7 @@ def publish_order_to_couriers(
         "dropoff_barrio": dropoff_barrio,
         "requires_cash": requires_cash,
         "cash_amount": cash_amount,
-        "excluded_couriers": set(),
+        "excluded_couriers": get_order_excluded_couriers(order_id),
         "order_distance_km": _order_distance_km,
     }
 
@@ -2354,6 +2361,10 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
     cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
     excluded = set(cycle.get("excluded_couriers", set()))
     excluded.add(courier_id)
+    try:
+        add_order_excluded_courier(order_id, courier_id)
+    except Exception:
+        pass
 
     # Notificar al courier
     try:
@@ -3122,6 +3133,10 @@ def _handle_release(update, context, order_id, reason_code=None):
     prev_cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
     excluded = set(prev_cycle.get("excluded_couriers", set()))
     excluded.add(courier["id"])
+    try:
+        add_order_excluded_courier(order_id, courier["id"])
+    except Exception:
+        pass
 
     # Recuperar coordenadas de recogida del ciclo anterior
     p_lat = prev_cycle.get("pickup_lat")

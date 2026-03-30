@@ -1326,6 +1326,8 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN special_commission INTEGER DEFAULT 0")
     if 'team_only' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN team_only INTEGER DEFAULT 0")
+    if 'excluded_courier_ids' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN excluded_courier_ids TEXT DEFAULT '[]'")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -2039,6 +2041,7 @@ def _init_db_postgres():
     _pg_add_col("orders", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "special_commission", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "team_only", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
 
@@ -11010,3 +11013,70 @@ def get_pending_scheduled_jobs():
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Couriers excluidos de re-oferta (persistidos en orders.excluded_courier_ids)
+# ---------------------------------------------------------------------------
+
+def get_order_excluded_couriers(order_id: int) -> set:
+    """Retorna el set de courier_ids excluidos para este pedido desde BD."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT excluded_courier_ids FROM orders WHERE id = {P}", (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return set()
+    try:
+        return set(json.loads(row[0]))
+    except Exception:
+        return set()
+
+
+def add_order_excluded_courier(order_id: int, courier_id: int):
+    """Agrega un courier_id al set de excluidos del pedido en BD (idempotente)."""
+    excluded = get_order_excluded_couriers(order_id)
+    excluded.add(courier_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    cur.execute(
+        f"UPDATE orders SET excluded_courier_ids = {P}, updated_at = {P} WHERE id = {P}",
+        (json.dumps(list(excluded)), now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def reset_order_excluded_couriers(order_id: int):
+    """Limpia el set de excluidos del pedido en BD (al re-ofertar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    cur.execute(
+        f"UPDATE orders SET excluded_courier_ids = '[]', updated_at = {P} WHERE id = {P}",
+        (now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_courier_monthly_delivered_count(courier_id: int) -> int:
+    """Retorna el numero de pedidos entregados por el courier en el mes calendario actual."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    next_month_raw = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+    next_month = next_month_raw.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT COUNT(*) FROM orders
+        WHERE courier_id = {P}
+          AND status = 'DELIVERED'
+          AND delivered_at >= {P}
+          AND delivered_at < {P}
+    """, (courier_id, month_start, next_month))
+    row = cur.fetchone()
+    conn.close()
+    return int(row[0] or 0)
