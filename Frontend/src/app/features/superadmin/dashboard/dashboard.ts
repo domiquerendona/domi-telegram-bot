@@ -1,7 +1,7 @@
 import { Component, signal, OnInit, Inject, PLATFORM_ID } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NgIf, isPlatformBrowser } from '@angular/common';
-
+import { environment } from '../../../../environments/environment';
 
 import { CommonModule } from '@angular/common';
 
@@ -186,7 +186,7 @@ export class DashboardComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<DashboardStats>('http://localhost:8000/dashboard/stats').subscribe({
+    this.http.get<DashboardStats>(`${environment.apiBaseUrl}/dashboard/stats`).subscribe({
       next: (d) => { this._stats.set(d); this.cargando.set(false); },
       error: (e) => { this.error.set(`Error ${e.status}: ${e.error?.detail ?? 'sin conexion'}`); this.cargando.set(false); }
     });

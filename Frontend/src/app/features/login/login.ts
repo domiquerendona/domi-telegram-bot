@@ -4,6 +4,7 @@ import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { NgIf } from '@angular/common';
 import { AuthService } from '../../core/services/auth.service';
+import { environment } from '../../../environments/environment';
 
 @Component({
 selector: 'app-login',
@@ -228,7 +229,7 @@ this.cargando.set(true);
 this.error.set('');
 
 this.http.post<{ token: string; username: string; role: string }>(
-'http://localhost:8000/auth/login',
+`${environment.apiBaseUrl}/auth/login`,
 { username: this.username, password: this.password }
 ).subscribe({
 next: (res) => {

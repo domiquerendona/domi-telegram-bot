@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface Order {
   id: number;
@@ -173,7 +174,7 @@ export class OrdersComponent implements OnInit, OnDestroy {
     this.cargando.set(true);
     this.error.set('');
     const params = filtro !== 'TODOS' ? `?status=${filtro}` : '';
-    this.http.get<Order[]>(`http://localhost:8000/admin/orders${params}`).subscribe({
+    this.http.get<Order[]>(`${environment.apiBaseUrl}/admin/orders${params}`).subscribe({
       next: (data) => { this.orders.set(data); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });
@@ -185,7 +186,7 @@ export class OrdersComponent implements OnInit, OnDestroy {
 
   cancelar(o: Order) {
     if (!confirm(`¿Cancelar pedido #${o.id} de ${o.customer_name}?`)) return;
-    this.http.post(`http://localhost:8000/admin/orders/${o.id}/cancel`, {}).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/orders/${o.id}/cancel`, {}).subscribe({
       next: () => this.cargar(this.filtroActivo()),
       error: (e) => alert(e.error?.detail ?? 'Error al cancelar el pedido'),
     });

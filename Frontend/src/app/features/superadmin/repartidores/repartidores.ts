@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface Courier {
   id: number;
@@ -137,7 +138,7 @@ export class RepartidoresComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<Courier[]>('http://localhost:8000/admin/couriers').subscribe({
+    this.http.get<Courier[]>(`${environment.apiBaseUrl}/admin/couriers`).subscribe({
       next: (data) => { this.couriers.set(data); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });
@@ -157,7 +158,7 @@ export class RepartidoresComponent implements OnInit {
       approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
     };
     if (!confirm(`¿${labels[tipo] ?? tipo} a ${c.full_name}?`)) return;
-    this.http.post(`http://localhost:8000/admin/couriers/${c.id}/${tipo}`, {}).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/couriers/${c.id}/${tipo}`, {}).subscribe({
       next: () => this.cargar(),
       error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });

@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface Ally {
   id: number;
@@ -132,7 +133,7 @@ export class AliadosComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<Ally[]>('http://localhost:8000/admin/allies').subscribe({
+    this.http.get<Ally[]>(`${environment.apiBaseUrl}/admin/allies`).subscribe({
       next: (data) => { this.allies.set(data); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });
@@ -152,7 +153,7 @@ export class AliadosComponent implements OnInit {
       approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
     };
     if (!confirm(`¿${labels[tipo] ?? tipo} a ${a.business_name}?`)) return;
-    this.http.post(`http://localhost:8000/admin/allies/${a.id}/${tipo}`, {}).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/allies/${a.id}/${tipo}`, {}).subscribe({
       next: () => this.cargar(),
       error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });

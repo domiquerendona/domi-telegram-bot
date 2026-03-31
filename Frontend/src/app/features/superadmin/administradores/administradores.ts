@@ -2,6 +2,7 @@ import { Component, OnInit, signal, computed } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface Admin {
   id: number;
@@ -467,7 +468,7 @@ export class AdministradoresComponent implements OnInit {
   cargarBot() {
     this.cargando.set(true);
     this.errorBot.set('');
-    this.http.get<Admin[]>('http://localhost:8000/admin/admins').subscribe({
+    this.http.get<Admin[]>(`${environment.apiBaseUrl}/admin/admins`).subscribe({
       next: (data) => { this.admins.set(data); this.cargando.set(false); },
       error: () => {
         this.errorBot.set('No se pudo conectar con el servidor.');
@@ -494,7 +495,7 @@ export class AdministradoresComponent implements OnInit {
       approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
     };
     if (!confirm(`¿${labels[tipo] ?? tipo} a ${a.full_name}?`)) return;
-    this.http.post(`http://localhost:8000/admin/admins/${a.id}/${tipo}`, {}).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/admins/${a.id}/${tipo}`, {}).subscribe({
       next: () => this.cargarBot(),
       error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
     });
@@ -505,7 +506,7 @@ export class AdministradoresComponent implements OnInit {
   cargarPanel() {
     this.cargandoPanel.set(true);
     this.errorPanel.set('');
-    this.http.get<WebPanelUser[]>('http://localhost:8000/admin/web-users').subscribe({
+    this.http.get<WebPanelUser[]>(`${environment.apiBaseUrl}/admin/web-users`).subscribe({
       next: (data) => { this.webUsers.set(data); this.cargandoPanel.set(false); },
       error: () => {
         this.errorPanel.set('No se pudo cargar la lista de usuarios del panel.');
@@ -538,7 +539,7 @@ export class AdministradoresComponent implements OnInit {
       role: this.nuevoRole,
       admin_id: this.nuevoRole === 'ADMIN_LOCAL' && this.nuevoAdminId ? Number(this.nuevoAdminId) : null,
     };
-    this.http.post('http://localhost:8000/admin/web-users', body).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/web-users`, body).subscribe({
       next: () => {
         this.creando.set(false);
         this.creandoVisible.set(false);
@@ -554,7 +555,7 @@ export class AdministradoresComponent implements OnInit {
   cambiarEstadoPanel(u: WebPanelUser, status: string) {
     const accion = status === 'INACTIVE' ? 'inactivar' : 'activar';
     if (!confirm(`¿${accion} al usuario "${u.username}"?`)) return;
-    this.http.patch(`http://localhost:8000/admin/web-users/${u.id}/status`, { status }).subscribe({
+    this.http.patch(`${environment.apiBaseUrl}/admin/web-users/${u.id}/status`, { status }).subscribe({
       next: () => this.cargarPanel(),
       error: (e) => alert(e.error?.detail ?? 'Error al cambiar el estado.')
     });

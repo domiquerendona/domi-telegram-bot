@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface Resumen {
   hoy: number;
@@ -204,7 +205,7 @@ export class GananciasComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<GananciasData>('http://localhost:8000/admin/ganancias').subscribe({
+    this.http.get<GananciasData>(`${environment.apiBaseUrl}/admin/ganancias`).subscribe({
       next: (d) => { this.data.set(d); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });

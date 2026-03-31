@@ -2,6 +2,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { NgIf, NgFor } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
+import { environment } from '../../../../environments/environment';
 
 interface PricingField {
   key: string;
@@ -120,7 +121,7 @@ export class SettingsComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<Record<string, string>>('http://localhost:8000/admin/settings/pricing').subscribe({
+    this.http.get<Record<string, string>>(`${environment.apiBaseUrl}/admin/settings/pricing`).subscribe({
       next: (d) => {
         for (const k of Object.keys(d)) {
           this.values[k] = parseFloat(d[k]) || 0;
@@ -137,7 +138,7 @@ export class SettingsComponent implements OnInit {
   guardar() {
     this.guardando.set(true);
     this.guardado.set(false);
-    this.http.post('http://localhost:8000/admin/settings/pricing', this.values).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/settings/pricing`, this.values).subscribe({
       next: () => {
         this.guardando.set(false);
         this.guardado.set(true);
