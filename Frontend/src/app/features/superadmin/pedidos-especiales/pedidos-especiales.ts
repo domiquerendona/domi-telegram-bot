@@ -299,7 +299,7 @@ export class PedidosEspecialesComponent implements OnInit {
     this.cargando.set(true);
     this.error.set('');
     const token = localStorage.getItem('admin_token');
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     const url = `http://localhost:8000/admin/pedidos-especiales/metricas?periodo=${this.periodo()}`;
     this.http.get<MetricasResponse>(url, { headers }).subscribe({
       next: (r) => { this.datos.set(r); this.cargando.set(false); },
