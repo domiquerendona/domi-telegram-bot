@@ -50,7 +50,7 @@ export const routes: Routes = [
     canActivate: [AuthGuard],
     children: [                     // Rutas hijas que se muestran dentro del layout
       { 
-        path: '',                   // Ruta por defecto dentro de "superadmin"
+        path: 'dashboard',                   // Ruta por defecto dentro de "superadmin"
         component: DashboardComponent, // Componente que se carga (Dashboard)
         data: { title: 'Dashboard' }   // Metadata opcional (por ejemplo, para título de página)
       },
