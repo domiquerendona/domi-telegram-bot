@@ -26,8 +26,7 @@ app.include_router(form_router)
 
 origins = [
     "http://localhost:4200",
-    # PENDIENTE: agregar aquí el dominio del frontend público del formulario
-    # cuando esté desplegado (ej. "https://form.domiquerendona.com")
+    "https://angular-production-44c8.up.railway.app",
 ]
 
 app.add_middleware(
