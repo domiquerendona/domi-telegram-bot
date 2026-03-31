@@ -10,7 +10,9 @@ import { join } from 'node:path';
 const browserDistFolder = join(import.meta.dirname, '../browser');
 
 const app = express();
-const angularApp = new AngularNodeAppEngine();
+const angularApp = new AngularNodeAppEngine({
+  allowedHosts: ['angular-production-44c8.up.railway.app', 'localhost'],
+});
 
 /**
  * Servir archivos estáticos del browser build
