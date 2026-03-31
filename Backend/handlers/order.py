@@ -3769,12 +3769,55 @@ def admin_pedido_usar_plantilla_callback(update, context):
         use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
         tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
         label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
-        keyboard.append([InlineKeyboardButton(label, callback_data="admin_ped_tmpl_{}".format(tid))])
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_del_{}".format(tid)),
+        ])
     keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
 
     context.user_data["admin_ped_admin_id"] = admin["id"]
     query.edit_message_text(
         "Selecciona una plantilla para pre-llenar el pedido:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_USE_TEMPLATE
+
+
+def admin_pedido_tmpl_del_callback(update, context):
+    """Admin elimina una plantilla desde la lista de seleccion."""
+    query = update.callback_query
+    query.answer()
+
+    data = query.data or ""
+    template_id = int(data.replace("admin_ped_tmpl_del_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error: perfil no encontrado.", show_alert=True)
+        return ADMIN_PEDIDO_USE_TEMPLATE
+
+    delete_order_template(template_id, admin["id"])
+
+    # Recargar la lista actualizada
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text("Plantilla eliminada. No tienes mas plantillas guardadas.")
+        return ConversationHandler.END
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_del_{}".format(tid)),
+        ])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "Plantilla eliminada. Selecciona otra o cancela:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return ADMIN_PEDIDO_USE_TEMPLATE
@@ -5354,6 +5397,7 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_pickup_text_handler),
         ],
         ADMIN_PEDIDO_USE_TEMPLATE: [
+            CallbackQueryHandler(admin_pedido_tmpl_del_callback, pattern=r"^admin_ped_tmpl_del_\d+$"),
             CallbackQueryHandler(admin_pedido_tmpl_sel_callback, pattern=r"^admin_ped_tmpl_\d+$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],

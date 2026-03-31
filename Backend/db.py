@@ -1824,6 +1824,20 @@ def init_db():
         );
     """)
 
+    # Tabla: pending_fee_collections (cobros de fees fallidos pendientes de reintento)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_fee_collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            creator_admin_id INTEGER NOT NULL,
+            total_fee INTEGER NOT NULL,
+            has_commission INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT
+        );
+    """)
+
     # Tabla: admin_order_templates (plantillas de pedidos frecuentes del admin)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS admin_order_templates (
@@ -2064,6 +2078,28 @@ def _init_db_postgres():
     _pg_add_col("web_users", "admin_id", "BIGINT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_username ON web_users(username)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_status ON web_users(status)")
+
+    # pending_fee_collections: cobros de fees fallidos pendientes de reintento
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_fee_collections (
+            id BIGSERIAL PRIMARY KEY,
+            order_id BIGINT NOT NULL,
+            creator_admin_id BIGINT NOT NULL,
+            total_fee INTEGER NOT NULL,
+            has_commission INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT NOW(),
+            resolved_at TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pending_fee_collections_status
+        ON pending_fee_collections(status)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pending_fee_collections_order_id
+        ON pending_fee_collections(order_id)
+    """)
 
     # admin_order_templates: plantillas de pedidos frecuentes del admin
     cur.execute("""
@@ -3164,16 +3200,23 @@ def get_active_orders_by_ally(ally_id: int):
     return rows
 
 
-def cancel_order(order_id: int, canceled_by: str):
+def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    
+    # Check if 'reason' column exists and add it if it doesn't
+    cur.execute("PRAGMA table_info(orders)")
+    columns = [col[1] for col in cur.fetchall()]
+    if 'reason' not in columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN reason TEXT")
+
     cur.execute(f"""
         UPDATE orders
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
         WHERE id = {P};
-    """, (canceled_by, order_id))
+    """, (canceled_by, reason, order_id))
     conn.commit()
     conn.close()
 
@@ -9532,6 +9575,24 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
     )
     subs_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
+    # Retiros de Sociedad recibidos este mes (Admin Plataforma recibe SOCIEDAD_ADVANCE)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'SOCIEDAD_ADVANCE' AND to_type = 'ADMIN' AND to_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    sociedad_advance_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
+
+    # Retiros enviados desde este admin a saldo personal (Sociedad envia SOCIEDAD_ADVANCE)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'SOCIEDAD_ADVANCE' AND from_type = 'SOCIEDAD' AND from_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    sociedad_advance_salida_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
+
     conn.close()
     return {
         "fees_mes": fees_mes,
@@ -9539,6 +9600,8 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
         "ingresos_mes": ingresos_mes,
         "recargas_mes": recargas_mes,
         "subs_mes": subs_mes,
+        "sociedad_advance_mes": sociedad_advance_mes,
+        "sociedad_advance_salida_mes": sociedad_advance_salida_mes,
         "mes_inicio": mes_start_s[:7],
     }
 
@@ -10523,18 +10586,25 @@ def deliver_route_stop(route_id, sequence):
     conn.close()
 
 
-def cancel_route(route_id, canceled_by):
+def cancel_route(route_id: int, canceled_by: str, reason: str = None):
     """Cancela una ruta."""
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    
+    # Check if 'reason' column exists and add it if it doesn't
+    cur.execute("PRAGMA table_info(routes)")
+    columns = [col[1] for col in cur.fetchall()]
+    if 'reason' not in columns:
+        cur.execute("ALTER TABLE routes ADD COLUMN reason TEXT")
+
     cur.execute(
         f"""
         UPDATE routes
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
         WHERE id = {P}
         """,
-        (canceled_by, route_id)
+        (canceled_by, reason, route_id)
     )
     conn.commit()
     conn.close()
@@ -11257,4 +11327,72 @@ def reset_order_excluded_couriers(order_id: int):
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# pending_fee_collections — cobros fallidos pendientes de reintento
+# ---------------------------------------------------------------------------
+
+def create_pending_fee_collection(order_id: int, creator_admin_id: int, total_fee: int, has_commission: bool) -> int:
+    """Registra un cobro de fee fallido. Idempotente: si ya existe uno PENDING para este pedido, no crea duplicado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    # Verificar si ya existe uno PENDING para este pedido
+    cur.execute(
+        f"SELECT id FROM pending_fee_collections WHERE order_id = {P} AND status = 'PENDING'",
+        (order_id,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        conn.close()
+        return _row_value(existing, 0)
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    row_id = _insert_returning_id(cur, conn, f"""
+        INSERT INTO pending_fee_collections
+            (order_id, creator_admin_id, total_fee, has_commission, status, created_at)
+        VALUES ({P},{P},{P},{P},'PENDING',{P})
+    """, (order_id, creator_admin_id, total_fee, 1 if has_commission else 0, now))
+    return row_id
+
+
+def resolve_pending_fee_collection(order_id: int):
+    """Marca como RESOLVED el cobro pendiente de un pedido."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE pending_fee_collections SET status = 'RESOLVED', resolved_at = {P} WHERE order_id = {P} AND status = 'PENDING'",
+        (now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_fee_collection(order_id: int):
+    """Retorna el registro PENDING de cobro fallido para un pedido, o None si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM pending_fee_collections WHERE order_id = {P} AND status = 'PENDING'",
+        (order_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_all_pending_fee_collections(admin_id: int = None):
+    """Lista todos los cobros pendientes. Si admin_id se pasa, filtra por creator_admin_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if admin_id is not None:
+        cur.execute(
+            f"SELECT * FROM pending_fee_collections WHERE status = 'PENDING' AND creator_admin_id = {P} ORDER BY created_at DESC",
+            (admin_id,),
+        )
+    else:
+        cur.execute("SELECT * FROM pending_fee_collections WHERE status = 'PENDING' ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 

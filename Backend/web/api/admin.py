@@ -494,10 +494,15 @@ def get_pedidos_especiales_metricas(
                 admin_ids.append(pa_id)
 
     orders_all = []
+    seen_order_ids = set()
     for aid in admin_ids:
         rows = get_admin_special_orders_between(aid, start_s, end_s)
         for r in rows:
             row = dict(r) if not isinstance(r, dict) else r
+            oid = row.get("id")
+            if oid in seen_order_ids:
+                continue
+            seen_order_ids.add(oid)
             row["_creator_admin_id"] = aid
             orders_all.append(row)
 

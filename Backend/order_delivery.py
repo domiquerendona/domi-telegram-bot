@@ -89,6 +89,9 @@ from db import (
     get_order_excluded_couriers,
     add_order_excluded_courier,
     reset_order_excluded_couriers,
+    create_pending_fee_collection,
+    resolve_pending_fee_collection,
+    get_pending_fee_collection,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available
 
@@ -4160,8 +4163,13 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
 def _notify_admin_creator_fee_failed(context, order_id, creator_admin_id, total_fee, has_commission):
     """
     Notifica al admin creador que no se pudieron cobrar los fees de plataforma
-    por saldo insuficiente. Incluye boton de reintento.
+    por saldo insuficiente. Persiste el cobro pendiente en BD e incluye boton de reintento.
     """
+    try:
+        # Persistir en BD para sobrevivir reinicios
+        create_pending_fee_collection(order_id, creator_admin_id, total_fee, has_commission)
+    except Exception as e:
+        logger.warning("No se pudo persistir pending_fee_collection orden %s: %s", order_id, e)
     try:
         from services import get_fee_config
         fee_cfg = get_fee_config()
@@ -4233,6 +4241,11 @@ def _handle_admin_retry_creator_fees(update, context, order_id):
             int(order["total_fee"] or 0),
             has_commission=(special_commission > 0),
         )
+        # Marcar como resuelto en BD
+        try:
+            resolve_pending_fee_collection(order_id)
+        except Exception:
+            pass
         query.edit_message_text(
             "Fees de plataforma del pedido #{} cobrados exitosamente.".format(order_id)
         )
