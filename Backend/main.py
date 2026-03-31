@@ -2400,7 +2400,6 @@ def main():
     # -------------------------
     # Conversaciones completas
     # -------------------------
-    dp.add_handler(cancellation_conv)
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
