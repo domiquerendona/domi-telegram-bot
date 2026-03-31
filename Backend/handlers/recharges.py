@@ -137,15 +137,13 @@ def cmd_saldo(update, context):
             bd = get_admin_balance_breakdown(admin_id)
             mes = bd["mes_inicio"]
             mensaje += "\n   Desglose del mes ({}):\n".format(mes)
-            if bd["ingresos_mes"]:
-                mensaje += "   Ingresos externos:   +${:,}\n".format(bd["ingresos_mes"])
             if bd["fees_mes"]:
-                mensaje += "   Fees equipo:         +${:,}\n".format(bd["fees_mes"])
-            if bd["recargas_mes"]:
-                mensaje += "   Recargas aprobadas:  -${:,}\n".format(bd["recargas_mes"])
-            if not any([bd["ingresos_mes"], bd["fees_mes"], bd["recargas_mes"]]):
+                mensaje += "   Fees equipo:             +${:,}\n".format(bd["fees_mes"])
+            if bd["sociedad_advance_mes"]:
+                mensaje += "   Retiros de Sociedad:     +${:,}\n".format(bd["sociedad_advance_mes"])
+            if not any([bd["fees_mes"], bd["sociedad_advance_mes"]]):
                 mensaje += "   (sin movimientos este mes)\n"
-            mensaje += "   Ganancias equipo acumuladas: ${:,}\n".format(bd["fees_total"])
+            mensaje += "   Fees equipo acumulados: ${:,}\n".format(bd["fees_total"])
             # Cuenta de la Sociedad (separada)
             sociedad = get_platform_sociedad()
             if sociedad:
@@ -163,9 +161,12 @@ def cmd_saldo(update, context):
                     mensaje += "   Suscripciones:       +${:,}\n".format(soc_bd["subs_mes"])
                 if soc_bd["recargas_mes"]:
                     mensaje += "   Recargas aprobadas:  -${:,}\n".format(soc_bd["recargas_mes"])
-                if not any([soc_bd["ingresos_mes"], soc_bd["fees_mes"], soc_bd["subs_mes"], soc_bd["recargas_mes"]]):
+                if soc_bd["sociedad_advance_salida_mes"]:
+                    mensaje += "   Retiros al personal: -${:,}\n".format(soc_bd["sociedad_advance_salida_mes"])
+                if not any([soc_bd["ingresos_mes"], soc_bd["fees_mes"], soc_bd["subs_mes"],
+                            soc_bd["recargas_mes"], soc_bd["sociedad_advance_salida_mes"]]):
                     mensaje += "   (sin movimientos este mes)\n"
-                mensaje += "   Acumulado total sociedad: ${:,}\n".format(soc_bd["fees_total"])
+                mensaje += "   Fees plataforma acumulados: ${:,}\n".format(soc_bd["fees_total"])
         mensaje += "\n"
         tiene_algo = True
 
