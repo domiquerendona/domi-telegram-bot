@@ -2222,6 +2222,10 @@ def order_courier_callback(update, context):
     if data.startswith("order_busy_"):
         order_id = int(data.replace("order_busy_", ""))
         return _handle_busy(update, context, order_id)
+    # IMPORTANTE: order_pickup_pinissue_ debe ir antes que order_pickup_ (prefijo mas especifico primero)
+    if data.startswith("order_pickup_pinissue_"):
+        order_id = int(data.replace("order_pickup_pinissue_", ""))
+        return _handle_order_pickup_pinissue(update, context, order_id)
     if data.startswith("order_pickup_"):
         order_id = int(data.replace("order_pickup_", ""))
         return _handle_pickup(update, context, order_id)
@@ -2286,10 +2290,6 @@ def order_courier_callback(update, context):
     if data.startswith("admin_pinissue_cancel_ally_"):
         order_id = int(data.replace("admin_pinissue_cancel_ally_", ""))
         return _handle_admin_pinissue_action(update, context, order_id, "cancel_ally")
-    # pickup pin issue — pedido (punto de recogida)
-    if data.startswith("order_pickup_pinissue_"):
-        order_id = int(data.replace("order_pickup_pinissue_", ""))
-        return _handle_order_pickup_pinissue(update, context, order_id)
     if data.startswith("admin_pickup_confirm_"):
         parts = data.replace("admin_pickup_confirm_", "").split("_")
         if len(parts) == 2:
