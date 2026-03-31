@@ -2429,11 +2429,13 @@ def admin_mi_saldo_callback(update, context):
         hoy_lines.append("  Comisiones especiales:     +${:,}".format(datos["comisiones_hoy"]))
     if datos["subs_hoy"]:
         hoy_lines.append("  Suscripciones:             +${:,}".format(datos["subs_hoy"]))
+    if datos.get("sociedad_advance_hoy"):
+        hoy_lines.append("  Retiro de Sociedad:        +${:,}".format(datos["sociedad_advance_hoy"]))
     if datos["plat_fee_pagado_hoy"]:
         hoy_lines.append("  Fee plataforma pagado:     -${:,}".format(datos["plat_fee_pagado_hoy"]))
     if datos["tech_fee_pagado_hoy"]:
         hoy_lines.append("  Desarrollo tecnologico:    -${:,}".format(datos["tech_fee_pagado_hoy"]))
-    if datos["recargas_salientes_hoy"]:
+    if not is_platform and datos["recargas_salientes_hoy"]:
         hoy_lines.append("  Recargas aprobadas:        -${:,}".format(datos["recargas_salientes_hoy"]))
 
     if hoy_lines:

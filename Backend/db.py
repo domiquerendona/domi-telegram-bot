@@ -9676,6 +9676,13 @@ def get_admin_saldo_hoy(admin_id: int) -> dict:
         (admin_id, hoy_start_s),
     )
 
+    # Retiros de Sociedad recibidos hoy (SOCIEDAD_ADVANCE: admin es destinatario)
+    sociedad_advance_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='SOCIEDAD_ADVANCE' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
     conn.close()
     return {
         "balance": balance,
@@ -9685,7 +9692,8 @@ def get_admin_saldo_hoy(admin_id: int) -> dict:
         "plat_fee_pagado_hoy": plat_fee_pagado_hoy,
         "tech_fee_pagado_hoy": tech_fee_pagado_hoy,
         "recargas_salientes_hoy": recargas_salientes_hoy,
-        "total_ingresos_hoy": fees_estandar_hoy + comisiones_hoy + subs_hoy,
+        "sociedad_advance_hoy": sociedad_advance_hoy,
+        "total_ingresos_hoy": fees_estandar_hoy + comisiones_hoy + subs_hoy + sociedad_advance_hoy,
         "total_egresos_hoy": plat_fee_pagado_hoy + tech_fee_pagado_hoy + recargas_salientes_hoy,
         "fecha": hoy_start_s[:10],
     }
