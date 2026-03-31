@@ -3783,6 +3783,129 @@ def admin_pedido_usar_plantilla_callback(update, context):
     return ADMIN_PEDIDO_USE_TEMPLATE
 
 
+def admin_mis_plantillas_callback(update, context):
+    """Admin accede a 'Mis plantillas' desde el menu principal — lista con opcion de eliminar."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No tienes perfil de administrador.")
+        return
+
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text(
+            "No tienes plantillas guardadas.\n\n"
+            "Las plantillas se crean al finalizar un pedido especial — "
+            'el bot te preguntara si deseas guardar la configuracion como plantilla.'
+        )
+        return
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+        ])
+
+    query.edit_message_text(
+        "Mis plantillas ({} guardadas):\n\n"
+        "Toca el nombre para ver el detalle, o Eliminar para borrarla.".format(len(templates)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def admin_ped_tmpl_info_callback(update, context):
+    """Muestra el detalle de una plantilla desde el menu Mis plantillas."""
+    query = update.callback_query
+    query.answer()
+
+    template_id = int(query.data.replace("admin_ped_tmpl_info_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error.", show_alert=True)
+        return
+
+    t = get_order_template_by_id(template_id, admin["id"])
+    if not t:
+        query.edit_message_text("Plantilla no encontrada.")
+        return
+
+    tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+    pickup_addr = t["pickup_addr"] if hasattr(t, "__getitem__") else t[4]
+    tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+    comision = t["comision"] if hasattr(t, "__getitem__") else t[10]
+    team_only = t["team_only"] if hasattr(t, "__getitem__") else t[11]
+    instruc = t["instruc"] if hasattr(t, "__getitem__") else t[12]
+    use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+
+    lines = [
+        "Plantilla: {}".format(tname),
+        "Pickup: {}".format(pickup_addr or "no definido"),
+        "Tarifa: ${:,}".format(tarifa or 0),
+    ]
+    if comision:
+        lines.append("Comision al courier: ${:,}".format(comision))
+    lines.append("Visibilidad: {}".format("Solo mi equipo" if team_only else "Todos los couriers"))
+    if instruc:
+        lines.append("Instrucciones: {}".format(instruc))
+    lines.append("Usos: {}".format(use_count or 0))
+
+    query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(template_id)),
+            InlineKeyboardButton("Volver", callback_data="admin_mis_plantillas"),
+        ]]),
+    )
+
+
+def admin_ped_tmpl_menu_del_callback(update, context):
+    """Elimina una plantilla desde el menu Mis plantillas y recarga la lista."""
+    query = update.callback_query
+    query.answer()
+
+    template_id = int(query.data.replace("admin_ped_tmpl_menu_del_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error.", show_alert=True)
+        return
+
+    delete_order_template(template_id, admin["id"])
+
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text("Plantilla eliminada. No tienes mas plantillas guardadas.")
+        return
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+        ])
+
+    query.edit_message_text(
+        "Plantilla eliminada. Plantillas restantes ({}):\n\n"
+        "Toca el nombre para ver el detalle, o Eliminar para borrarla.".format(len(templates)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
 def admin_pedido_tmpl_del_callback(update, context):
     """Admin elimina una plantilla desde la lista de seleccion."""
     query = update.callback_query

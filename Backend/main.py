@@ -262,6 +262,7 @@ from services import (
     count_ally_form_requests_by_status,
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
+    get_all_pending_fee_collections,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, admin_special_orders_history_callback
 from db import (
@@ -442,6 +443,9 @@ from handlers.order import (
     nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv,
     route_suggest_inc_conv,
     admin_pedido_conv,
+    admin_mis_plantillas_callback,
+    admin_ped_tmpl_info_callback,
+    admin_ped_tmpl_menu_del_callback,
 )
 from handlers.route import (
     nueva_ruta_desde_cotizador,
@@ -1321,6 +1325,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
             [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
             [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+            [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -1372,6 +1377,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
         [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
         [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+        [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
         [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
@@ -2216,6 +2222,47 @@ def solequipo_ally_sel_callback(update, context):
     )
 
 
+def _recover_pending_fee_collections(bot):
+    """Al arrancar, reenvía al admin el botón de reintento por cada cobro de fee pendiente."""
+    try:
+        pending = get_all_pending_fee_collections()
+        for rec in pending:
+            try:
+                rec = dict(rec) if not isinstance(rec, dict) else rec
+                order_id = rec.get("order_id") or (rec[1] if len(rec) > 1 else None)
+                creator_admin_id = rec.get("creator_admin_id") or (rec[2] if len(rec) > 2 else None)
+                if not order_id or not creator_admin_id:
+                    continue
+                admin = get_admin_by_id(int(creator_admin_id))
+                if not admin:
+                    continue
+                user = get_user_by_id(admin["user_id"] if isinstance(admin, dict) else admin[1])
+                if not user:
+                    continue
+                telegram_id = user["telegram_id"] if isinstance(user, dict) else user[2]
+                if not telegram_id:
+                    continue
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "Cobro pendiente — pedido #{}\n\n"
+                        "Hay un fee de plataforma que no pudo cobrarse mientras el bot estuvo reiniciado.\n"
+                        "Recarga tu saldo si es necesario y usa el boton para completar el cobro."
+                    ).format(order_id),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "Reintentar cobro de fees",
+                            callback_data="admin_retry_creator_fees_{}".format(order_id),
+                        )
+                    ]]),
+                )
+            except Exception as e:
+                logger.warning("_recover_pending_fee_collections: error en registro %s: %s", rec, e)
+    except Exception as e:
+        logger.warning("_recover_pending_fee_collections: %s", e)
+
+
 def main():
     # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
     # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
@@ -2345,6 +2392,7 @@ def main():
     # -------------------------
     # Conversaciones completas
     # -------------------------
+    dp.add_handler(cancellation_conv)
     dp.add_handler(ally_conv)          # /soy_aliado
     dp.add_handler(courier_conv)       # /soy_repartidor
     dp.add_handler(nueva_ruta_conv)    # Nueva ruta (multi-parada)
@@ -2359,6 +2407,9 @@ def main():
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
+    dp.add_handler(CallbackQueryHandler(admin_mis_plantillas_callback, pattern=r"^admin_mis_plantillas$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_info_callback, pattern=r"^admin_ped_tmpl_info_\d+$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_menu_del_callback, pattern=r"^admin_ped_tmpl_menu_del_\d+$"))
 
     # Parqueadero: revision de direcciones (admin local y plataforma)
     dp.add_handler(CallbackQueryHandler(
@@ -2467,6 +2518,9 @@ def main():
 
     # Recuperar jobs persistidos tras reinicio
     recover_scheduled_jobs(updater.job_queue)
+
+    # Reenviar notificaciones de cobros de fees pendientes (sobreviven reinicios)
+    _recover_pending_fee_collections(updater.bot)
 
     # Iniciar el bot
     updater.start_polling(drop_pending_updates=True)
