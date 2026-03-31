@@ -959,6 +959,8 @@ def init_db():
     admin_allies_cols = [r[1] for r in cur.fetchall()]
     if "subscription_price" not in admin_allies_cols:
         cur.execute("ALTER TABLE admin_allies ADD COLUMN subscription_price INTEGER DEFAULT NULL")
+    if "parking_fee_enabled" not in admin_allies_cols:
+        cur.execute("ALTER TABLE admin_allies ADD COLUMN parking_fee_enabled INTEGER DEFAULT 0")
 
     # Tabla: admin_couriers (relación admin-repartidor)
     cur.execute("""
@@ -1320,6 +1322,12 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN customer_delivery_fee INTEGER DEFAULT NULL")
     if 'parking_fee' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN parking_fee INTEGER DEFAULT 0")
+    if 'special_commission' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN special_commission INTEGER DEFAULT 0")
+    if 'team_only' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN team_only INTEGER DEFAULT 0")
+    if 'excluded_courier_ids' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN excluded_courier_ids TEXT DEFAULT '[]'")
 
     try:
         cur.execute("ALTER TABLE orders ADD COLUMN canceled_by TEXT;")
@@ -1332,6 +1340,24 @@ def init_db():
         route_cols = [col[1] for col in cur.fetchall()]
         if 'additional_incentive' not in route_cols:
             cur.execute("ALTER TABLE routes ADD COLUMN additional_incentive INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+    # Migración: agregar courier_arrived_at a routes
+    try:
+        cur.execute("PRAGMA table_info(routes)")
+        route_cols = [col[1] for col in cur.fetchall()]
+        if 'courier_arrived_at' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN courier_arrived_at TEXT")
+    except Exception:
+        pass
+
+    # Migración: agregar parking_fee a route_destinations
+    try:
+        cur.execute("PRAGMA table_info(route_destinations)")
+        rdest_cols = [col[1] for col in cur.fetchall()]
+        if 'parking_fee' not in rdest_cols:
+            cur.execute("ALTER TABLE route_destinations ADD COLUMN parking_fee INTEGER DEFAULT 0")
     except Exception:
         pass
 
@@ -1719,7 +1745,8 @@ def init_db():
             published_at TEXT,
             accepted_at TEXT,
             delivered_at TEXT,
-            canceled_at TEXT
+            canceled_at TEXT,
+            courier_arrived_at TEXT
         );
     """)
     cur.execute("""
@@ -1734,6 +1761,7 @@ def init_db():
             customer_barrio TEXT NOT NULL,
             dropoff_lat REAL,
             dropoff_lng REAL,
+            parking_fee INTEGER DEFAULT 0,
             status TEXT DEFAULT 'PENDING',
             delivered_at TEXT,
             created_at TEXT DEFAULT (datetime('now'))
@@ -1791,6 +1819,42 @@ def init_db():
             fire_at TEXT NOT NULL,
             job_data TEXT DEFAULT '{}',
             status TEXT DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+    # Tabla: pending_fee_collections (cobros de fees fallidos pendientes de reintento)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_fee_collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            creator_admin_id INTEGER NOT NULL,
+            total_fee INTEGER NOT NULL,
+            has_commission INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT
+        );
+    """)
+
+    # Tabla: admin_order_templates (plantillas de pedidos frecuentes del admin)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_order_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            pickup_location_id INTEGER,
+            pickup_addr TEXT,
+            pickup_city TEXT,
+            pickup_barrio TEXT,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            tarifa INTEGER DEFAULT 0,
+            comision INTEGER DEFAULT 0,
+            team_only INTEGER DEFAULT 0,
+            instruc TEXT,
+            use_count INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -1989,6 +2053,14 @@ def _init_db_postgres():
     _pg_add_col("admin_customer_addresses", "parking_reviewed_by", "INTEGER DEFAULT NULL")
     _pg_add_col("admin_customer_addresses", "parking_reviewed_at", "TIMESTAMP")
     _pg_add_col("orders", "parking_fee", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "special_commission", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "team_only", "INTEGER DEFAULT 0")
+    _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
+    _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
+    _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
+
+    # routes: additional_incentive para incentivos agregados por el aliado
+    _pg_add_col("routes", "additional_incentive", "INTEGER DEFAULT 0")
 
     # web_users: tabla de usuarios del panel web (multiusuario real)
     cur.execute("""
@@ -2006,6 +2078,54 @@ def _init_db_postgres():
     _pg_add_col("web_users", "admin_id", "BIGINT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_username ON web_users(username)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_status ON web_users(status)")
+
+    # pending_fee_collections: cobros de fees fallidos pendientes de reintento
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_fee_collections (
+            id BIGSERIAL PRIMARY KEY,
+            order_id BIGINT NOT NULL,
+            creator_admin_id BIGINT NOT NULL,
+            total_fee INTEGER NOT NULL,
+            has_commission INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT NOW(),
+            resolved_at TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pending_fee_collections_status
+        ON pending_fee_collections(status)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pending_fee_collections_order_id
+        ON pending_fee_collections(order_id)
+    """)
+
+    # admin_order_templates: plantillas de pedidos frecuentes del admin
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_order_templates (
+            id BIGSERIAL PRIMARY KEY,
+            admin_id BIGINT NOT NULL,
+            name TEXT NOT NULL,
+            pickup_location_id BIGINT,
+            pickup_addr TEXT,
+            pickup_city TEXT,
+            pickup_barrio TEXT,
+            pickup_lat REAL,
+            pickup_lng REAL,
+            tarifa INTEGER DEFAULT 0,
+            comision INTEGER DEFAULT 0,
+            team_only INTEGER DEFAULT 0,
+            instruc TEXT,
+            use_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_order_templates_admin_id
+        ON admin_order_templates(admin_id)
+    """)
 
     # 3) Migraciones de datos (idempotentes)
 
@@ -3080,16 +3200,23 @@ def get_active_orders_by_ally(ally_id: int):
     return rows
 
 
-def cancel_order(order_id: int, canceled_by: str):
+def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    
+    # Check if 'reason' column exists and add it if it doesn't
+    cur.execute("PRAGMA table_info(orders)")
+    columns = [col[1] for col in cur.fetchall()]
+    if 'reason' not in columns:
+        cur.execute("ALTER TABLE orders ADD COLUMN reason TEXT")
+
     cur.execute(f"""
         UPDATE orders
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
         WHERE id = {P};
-    """, (canceled_by, order_id))
+    """, (canceled_by, reason, order_id))
     conn.commit()
     conn.close()
 
@@ -3125,6 +3252,19 @@ def set_courier_arrived(order_id: int):
     cur.execute(
         f"UPDATE orders SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
         (order_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_route_courier_arrived(route_id: int):
+    """Marca la llegada del courier al pickup de la ruta. Idempotente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"UPDATE routes SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        (route_id,),
     )
     conn.commit()
     conn.close()
@@ -3548,6 +3688,10 @@ def ensure_pricing_defaults():
         # Piso minimo que la plataforma recibe por cada suscripcion, independiente del precio total.
         # El admin retiene: precio_total - subscription_platform_share
         "subscription_platform_share": "20000",
+        # Pedidos especiales del admin — fee de desarrollo tecnologico
+        # Porcentaje sobre la tarifa del servicio cobrado al admin creador cuando hay comision especial.
+        # Va 100% a la sociedad. 0 = desactivado.
+        "fee_special_order_tech_dev_pct": "2",
     }
     for k, v in defaults.items():
         existing = get_setting(k)
@@ -5406,12 +5550,16 @@ def create_order(
     payment_confirmed_at: str = None,
     payment_confirmed_by: int = None,
     parking_fee: int = 0,
+    special_commission: int = 0,
+    team_only: int = 0,
 ):
     """Crea un pedido en estado PENDING y devuelve su id.
 
     Para pedidos de aliados: ally_id requerido, creator_admin_id=None.
     Para pedidos especiales de admin: ally_id=None, creator_admin_id requerido.
     parking_fee: tarifa de parqueadero incluida en este pedido (0 si no aplica).
+    special_commission: comision especial que el admin cobra al courier por este pedido (0 = usa fee estandar).
+    team_only: 1 = solo ofertar a couriers del equipo del admin creador; 0 = todos los equipos.
     """
     if not has_valid_coords(pickup_lat, pickup_lng):
         raise ValueError("El punto de recogida requiere ubicacion confirmada.")
@@ -5457,8 +5605,10 @@ def create_order(
             payment_method,
             payment_confirmed_at,
             payment_confirmed_by,
-            parking_fee
-        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
+            parking_fee,
+            special_commission,
+            team_only
+        ) VALUES ({P}, {P}, NULL, 'PENDING', {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P});
     """, (
         ally_id,
         creator_admin_id,
@@ -5495,6 +5645,8 @@ def create_order(
         payment_confirmed_at,
         payment_confirmed_by,
         parking_fee if parking_fee else 0,
+        special_commission if special_commission else 0,
+        1 if team_only else 0,
     ))
     conn.commit()
     conn.close()
@@ -5664,6 +5816,110 @@ def get_ally_routes_between(ally_id: int, start_s: str, end_s: str):
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_admin_special_orders_between(admin_id: int, start_s: str, end_s: str):
+    """Pedidos especiales creados por un admin (DELIVERED o CANCELLED) entre start_s y end_s."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT *
+        FROM orders
+        WHERE creator_admin_id = {P}
+          AND status IN ('DELIVERED', 'CANCELLED')
+          AND created_at >= {P}
+          AND created_at < {P}
+        ORDER BY created_at DESC
+    """, (admin_id, start_s, end_s))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_admin_special_orders_recent(admin_id: int, limit: int = 15) -> list:
+    """Últimos pedidos especiales creados por el admin (todos los estados), los más recientes primero."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, status, customer_name, customer_address, total_fee, special_commission,
+               created_at, courier_id
+        FROM orders
+        WHERE creator_admin_id = {P} AND ally_id IS NULL
+        ORDER BY id DESC
+        LIMIT {P}
+    """, (admin_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def save_order_template(admin_id: int, name: str, pickup_location_id, pickup_addr: str,
+                         pickup_city: str, pickup_barrio: str, pickup_lat, pickup_lng,
+                         tarifa: int, comision: int, team_only: int, instruc: str) -> int:
+    """Guarda o actualiza una plantilla de pedido frecuente para el admin. Retorna el id."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    return _insert_returning_id(cur, conn, f"""
+        INSERT INTO admin_order_templates
+            (admin_id, name, pickup_location_id, pickup_addr, pickup_city, pickup_barrio,
+             pickup_lat, pickup_lng, tarifa, comision, team_only, instruc, created_at, updated_at)
+        VALUES ({P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P},{P})
+    """, (admin_id, name, pickup_location_id, pickup_addr, pickup_city, pickup_barrio,
+          pickup_lat, pickup_lng, tarifa, comision, team_only, instruc, now, now))
+
+
+def list_order_templates(admin_id: int) -> list:
+    """Lista las plantillas del admin ordenadas por uso desc."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT * FROM admin_order_templates
+        WHERE admin_id = {P}
+        ORDER BY use_count DESC, created_at DESC
+    """, (admin_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_order_template_by_id(template_id: int, admin_id: int):
+    """Retorna una plantilla por id verificando que pertenezca al admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT * FROM admin_order_templates
+        WHERE id = {P} AND admin_id = {P}
+    """, (template_id, admin_id))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def increment_order_template_usage(template_id: int, admin_id: int):
+    """Incrementa el contador de uso de una plantilla."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        UPDATE admin_order_templates
+        SET use_count = use_count + 1, updated_at = {P}
+        WHERE id = {P} AND admin_id = {P}
+    """, (now, template_id, admin_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_order_template(template_id: int, admin_id: int):
+    """Elimina una plantilla del admin."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        DELETE FROM admin_order_templates
+        WHERE id = {P} AND admin_id = {P}
+    """, (template_id, admin_id))
+    conn.commit()
+    conn.close()
 
 
 def get_orders_by_courier(courier_id: int, limit: int = 50):
@@ -7429,28 +7685,114 @@ def find_matching_customer_address(customer_id: int, address_text: str, city: st
 PARKING_FEE_AMOUNT = 1200  # Tarifa fija de parqueadero en COP
 
 
-def set_address_parking_status(address_id: int, status: str, reviewed_by: int = None) -> bool:
-    """Actualiza el estado de parqueadero de una direccion de cliente aliado.
+def set_address_parking_status(address_id: int, status: str, reviewed_by: int = None,
+                               table: str = "ally_customer_addresses") -> bool:
+    """Actualiza el estado de parqueadero de una direccion de cliente.
 
+    table: 'ally_customer_addresses' (default) o 'admin_customer_addresses'.
     status validos: NOT_ASKED | ALLY_YES | PENDING_REVIEW | ADMIN_YES | ADMIN_NO
     reviewed_by: admins.id (solo cuando el admin hace la revision).
     """
+    if table not in ("ally_customer_addresses", "admin_customer_addresses"):
+        table = "ally_customer_addresses"
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     if reviewed_by is not None:
         cur.execute(f"""
-            UPDATE ally_customer_addresses
+            UPDATE {table}
             SET parking_status = {P}, parking_reviewed_by = {P}, parking_reviewed_at = {now_sql},
                 updated_at = {now_sql}
             WHERE id = {P} AND status = 'ACTIVE'
         """, (status, reviewed_by, address_id))
     else:
         cur.execute(f"""
-            UPDATE ally_customer_addresses
+            UPDATE {table}
             SET parking_status = {P}, updated_at = {now_sql}
             WHERE id = {P} AND status = 'ACTIVE'
         """, (status, address_id))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_ally_telegram_id_by_address_id(address_id: int):
+    """Dado el id de una ally_customer_address, retorna el telegram_id del aliado dueno."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM ally_customer_addresses aca
+        JOIN ally_customers ac ON ac.id = aca.customer_id
+        JOIN allies al ON al.id = ac.ally_id
+        JOIN users u ON u.id = al.user_id
+        WHERE aca.id = {P}
+    """, (address_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_value(row, "telegram_id")
+
+
+def get_ally_telegram_id_by_ally_id(ally_id: int):
+    """Dado el id de un aliado (allies.id), retorna el telegram_id del usuario dueno."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM allies al
+        JOIN users u ON u.id = al.user_id
+        WHERE al.id = {P}
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _row_value(row, "telegram_id")
+
+
+def get_ally_parking_fee_enabled(ally_id: int) -> bool:
+    """Retorna True si el cobro de parqueo esta habilitado para este aliado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT parking_fee_enabled FROM admin_allies
+        WHERE ally_id = {P} AND status = 'APPROVED'
+        ORDER BY updated_at DESC LIMIT 1
+    """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return False
+    return bool(_row_value(row, "parking_fee_enabled"))
+
+
+def toggle_ally_parking_fee(ally_id: int, admin_id, enabled: bool) -> bool:
+    """Habilita o deshabilita el cobro de parqueo para un aliado.
+
+    admin_id=None: Admin de Plataforma — actualiza el vinculo APPROVED del aliado
+    (cualquier admin que lo tenga aprobado) para no fallar cuando el aliado pertenece
+    a un Admin Local con quien la plataforma no tiene vinculo directo.
+    admin_id=int: Admin Local — actualiza solo su propio vinculo con el aliado.
+    Retorna True si se actualizó al menos un registro.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if admin_id is None:
+        cur.execute(f"""
+            UPDATE admin_allies
+            SET parking_fee_enabled = {P}, updated_at = {now_sql}
+            WHERE ally_id = {P} AND status = 'APPROVED'
+        """, (1 if enabled else 0, ally_id))
+    else:
+        cur.execute(f"""
+            UPDATE admin_allies
+            SET parking_fee_enabled = {P}, updated_at = {now_sql}
+            WHERE ally_id = {P} AND admin_id = {P}
+        """, (1 if enabled else 0, ally_id, admin_id))
     updated = cur.rowcount > 0
     conn.commit()
     conn.close()
@@ -7465,37 +7807,47 @@ def get_addresses_pending_parking_review(admin_id) -> list:
 
     IMPORTANTE PRIVACIDAD: solo retorna datos geograficos (direccion, ciudad, barrio)
     y nombre del aliado. NO incluye nombre ni telefono del cliente.
-    Incluye registros con parking_status: NOT_ASKED, ALLY_YES, PENDING_REVIEW.
+    Solo incluye: ALLY_YES (aliado confirmo dificultad) y PENDING_REVIEW (aliado no sabe).
+    NOT_ASKED (sin respuesta previa) se excluye — disponible solo en get_all_addresses_parking_review.
+    Ordenamiento: ALLY_YES primero (mas urgente), luego PENDING_REVIEW, dentro de cada grupo por fecha.
     """
     conn = get_connection()
     cur = conn.cursor()
+    order_clause = """
+        ORDER BY
+            CASE aca.parking_status
+                WHEN 'ALLY_YES' THEN 1
+                WHEN 'PENDING_REVIEW' THEN 2
+                ELSE 3
+            END,
+            aca.created_at DESC
+        LIMIT 30
+    """
     if admin_id is None:
         cur.execute(f"""
             SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
                    aca.parking_reviewed_by, aca.parking_reviewed_at,
-                   al.business_name AS ally_name
+                   al.business_name AS ally_name, al.id AS ally_id
             FROM ally_customer_addresses aca
             JOIN ally_customers ac ON aca.customer_id = ac.id
             JOIN allies al ON ac.ally_id = al.id
             WHERE aca.status = 'ACTIVE'
-              AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
-            ORDER BY aca.created_at DESC
-            LIMIT 30
+              AND aca.parking_status IN ('ALLY_YES', 'PENDING_REVIEW')
+            {order_clause}
         """)
     else:
         cur.execute(f"""
             SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
                    aca.parking_reviewed_by, aca.parking_reviewed_at,
-                   al.business_name AS ally_name
+                   al.business_name AS ally_name, al.id AS ally_id
             FROM ally_customer_addresses aca
             JOIN ally_customers ac ON aca.customer_id = ac.id
             JOIN allies al ON ac.ally_id = al.id
             JOIN admin_allies aa ON aa.ally_id = al.id
                 AND aa.admin_id = {P} AND aa.status = 'APPROVED'
             WHERE aca.status = 'ACTIVE'
-              AND aca.parking_status IN ('NOT_ASKED', 'ALLY_YES', 'PENDING_REVIEW')
-            ORDER BY aca.created_at DESC
-            LIMIT 30
+              AND aca.parking_status IN ('ALLY_YES', 'PENDING_REVIEW')
+            {order_clause}
         """, (admin_id,))
     rows = cur.fetchall()
     conn.close()
@@ -7503,12 +7855,14 @@ def get_addresses_pending_parking_review(admin_id) -> list:
 
 
 def get_all_addresses_parking_review(admin_id) -> list:
-    """Retorna todas las direcciones (pendientes y revisadas) para consulta y correccion.
+    """Retorna direcciones con decision tomada o pendiente de decision (excluye NOT_ASKED).
 
     admin_id=None: admin de plataforma — todos los aliados sin filtro de equipo.
     admin_id=int: admin local — solo aliados de su equipo.
 
     IMPORTANTE PRIVACIDAD: solo datos geograficos y nombre del aliado. Sin PII del cliente.
+    Excluye NOT_ASKED (sin respuesta del aliado). Incluye: ALLY_YES, PENDING_REVIEW, ADMIN_YES, ADMIN_NO.
+    Ordenamiento: pendientes primero (ALLY_YES, PENDING_REVIEW), luego revisados (ADMIN_YES, ADMIN_NO).
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -7517,8 +7871,9 @@ def get_all_addresses_parking_review(admin_id) -> list:
             CASE aca.parking_status
                 WHEN 'ALLY_YES' THEN 1
                 WHEN 'PENDING_REVIEW' THEN 2
-                WHEN 'NOT_ASKED' THEN 3
-                ELSE 4
+                WHEN 'ADMIN_YES' THEN 3
+                WHEN 'ADMIN_NO' THEN 4
+                ELSE 5
             END,
             aca.created_at DESC
         LIMIT 50
@@ -7527,24 +7882,26 @@ def get_all_addresses_parking_review(admin_id) -> list:
         cur.execute(f"""
             SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
                    aca.parking_reviewed_by, aca.parking_reviewed_at,
-                   al.business_name AS ally_name
+                   al.business_name AS ally_name, al.id AS ally_id
             FROM ally_customer_addresses aca
             JOIN ally_customers ac ON aca.customer_id = ac.id
             JOIN allies al ON ac.ally_id = al.id
             WHERE aca.status = 'ACTIVE'
+              AND aca.parking_status IN ('ALLY_YES', 'PENDING_REVIEW', 'ADMIN_YES', 'ADMIN_NO')
             {order_case}
         """)
     else:
         cur.execute(f"""
             SELECT aca.id, aca.address_text, aca.city, aca.barrio, aca.parking_status,
                    aca.parking_reviewed_by, aca.parking_reviewed_at,
-                   al.business_name AS ally_name
+                   al.business_name AS ally_name, al.id AS ally_id
             FROM ally_customer_addresses aca
             JOIN ally_customers ac ON aca.customer_id = ac.id
             JOIN allies al ON ac.ally_id = al.id
             JOIN admin_allies aa ON aa.ally_id = al.id
                 AND aa.admin_id = {P} AND aa.status = 'APPROVED'
             WHERE aca.status = 'ACTIVE'
+              AND aca.parking_status IN ('ALLY_YES', 'PENDING_REVIEW', 'ADMIN_YES', 'ADMIN_NO')
             {order_case}
         """, (admin_id,))
     rows = cur.fetchall()
@@ -8322,17 +8679,21 @@ def update_admin_balance_with_ledger(
 
 def register_platform_income(admin_id: int, amount: int, method: str, note: str = None) -> int:
     """
-    Registra un ingreso externo recibido por el Admin de Plataforma
-    (efectivo, Nequi, transferencia bancaria, etc.).
-    Incrementa admins.balance y genera entrada en ledger:
-        kind=INCOME, from_type=EXTERNAL, from_id=0, to_type=ADMIN, to_id=admin_id
+    Registra un ingreso externo a la cuenta de la SOCIEDAD.
+    admin_id: admins.id del Admin Plataforma que registra (solo para la nota).
+    El dinero SIEMPRE va al balance de la Sociedad (team_code='SOCIEDAD'),
+    no al saldo personal del Admin Plataforma.
     Retorna: ledger_id
     """
-    full_note = "Ingreso externo registrado manualmente. Metodo: {}".format(method)
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        # fallback de seguridad: si la sociedad aun no existe, va al admin
+        sociedad_id = admin_id
+    full_note = "Ingreso externo registrado por admin_id={}. Metodo: {}".format(admin_id, method)
     if note:
         full_note += ". Nota: {}".format(note)
     return update_admin_balance_with_ledger(
-        admin_id=admin_id,
+        admin_id=sociedad_id,
         delta=amount,
         kind="INCOME",
         note=full_note,
@@ -8341,6 +8702,153 @@ def register_platform_income(admin_id: int, amount: int, method: str, note: str 
         from_type="EXTERNAL",
         from_id=0,
     )
+
+
+def transfer_sociedad_to_platform(platform_admin_id: int, amount: int, note: str = None) -> int:
+    """
+    Transfiere fondos de la Sociedad al saldo personal del Admin Plataforma.
+    Debita admins.balance de SOCIEDAD y acredita admins.balance de PLATFORM.
+    Registra dos entradas en ledger con kind='SOCIEDAD_ADVANCE'.
+    Retorna ledger_id del debito (o lanza excepcion si no hay saldo suficiente).
+    """
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        raise ValueError("La cuenta de la Sociedad no esta configurada.")
+
+    full_note = "Retiro de Sociedad a saldo personal. {}".format(note or "")
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT balance FROM admins WHERE id = " + P + for_update,
+            (sociedad_id,),
+        )
+        row = cur.fetchone()
+        soc_balance = _row_value(row, "balance", 0, 0) or 0
+        if soc_balance < amount:
+            conn.rollback()
+            raise ValueError(
+                "Saldo insuficiente en Sociedad. Disponible: ${:,}. Solicitado: ${:,}.".format(
+                    soc_balance, amount
+                )
+            )
+
+        # Debitar Sociedad
+        cur.execute(
+            "UPDATE admins SET balance = balance - " + P + " WHERE id = " + P,
+            (amount, sociedad_id),
+        )
+        # Acreditar Admin Plataforma
+        cur.execute(
+            "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P,
+            (amount, platform_admin_id),
+        )
+        # Ledger: salida de Sociedad
+        ledger_id = _insert_returning_id(
+            cur,
+            "INSERT INTO ledger"
+            " (kind, from_type, from_id, to_type, to_id, amount, note, created_at)"
+            " VALUES (" + ", ".join([P] * 7) + ", " + now_sql + ")",
+            (
+                "SOCIEDAD_ADVANCE", "SOCIEDAD", sociedad_id,
+                "ADMIN", platform_admin_id, amount,
+                full_note,
+            ),
+        )
+        conn.commit()
+        return ledger_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_sociedad_balance() -> int:
+    """Retorna el saldo actual de la cuenta de la Sociedad."""
+    sociedad_id = get_platform_sociedad_id()
+    if not sociedad_id:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM admins WHERE id = " + P, (sociedad_id,))
+    row = cur.fetchone()
+    conn.close()
+    return int(_row_value(row, "balance", 0, 0) or 0)
+
+
+def get_sociedad_saldo_hoy(sociedad_id: int) -> dict:
+    """
+    Resumen financiero de la Sociedad para HOY.
+    Separa: ingresos externos, fees de plataforma recibidos, suscripciones,
+    recargas pagadas, retiros al admin plataforma.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    hoy_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_start_s = hoy_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    def _sum(query, params):
+        cur.execute(query, params)
+        row = cur.fetchone()
+        if not row:
+            return 0
+        val = _row_value(row, "total", 0, 0)
+        return int(val) if val else 0
+
+    balance = get_sociedad_balance()
+
+    ingresos_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='INCOME' AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    plat_fees_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind IN ('PLATFORM_FEE','SPECIAL_ORDER_PLATFORM_FEE','TECH_DEV_FEE')"
+        " AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    subs_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='SUBSCRIPTION_PLATFORM_SHARE' AND to_type='ADMIN' AND to_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    recargas_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='RECHARGE' AND from_type='SOCIEDAD' AND from_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+    retiros_hoy = _sum(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        " WHERE kind='SOCIEDAD_ADVANCE' AND from_type='SOCIEDAD' AND from_id=" + P + " AND created_at>=" + P,
+        (sociedad_id, hoy_start_s),
+    )
+
+    conn.close()
+    total_ingresos = ingresos_hoy + plat_fees_hoy + subs_hoy
+    total_egresos = recargas_hoy + retiros_hoy
+    return {
+        "balance": balance,
+        "ingresos_hoy": ingresos_hoy,
+        "plat_fees_hoy": plat_fees_hoy,
+        "subs_hoy": subs_hoy,
+        "recargas_hoy": recargas_hoy,
+        "retiros_hoy": retiros_hoy,
+        "total_ingresos_hoy": total_ingresos,
+        "total_egresos_hoy": total_egresos,
+        "fecha": hoy_start_s[:10],
+    }
 
 
 def settle_route_additional_stops_fee(
@@ -9042,47 +9550,65 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
 
     # Fees del mes (FEE_INCOME + PLATFORM_FEE como receptor)
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    fees_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    fees_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Fees acumulados totales
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}",
         (admin_id,),
     )
-    fees_total = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    fees_total = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Ingresos externos del mes
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind = 'INCOME' AND to_type = 'ADMIN' AND to_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    ingresos_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    ingresos_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
-    # Recargas aprobadas salidas del mes (el admin es el origen)
+    # Recargas aprobadas salidas del mes (el admin es el origen; incluye SOCIEDAD)
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
-        f" WHERE kind = 'RECHARGE' AND from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P}"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'RECHARGE' AND from_type IN ('ADMIN', 'PLATFORM', 'SOCIEDAD') AND from_id = {P}"
         f" AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    recargas_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    recargas_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     # Ganancias por suscripciones del mes
     cur.execute(
-        f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
         f" WHERE kind IN ('SUBSCRIPTION_PLATFORM_SHARE', 'SUBSCRIPTION_ADMIN_SHARE')"
         f" AND to_type = 'ADMIN' AND to_id = {P} AND created_at >= {P}",
         (admin_id, mes_start_s),
     )
-    subs_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
+    subs_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
+
+    # Retiros de Sociedad recibidos este mes (Admin Plataforma recibe SOCIEDAD_ADVANCE)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'SOCIEDAD_ADVANCE' AND to_type = 'ADMIN' AND to_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    sociedad_advance_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
+
+    # Retiros enviados desde este admin a saldo personal (Sociedad envia SOCIEDAD_ADVANCE)
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM ledger"
+        f" WHERE kind = 'SOCIEDAD_ADVANCE' AND from_type = 'SOCIEDAD' AND from_id = {P}"
+        f" AND created_at >= {P}",
+        (admin_id, mes_start_s),
+    )
+    sociedad_advance_salida_mes = _row_value(cur.fetchone(), "total", 0, 0) or 0
 
     conn.close()
     return {
@@ -9091,14 +9617,110 @@ def get_admin_balance_breakdown(admin_id: int) -> dict:
         "ingresos_mes": ingresos_mes,
         "recargas_mes": recargas_mes,
         "subs_mes": subs_mes,
+        "sociedad_advance_mes": sociedad_advance_mes,
+        "sociedad_advance_salida_mes": sociedad_advance_salida_mes,
         "mes_inicio": mes_start_s[:7],
     }
 
 
-def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = None, limit: int = 30) -> list:
+def get_admin_saldo_hoy(admin_id: int) -> dict:
+    """
+    Resumen financiero del admin para HOY: ingresos, egresos y saldo actual.
+    Separa: fees estandar recibidos, comisiones especiales recibidas,
+    fees de plataforma pagados, tech dev fee pagados, recargas aprobadas salientes.
+    Retorna dict con todas las claves siempre presentes (0 si sin movimientos hoy).
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    hoy_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_start_s = hoy_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    def _sum(query, params):
+        cur.execute(query, params)
+        row = cur.fetchone()
+        if not row:
+            return 0
+        val = _row_value(row, "total", 0, 0)
+        return int(val) if val else 0
+
+    # Saldo actual
+    cur.execute(f"SELECT balance FROM admins WHERE id = {P}", (admin_id,))
+    row = cur.fetchone()
+    balance = int(_row_value(row, "balance", 0, 0) or 0)
+
+    # Fees estandar recibidos hoy (FEE_INCOME: el admin es el destinatario)
+    fees_estandar_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind = 'FEE_INCOME' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Comisiones especiales recibidas hoy (SPECIAL_ORDER_COMMISSION: admin es destinatario)
+    comisiones_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='SPECIAL_ORDER_COMMISSION' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Fees de plataforma pagados hoy por el admin (SPECIAL_ORDER_PLATFORM_FEE: admin es origen)
+    plat_fee_pagado_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='SPECIAL_ORDER_PLATFORM_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Tech dev fee pagados hoy por el admin (TECH_DEV_FEE: admin es origen)
+    tech_fee_pagado_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='TECH_DEV_FEE' AND from_type='ADMIN' AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Recargas aprobadas salientes hoy (RECHARGE: admin es origen)
+    recargas_salientes_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='RECHARGE' AND from_type IN ('ADMIN','PLATFORM') AND from_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Suscripciones cobradas hoy (SUBSCRIPTION_ADMIN_SHARE: admin es destinatario)
+    subs_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='SUBSCRIPTION_ADMIN_SHARE' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    # Retiros de Sociedad recibidos hoy (SOCIEDAD_ADVANCE: admin es destinatario)
+    sociedad_advance_hoy = _sum(
+        f"SELECT COALESCE(SUM(amount),0) AS total FROM ledger"
+        f" WHERE kind='SOCIEDAD_ADVANCE' AND to_type='ADMIN' AND to_id={P} AND created_at>={P}",
+        (admin_id, hoy_start_s),
+    )
+
+    conn.close()
+    return {
+        "balance": balance,
+        "fees_estandar_hoy": fees_estandar_hoy,
+        "comisiones_hoy": comisiones_hoy,
+        "subs_hoy": subs_hoy,
+        "plat_fee_pagado_hoy": plat_fee_pagado_hoy,
+        "tech_fee_pagado_hoy": tech_fee_pagado_hoy,
+        "recargas_salientes_hoy": recargas_salientes_hoy,
+        "sociedad_advance_hoy": sociedad_advance_hoy,
+        "total_ingresos_hoy": fees_estandar_hoy + comisiones_hoy + subs_hoy + sociedad_advance_hoy,
+        "total_egresos_hoy": plat_fee_pagado_hoy + tech_fee_pagado_hoy + recargas_salientes_hoy,
+        "fecha": hoy_start_s[:10],
+    }
+
+
+def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = None, limit: int = 30, is_sociedad: bool = False) -> list:
     """
     Movimientos del ledger del admin: entradas donde el admin recibe (to_id)
     o envía (from_id) dinero. Ordenados por fecha DESC.
+    Para la cuenta Sociedad (is_sociedad=True) incluye salidas con from_type='SOCIEDAD'.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -9112,18 +9734,33 @@ def get_admin_ledger_movements(admin_id: int, start_s: str = None, end_s: str = 
         date_filter += f" AND created_at < {P}"
         date_params.append(end_s)
 
-    params = [admin_id, admin_id] + date_params + [limit]
-    cur.execute(
-        f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
-        f" FROM ledger"
-        f" WHERE ("
-        f"   (to_type = 'ADMIN' AND to_id = {P})"
-        f"   OR (from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P})"
-        f" ){date_filter}"
-        f" ORDER BY created_at DESC"
-        f" LIMIT {P}",
-        params,
-    )
+    if is_sociedad:
+        # Sociedad: entradas (to_id) o salidas (from_type='SOCIEDAD')
+        params = [admin_id, admin_id] + date_params + [limit]
+        cur.execute(
+            f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
+            f" FROM ledger"
+            f" WHERE ("
+            f"   (to_type = 'ADMIN' AND to_id = {P})"
+            f"   OR (from_type = 'SOCIEDAD' AND from_id = {P})"
+            f" ){date_filter}"
+            f" ORDER BY created_at DESC"
+            f" LIMIT {P}",
+            params,
+        )
+    else:
+        params = [admin_id, admin_id] + date_params + [limit]
+        cur.execute(
+            f"SELECT id, kind, amount, from_type, from_id, to_type, to_id, note, created_at"
+            f" FROM ledger"
+            f" WHERE ("
+            f"   (to_type = 'ADMIN' AND to_id = {P})"
+            f"   OR (from_type IN ('ADMIN', 'PLATFORM') AND from_id = {P})"
+            f" ){date_filter}"
+            f" ORDER BY created_at DESC"
+            f" LIMIT {P}",
+            params,
+        )
     rows = cur.fetchall()
     conn.close()
 
@@ -9813,7 +10450,7 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
 
 def create_route_destination(route_id, sequence, customer_name, customer_phone,
                               customer_address, customer_city, customer_barrio,
-                              dropoff_lat=None, dropoff_lng=None):
+                              dropoff_lat=None, dropoff_lng=None, parking_fee=0):
     """Inserta una parada de ruta. Retorna el destination_id."""
     if not has_valid_coords(dropoff_lat, dropoff_lng):
         raise ValueError("La parada de la ruta requiere ubicacion confirmada.")
@@ -9825,12 +10462,12 @@ def create_route_destination(route_id, sequence, customer_name, customer_phone,
         INSERT INTO route_destinations (
             route_id, sequence, customer_name, customer_phone,
             customer_address, customer_city, customer_barrio,
-            dropoff_lat, dropoff_lng, status
-        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+            dropoff_lat, dropoff_lng, parking_fee, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
         """,
         (route_id, sequence, customer_name, customer_phone,
          customer_address, customer_city, customer_barrio,
-         dropoff_lat, dropoff_lng),
+         dropoff_lat, dropoff_lng, parking_fee if parking_fee else 0),
     )
     conn.commit()
     conn.close()
@@ -9974,18 +10611,25 @@ def deliver_route_stop(route_id, sequence):
     conn.close()
 
 
-def cancel_route(route_id, canceled_by):
+def cancel_route(route_id: int, canceled_by: str, reason: str = None):
     """Cancela una ruta."""
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    
+    # Check if 'reason' column exists and add it if it doesn't
+    cur.execute("PRAGMA table_info(routes)")
+    columns = [col[1] for col in cur.fetchall()]
+    if 'reason' not in columns:
+        cur.execute("ALTER TABLE routes ADD COLUMN reason TEXT")
+
     cur.execute(
         f"""
         UPDATE routes
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
         WHERE id = {P}
         """,
-        (canceled_by, route_id)
+        (canceled_by, reason, route_id)
     )
     conn.commit()
     conn.close()
@@ -10631,3 +11275,149 @@ def get_pending_scheduled_jobs():
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Couriers excluidos de re-oferta (persistidos en orders.excluded_courier_ids)
+# ---------------------------------------------------------------------------
+
+def get_order_excluded_couriers(order_id: int) -> set:
+    """Retorna el set de courier_ids excluidos para este pedido desde BD."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT excluded_courier_ids FROM orders WHERE id = {P}", (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return set()
+    try:
+        return set(json.loads(row[0]))
+    except Exception:
+        return set()
+
+
+def add_order_excluded_courier(order_id: int, courier_id: int):
+    """Agrega un courier_id al set de excluidos del pedido en BD (atómico, idempotente)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "postgres":
+            # Atomic: append al array JSON en un solo UPDATE usando jsonb
+            cur.execute(
+                """
+                UPDATE orders
+                SET excluded_courier_ids = (
+                    SELECT jsonb_agg(DISTINCT elem::int)::text
+                    FROM (
+                        SELECT jsonb_array_elements_text(
+                            COALESCE(NULLIF(excluded_courier_ids, ''), '[]')::jsonb
+                        ) AS elem
+                        UNION ALL SELECT %s::text AS elem
+                    ) sub
+                ),
+                updated_at = %s
+                WHERE id = %s
+                """,
+                (str(courier_id), now, order_id),
+            )
+        else:
+            # SQLite: single-process, leer y escribir en la misma conexión/transacción
+            cur.execute("SELECT excluded_courier_ids FROM orders WHERE id = ?", (order_id,))
+            row = cur.fetchone()
+            excluded = set()
+            if row and row[0]:
+                try:
+                    excluded = set(json.loads(row[0]))
+                except Exception:
+                    pass
+            excluded.add(courier_id)
+            cur.execute(
+                "UPDATE orders SET excluded_courier_ids = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(list(excluded)), now, order_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_order_excluded_couriers(order_id: int):
+    """Limpia el set de excluidos del pedido en BD (al re-ofertar)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    cur.execute(
+        f"UPDATE orders SET excluded_courier_ids = '[]', updated_at = {P} WHERE id = {P}",
+        (now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# pending_fee_collections — cobros fallidos pendientes de reintento
+# ---------------------------------------------------------------------------
+
+def create_pending_fee_collection(order_id: int, creator_admin_id: int, total_fee: int, has_commission: bool) -> int:
+    """Registra un cobro de fee fallido. Idempotente: si ya existe uno PENDING para este pedido, no crea duplicado."""
+    conn = get_connection()
+    cur = conn.cursor()
+    # Verificar si ya existe uno PENDING para este pedido
+    cur.execute(
+        f"SELECT id FROM pending_fee_collections WHERE order_id = {P} AND status = 'PENDING'",
+        (order_id,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        conn.close()
+        return _row_value(existing, 0)
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    row_id = _insert_returning_id(cur, conn, f"""
+        INSERT INTO pending_fee_collections
+            (order_id, creator_admin_id, total_fee, has_commission, status, created_at)
+        VALUES ({P},{P},{P},{P},'PENDING',{P})
+    """, (order_id, creator_admin_id, total_fee, 1 if has_commission else 0, now))
+    return row_id
+
+
+def resolve_pending_fee_collection(order_id: int):
+    """Marca como RESOLVED el cobro pendiente de un pedido."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE pending_fee_collections SET status = 'RESOLVED', resolved_at = {P} WHERE order_id = {P} AND status = 'PENDING'",
+        (now, order_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_fee_collection(order_id: int):
+    """Retorna el registro PENDING de cobro fallido para un pedido, o None si no existe."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM pending_fee_collections WHERE order_id = {P} AND status = 'PENDING'",
+        (order_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_all_pending_fee_collections(admin_id: int = None):
+    """Lista todos los cobros pendientes. Si admin_id se pasa, filtra por creator_admin_id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if admin_id is not None:
+        cur.execute(
+            f"SELECT * FROM pending_fee_collections WHERE status = 'PENDING' AND creator_admin_id = {P} ORDER BY created_at DESC",
+            (admin_id,),
+        )
+    else:
+        cur.execute("SELECT * FROM pending_fee_collections WHERE status = 'PENDING' ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+

@@ -39,6 +39,9 @@ from services import (
     update_admin_panel_pricing_settings, cancel_order_from_admin_panel,
     resolve_support_request_from_admin_panel,
     create_web_user, update_web_user_status,
+    get_admin_special_orders_between, get_fee_config,
+    get_courier_by_id, get_admin_by_id, get_all_local_admins,
+    get_platform_admin,
 )
 
 
@@ -432,6 +435,157 @@ def create_web_user_endpoint(
             raise HTTPException(status_code=409, detail="El nombre de usuario ya existe")
         raise HTTPException(status_code=500, detail="Error al crear el usuario")
     return {"ok": True, "id": new_id}
+
+
+@router.get("/pedidos-especiales/metricas")
+def get_pedidos_especiales_metricas(
+    periodo: str = "semana",
+    admin_filter: int = None,
+    current_user=Depends(get_current_user),
+):
+    """Metricas de rentabilidad de pedidos especiales del admin.
+
+    periodo: hoy | ayer | semana | mes | todo
+    admin_filter: solo ADMIN_PLATFORM puede filtrar por admin_id (None = todos)
+    ADMIN_LOCAL solo ve sus propios pedidos.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if periodo == "hoy":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+    elif periodo == "ayer":
+        yesterday = now - timedelta(days=1)
+        start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+    elif periodo == "semana":
+        start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+    elif periodo == "mes":
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = now
+    else:  # todo
+        start = datetime(2024, 1, 1)
+        end = now
+
+    start_s = start.strftime("%Y-%m-%d %H:%M:%S")
+    end_s = end.strftime("%Y-%m-%d %H:%M:%S")
+
+    fee_cfg = get_fee_config()
+    platform_share = fee_cfg.get("fee_platform_share", 100)
+    tech_dev_pct = fee_cfg.get("fee_special_order_tech_dev_pct", 2)
+
+    # Determinar qué admins mostrar
+    scoped_admin_id = _scoped_admin_id(current_user)
+    if scoped_admin_id is not None:
+        admin_ids = [scoped_admin_id]
+    elif admin_filter:
+        admin_ids = [admin_filter]
+    else:
+        # PLATFORM_ADMIN sin filtro: todos los admins locales + plataforma
+        all_admins = get_all_local_admins()
+        admin_ids = [a["id"] for a in all_admins]
+        platform_admin = get_platform_admin()
+        if platform_admin:
+            pa_id = platform_admin["id"] if isinstance(platform_admin, dict) else platform_admin[0]
+            if pa_id not in admin_ids:
+                admin_ids.append(pa_id)
+
+    orders_all = []
+    seen_order_ids = set()
+    for aid in admin_ids:
+        rows = get_admin_special_orders_between(aid, start_s, end_s)
+        for r in rows:
+            row = dict(r) if not isinstance(r, dict) else r
+            oid = row.get("id")
+            if oid in seen_order_ids:
+                continue
+            seen_order_ids.add(oid)
+            row["_creator_admin_id"] = aid
+            orders_all.append(row)
+
+    # Batch-lookup de nombres de courier (1 query por courier único, no por pedido)
+    unique_courier_ids = {int(o["courier_id"]) for o in orders_all if o.get("courier_id")}
+    courier_names = {}
+    for cid in unique_courier_ids:
+        try:
+            c = get_courier_by_id(cid)
+            if c:
+                courier_names[cid] = c["full_name"] if isinstance(c, dict) else c[0]
+        except Exception:
+            pass
+
+    # Calcular métricas por pedido
+    result_orders = []
+    total_tarifas = 0
+    total_comisiones = 0
+    total_fees_admin = 0
+    total_ganancia_neta = 0
+    total_delivered = 0
+    total_cancelled = 0
+
+    for order in orders_all:
+        total_fee = int(order.get("total_fee") or 0)
+        special_commission = int(order.get("special_commission") or 0)
+        status = order.get("status", "")
+
+        # Calcular fees del admin creador (solo aplica en DELIVERED)
+        if status == "DELIVERED":
+            platform_fee = platform_share
+            tech_dev_fee = round(total_fee * tech_dev_pct / 100) if special_commission > 0 else 0
+            fee_admin_pagado = platform_fee + tech_dev_fee
+            ganancia_neta = special_commission - fee_admin_pagado
+        else:
+            platform_fee = 0
+            tech_dev_fee = 0
+            fee_admin_pagado = 0
+            ganancia_neta = 0
+
+        # Nombre del courier desde el dict pre-cargado
+        courier_id = order.get("courier_id")
+        courier_name = courier_names.get(int(courier_id)) if courier_id else None
+
+        if status == "DELIVERED":
+            total_tarifas += total_fee
+            total_comisiones += special_commission
+            total_fees_admin += fee_admin_pagado
+            total_ganancia_neta += ganancia_neta
+            total_delivered += 1
+        else:
+            total_cancelled += 1
+
+        result_orders.append({
+            "id": order.get("id"),
+            "created_at": str(order.get("created_at") or ""),
+            "status": status,
+            "total_fee": total_fee,
+            "special_commission": special_commission,
+            "platform_fee": platform_fee,
+            "tech_dev_fee": tech_dev_fee,
+            "fee_admin_pagado": fee_admin_pagado,
+            "ganancia_neta": ganancia_neta,
+            "courier_name": courier_name,
+            "customer_name": order.get("customer_name"),
+            "customer_barrio": order.get("customer_barrio"),
+            "customer_city": order.get("customer_city"),
+            "creator_admin_id": order.get("creator_admin_id"),
+        })
+
+    return {
+        "periodo": periodo,
+        "resumen": {
+            "total_pedidos": len(result_orders),
+            "entregados": total_delivered,
+            "cancelados": total_cancelled,
+            "total_tarifas": total_tarifas,
+            "total_comisiones": total_comisiones,
+            "total_fees_admin": total_fees_admin,
+            "ganancia_neta": total_ganancia_neta,
+        },
+        "pedidos": result_orders,
+    }
 
 
 @router.patch("/web-users/{user_id}/status")

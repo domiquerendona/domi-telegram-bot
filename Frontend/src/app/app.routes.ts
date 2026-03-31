@@ -22,6 +22,7 @@ import { CentroAyudaComponent } from './features/superadmin/soporte/centro-ayuda
 import {ContactoComponent} from './features/superadmin/soporte/contacto'
 import { PreguntasFrecuentesComponent } from './features/superadmin/soporte/preguntas-frecuentes';
 import { SolicitudesSoporteComponent } from './features/superadmin/soporte/solicitudes-soporte';
+import { PedidosEspecialesComponent } from './features/superadmin/pedidos-especiales/pedidos-especiales';
 import { LoginComponent } from './features/login/login';
 import { FormPedidoComponent } from './features/public/form-pedido';
 import { AuthGuard } from './core/guards/auth.guard';
@@ -130,6 +131,11 @@ export const routes: Routes = [
       path: 'solicitudes-soporte',
       component: SolicitudesSoporteComponent,
       data: { title: 'Soporte — Pin mal ubicado' }
+    },
+    {
+      path: 'pedidos-especiales',
+      component: PedidosEspecialesComponent,
+      data: { title: 'Pedidos especiales — Metricas' }
     },
     ]
   }

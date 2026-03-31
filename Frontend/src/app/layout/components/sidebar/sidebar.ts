@@ -94,6 +94,12 @@ import { AuthService } from '../../../core/services/auth.service';
           <span *ngIf="!collapsed()">Soporte</span>
         </a>
 
+        <a routerLink="/superadmin/pedidos-especiales"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">assignment</span>
+          <span *ngIf="!collapsed()">Pedidos especiales</span>
+        </a>
+
         <a *ngIf="authService.isPlatformAdmin()"
            routerLink="/superadmin/settings"
            routerLinkActive="active">
