@@ -23,7 +23,9 @@ from handlers.states import (
     OFFER_SUGGEST_INC_MONTO,
     ROUTE_SUGGEST_INC_MONTO,
     ADMIN_PEDIDO_PICKUP, ADMIN_PEDIDO_CUST_NAME, ADMIN_PEDIDO_CUST_PHONE,
-    ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
+    ADMIN_PEDIDO_CUST_ADDR, ADMIN_PEDIDO_TARIFA, ADMIN_PEDIDO_INSTRUC, ADMIN_PEDIDO_INC_MONTO,
+    ADMIN_PEDIDO_COMISION,
+    ADMIN_PEDIDO_TEMPLATE_NAME, ADMIN_PEDIDO_USE_TEMPLATE,
     ADMIN_PEDIDO_SEL_CUST, ADMIN_PEDIDO_SEL_CUST_ADDR, ADMIN_PEDIDO_SAVE_PICKUP,
     PEDIDO_DEDUP_CONFIRM, PEDIDO_GUARDAR_DIR_EXISTENTE,
     ADMIN_PEDIDO_SEL_CUST_BUSCAR, ADMIN_PEDIDO_CUST_DEDUP, ADMIN_PEDIDO_GUARDAR_CUST,
@@ -70,8 +72,13 @@ from services import (
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
     get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT, set_address_parking_status,
+    get_ally_parking_fee_enabled,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
+    get_fee_config,
+    save_order_template, list_order_templates, get_order_template_by_id,
+    increment_order_template_usage, delete_order_template,
+    get_admin_balance,
 )
 
 
@@ -325,8 +332,10 @@ def pedido_selector_cliente_callback(update, context):
         keyboard = []
         for addr in addresses:
             label = addr["label"] or "Sin etiqueta"
-            btn_text = f"{label}: {addr['address_text'][:30]}..."
-            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_addr_{addr['id']}")])
+            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
+            parking_tag = " [P]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
+            btn_text = "{}{}: {}...".format(label, parking_tag, addr["address_text"][:28])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="pedido_sel_addr_{}".format(addr["id"]))])
 
         keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="pedido_nueva_dir")])
 
@@ -412,18 +421,23 @@ def pedido_seleccionar_direccion_callback(update, context):
                 lat=lat,
                 lng=lng
             )
-            context.user_data["pedido_parking_address_id"] = address_id
-            keyboard = [
-                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
-                [InlineKeyboardButton("No / No lo se", callback_data="pedido_dir_parking_no")],
-            ]
-            query.edit_message_text(
-                "Direccion guardada.\n\n"
-                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-            return PEDIDO_GUARDAR_DIR_PARKING
+            ally_id_ctx = context.user_data.get("ally_id")
+            parking_enabled = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+            if parking_enabled:
+                context.user_data["pedido_parking_address_id"] = address_id
+                keyboard = [
+                    [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
+                    [InlineKeyboardButton("No / No lo se", callback_data="pedido_dir_parking_no")],
+                ]
+                query.edit_message_text(
+                    "Direccion guardada.\n\n"
+                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return PEDIDO_GUARDAR_DIR_PARKING
+            else:
+                query.edit_message_text("Direccion guardada. Continuamos.")
         else:
             query.edit_message_text("OK, continuamos.")
         return mostrar_selector_pickup(query, context, edit=False)
@@ -455,11 +469,16 @@ def pedido_seleccionar_direccion_callback(update, context):
         except Exception:
             pass
 
-        try:
-            parking_status = address["parking_status"]
-        except (KeyError, IndexError):
-            parking_status = "NOT_ASKED"
-        context.user_data["pedido_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
+        ally_id_ctx = context.user_data.get("ally_id")
+        parking_enabled_ctx = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+        if parking_enabled_ctx:
+            try:
+                parking_status = address["parking_status"]
+            except (KeyError, IndexError):
+                parking_status = "NOT_ASKED"
+            context.user_data["pedido_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
+        else:
+            context.user_data["pedido_parking_fee"] = 0
 
         if not has_valid_coords(address["lat"], address["lng"]):
             query.edit_message_text(
@@ -2034,7 +2053,8 @@ def construir_resumen_pedido(context):
     subtotal_servicio = int(context.user_data.get("quote_price", 0) or 0)
     tarifa_distancia = int(context.user_data.get("quote_distance_fee", subtotal_servicio) or 0)
     incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
-    total = subtotal_servicio + incentivo
+    pedido_parking_fee = int(context.user_data.get("pedido_parking_fee") or 0)
+    total = subtotal_servicio + incentivo + pedido_parking_fee
     requires_cash = context.user_data.get("requires_cash", False)
     cash_amount = context.user_data.get("cash_required_amount", 0)
     buy_products = context.user_data.get("buy_products_count", 0)
@@ -2072,11 +2092,9 @@ def construir_resumen_pedido(context):
     resumen += "Subtotal del servicio: " + _fmt_pesos(subtotal_servicio) + "\n"
     if incentivo > 0:
         resumen += "Incentivo adicional: " + _fmt_pesos(incentivo) + "\n"
-    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
-
-    pedido_parking_fee = int(context.user_data.get("pedido_parking_fee") or 0)
     if pedido_parking_fee > 0:
         resumen += "Punto con parqueo dificil: +" + _fmt_pesos(pedido_parking_fee) + "\n"
+    resumen += "Total a pagar: " + _fmt_pesos(total) + "\n"
 
     if requires_cash and cash_amount > 0:
         resumen += "Base requerida: " + _fmt_pesos(cash_amount) + "\n"
@@ -2292,6 +2310,22 @@ def pedido_incentivo_existing_fixed_callback(update, context):
     # Usar siempre el pedido recargado para evitar textos con totals parciales.
     refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
 
+    # Notificar al aliado
+    try:
+        incentive = int(refreshed_order["additional_incentive"] or 0)
+        total_fee = int(refreshed_order["total_fee"] or 0)
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado al pedido #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}"
+            ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+        )
+    except Exception:
+        pass
+
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
         repost_order_to_couriers(order_id, context)
@@ -2376,6 +2410,22 @@ def pedido_incentivo_existing_monto_handler(update, context):
     context.user_data.pop("pedido_incentivo_edit_order_id", None)
     refreshed_order = _get_refreshed_order_after_incentive_update(order_id) or order
 
+    # Notificar al aliado
+    try:
+        incentive = int(refreshed_order["additional_incentive"] or 0)
+        total_fee = int(refreshed_order["total_fee"] or 0)
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado al pedido #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}"
+            ).format(int(order_id), _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee)),
+        )
+    except Exception:
+        pass
+
     # Si el pedido sigue en oferta (PUBLISHED), re-ofertar para que los couriers vean el nuevo pago.
     try:
         repost_order_to_couriers(int(order_id), context)
@@ -2442,6 +2492,19 @@ def offer_suggest_inc_fixed_callback(update, context):
 
     total_fee = int(refreshed_order["total_fee"] or 0)
     incentive = int(refreshed_order["additional_incentive"] or 0)
+    
+    # Notificar al creador (aliado o admin)
+    context.bot.send_message(
+        chat_id=telegram_id,
+        text=(
+            "Incentivo agregado al pedido #{}:\n"
+            "Incentivo adicional: +{}\n"
+            "Total incentivos: {}\n"
+            "Nuevo pago total: {}\n\n"
+            "Re-ofertando a {} repartidores activos."
+        ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+    )
+
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
         "Incentivo acumulado: ${:,}\n"
@@ -2517,6 +2580,19 @@ def offer_suggest_inc_monto_handler(update, context):
     repost_count = repost_order_to_couriers(int(order_id), context)
     total_fee = int(refreshed_order["total_fee"] or 0)
     incentive = int(refreshed_order["additional_incentive"] or 0)
+    
+    # Notificar al creador (aliado o admin)
+    context.bot.send_message(
+        chat_id=telegram_id,
+        text=(
+            "Incentivo agregado al pedido #{}:\n"
+            "Incentivo adicional: +{}\n"
+            "Total incentivos: {}\n"
+            "Nuevo pago total: {}\n\n"
+            "Re-ofertando a {} repartidores activos."
+        ).format(order_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+    )
+    
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
         "Incentivo acumulado: ${:,}\n"
@@ -2558,6 +2634,22 @@ def route_suggest_inc_fixed_callback(update, context):
     route = get_route_by_id(route_id)
     total_fee = int(route["total_fee"] or 0) if route else 0
     incentive = int(route["additional_incentive"] or 0) if route else delta
+
+    # Notificar al creador
+    try:
+        telegram_id = update.effective_user.id
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado a la ruta #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}\n\n"
+                "Re-ofertando a {} repartidores activos."
+            ).format(route_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+        )
+    except Exception as e:
+        logger.warning("Error al notificar al creador de la ruta: %s", e)
 
     query.edit_message_text(
         "Incentivo agregado: +${:,}\n"
@@ -2623,6 +2715,22 @@ def route_suggest_inc_monto_handler(update, context):
     route = get_route_by_id(route_id)
     total_fee = int(route["total_fee"] or 0) if route else 0
     incentive = int(route["additional_incentive"] or 0) if route else delta
+    
+    # Notificar al creador
+    try:
+        telegram_id = update.effective_user.id
+        context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Incentivo agregado a la ruta #{}:\n"
+                "Incentivo adicional: +{}\n"
+                "Total incentivos: {}\n"
+                "Nuevo pago total: {}\n\n"
+                "Re-ofertando a {} repartidores activos."
+            ).format(route_id, _fmt_pesos(delta), _fmt_pesos(incentive), _fmt_pesos(total_fee), repost_count),
+        )
+    except Exception as e:
+        logger.warning("Error al notificar al creador de la ruta: %s", e)
 
     update.message.reply_text(
         "Incentivo agregado: +${:,}\n"
@@ -2643,6 +2751,9 @@ def _admin_ped_preview_text(ctx):
     """Construye texto y teclado del preview del pedido especial del admin."""
     tarifa = int(ctx.get("admin_ped_tarifa") or 0)
     incentivo = int(ctx.get("admin_ped_incentivo") or 0)
+    parking_fee = int(ctx.get("admin_ped_parking_fee") or 0)
+    comision = int(ctx.get("admin_ped_comision") or 0)
+    team_only = int(ctx.get("admin_ped_team_only") or 0)
     total = tarifa + incentivo
     distancia_km = float(ctx.get("admin_ped_distance_km") or 0)
     instruc = ctx.get("admin_ped_instruc") or "Ninguna"
@@ -2654,28 +2765,69 @@ def _admin_ped_preview_text(ctx):
         source_label = "Ruta desde cache"
     elif "fallback" in quote_source:
         source_label = "Ruta estimada local"
+    visibilidad_label = "Solo mi equipo" if team_only else "Todos los equipos"
+    visibilidad_btn = "Cambiara: Todos los equipos" if team_only else "Cambiara: Solo mi equipo"
+    # Calcular lo que el admin pagara a plataforma al entregar
+    fee_cfg_prev = get_fee_config()
+    platform_share = fee_cfg_prev["fee_platform_share"]
+    tech_dev_pct = fee_cfg_prev["fee_special_order_tech_dev_pct"]
+    admin_fee_plat = platform_share
+    admin_fee_tech = round(tarifa * tech_dev_pct / 100) if (comision > 0 and tech_dev_pct > 0 and tarifa > 0) else 0
+    admin_fee_total = admin_fee_plat + admin_fee_tech
+    if admin_fee_tech > 0:
+        admin_fee_line = "Tus fees al entregar: -${:,} (plataforma ${:,} + desarrollo {}% ${:,})".format(
+            admin_fee_total, admin_fee_plat, tech_dev_pct, admin_fee_tech)
+    else:
+        admin_fee_line = "Tus fees al entregar: -${:,} (fee de plataforma)".format(admin_fee_plat)
+
+    # Aviso de saldo bajo si el balance post-fee quedaria por debajo del minimo operativo
+    saldo_bajo_warning = ""
+    try:
+        admin_id_prev = ctx.get("admin_ped_admin_id")
+        if admin_id_prev:
+            current_balance = get_admin_balance(int(admin_id_prev))
+            balance_post_fee = current_balance - admin_fee_total
+            if balance_post_fee < MIN_ADMIN_OPERATING_BALANCE:
+                saldo_bajo_warning = (
+                    "\n\nAVISO: tras cobrar los fees de este pedido tu saldo quedara en ${:,}, "
+                    "por debajo del minimo operativo (${:,}). "
+                    "Recarga tu cuenta pronto para poder seguir creando pedidos especiales.".format(
+                        balance_post_fee, MIN_ADMIN_OPERATING_BALANCE)
+                )
+    except Exception:
+        pass
+
     text = (
         "Resumen del pedido especial:\n\n"
         "Recogida: {}\n"
         "Cliente: {} / {}\n"
         "Entrega: {}\n"
-        "Distancia: {:.1f} km\n"
-        "Tarifa calculada: ${:,}\n"
-        "Fuente: {}\n"
+        "Distancia: {:.1f} km ({})\n"
+        "Tarifa al repartidor: ${:,}\n"
         "{}"
+        "{}"
+        "Comision al repartidor: {}\n"
+        "{}\n"
+        "Visibilidad: {}\n"
         "Instrucciones: {}\n\n"
-        "Total oferta: ${:,}"
+        "Total oferta al courier: ${:,}"
+        "{}"
     ).format(
         ctx.get("admin_ped_pickup_addr", ""),
         ctx.get("admin_ped_cust_name", ""),
         ctx.get("admin_ped_cust_phone", ""),
         ctx.get("admin_ped_cust_addr", ""),
         distancia_km,
-        tarifa,
         source_label,
+        tarifa,
         "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
+        "Punto con parqueo dificil: +${:,}\n".format(parking_fee) if parking_fee else "",
+        "${:,}".format(comision) if comision > 0 else "Fee estandar al repartidor ($300)",
+        admin_fee_line,
+        visibilidad_label,
         instruc,
         total,
+        saldo_bajo_warning,
     )
     keyboard = [
         [InlineKeyboardButton("Confirmar y publicar", callback_data="admin_pedido_confirmar")],
@@ -2685,13 +2837,15 @@ def _admin_ped_preview_text(ctx):
             InlineKeyboardButton("+$3,000", callback_data="admin_pedido_inc_3000"),
         ],
         [InlineKeyboardButton("Otro incentivo", callback_data="admin_pedido_inc_otro")],
+        [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
+        [InlineKeyboardButton("Guardar como plantilla", callback_data="admin_pedido_guardar_plantilla")],
         [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
 
 def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
-    """Calcula la cotizacion del pedido especial admin y pide instrucciones."""
+    """Calcula la distancia del pedido especial admin y pide la tarifa manual al admin."""
     pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
     pickup_city = context.user_data.get("admin_ped_pickup_city", "")
     pickup_lat = context.user_data.get("admin_ped_pickup_lat")
@@ -2712,14 +2866,9 @@ def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
         dropoff_lng=dropoff_lng,
     )
     context.user_data.setdefault("admin_ped_incentivo", 0)
-    pricing = build_order_pricing_breakdown(
-        distance_km=cotizacion["distance_km"],
-        additional_incentive=context.user_data.get("admin_ped_incentivo", 0),
-    )
-    context.user_data["admin_ped_distance_km"] = pricing["distance_km"]
-    context.user_data["admin_ped_tarifa"] = pricing["subtotal_fee"]
-    context.user_data["admin_ped_base_fee"] = pricing["base_fee"]
-    context.user_data["admin_ped_buy_surcharge"] = pricing["buy_surcharge"]
+    context.user_data.setdefault("admin_ped_comision", 0)
+    context.user_data.setdefault("admin_ped_team_only", 0)
+    context.user_data["admin_ped_distance_km"] = cotizacion["distance_km"]
     context.user_data["admin_ped_quote_source"] = cotizacion.get("quote_source", "text")
     source_label = "Ruta estimada"
     if cotizacion.get("quote_source") == "coords":
@@ -2729,34 +2878,99 @@ def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
     elif "fallback" in str(cotizacion.get("quote_source", "")):
         source_label = "Ruta estimada local"
     text = (
-        "Distancia: {:.1f} km\n"
-        "Tarifa calculada: ${:,}\n"
-        "Fuente: {}\n\n"
-        "Escribe instrucciones adicionales para el courier "
-        "o toca 'Sin instrucciones'."
-    ).format(
-        pricing["distance_km"],
-        pricing["subtotal_fee"],
-        source_label,
-    )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")]])
+        "Distancia calculada: {:.1f} km ({})\n\n"
+        "Cual es la tarifa que le pagaras al repartidor?\n"
+        "Ingresa el monto en pesos (ej: 15000):"
+    ).format(cotizacion["distance_km"], source_label)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
     if edit and hasattr(update_or_query, "edit_message_text"):
         update_or_query.edit_message_text(text, reply_markup=markup)
     elif hasattr(update_or_query, "message") and update_or_query.message:
         update_or_query.message.reply_text(text, reply_markup=markup)
     else:
         update_or_query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_TARIFA
+
+
+def _admin_pedido_pedir_comision(update_or_query, context):
+    """Muestra la tarifa ingresada y pide la comision que cobrara al courier."""
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    fee_cfg = get_fee_config()
+    min_comision = fee_cfg["fee_platform_share"]
+    text = (
+        "Tarifa al repartidor: ${:,}\n\n"
+        "Comision al repartidor:\n"
+        "Es el monto que se le descontara al courier de su saldo operativo "
+        "al entregar este pedido (va al admin creador mas la cuota de plataforma).\n\n"
+        "Minimo si cobras: ${:,} (cuota de plataforma).\n"
+        "Escribe el monto o toca 'Sin comision':"
+    ).format(tarifa, min_comision)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sin comision (fee estandar)", callback_data="admin_pedido_sin_comision")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_COMISION
+
+
+def _admin_pedido_pedir_instruc(update_or_query, context):
+    """Muestra resumen de tarifa/comision/visibilidad y pide instrucciones al admin."""
+    tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
+    comision = int(context.user_data.get("admin_ped_comision") or 0)
+    team_only = int(context.user_data.get("admin_ped_team_only") or 0)
+    fee_cfg = get_fee_config()
+    fee_estandar = fee_cfg["fee_service_total"]
+    if comision > 0:
+        comision_str = "Comision al repartidor: ${:,}".format(comision)
+    else:
+        comision_str = "Comision: fee estandar (${:,})".format(fee_estandar)
+    visibilidad_label = "Solo mi equipo" if team_only else "Todos los equipos"
+    text = (
+        "Tarifa al repartidor: ${:,}\n"
+        "{}\n"
+        "Visibilidad: {}\n\n"
+        "Escribe instrucciones adicionales para el courier "
+        "o toca 'Sin instrucciones'."
+    ).format(tarifa, comision_str, visibilidad_label)
+    visibilidad_btn = "Visibilidad: Solo mi equipo" if team_only else "Visibilidad: Todos los equipos"
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Sin instrucciones", callback_data="admin_pedido_sin_instruc")],
+        [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
+        [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
+    ])
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(text, reply_markup=markup)
+    else:
+        update_or_query.edit_message_text(text, reply_markup=markup)
     return ADMIN_PEDIDO_INSTRUC
 
 
+MIN_ADMIN_OPERATING_BALANCE = 2000  # Saldo minimo para crear pedidos especiales
+
+
 def admin_nuevo_pedido_start(update, context):
-    """Entrada al flujo de pedido especial del admin. Verifica y muestra puntos de recogida."""
+    """Entrada al flujo de pedido especial del admin. Verifica saldo minimo y muestra puntos de recogida."""
     query = update.callback_query
     query.answer()
     telegram_id = update.effective_user.id
     admin = get_admin_by_telegram_id(telegram_id)
     if not admin or (admin["status"] or "").upper() != "APPROVED":
         query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
+        return ConversationHandler.END
+    admin_balance = int(admin["balance"] or 0) if admin.get("balance") is not None else 0
+    if admin_balance < MIN_ADMIN_OPERATING_BALANCE:
+        query.edit_message_text(
+            "Saldo insuficiente para crear un pedido especial.\n\n"
+            "Tu saldo actual: ${:,}\n"
+            "Saldo minimo requerido: ${:,}\n\n"
+            "Recarga tu saldo para poder crear pedidos especiales.".format(
+                admin_balance, MIN_ADMIN_OPERATING_BALANCE)
+        )
         return ConversationHandler.END
     admin_id = admin["id"]
     # Limpiar datos anteriores del flujo
@@ -2767,6 +2981,13 @@ def admin_nuevo_pedido_start(update, context):
     show_flow_menu(update, context, "Iniciando pedido especial...")
     locations = get_admin_locations(admin_id)
     keyboard = []
+    # Mostrar boton de plantillas si el admin tiene alguna
+    templates = list_order_templates(admin_id)
+    if templates:
+        keyboard.append([InlineKeyboardButton(
+            "Usar plantilla ({} guardadas)".format(len(templates)),
+            callback_data="admin_pedido_usar_plantilla",
+        )])
     for loc in locations:
         label = loc["label"] if loc["label"] else loc["address"]
         keyboard.append([InlineKeyboardButton(label, callback_data="admin_pedido_pickup_{}".format(loc["id"]))])
@@ -3052,6 +3273,11 @@ def admin_pedido_addr_selected(update, context):
     context.user_data["admin_ped_dropoff_lng"] = address["lng"]
     context.user_data["admin_ped_dropoff_city"] = address["city"] or ""
     context.user_data["admin_ped_dropoff_barrio"] = address["barrio"] or ""
+    try:
+        parking_status = address["parking_status"]
+    except (KeyError, IndexError):
+        parking_status = "NOT_ASKED"
+    context.user_data["admin_ped_parking_fee"] = PARKING_FEE_AMOUNT if parking_status in ("ALLY_YES", "ADMIN_YES") else 0
     cust_id_for_inc = context.user_data.get("admin_ped_selected_cust_id")
     if cust_id_for_inc:
         try:
@@ -3060,7 +3286,7 @@ def admin_pedido_addr_selected(update, context):
             pass
 
     query.edit_message_text(
-        "Cliente: {}\nEntrega: {}\n\nCalculando tarifa...".format(
+        "Cliente: {}\nEntrega: {}\n\nCalculando distancia...".format(
             cust_name, address["address_text"]
         )
     )
@@ -3140,6 +3366,7 @@ def admin_pedido_cust_gps_handler(update, context):
     context.user_data["admin_ped_dropoff_lng"] = lng
     context.user_data["admin_ped_dropoff_city"] = ""
     context.user_data["admin_ped_dropoff_barrio"] = ""
+    context.user_data["admin_ped_parking_fee"] = 0
     update.message.reply_text("Direccion de entrega registrada.\n\nCalculando tarifa...")
     return _admin_pedido_calcular_preview(update, context, edit=False)
 
@@ -3155,6 +3382,7 @@ def admin_pedido_geo_callback(update, context):
         context.user_data["admin_ped_dropoff_lng"] = pending.get("lng")
         context.user_data["admin_ped_dropoff_city"] = pending.get("city", "")
         context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
+        context.user_data["admin_ped_parking_fee"] = 0
         context.user_data.pop("admin_ped_geo_cust_pending", None)
         query.edit_message_text(
             "Entrega: {}\n\nCalculando tarifa...".format(
@@ -3192,6 +3420,67 @@ def admin_pedido_geo_callback(update, context):
             )
             context.user_data.pop("admin_ped_geo_cust_pending", None)
             return ADMIN_PEDIDO_CUST_ADDR
+
+
+def admin_pedido_tarifa_handler(update, context):
+    """Captura la tarifa manual ingresada por el admin y pide la comision."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "").replace("$", "")
+    if not texto.isdigit() or int(texto) < 1000:
+        update.message.reply_text("Ingresa una tarifa valida en pesos (minimo $1,000).")
+        return ADMIN_PEDIDO_TARIFA
+    tarifa = int(texto)
+    if tarifa > 500000:
+        update.message.reply_text("La tarifa es demasiado alta (maximo $500,000).")
+        return ADMIN_PEDIDO_TARIFA
+    context.user_data["admin_ped_tarifa"] = tarifa
+    context.user_data["admin_ped_base_fee"] = tarifa
+    context.user_data["admin_ped_buy_surcharge"] = 0
+    return _admin_pedido_pedir_comision(update, context)
+
+
+def admin_pedido_comision_handler(update, context):
+    """Captura el monto de comision y pide instrucciones."""
+    texto = update.message.text.strip().replace(",", "").replace(".", "").replace("$", "")
+    if not texto.isdigit() or int(texto) < 0:
+        update.message.reply_text("Ingresa un monto valido o toca 'Sin comision'.")
+        return ADMIN_PEDIDO_COMISION
+    comision = int(texto)
+    if comision > 0:
+        fee_cfg = get_fee_config()
+        min_comision = fee_cfg["fee_platform_share"]
+        if comision < min_comision:
+            update.message.reply_text(
+                "La comision minima es ${:,} (cuota de plataforma). "
+                "Ingresa ese monto o mas, o toca 'Sin comision'.".format(min_comision)
+            )
+            return ADMIN_PEDIDO_COMISION
+    if comision > 200000:
+        update.message.reply_text("La comision es demasiado alta (maximo $200,000).")
+        return ADMIN_PEDIDO_COMISION
+    context.user_data["admin_ped_comision"] = comision
+    return _admin_pedido_pedir_instruc(update, context)
+
+
+def admin_pedido_sin_comision_callback(update, context):
+    """Admin elige no cobrar comision especial (usa fee estandar)."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["admin_ped_comision"] = 0
+    return _admin_pedido_pedir_instruc(query, context)
+
+
+def admin_pedido_team_toggle_callback(update, context):
+    """Alterna visibilidad: todos los equipos / solo mi equipo."""
+    query = update.callback_query
+    query.answer()
+    actual = int(context.user_data.get("admin_ped_team_only") or 0)
+    context.user_data["admin_ped_team_only"] = 0 if actual else 1
+    # Mantener instrucciones si ya las habia y mostrar preview actualizado
+    if context.user_data.get("admin_ped_instruc") is not None:
+        text, markup = _admin_ped_preview_text(context.user_data)
+        query.edit_message_text(text, reply_markup=markup)
+        return ADMIN_PEDIDO_INSTRUC
+    return _admin_pedido_pedir_instruc(query, context)
 
 
 def admin_pedido_instruc_handler(update, context):
@@ -3259,7 +3548,10 @@ def admin_pedido_confirmar_callback(update, context):
         return ConversationHandler.END
     tarifa = int(context.user_data.get("admin_ped_tarifa") or 0)
     incentivo = int(context.user_data.get("admin_ped_incentivo") or 0)
-    total_fee = tarifa + incentivo
+    parking_fee = int(context.user_data.get("admin_ped_parking_fee") or 0)
+    comision = int(context.user_data.get("admin_ped_comision") or 0)
+    team_only = int(context.user_data.get("admin_ped_team_only") or 0)
+    total_fee = tarifa + incentivo + parking_fee
     pickup_location_id = context.user_data.get("admin_ped_pickup_id")
     pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
     pickup_lat = context.user_data.get("admin_ped_pickup_lat")
@@ -3310,6 +3602,9 @@ def admin_pedido_confirmar_callback(update, context):
             dropoff_lng=dropoff_lng,
             quote_source=quote_source,
             ally_admin_id_snapshot=admin_id,
+            parking_fee=parking_fee,
+            special_commission=comision,
+            team_only=team_only,
         )
     except Exception as e:
         logger.error("admin_pedido_confirmar_callback create_order: %s", e)
@@ -3332,14 +3627,20 @@ def admin_pedido_confirmar_callback(update, context):
         )
     except Exception as e:
         logger.warning("admin_pedido_confirmar_callback publish: %s", e)
+    comision_str = " | Comision: ${:,}".format(comision) if comision > 0 else " | Comision: fee estandar"
+    visibilidad_str = "Solo equipo propio" if team_only else "Todos los equipos"
     success_msg = (
         "Pedido especial publicado.\n"
         "ID: #{}\n"
         "Tarifa: ${:,}{}\n"
+        "{}\n"
+        "Visibilidad: {}\n"
         "Ofertando a {} repartidores activos.".format(
             order_id,
             total_fee,
             " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
+            comision_str,
+            visibilidad_str,
             published_count,
         )
     )
@@ -3376,6 +3677,320 @@ def admin_pedido_confirmar_callback(update, context):
         if key.startswith("admin_ped_"):
             del context.user_data[key]
     return ConversationHandler.END
+
+
+def admin_pedido_guardar_plantilla_callback(update, context):
+    """Admin toca 'Guardar como plantilla' en el preview del pedido especial."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "Ingresa un nombre corto para esta plantilla\n"
+        "(ej: 'Pollo Express', 'Farmacia Centro'):"
+    )
+    return ADMIN_PEDIDO_TEMPLATE_NAME
+
+
+def admin_pedido_template_name_handler(update, context):
+    """Recibe el nombre de la plantilla y la guarda."""
+    nombre = update.message.text.strip()
+    if not nombre:
+        update.message.reply_text("El nombre no puede estar vacio. Intenta de nuevo:")
+        return ADMIN_PEDIDO_TEMPLATE_NAME
+
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        update.message.reply_text("Error: sesion expirada. Vuelve al menu.")
+        return ConversationHandler.END
+
+    # Recolectar datos del pedido actual
+    pickup_location_id = context.user_data.get("admin_ped_pickup_id")
+    pickup_addr = context.user_data.get("admin_ped_pickup_addr", "")
+    pickup_city = context.user_data.get("admin_ped_pickup_city", "")
+    pickup_barrio = context.user_data.get("admin_ped_pickup_barrio", "")
+    pickup_lat = context.user_data.get("admin_ped_pickup_lat")
+    pickup_lng = context.user_data.get("admin_ped_pickup_lng")
+    tarifa = int(context.user_data.get("admin_ped_tarifa", 0) or 0)
+    comision = int(context.user_data.get("admin_ped_comision", 0) or 0)
+    team_only = int(context.user_data.get("admin_ped_team_only", 0) or 0)
+    instruc = context.user_data.get("admin_ped_instruc", "")
+
+    try:
+        save_order_template(
+            admin_id=int(admin_id),
+            name=nombre,
+            pickup_location_id=pickup_location_id,
+            pickup_addr=pickup_addr,
+            pickup_city=pickup_city,
+            pickup_barrio=pickup_barrio,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            tarifa=tarifa,
+            comision=comision,
+            team_only=team_only,
+            instruc=instruc or "",
+        )
+        update.message.reply_text(
+            'Plantilla "{}" guardada.\n'
+            'La encontraras en "Usar plantilla" la proxima vez que crees un pedido especial.'.format(nombre)
+        )
+    except Exception as e:
+        logger.error("admin_pedido_template_name_handler: %s", e)
+        update.message.reply_text("Error al guardar la plantilla. Intenta de nuevo.")
+
+    # Mostrar el preview de nuevo para que pueda confirmar
+    from handlers.order import _admin_pedido_calcular_preview
+    _admin_pedido_calcular_preview(update, context, edit=False)
+    return ADMIN_PEDIDO_INSTRUC
+
+
+def admin_pedido_usar_plantilla_callback(update, context):
+    """Admin toca 'Usar plantilla' al inicio del flujo — muestra lista de plantillas."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No tienes perfil de administrador.")
+        return ConversationHandler.END
+
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text(
+            "No tienes plantillas guardadas.\n"
+            "Crea un pedido especial y guarda la configuracion como plantilla."
+        )
+        return ConversationHandler.END
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_del_{}".format(tid)),
+        ])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    context.user_data["admin_ped_admin_id"] = admin["id"]
+    query.edit_message_text(
+        "Selecciona una plantilla para pre-llenar el pedido:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_USE_TEMPLATE
+
+
+def admin_mis_plantillas_callback(update, context):
+    """Admin accede a 'Mis plantillas' desde el menu principal — lista con opcion de eliminar."""
+    query = update.callback_query
+    query.answer()
+
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No tienes perfil de administrador.")
+        return
+
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text(
+            "No tienes plantillas guardadas.\n\n"
+            "Las plantillas se crean al finalizar un pedido especial — "
+            'el bot te preguntara si deseas guardar la configuracion como plantilla.'
+        )
+        return
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+        ])
+
+    query.edit_message_text(
+        "Mis plantillas ({} guardadas):\n\n"
+        "Toca el nombre para ver el detalle, o Eliminar para borrarla.".format(len(templates)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def admin_ped_tmpl_info_callback(update, context):
+    """Muestra el detalle de una plantilla desde el menu Mis plantillas."""
+    query = update.callback_query
+    query.answer()
+
+    template_id = int(query.data.replace("admin_ped_tmpl_info_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error.", show_alert=True)
+        return
+
+    t = get_order_template_by_id(template_id, admin["id"])
+    if not t:
+        query.edit_message_text("Plantilla no encontrada.")
+        return
+
+    tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+    pickup_addr = t["pickup_addr"] if hasattr(t, "__getitem__") else t[4]
+    tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+    comision = t["comision"] if hasattr(t, "__getitem__") else t[10]
+    team_only = t["team_only"] if hasattr(t, "__getitem__") else t[11]
+    instruc = t["instruc"] if hasattr(t, "__getitem__") else t[12]
+    use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+
+    lines = [
+        "Plantilla: {}".format(tname),
+        "Pickup: {}".format(pickup_addr or "no definido"),
+        "Tarifa: ${:,}".format(tarifa or 0),
+    ]
+    if comision:
+        lines.append("Comision al courier: ${:,}".format(comision))
+    lines.append("Visibilidad: {}".format("Solo mi equipo" if team_only else "Todos los couriers"))
+    if instruc:
+        lines.append("Instrucciones: {}".format(instruc))
+    lines.append("Usos: {}".format(use_count or 0))
+
+    query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(template_id)),
+            InlineKeyboardButton("Volver", callback_data="admin_mis_plantillas"),
+        ]]),
+    )
+
+
+def admin_ped_tmpl_menu_del_callback(update, context):
+    """Elimina una plantilla desde el menu Mis plantillas y recarga la lista."""
+    query = update.callback_query
+    query.answer()
+
+    template_id = int(query.data.replace("admin_ped_tmpl_menu_del_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error.", show_alert=True)
+        return
+
+    delete_order_template(template_id, admin["id"])
+
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text("Plantilla eliminada. No tienes mas plantillas guardadas.")
+        return
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+        ])
+
+    query.edit_message_text(
+        "Plantilla eliminada. Plantillas restantes ({}):\n\n"
+        "Toca el nombre para ver el detalle, o Eliminar para borrarla.".format(len(templates)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def admin_pedido_tmpl_del_callback(update, context):
+    """Admin elimina una plantilla desde la lista de seleccion."""
+    query = update.callback_query
+    query.answer()
+
+    data = query.data or ""
+    template_id = int(data.replace("admin_ped_tmpl_del_", ""))
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.answer("Error: perfil no encontrado.", show_alert=True)
+        return ADMIN_PEDIDO_USE_TEMPLATE
+
+    delete_order_template(template_id, admin["id"])
+
+    # Recargar la lista actualizada
+    templates = list_order_templates(admin["id"])
+    if not templates:
+        query.edit_message_text("Plantilla eliminada. No tienes mas plantillas guardadas.")
+        return ConversationHandler.END
+
+    keyboard = []
+    for t in templates[:10]:
+        tid = t["id"] if hasattr(t, "__getitem__") else t[0]
+        tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+        use_count = t["use_count"] if hasattr(t, "__getitem__") else t[13]
+        tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+        label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_{}".format(tid)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_del_{}".format(tid)),
+        ])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "Plantilla eliminada. Selecciona otra o cancela:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_USE_TEMPLATE
+
+
+def admin_pedido_tmpl_sel_callback(update, context):
+    """Admin selecciona una plantilla — pre-llena user_data y va al paso de cliente."""
+    query = update.callback_query
+    query.answer()
+
+    data = query.data or ""
+    template_id = int(data.replace("admin_ped_tmpl_", ""))
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    if not admin_id:
+        query.edit_message_text("Error: sesion expirada.")
+        return ConversationHandler.END
+
+    template = get_order_template_by_id(template_id, int(admin_id))
+    if not template:
+        query.edit_message_text("Plantilla no encontrada.")
+        return ConversationHandler.END
+
+    # Pre-llenar user_data con los datos de la plantilla
+    t = template
+    context.user_data["admin_ped_pickup_id"] = t["pickup_location_id"] if hasattr(t, "__getitem__") else t[3]
+    context.user_data["admin_ped_pickup_addr"] = t["pickup_addr"] if hasattr(t, "__getitem__") else t[4]
+    context.user_data["admin_ped_pickup_city"] = t["pickup_city"] if hasattr(t, "__getitem__") else t[5]
+    context.user_data["admin_ped_pickup_barrio"] = t["pickup_barrio"] if hasattr(t, "__getitem__") else t[6]
+    context.user_data["admin_ped_pickup_lat"] = t["pickup_lat"] if hasattr(t, "__getitem__") else t[7]
+    context.user_data["admin_ped_pickup_lng"] = t["pickup_lng"] if hasattr(t, "__getitem__") else t[8]
+    context.user_data["admin_ped_tarifa"] = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
+    context.user_data["admin_ped_comision"] = t["comision"] if hasattr(t, "__getitem__") else t[10]
+    context.user_data["admin_ped_team_only"] = t["team_only"] if hasattr(t, "__getitem__") else t[11]
+    context.user_data["admin_ped_instruc"] = t["instruc"] if hasattr(t, "__getitem__") else t[12]
+    tname = t["name"] if hasattr(t, "__getitem__") else t[2]
+
+    increment_order_template_usage(template_id, int(admin_id))
+
+    pickup_addr = context.user_data["admin_ped_pickup_addr"] or "no definido"
+    query.edit_message_text(
+        'Plantilla "{}" cargada.\n'
+        "Pickup: {}\n"
+        "Tarifa: ${:,}\n\n"
+        "Ahora ingresa el nombre del cliente:".format(
+            tname,
+            pickup_addr,
+            context.user_data["admin_ped_tarifa"],
+        )
+    )
+    return ADMIN_PEDIDO_CUST_NAME
 
 
 def admin_pedido_buscar_cust_start(update, context):
@@ -3538,9 +4153,9 @@ def admin_pedido_guardar_parking_callback(update, context):
     address_id = context.user_data.pop("admin_ped_parking_address_id", None)
     if address_id:
         if query.data == "admin_ped_guardar_parking_si":
-            set_address_parking_status(address_id, "ALLY_YES")
+            set_address_parking_status(address_id, "ALLY_YES", table="admin_customer_addresses")
         else:
-            set_address_parking_status(address_id, "PENDING_REVIEW")
+            set_address_parking_status(address_id, "PENDING_REVIEW", table="admin_customer_addresses")
     for key in list(context.user_data.keys()):
         if key.startswith("admin_ped_"):
             del context.user_data[key]
@@ -3959,6 +4574,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         buy_products_count=context.user_data.get("buy_products_count", 0),
         additional_incentive=pedido_incentivo,
     )
+    parking_fee_val = int(context.user_data.get("pedido_parking_fee") or 0)
 
     order_id = create_order(
         ally_id=ally_id,
@@ -3977,7 +4593,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         high_demand_extra=0,
         night_extra=0,
         additional_incentive=pricing["additional_incentive"],
-        total_fee=pricing["total_fee"],
+        total_fee=pricing["total_fee"] + parking_fee_val,
         instructions=instructions_final,
         requires_cash=requires_cash,
         cash_required_amount=cash_required_amount,
@@ -3990,7 +4606,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         purchase_amount=context.user_data.get("pedido_purchase_amount"),
         delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
         customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
-        parking_fee=int(context.user_data.get("pedido_parking_fee") or 0),
+        parking_fee=parking_fee_val,
     )
     context.user_data["order_id"] = order_id
 
@@ -4097,6 +4713,10 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
         )
         return PEDIDO_GUARDAR_DIR_EXISTENTE
 
+    try:
+        query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     context.user_data.clear()
     if published_count == 0:
         show_main_menu(
@@ -4273,18 +4893,25 @@ def pedido_guardar_cliente_callback(update, context):
                 lat=context.user_data.get("dropoff_lat"),
                 lng=context.user_data.get("dropoff_lng"),
             )
-            context.user_data["pedido_guardar_parking_address_id"] = address_id
-            keyboard = [
-                [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_guardar_cust_parking_si")],
-                [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
-            ]
-            query.edit_message_text(
-                "Cliente '{}' guardado.\n\n"
-                "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-            return PEDIDO_GUARDAR_CUST_PARKING
+            ally_id_ctx = context.user_data.get("ally_id")
+            parking_enabled_save = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
+            if parking_enabled_save:
+                context.user_data["pedido_guardar_parking_address_id"] = address_id
+                keyboard = [
+                    [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_guardar_cust_parking_si")],
+                    [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
+                ]
+                query.edit_message_text(
+                    "Cliente '{}' guardado.\n\n"
+                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return PEDIDO_GUARDAR_CUST_PARKING
+            else:
+                context.user_data.clear()
+                show_main_menu(update, context, "Pedido creado exitosamente.\nCliente '{}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.".format(customer_name))
+                return ConversationHandler.END
         except Exception as e:
             context.user_data.clear()
             show_main_menu(update, context, "Pedido creado exitosamente.\nError al guardar cliente: {}\nPronto un repartidor sera asignado.".format(str(e)))
@@ -4884,12 +5511,18 @@ admin_pedido_conv = ConversationHandler(
     ],
     states={
         ADMIN_PEDIDO_PICKUP: [
+            CallbackQueryHandler(admin_pedido_usar_plantilla_callback, pattern=r"^admin_pedido_usar_plantilla$"),
             CallbackQueryHandler(admin_pedido_pickup_callback, pattern=r"^admin_pedido_pickup_\d+$"),
             CallbackQueryHandler(admin_pedido_nueva_dir_start, pattern=r"^admin_pedido_nueva_dir$"),
             CallbackQueryHandler(admin_pedido_geo_pickup_callback, pattern=r"^admin_pedido_geo_pickup_(si|no)$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.location, admin_pedido_pickup_gps_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_pickup_text_handler),
+        ],
+        ADMIN_PEDIDO_USE_TEMPLATE: [
+            CallbackQueryHandler(admin_pedido_tmpl_del_callback, pattern=r"^admin_ped_tmpl_del_\d+$"),
+            CallbackQueryHandler(admin_pedido_tmpl_sel_callback, pattern=r"^admin_ped_tmpl_\d+$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_SAVE_PICKUP: [
             CallbackQueryHandler(admin_pedido_save_pickup_callback, pattern=r"^admin_pedido_save_pickup_(si|no)$"),
@@ -4916,13 +5549,28 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
         ],
+        ADMIN_PEDIDO_TARIFA: [
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
+        ],
+        ADMIN_PEDIDO_COMISION: [
+            CallbackQueryHandler(admin_pedido_sin_comision_callback, pattern=r"^admin_pedido_sin_comision$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_comision_handler),
+        ],
         ADMIN_PEDIDO_INSTRUC: [
             CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
             CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
             CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
+            CallbackQueryHandler(admin_pedido_team_toggle_callback, pattern=r"^admin_pedido_team_toggle$"),
+            CallbackQueryHandler(admin_pedido_guardar_plantilla_callback, pattern=r"^admin_pedido_guardar_plantilla$"),
             CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_instruc_handler),
+        ],
+        ADMIN_PEDIDO_TEMPLATE_NAME: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_template_name_handler),
         ],
         ADMIN_PEDIDO_INC_MONTO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_inc_monto_handler),

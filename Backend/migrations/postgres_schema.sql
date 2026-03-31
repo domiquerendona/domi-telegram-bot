@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS admin_allies (
     balance INTEGER DEFAULT 0 CHECK(balance >= 0),
     is_active INTEGER DEFAULT 1,
     subscription_price INTEGER DEFAULT NULL,
+    parking_fee_enabled INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(admin_id, ally_id)
@@ -358,6 +359,10 @@ CREATE TABLE IF NOT EXISTS admin_customer_addresses (
     lat REAL,
     lng REAL,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    use_count INTEGER DEFAULT 0,
+    parking_status TEXT DEFAULT 'NOT_ASKED',
+    parking_reviewed_by INTEGER,
+    parking_reviewed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -407,7 +412,10 @@ CREATE TABLE IF NOT EXISTS orders (
     courier_admin_id_snapshot BIGINT,
     purchase_amount INTEGER DEFAULT NULL,
     delivery_subsidy_applied INTEGER DEFAULT 0,
-    customer_delivery_fee INTEGER DEFAULT NULL
+    customer_delivery_fee INTEGER DEFAULT NULL,
+    parking_fee INTEGER DEFAULT 0,
+    special_commission INTEGER DEFAULT 0,
+    team_only INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS order_offer_queue (
@@ -502,6 +510,10 @@ CREATE TABLE IF NOT EXISTS ally_customer_addresses (
     lat REAL,
     lng REAL,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    use_count INTEGER DEFAULT 0,
+    parking_status TEXT DEFAULT 'NOT_ASKED',
+    parking_reviewed_by INTEGER,
+    parking_reviewed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -684,7 +696,8 @@ CREATE TABLE IF NOT EXISTS routes (
     published_at TIMESTAMP,
     accepted_at TIMESTAMP,
     delivered_at TIMESTAMP,
-    canceled_at TIMESTAMP
+    canceled_at TIMESTAMP,
+    courier_arrived_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS route_destinations (
@@ -700,6 +713,7 @@ CREATE TABLE IF NOT EXISTS route_destinations (
     dropoff_lng REAL,
     status TEXT DEFAULT 'PENDING',
     delivered_at TIMESTAMP,
+    parking_fee INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW()
 );
 

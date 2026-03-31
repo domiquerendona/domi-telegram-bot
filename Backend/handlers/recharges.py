@@ -32,6 +32,7 @@ from handlers.states import (
     RECARGAR_COMPROBANTE,
     RECARGAR_MONTO,
     RECARGAR_ROL,
+    SOCIEDAD_RETIRO_MONTO,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -47,8 +48,12 @@ from services import (
     approve_recharge_request,
     get_admin_balance_breakdown,
     get_admin_ledger_movements,
+    get_admin_saldo_hoy,
     get_platform_sociedad,
     get_platform_sociedad_id,
+    transfer_sociedad_to_platform,
+    get_sociedad_balance,
+    get_sociedad_saldo_hoy,
     approve_role_registration,
     count_admin_couriers,
     count_admin_couriers_with_min_balance,
@@ -132,15 +137,13 @@ def cmd_saldo(update, context):
             bd = get_admin_balance_breakdown(admin_id)
             mes = bd["mes_inicio"]
             mensaje += "\n   Desglose del mes ({}):\n".format(mes)
-            if bd["ingresos_mes"]:
-                mensaje += "   Ingresos externos:   +${:,}\n".format(bd["ingresos_mes"])
             if bd["fees_mes"]:
-                mensaje += "   Fees equipo:         +${:,}\n".format(bd["fees_mes"])
-            if bd["recargas_mes"]:
-                mensaje += "   Recargas aprobadas:  -${:,}\n".format(bd["recargas_mes"])
-            if not any([bd["ingresos_mes"], bd["fees_mes"], bd["recargas_mes"]]):
+                mensaje += "   Fees equipo:             +${:,}\n".format(bd["fees_mes"])
+            if bd["sociedad_advance_mes"]:
+                mensaje += "   Retiros de Sociedad:     +${:,}\n".format(bd["sociedad_advance_mes"])
+            if not any([bd["fees_mes"], bd["sociedad_advance_mes"]]):
                 mensaje += "   (sin movimientos este mes)\n"
-            mensaje += "   Ganancias equipo acumuladas: ${:,}\n".format(bd["fees_total"])
+            mensaje += "   Fees equipo acumulados: ${:,}\n".format(bd["fees_total"])
             # Cuenta de la Sociedad (separada)
             sociedad = get_platform_sociedad()
             if sociedad:
@@ -150,13 +153,20 @@ def cmd_saldo(update, context):
                 mensaje += "\n💼 Sociedad Domiquerendona:\n"
                 mensaje += "   Saldo sociedad: ${:,}\n".format(soc_balance)
                 mensaje += "\n   Desglose del mes ({}):\n".format(mes)
+                if soc_bd["ingresos_mes"]:
+                    mensaje += "   Ingresos externos:   +${:,}\n".format(soc_bd["ingresos_mes"])
                 if soc_bd["fees_mes"]:
                     mensaje += "   Fees plataforma:     +${:,}\n".format(soc_bd["fees_mes"])
                 if soc_bd["subs_mes"]:
                     mensaje += "   Suscripciones:       +${:,}\n".format(soc_bd["subs_mes"])
-                if not any([soc_bd["fees_mes"], soc_bd["subs_mes"]]):
+                if soc_bd["recargas_mes"]:
+                    mensaje += "   Recargas aprobadas:  -${:,}\n".format(soc_bd["recargas_mes"])
+                if soc_bd["sociedad_advance_salida_mes"]:
+                    mensaje += "   Retiros al personal: -${:,}\n".format(soc_bd["sociedad_advance_salida_mes"])
+                if not any([soc_bd["ingresos_mes"], soc_bd["fees_mes"], soc_bd["subs_mes"],
+                            soc_bd["recargas_mes"], soc_bd["sociedad_advance_salida_mes"]]):
                     mensaje += "   (sin movimientos este mes)\n"
-                mensaje += "   Acumulado total sociedad: ${:,}\n".format(soc_bd["fees_total"])
+                mensaje += "   Fees plataforma acumulados: ${:,}\n".format(soc_bd["fees_total"])
         mensaje += "\n"
         tiene_algo = True
 
@@ -2202,7 +2212,9 @@ def ingreso_iniciar_callback(update, context):
         query.edit_message_text("Acceso restringido al Administrador de Plataforma.")
         return ConversationHandler.END
     query.edit_message_text(
-        "Registro de ingreso externo.\n\n"
+        "Registrar ingreso externo a la Sociedad.\n\n"
+        "Este dinero se acredita al fondo de la Sociedad Domiquerendona,\n"
+        "no a tu saldo personal.\n\n"
         "Escribe el monto recibido (solo numeros).\n"
         "Ejemplo: 50000\n\n"
         "Escribe Cancelar para salir."
@@ -2293,16 +2305,16 @@ def ingreso_nota_handler(update, context):
         return ConversationHandler.END
     context.user_data.pop("ingreso_monto", None)
     context.user_data.pop("ingreso_metodo", None)
-    nuevo_balance = get_admin_balance(admin_id)
+    nuevo_balance_sociedad = get_sociedad_balance()
     update.message.reply_text(
-        "Ingreso registrado correctamente.\n\n"
+        "Ingreso registrado correctamente en la Sociedad.\n\n"
         "Monto: ${:,}\n"
         "Metodo: {}\n"
-        "{}Nuevo saldo disponible: ${:,}".format(
+        "{}Nuevo saldo Sociedad: ${:,}".format(
             monto,
             metodo,
             "Nota: {}\n".format(nota) if nota else "",
-            nuevo_balance,
+            nuevo_balance_sociedad,
         )
     )
     return ConversationHandler.END
@@ -2377,6 +2389,210 @@ ingreso_conv = ConversationHandler(
 
 
 # ---------------------------------------------------------------------------
+# admin_mi_saldo — Vista de saldo en tiempo real para cualquier admin
+# Entry: callback admin_mi_saldo
+# Muestra: saldo actual, resumen HOY (ingresos/egresos), alerta si saldo bajo
+# ---------------------------------------------------------------------------
+
+MIN_ADMIN_OPERATING_BALANCE_DISPLAY = 2000  # Umbral para alerta visual de saldo bajo
+
+
+def admin_mi_saldo_callback(update, context):
+    """Muestra el saldo actual del admin con resumen de movimientos de hoy."""
+    query = update.callback_query
+    query.answer()
+    telegram_id = update.effective_user.id
+    admin = get_admin_by_telegram_id(telegram_id)
+    if not admin:
+        query.edit_message_text("No se encontro tu perfil de administrador.")
+        return
+
+    admin_id = admin["id"]
+    is_platform = admin.get("team_code") == "PLATFORM"
+    datos = get_admin_saldo_hoy(admin_id)
+    balance = datos["balance"]
+    alerta = balance < MIN_ADMIN_OPERATING_BALANCE_DISPLAY
+
+    if alerta:
+        estado_icon = "SALDO BAJO"
+        alerta_line = "\nATENCION: Tu saldo personal esta bajo del minimo (${:,}).\n".format(
+            MIN_ADMIN_OPERATING_BALANCE_DISPLAY)
+    else:
+        estado_icon = "OK"
+        alerta_line = ""
+
+    # Construir resumen personal de hoy
+    hoy_lines = []
+    if datos["fees_estandar_hoy"]:
+        hoy_lines.append("  Fees estandar recibidos:   +${:,}".format(datos["fees_estandar_hoy"]))
+    if datos["comisiones_hoy"]:
+        hoy_lines.append("  Comisiones especiales:     +${:,}".format(datos["comisiones_hoy"]))
+    if datos["subs_hoy"]:
+        hoy_lines.append("  Suscripciones:             +${:,}".format(datos["subs_hoy"]))
+    if datos.get("sociedad_advance_hoy"):
+        hoy_lines.append("  Retiro de Sociedad:        +${:,}".format(datos["sociedad_advance_hoy"]))
+    if datos["plat_fee_pagado_hoy"]:
+        hoy_lines.append("  Fee plataforma pagado:     -${:,}".format(datos["plat_fee_pagado_hoy"]))
+    if datos["tech_fee_pagado_hoy"]:
+        hoy_lines.append("  Desarrollo tecnologico:    -${:,}".format(datos["tech_fee_pagado_hoy"]))
+    if not is_platform and datos["recargas_salientes_hoy"]:
+        hoy_lines.append("  Recargas aprobadas:        -${:,}".format(datos["recargas_salientes_hoy"]))
+
+    if hoy_lines:
+        resumen_hoy = "\nMovimientos personales de hoy ({}):\n".format(datos["fecha"]) + "\n".join(hoy_lines)
+        neto = datos["total_ingresos_hoy"] - datos["total_egresos_hoy"]
+        signo = "+" if neto >= 0 else ""
+        resumen_hoy += "\n  Neto del dia:              {}${:,}".format(signo, neto)
+    else:
+        resumen_hoy = "\nMovimientos personales de hoy ({}): sin movimientos.".format(datos["fecha"])
+
+    team_name = admin.get("team_name") or "Admin"
+
+    if is_platform:
+        # Para Admin Plataforma: mostrar saldo personal + saldo Sociedad
+        sociedad_id = get_platform_sociedad_id()
+        soc = get_sociedad_saldo_hoy(sociedad_id) if sociedad_id else None
+        soc_balance = soc["balance"] if soc else 0
+
+        soc_lines = []
+        if soc:
+            if soc["ingresos_hoy"]:
+                soc_lines.append("  Ingresos externos:         +${:,}".format(soc["ingresos_hoy"]))
+            if soc["plat_fees_hoy"]:
+                soc_lines.append("  Fees de plataforma:        +${:,}".format(soc["plat_fees_hoy"]))
+            if soc["subs_hoy"]:
+                soc_lines.append("  Suscripciones (plataforma):+${:,}".format(soc["subs_hoy"]))
+            if soc["recargas_hoy"]:
+                soc_lines.append("  Recargas aprobadas:        -${:,}".format(soc["recargas_hoy"]))
+            if soc["retiros_hoy"]:
+                soc_lines.append("  Retiros a tu saldo:        -${:,}".format(soc["retiros_hoy"]))
+
+        if soc_lines:
+            resumen_soc = "\nMovimientos Sociedad de hoy ({}):\n".format(datos["fecha"]) + "\n".join(soc_lines)
+            neto_soc = soc["total_ingresos_hoy"] - soc["total_egresos_hoy"]
+            signo_soc = "+" if neto_soc >= 0 else ""
+            resumen_soc += "\n  Neto del dia:              {}${:,}".format(signo_soc, neto_soc)
+        else:
+            resumen_soc = "\nMovimientos Sociedad de hoy ({}): sin movimientos.".format(datos["fecha"])
+
+        texto = (
+            "Mis saldos — {}\n\n"
+            "Saldo personal (ganancias equipo): ${:,} [{}]{}{}\n"
+            "Saldo Sociedad (fondos operativos): ${:,}{}"
+        ).format(
+            team_name,
+            balance, estado_icon, alerta_line, resumen_hoy,
+            soc_balance, resumen_soc,
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Retirar de Sociedad a mi saldo", callback_data="admin_sociedad_retiro")],
+            [InlineKeyboardButton("Ver mis movimientos personales", callback_data="admin_movimientos")],
+        ])
+    else:
+        texto = (
+            "Mi saldo — {}\n\n"
+            "Saldo actual: ${:,} [{}]{}{}"
+        ).format(
+            team_name, balance, estado_icon, alerta_line, resumen_hoy,
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Ver historial de movimientos", callback_data="admin_movimientos")],
+        ])
+
+    query.edit_message_text(texto, reply_markup=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# Flujo "Retirar de Sociedad a mi saldo personal" (Admin Plataforma)
+# Entry: callback admin_sociedad_retiro
+# ---------------------------------------------------------------------------
+
+def sociedad_retiro_iniciar_callback(update, context):
+    """Punto de entrada: Admin Plataforma retira fondos de Sociedad a su saldo personal."""
+    query = update.callback_query
+    query.answer()
+    if not user_has_platform_admin(query.from_user.id):
+        query.edit_message_text("Acceso restringido al Administrador de Plataforma.")
+        return ConversationHandler.END
+    soc_balance = get_sociedad_balance()
+    if soc_balance <= 0:
+        query.edit_message_text(
+            "La Sociedad no tiene saldo disponible para retirar.\n\n"
+            "Saldo Sociedad: ${:,}".format(soc_balance)
+        )
+        return ConversationHandler.END
+    query.edit_message_text(
+        "Retirar fondos de la Sociedad a tu saldo personal.\n\n"
+        "Saldo disponible en Sociedad: ${:,}\n\n"
+        "Escribe el monto a retirar (solo numeros).\n"
+        "Escribe Cancelar para salir.".format(soc_balance)
+    )
+    return SOCIEDAD_RETIRO_MONTO
+
+
+def sociedad_retiro_monto_handler(update, context):
+    """Captura el monto, confirma y ejecuta la transferencia Sociedad → personal."""
+    texto = (update.message.text or "").strip()
+    if texto.lower() == "cancelar":
+        update.message.reply_text("Retiro cancelado.")
+        return ConversationHandler.END
+    try:
+        monto = int(texto.replace(",", "").replace(".", "").replace(" ", ""))
+    except ValueError:
+        update.message.reply_text("Monto invalido. Escribe solo numeros. Ejemplo: 50000")
+        return SOCIEDAD_RETIRO_MONTO
+    if monto < 1000:
+        update.message.reply_text("El monto minimo es $1,000.")
+        return SOCIEDAD_RETIRO_MONTO
+    if monto > 500000000:
+        update.message.reply_text("El monto maximo por retiro es $500,000,000.")
+        return SOCIEDAD_RETIRO_MONTO
+
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin:
+        update.message.reply_text("No se encontro tu perfil de administrador.")
+        return ConversationHandler.END
+    admin_id = admin["id"]
+    try:
+        transfer_sociedad_to_platform(platform_admin_id=admin_id, amount=monto)
+    except ValueError as e:
+        update.message.reply_text("No se pudo realizar el retiro: {}".format(e))
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error("sociedad_retiro: %s", e)
+        update.message.reply_text("Error al procesar el retiro. Revisa los logs.")
+        return ConversationHandler.END
+
+    nuevo_personal = get_admin_balance(admin_id)
+    nuevo_soc = get_sociedad_balance()
+    update.message.reply_text(
+        "Retiro realizado correctamente.\n\n"
+        "Monto retirado:       ${:,}\n"
+        "Tu saldo personal:    ${:,}\n"
+        "Saldo Sociedad:       ${:,}".format(monto, nuevo_personal, nuevo_soc)
+    )
+    return ConversationHandler.END
+
+
+sociedad_retiro_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(sociedad_retiro_iniciar_callback, pattern=r"^admin_sociedad_retiro$"),
+    ],
+    states={
+        SOCIEDAD_RETIRO_MONTO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, sociedad_retiro_monto_handler),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+    ],
+    allow_reentry=True,
+    name="sociedad_retiro_conv",
+    persistent=True,
+)
+
+
 # admin_movimientos — Historial de movimientos del saldo master (PLATFORM)
 # Entry: callback admin_movimientos
 # Periodo: admin_movimientos_hoy / semana / mes / todo
@@ -2389,31 +2605,46 @@ _KIND_LABELS = {
     "RECHARGE": "Recarga aprobada",
     "SUBSCRIPTION_PLATFORM_SHARE": "Suscripcion (plataforma)",
     "SUBSCRIPTION_ADMIN_SHARE": "Suscripcion (admin)",
+    "SPECIAL_ORDER_COMMISSION": "Comision pedido especial",
+    "SPECIAL_ORDER_PLATFORM_FEE": "Fee plataforma pedido especial",
+    "TECH_DEV_FEE": "Desarrollo tecnologico (2%)",
+    "SOCIEDAD_ADVANCE": "Retiro de Sociedad a saldo personal",
 }
 
-_MOVIMIENTOS_KEYBOARD = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
-        InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
-    ],
-    [
-        InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
-        InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
-    ],
-    [
-        InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
-        InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
-    ],
-])
+def _movimientos_keyboard(is_platform=False):
+    rows = [
+        [
+            InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
+            InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
+        ],
+        [
+            InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
+            InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
+        ],
+    ]
+    if is_platform:
+        rows.append([
+            InlineKeyboardButton("Sociedad — Hoy", callback_data="admin_movimientos_soc_hoy"),
+            InlineKeyboardButton("Sociedad — Semana", callback_data="admin_movimientos_soc_semana"),
+        ])
+        rows.append([
+            InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
+            InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_movimientos_callback(update, context):
     """Muestra selector de periodo para ver movimientos del saldo master."""
     query = update.callback_query
     query.answer()
+    user_tg = update.effective_user
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    admin = get_admin_by_user_id(user_row["id"])
+    is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
     query.edit_message_text(
         "Movimientos del saldo master — selecciona un periodo:",
-        reply_markup=_MOVIMIENTOS_KEYBOARD,
+        reply_markup=_movimientos_keyboard(is_platform=is_platform),
     )
 
 
@@ -2458,7 +2689,7 @@ def admin_movimientos_periodo_callback(update, context):
         periodo_label = "Todo el historial"
 
     start_s = start.strftime("%Y-%m-%d %H:%M:%S") if start else None
-    movimientos = get_admin_ledger_movements(target_id, start_s=start_s, limit=30)
+    movimientos = get_admin_ledger_movements(target_id, start_s=start_s, limit=30, is_sociedad=es_sociedad)
 
     label = "{} — {}".format(cuenta_label, periodo_label)
     if not movimientos:
@@ -2476,7 +2707,8 @@ def admin_movimientos_periodo_callback(update, context):
         if len(movimientos) == 30:
             texto += "\n(mostrando ultimos 30)"
 
-    query.edit_message_text(texto, reply_markup=_MOVIMIENTOS_KEYBOARD)
+    is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
+    query.edit_message_text(texto, reply_markup=_movimientos_keyboard(is_platform=is_platform))
 
 
 # ---------------------------------------------------------------------------

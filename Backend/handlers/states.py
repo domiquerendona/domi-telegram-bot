@@ -271,6 +271,9 @@ INGRESO_MONTO = 970
 INGRESO_METODO = 971
 INGRESO_NOTA = 972
 
+# Estado para el flujo de retiro de Sociedad → saldo personal (Admin Plataforma)
+SOCIEDAD_RETIRO_MONTO = 973
+
 OFFER_SUGGEST_INC_MONTO = 915  # Capturar monto libre en sugerencia T+5 (pedido)
 ROUTE_SUGGEST_INC_MONTO = 914  # Capturar monto libre en sugerencia T+5 (ruta)
 
@@ -279,8 +282,12 @@ ADMIN_PEDIDO_PICKUP    = 908   # Seleccionar/crear dirección de recogida
 ADMIN_PEDIDO_CUST_NAME = 909   # Nombre del cliente
 ADMIN_PEDIDO_CUST_PHONE= 910   # Teléfono del cliente
 ADMIN_PEDIDO_CUST_ADDR = 911   # Dirección de entrega (texto/GPS/geocoding)
+ADMIN_PEDIDO_TARIFA    = 912   # Tarifa manual al repartidor (ingresada por el admin)
 ADMIN_PEDIDO_INSTRUC   = 913   # Instrucciones adicionales
 ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicación)
+ADMIN_PEDIDO_COMISION  = 1011  # Comisión especial que el admin cobra al repartidor por el servicio
+ADMIN_PEDIDO_TEMPLATE_NAME = 1012  # Nombre de la plantilla al guardar pedido especial como plantilla
+ADMIN_PEDIDO_USE_TEMPLATE  = 1013  # Seleccionar plantilla para pre-llenar pedido especial
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
