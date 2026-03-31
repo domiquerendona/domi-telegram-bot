@@ -166,6 +166,7 @@ from services import (
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_pending_route_stops,
+    get_route_destinations,
     ally_get_order_for_incentive,
     ally_increment_order_incentive,
     admin_get_order_for_incentive,
@@ -261,8 +262,9 @@ from services import (
     count_ally_form_requests_by_status,
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
+    get_all_pending_fee_collections,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, admin_special_orders_history_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -346,6 +348,8 @@ from handlers.recharges import (
     ally_suscripcion_conv,
     admin_movimientos_callback,
     admin_movimientos_periodo_callback,
+    admin_mi_saldo_callback,
+    sociedad_retiro_conv,
 )
 from handlers.registration import (
     soy_aliado,
@@ -439,6 +443,9 @@ from handlers.order import (
     nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv,
     route_suggest_inc_conv,
     admin_pedido_conv,
+    admin_mis_plantillas_callback,
+    admin_ped_tmpl_info_callback,
+    admin_ped_tmpl_menu_del_callback,
 )
 from handlers.route import (
     nueva_ruta_desde_cotizador,
@@ -1061,6 +1068,27 @@ def courier_pedidos_en_curso(update, context):
                     callback_data="order_delivered_confirm_{}".format(order_id),
                 ),
             ])
+            dropoff_lat = _row_value(active_order, "dropoff_lat")
+            dropoff_lng = _row_value(active_order, "dropoff_lng")
+            customer_name = _row_value(active_order, "customer_name") or "Sin nombre"
+            customer_phone = _row_value(active_order, "customer_phone") or "Sin telefono"
+            customer_address = _row_value(active_order, "customer_address") or "Sin direccion"
+            msg += (
+                "\n\nENTREGA:\n"
+                "Cliente: {}\n"
+                "Telefono: {}\n"
+                "Direccion: {}"
+            ).format(customer_name, customer_phone, customer_address)
+            if dropoff_lat and dropoff_lng:
+                dest = "{},{}".format(float(dropoff_lat), float(dropoff_lng))
+                kb.append([InlineKeyboardButton(
+                    "Abrir en Google Maps",
+                    url="https://www.google.com/maps/dir/?api=1&destination={}&travelmode=driving".format(dest)
+                )])
+                kb.append([InlineKeyboardButton(
+                    "Abrir en Waze",
+                    url="https://waze.com/ul?ll={}&navigate=yes".format(dest)
+                )])
         update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
     if active_route:
@@ -1075,24 +1103,68 @@ def courier_pedidos_en_curso(update, context):
 
         pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
         next_seq = None
+        next_stop = None
         if pending_stops:
             try:
-                next_seq = min(int(s["sequence"]) for s in pending_stops if s["sequence"] is not None)
+                next_stop = min(pending_stops, key=lambda s: int(s["sequence"]) if s["sequence"] is not None else 9999)
+                next_seq = int(next_stop["sequence"]) if next_stop else None
             except Exception:
                 next_seq = None
+
+        total_stops = len(get_route_destinations(int(route_id))) if route_id != "-" else 0
+        completed_stops = total_stops - len(pending_stops)
 
         msg = (
             "Ruta #{}\n"
             "Estado: {}\n"
             "Recoge en: {}\n"
-            "Pago: ${:,}"
-        ).format(route_id, st, pickup_address, total_fee)
+            "Pago: ${:,}\n"
+            "Paradas: {}/{} completadas"
+        ).format(route_id, st, pickup_address, total_fee, completed_stops, total_stops)
+
+        if next_stop:
+            stop_name = next_stop.get("customer_name") or "Sin nombre"
+            stop_phone = next_stop.get("customer_phone") or "Sin telefono"
+            stop_addr = next_stop.get("customer_address") or "Sin direccion"
+            stop_city = next_stop.get("customer_city") or ""
+            stop_barrio = next_stop.get("customer_barrio") or ""
+            area = ", ".join(p for p in [stop_barrio, stop_city] if p)
+            msg += (
+                "\n\nSIGUIENTE PARADA (#{}):\n"
+                "Cliente: {}\n"
+                "Telefono: {}\n"
+                "Direccion: {}"
+            ).format(next_seq, stop_name, stop_phone, stop_addr)
+            if area:
+                msg += "\nZona: {}".format(area)
+
+        if len(pending_stops) > 1:
+            msg += "\n\nPROXIMAS PARADAS:"
+            for s in pending_stops[1:]:
+                s_seq = s.get("sequence", "?")
+                s_addr = s.get("customer_address") or "Sin direccion"
+                s_barrio = s.get("customer_barrio") or ""
+                s_city = s.get("customer_city") or ""
+                s_area = ", ".join(p for p in [s_barrio, s_city] if p)
+                msg += "\n{}. {} ({})".format(s_seq, s_addr, s_area) if s_area else "\n{}. {}".format(s_seq, s_addr)
 
         kb = []
-        if next_seq is not None:
+        if next_stop:
+            drop_lat = next_stop.get("dropoff_lat")
+            drop_lng = next_stop.get("dropoff_lng")
+            if drop_lat and drop_lng:
+                dest = "{},{}".format(float(drop_lat), float(drop_lng))
+                kb.append([InlineKeyboardButton(
+                    "Google Maps - Parada {}".format(next_seq),
+                    url="https://www.google.com/maps/dir/?api=1&destination={}&travelmode=driving".format(dest)
+                )])
+                kb.append([InlineKeyboardButton(
+                    "Waze - Parada {}".format(next_seq),
+                    url="https://waze.com/ul?ll={}&navigate=yes".format(dest)
+                )])
             kb.append([
                 InlineKeyboardButton(
-                    "Entregar siguiente parada",
+                    "Confirmar entrega parada {}".format(next_seq),
                     callback_data="ruta_entregar_{}_{}".format(route_id, next_seq),
                 )
             ])
@@ -1250,10 +1322,12 @@ def mi_admin(update, context):
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+            [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
             [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
             [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+            [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
-            [InlineKeyboardButton("💰 Mis movimientos", callback_data="admin_movimientos")],
+            [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
@@ -1300,9 +1374,12 @@ def mi_admin(update, context):
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
+        [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
         [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
         [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
+        [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
+        [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
@@ -2145,6 +2222,55 @@ def solequipo_ally_sel_callback(update, context):
     )
 
 
+def _recover_pending_fee_collections(bot):
+    """Al arrancar, reenvía al admin el botón de reintento por cada cobro de fee pendiente."""
+    try:
+        pending = get_all_pending_fee_collections()
+        for rec in pending:
+            try:
+                rec = dict(rec) if not isinstance(rec, dict) else rec
+                order_id = rec.get("order_id") or (rec[1] if len(rec) > 1 else None)
+                creator_admin_id = rec.get("creator_admin_id") or (rec[2] if len(rec) > 2 else None)
+                if not order_id or not creator_admin_id:
+                    continue
+                # Verificar que el pedido sigue en DELIVERED antes de reenviar
+                order = get_order_by_id(int(order_id))
+                if not order:
+                    continue
+                order_status = order["status"] if isinstance(order, dict) else order[3]
+                if order_status != "DELIVERED":
+                    # El pedido fue cancelado o aún no fue entregado; ignorar
+                    continue
+                admin = get_admin_by_id(int(creator_admin_id))
+                if not admin:
+                    continue
+                user = get_user_by_id(admin["user_id"] if isinstance(admin, dict) else admin[1])
+                if not user:
+                    continue
+                telegram_id = user["telegram_id"] if isinstance(user, dict) else user[2]
+                if not telegram_id:
+                    continue
+                from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+                bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "Cobro pendiente — pedido #{}\n\n"
+                        "Hay un fee de plataforma que no pudo cobrarse mientras el bot estuvo reiniciado.\n"
+                        "Recarga tu saldo si es necesario y usa el boton para completar el cobro."
+                    ).format(order_id),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            "Reintentar cobro de fees",
+                            callback_data="admin_retry_creator_fees_{}".format(order_id),
+                        )
+                    ]]),
+                )
+            except Exception as e:
+                logger.warning("_recover_pending_fee_collections: error en registro %s: %s", rec, e)
+    except Exception as e:
+        logger.warning("_recover_pending_fee_collections: %s", e)
+
+
 def main():
     # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
     # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
@@ -2225,8 +2351,10 @@ def main():
     dp.add_handler(config_ally_minpurchase_conv)  # debe ir ANTES del handler general config_*
     dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
+    dp.add_handler(sociedad_retiro_conv)          # Admin Plataforma retira de Sociedad a saldo personal
     dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
-    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_mes|soc_todo)$"))
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_hoy|soc_semana|soc_mes|soc_todo)$"))
+    dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo$"))
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
@@ -2248,8 +2376,12 @@ def main():
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pinissue_(fin|cancel_courier|cancel_ally)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_repost_\d+$"))  # aliado re-oferta pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickup_pinissue_\d+$"))  # pin recogida pedido
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pickup_(confirm|release)_\d+_\d+$"))  # admin resuelve pin recogida pedido
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_retry_creator_fees_\d+$"))  # reintento cobro fees admin creador
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_fee_detail_\d+$"))  # detalle financiero oferta comision especial
+    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_commission_confirm_\d+$"))  # courier confirma comision alta
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_menu_callback, pattern=r"^pedido_inc_menu_\d+$"))
     dp.add_handler(CallbackQueryHandler(pedido_incentivo_existing_fixed_callback, pattern=r"^pedido_inc_\d+x(1000|1500|2000|3000)$"))
     dp.add_handler(CallbackQueryHandler(offer_suggest_inc_fixed_callback, pattern=r"^offer_inc_\d+x(1500|2000|3000)$"))
@@ -2259,6 +2391,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(courier_deactivate_callback, pattern=r"^courier_deactivate$"))
     dp.add_handler(CallbackQueryHandler(admin_change_requests_callback, pattern=r"^chgreq_"))
     dp.add_handler(CallbackQueryHandler(ally_orders_history_callback, pattern=r"^allyhist_"))
+    dp.add_handler(CallbackQueryHandler(admin_special_orders_history_callback, pattern=r"^adminhist_"))
     dp.add_handler(CallbackQueryHandler(admin_orders_callback, pattern=r"^admpedidos_"))
     dp.add_handler(CallbackQueryHandler(solequipo_start_callback, pattern=r"^solequipo_start$"))
     dp.add_handler(CallbackQueryHandler(solequipo_courier_sel_callback, pattern=r"^solequipo_courier_sel_\d+$"))
@@ -2281,6 +2414,9 @@ def main():
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
+    dp.add_handler(CallbackQueryHandler(admin_mis_plantillas_callback, pattern=r"^admin_mis_plantillas$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_info_callback, pattern=r"^admin_ped_tmpl_info_\d+$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_menu_del_callback, pattern=r"^admin_ped_tmpl_menu_del_\d+$"))
 
     # Parqueadero: revision de direcciones (admin local y plataforma)
     dp.add_handler(CallbackQueryHandler(
@@ -2292,7 +2428,7 @@ def main():
         pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas|noop_\d+)$"
     ))
 
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_)"))
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_|ruta_pickup_)"))
 
     # Configuracion de tarifas (botones pricing_*)
     dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))
@@ -2317,7 +2453,7 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|repost|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^order_(arrived_pickup|arrival_enroute|arrival_release)_\d+$"))  # llegada al pickup (pedidos normales)
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_pickup_pinissue_\d+$"))  # pin recogida ruta
@@ -2389,6 +2525,9 @@ def main():
 
     # Recuperar jobs persistidos tras reinicio
     recover_scheduled_jobs(updater.job_queue)
+
+    # Reenviar notificaciones de cobros de fees pendientes (sobreviven reinicios)
+    _recover_pending_fee_collections(updater.bot)
 
     # Iniciar el bot
     updater.start_polling(drop_pending_updates=True)

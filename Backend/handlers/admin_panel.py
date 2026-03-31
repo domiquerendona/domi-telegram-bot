@@ -36,6 +36,10 @@ from services import (
     set_address_parking_status,
     get_addresses_pending_parking_review,
     get_all_addresses_parking_review,
+    get_ally_parking_fee_enabled,
+    toggle_ally_parking_fee,
+    get_ally_telegram_id_by_address_id,
+    get_ally_telegram_id_by_ally_id,
     get_all_allies,
     get_all_couriers,
     get_all_local_admins,
@@ -171,6 +175,9 @@ def _render_platform_ally_detail(query, ally_id: int):
     else:
         equipo_label = "(sin equipo asignado)"
 
+    parking_enabled = get_ally_parking_fee_enabled(ally_id)
+    parking_label = "Cobro parqueo dificil: {}".format("ACTIVO" if parking_enabled else "INACTIVO")
+
     texto = (
         "Detalle del aliado:\n\n"
         "ID: {id}\n"
@@ -184,6 +191,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         "Equipo: {equipo}\n"
         "Reinicio de registro: {reset_status}\n"
         "{subsidio_label}\n"
+        "{parking_label}\n"
         "Ubicación: {loc}\n"
         "{maps}"
     ).format(
@@ -198,6 +206,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         equipo=equipo_label,
         reset_status=reset_status,
         subsidio_label=subsidio_label,
+        parking_label=parking_label,
         loc=loc_text,
         maps=maps_text,
     )
@@ -227,6 +236,10 @@ def _render_platform_ally_detail(query, ally_id: int):
             "${:,}".format(min_purchase) if min_purchase is not None else "sin condicion"
         ),
         callback_data="config_ally_minpurchase_{}".format(ally_id)
+    )])
+    keyboard.append([InlineKeyboardButton(
+        "{} Cobro parqueo dificil".format("Desactivar" if parking_enabled else "Activar"),
+        callback_data="config_ally_parking_toggle_{}".format(ally_id)
     )])
     keyboard.append([InlineKeyboardButton("Asignar/corregir equipo", callback_data="config_ally_assign_menu_{}".format(ally_id))])
     keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")])
@@ -1426,15 +1439,22 @@ def admin_menu_callback(update, context):
         city = r["city"] or "-"
         barrio = r["barrio"] or "-"
         balance = r["balance"] or 0
+        parking_enabled = get_ally_parking_fee_enabled(ally_id)
         texto = (
             "Aliado ID: {}\n"
             "Negocio: {}\n"
             "Propietario: {}\n"
             "Telefono: {}\n"
             "Ciudad/Barrio: {} / {}\n"
-            "Saldo por vínculo: {}"
-        ).format(ally_id, business_name, owner_name, phone, city, barrio, balance)
+            "Saldo por vínculo: {}\n"
+            "Cobro parqueo dificil: {}"
+        ).format(ally_id, business_name, owner_name, phone, city, barrio, balance,
+                 "ACTIVO" if parking_enabled else "INACTIVO")
         keyboard = [
+            [InlineKeyboardButton(
+                "{} Cobro parqueo dificil".format("Desactivar" if parking_enabled else "Activar"),
+                callback_data="admin_local_parking_toggle_{}_{}_{}_{}" .format(ally_id, admin_id, offset, idx)
+            )],
             [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(admin_id, offset))],
             [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_allies")],
         ]
@@ -2050,6 +2070,109 @@ def admin_config_callback(update, context):
         except Exception as e:
             logger.error("config_ver_ally_%s: %s", data, e)
             query.answer("No pude abrir el detalle del aliado.", show_alert=True)
+        return
+
+    if data.startswith("admin_local_parking_toggle_"):
+        # Formato: admin_local_parking_toggle_{ally_id}_{admin_id}_{offset}_{idx}
+        try:
+            parts = data.replace("admin_local_parking_toggle_", "").split("_")
+            ally_id = int(parts[0])
+            link_admin_id = int(parts[1])
+            offset = int(parts[2])
+            idx = int(parts[3])
+        except (ValueError, IndexError):
+            query.answer("Error de formato.", show_alert=True)
+            return
+        query.answer()
+        currently_enabled = get_ally_parking_fee_enabled(ally_id)
+        new_enabled = not currently_enabled
+        toggle_ally_parking_fee(ally_id, link_admin_id, new_enabled)
+        new_state = "ACTIVO" if new_enabled else "INACTIVO"
+        query.answer("Cobro parqueo dificil: {}".format(new_state), show_alert=True)
+        try:
+            ally_tg_id = get_ally_telegram_id_by_ally_id(ally_id)
+            if ally_tg_id:
+                if new_enabled:
+                    toggle_msg = (
+                        "Tu administrador ha habilitado el cobro adicional por parqueo dificil.\n\n"
+                        "Las direcciones de tus clientes marcadas con dificultad de parqueo generaran "
+                        "un cargo de ${:,} adicional en cada pedido a esos puntos, "
+                        "para ayudar al repartidor con el parqueo o cualquier imprevisto.".format(PARKING_FEE_AMOUNT)
+                    )
+                else:
+                    toggle_msg = (
+                        "Tu administrador ha desactivado el cobro adicional por parqueo dificil.\n\n"
+                        "Ya no se aplicara el cargo adicional por parqueo en tus pedidos."
+                    )
+                context.bot.send_message(chat_id=ally_tg_id, text=toggle_msg)
+        except Exception as _e:
+            logger.warning("admin_local_parking_toggle_: no se pudo notificar al aliado %s: %s", ally_id, _e)
+        # Re-renderizar: simular callback admin_saldos_member_ally_{admin_id}_{offset}_{idx}
+        links = list_ally_links_by_admin(link_admin_id, limit=20, offset=offset)
+        if idx < 0 or idx >= len(links):
+            query.edit_message_text("Error al recargar el detalle.")
+            return
+        r = links[idx]
+        ally_id_r = r["ally_id"]
+        business_name = r["business_name"] or "-"
+        owner_name = r["owner_name"] or "-"
+        phone_r = r["phone"] or "-"
+        city_r = r["city"] or "-"
+        barrio_r = r["barrio"] or "-"
+        balance_r = r["balance"] or 0
+        parking_enabled_new = get_ally_parking_fee_enabled(ally_id_r)
+        texto = (
+            "Aliado ID: {}\n"
+            "Negocio: {}\n"
+            "Propietario: {}\n"
+            "Telefono: {}\n"
+            "Ciudad/Barrio: {} / {}\n"
+            "Saldo por vínculo: {}\n"
+            "Cobro parqueo dificil: {}"
+        ).format(ally_id_r, business_name, owner_name, phone_r, city_r, barrio_r, balance_r,
+                 "ACTIVO" if parking_enabled_new else "INACTIVO")
+        keyboard = [
+            [InlineKeyboardButton(
+                "{} Cobro parqueo dificil".format("Desactivar" if parking_enabled_new else "Activar"),
+                callback_data="admin_local_parking_toggle_{}_{}_{}_{}" .format(ally_id_r, link_admin_id, offset, idx)
+            )],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="admin_saldos_team_allies_{}_{}".format(link_admin_id, offset))],
+            [InlineKeyboardButton("⬅️ Volver a equipos", callback_data="admin_saldos_allies")],
+        ]
+        query.edit_message_text(texto, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("config_ally_parking_toggle_"):
+        try:
+            ally_id = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            query.answer("Error de formato.", show_alert=True)
+            return
+        currently_enabled = get_ally_parking_fee_enabled(ally_id)
+        new_enabled = not currently_enabled
+        # admin_id=None: actualiza el vinculo APPROVED del aliado sin importar qué admin lo gestione
+        toggle_ally_parking_fee(ally_id, None, new_enabled)
+        new_state = "ACTIVO" if new_enabled else "INACTIVO"
+        query.answer("Cobro parqueo dificil: {}".format(new_state), show_alert=True)
+        try:
+            ally_tg_id = get_ally_telegram_id_by_ally_id(ally_id)
+            if ally_tg_id:
+                if new_enabled:
+                    toggle_msg = (
+                        "Tu administrador ha habilitado el cobro adicional por parqueo dificil.\n\n"
+                        "Las direcciones de tus clientes marcadas con dificultad de parqueo generaran "
+                        "un cargo de ${:,} adicional en cada pedido a esos puntos, "
+                        "para ayudar al repartidor con el parqueo o cualquier imprevisto.".format(PARKING_FEE_AMOUNT)
+                    )
+                else:
+                    toggle_msg = (
+                        "Tu administrador ha desactivado el cobro adicional por parqueo dificil.\n\n"
+                        "Ya no se aplicara el cargo adicional por parqueo en tus pedidos."
+                    )
+                context.bot.send_message(chat_id=ally_tg_id, text=toggle_msg)
+        except Exception as _e:
+            logger.warning("config_ally_parking_toggle_: no se pudo notificar al aliado %s: %s", ally_id, _e)
+        _render_platform_ally_detail(query, ally_id)
         return
 
     if data.startswith("config_ally_assign_menu_"):
@@ -2678,6 +2801,9 @@ def admin_parking_review(update, context, show_all=False):
         user_id = update.effective_user.id
         send_fn = update.message.reply_text
 
+    # Persistir la vista actual para que el callback pueda restaurarla después de cada acción
+    context.user_data["parking_show_all"] = show_all
+
     admin = get_admin_by_user_id(get_user_db_id_from_update(update))
     if not admin:
         send_fn("No tienes un perfil de administrador activo.")
@@ -2689,15 +2815,30 @@ def admin_parking_review(update, context, show_all=False):
     rows = get_all_addresses_parking_review(admin_id) if show_all else get_addresses_pending_parking_review(admin_id)
 
     if not rows:
-        keyboard = [[InlineKeyboardButton("Ver todas (incluyendo revisadas)", callback_data="parking_ver_todas")]]
-        send_fn(
-            "No hay puntos de entrega pendientes de revision de parqueo.\n\n"
-            "Puedes ver tambien los ya revisados para corregirlos si es necesario.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        if show_all:
+            msg = "No hay puntos con decision tomada ni pendientes de revision."
+            keyboard = [[InlineKeyboardButton("Cerrar", callback_data="parking_close")]]
+        else:
+            msg = (
+                "No hay puntos de entrega pendientes de revision de parqueo.\n\n"
+                "Puedes ver los ya revisados para corregirlos si es necesario."
+            )
+            keyboard = [
+                [InlineKeyboardButton("Ver todas (con revisadas)", callback_data="parking_ver_todas")],
+                [InlineKeyboardButton("Cerrar", callback_data="parking_close")],
+            ]
+        send_fn(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     title = "PUNTOS CON DIFICULTAD DE PARQUEO" if not show_all else "TODOS LOS PUNTOS (parqueo)"
+
+    # Pre-cargar el estado del toggle por aliado para no hacer N consultas en el loop
+    ally_parking_cache = {}
+    for row in rows:
+        a_id = row["ally_id"] if "ally_id" in row.keys() else row[8]
+        if a_id not in ally_parking_cache:
+            ally_parking_cache[a_id] = get_ally_parking_fee_enabled(a_id)
+
     keyboard = []
     for i, row in enumerate(rows, 1):
         addr_id = row["id"] if "id" in row.keys() else row[0]
@@ -2706,19 +2847,22 @@ def admin_parking_review(update, context, show_all=False):
         barrio = row["barrio"] if "barrio" in row.keys() else row[3]
         status = row["parking_status"] if "parking_status" in row.keys() else row[4]
         ally_name = row["ally_name"] if "ally_name" in row.keys() else row[7]
+        a_id = row["ally_id"] if "ally_id" in row.keys() else row[8]
 
         location_label = "{}, {}".format(barrio or "Sin barrio", city or "Sin ciudad")
         header = "{}. {} | {} | {}".format(i, ally_name, address_text[:30], location_label)
         estado_label = _parking_status_label(status)
+        parking_toggle_on = ally_parking_cache.get(a_id, False)
 
         # Fila 1: encabezado del punto (no accionable, muestra info)
         keyboard.append([InlineKeyboardButton(
             header[:60],
             callback_data="parking_noop_{}".format(addr_id)
         )])
-        # Fila 2: estado actual
+        # Fila 2: estado actual + aviso de toggle si está desactivado (una sola fila)
+        toggle_suffix = " | COBRO DESACTIVADO" if not parking_toggle_on else ""
         keyboard.append([InlineKeyboardButton(
-            "Estado: {}".format(estado_label),
+            "Estado: {}{}".format(estado_label, toggle_suffix),
             callback_data="parking_noop_{}".format(addr_id)
         )])
         # Fila 3: botones de accion
@@ -2729,6 +2873,7 @@ def admin_parking_review(update, context, show_all=False):
 
     if not show_all:
         keyboard.append([InlineKeyboardButton("Ver todas (con revisadas)", callback_data="parking_ver_todas")])
+    keyboard.append([InlineKeyboardButton("Cerrar", callback_data="parking_close")])
 
     text = "{}\n\nToca SI o NO en cada punto para confirmar o descartar la dificultad de parqueo.".format(title)
     if len(rows) == 30:
@@ -2742,6 +2887,11 @@ def admin_parking_review_callback(update, context):
     query = update.callback_query
     query.answer()
     data = query.data
+
+    if data == "parking_close":
+        query.edit_message_text("Panel de parqueo cerrado.")
+        context.user_data.pop("parking_show_all", None)
+        return
 
     if data == "parking_ver_todas":
         admin_parking_review(update, context, show_all=True)
@@ -2766,11 +2916,29 @@ def admin_parking_review_callback(update, context):
                 "Confirmado: punto con dificultad de parqueo. Se aplicaran ${:,} en pedidos a esta direccion.".format(PARKING_FEE_AMOUNT),
                 show_alert=True
             )
+            ally_msg = (
+                "Tu administrador reviso una de tus direcciones de entrega y confirmo "
+                "que hay dificultad para parquear moto o bicicleta en ese punto.\n\n"
+                "Se agregaran ${:,} al costo del domicilio en pedidos a esa direccion "
+                "para ayudar al repartidor con el parqueo o cualquier imprevisto.".format(PARKING_FEE_AMOUNT)
+            )
         else:
             set_address_parking_status(address_id, "ADMIN_NO", reviewed_by=admin_id)
             query.answer("Confirmado: sin dificultad de parqueo en este punto.", show_alert=True)
+            ally_msg = (
+                "Tu administrador reviso una de tus direcciones de entrega y confirmo "
+                "que no hay dificultad especial para parquear en ese punto.\n\n"
+                "No se aplicara cobro adicional de parqueo en pedidos a esa direccion."
+            )
 
-        admin_parking_review(update, context, show_all=False)
+        try:
+            ally_telegram_id = get_ally_telegram_id_by_address_id(address_id)
+            if ally_telegram_id:
+                context.bot.send_message(chat_id=ally_telegram_id, text=ally_msg)
+        except Exception as _e:
+            logger.warning("admin_parking_review_callback: no se pudo notificar al aliado: %s", _e)
+
+        admin_parking_review(update, context, show_all=context.user_data.get("parking_show_all", False))
 
 
 def config_ally_subsidy_start(update, context):
