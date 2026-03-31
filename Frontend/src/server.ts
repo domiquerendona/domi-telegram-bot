@@ -26,7 +26,7 @@ app.use(
 /**
  * Todas las rutas las maneja Angular SSR
  */
-app.use('/**', async (req, res, next) => {
+app.use(async (req, res, next) => {
   try {
     const response = await angularApp.handle(req);
     if (response) {
