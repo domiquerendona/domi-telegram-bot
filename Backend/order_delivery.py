@@ -30,6 +30,7 @@ from db import (
     get_ally_orders_between,
     get_ally_routes_between,
     get_admin_special_orders_between,
+    get_admin_special_orders_recent,
     get_orders_by_admin_team,
     get_setting,
     get_user_by_telegram_id,
@@ -1616,6 +1617,9 @@ def _admin_history_period_keyboard():
             InlineKeyboardButton("Esta semana", callback_data="adminhist_periodo_semana"),
             InlineKeyboardButton("Este mes", callback_data="adminhist_periodo_mes"),
         ],
+        [
+            InlineKeyboardButton("Ultimos 15", callback_data="adminhist_periodo_recientes"),
+        ],
     ])
 
 
@@ -1695,9 +1699,44 @@ def _admin_history_grouped_text(orders, label):
     return "\n".join(lines), sorted_keys
 
 
+def _admin_show_special_recent(query, admin_id):
+    """Muestra los ultimos 15 pedidos especiales del admin (todos los estados)."""
+    orders = get_admin_special_orders_recent(admin_id, limit=15)
+    if not orders:
+        query.edit_message_text(
+            "Mis pedidos especiales — Ultimos 15\nNo tienes pedidos especiales aun.",
+            reply_markup=_admin_history_period_keyboard(),
+        )
+        return
+    STATUS_LABELS = {
+        "PUBLISHED": "Publicado",
+        "ACCEPTED": "Aceptado",
+        "PICKED_UP": "Recogido",
+        "DELIVERED": "Entregado",
+        "CANCELLED": "Cancelado",
+        "EXPIRED": "Expirado",
+    }
+    lines = ["Mis pedidos especiales — Ultimos {} ({} pedidos)".format(15, len(orders)), ""]
+    for o in orders:
+        created = str(_row_value(o, "created_at", "") or "")
+        day = created[:10] if len(created) >= 10 else "?"
+        hour = created[11:16] if len(created) >= 16 else "--:--"
+        status = _row_value(o, "status", "") or ""
+        fee = int(_row_value(o, "total_fee", 0) or 0)
+        name = _row_value(o, "customer_name", "N/A") or "N/A"
+        commission = int(_row_value(o, "special_commission", 0) or 0)
+        commission_str = " +com${:,}".format(commission) if commission > 0 else ""
+        status_label = STATUS_LABELS.get(status, status)
+        lines.append("#{} {} {} — {} — {}{}  [{}]".format(
+            _row_value(o, "id", "?"), day, hour, name,
+            _fmt_pesos_ally(fee), commission_str, status_label,
+        ))
+    query.edit_message_text("\n".join(lines), reply_markup=_admin_history_period_keyboard())
+
+
 def admin_special_orders_history_callback(update, context):
     """Callback historial de pedidos especiales del admin.
-    Patrones: adminhist_periodo_{period} | adminhist_dia_{YYYYMMDD}_{period}
+    Patrones: adminhist_periodo_{period} | adminhist_dia_{YYYYMMDD}_{period} | adminhist_periodo_recientes
     """
     query = update.callback_query
     query.answer()
@@ -1711,6 +1750,10 @@ def admin_special_orders_history_callback(update, context):
     admin = get_admin_by_telegram_id(telegram_id)
     if not admin:
         query.edit_message_text("No tienes perfil de administrador.")
+        return
+
+    if data == "adminhist_periodo_recientes":
+        _admin_show_special_recent(query, admin["id"])
         return
 
     if data.startswith("adminhist_periodo_"):

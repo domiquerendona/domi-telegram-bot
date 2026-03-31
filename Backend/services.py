@@ -282,6 +282,7 @@ from db import (
     delete_order_template,
     # Re-exports pedidos especiales admin y couriers excluidos
     get_admin_special_orders_between,
+    get_admin_special_orders_recent,
     get_order_excluded_couriers,
     reset_order_excluded_couriers,
     add_order_excluded_courier,

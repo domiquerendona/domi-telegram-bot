@@ -2233,6 +2233,14 @@ def _recover_pending_fee_collections(bot):
                 creator_admin_id = rec.get("creator_admin_id") or (rec[2] if len(rec) > 2 else None)
                 if not order_id or not creator_admin_id:
                     continue
+                # Verificar que el pedido sigue en DELIVERED antes de reenviar
+                order = get_order_by_id(int(order_id))
+                if not order:
+                    continue
+                order_status = order["status"] if isinstance(order, dict) else order[3]
+                if order_status != "DELIVERED":
+                    # El pedido fue cancelado o aún no fue entregado; ignorar
+                    continue
                 admin = get_admin_by_id(int(creator_admin_id))
                 if not admin:
                     continue

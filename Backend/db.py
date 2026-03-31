@@ -5836,6 +5836,23 @@ def get_admin_special_orders_between(admin_id: int, start_s: str, end_s: str):
     return rows
 
 
+def get_admin_special_orders_recent(admin_id: int, limit: int = 15) -> list:
+    """Últimos pedidos especiales creados por el admin (todos los estados), los más recientes primero."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT id, status, customer_name, customer_address, total_fee, special_commission,
+               created_at, courier_id
+        FROM orders
+        WHERE creator_admin_id = {P} AND ally_id IS NULL
+        ORDER BY id DESC
+        LIMIT {P}
+    """, (admin_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def save_order_template(admin_id: int, name: str, pickup_location_id, pickup_addr: str,
                          pickup_city: str, pickup_barrio: str, pickup_lat, pickup_lng,
                          tarifa: int, comision: int, team_only: int, instruc: str) -> int:
