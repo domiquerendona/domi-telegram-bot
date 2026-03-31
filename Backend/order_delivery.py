@@ -2245,21 +2245,21 @@ def order_courier_callback(update, context):
         return
     if data.startswith("order_release_reason_"):
         # order_release_reason_{order_id}_{reason}
-        parts = data.split("_")
-        if len(parts) < 5:
+        parts = data.replace("order_release_reason_", "", 1).split("_", 1)
+        if len(parts) < 2:
             query.edit_message_text("No se pudo procesar la razon de liberacion.")
             return
-        order_id = int(parts[3])
-        reason_code = parts[4]
+        order_id = int(parts[0])
+        reason_code = parts[1]
         return _handle_release_reason_selected(update, context, order_id, reason_code)
     if data.startswith("order_release_confirm_"):
         # order_release_confirm_{order_id}_{reason}
-        parts = data.split("_")
-        if len(parts) < 5:
+        parts = data.replace("order_release_confirm_", "", 1).split("_", 1)
+        if len(parts) < 2:
             query.edit_message_text("No se pudo confirmar la liberacion.")
             return
-        order_id = int(parts[3])
-        reason_code = parts[4]
+        order_id = int(parts[0])
+        reason_code = parts[1]
         return _handle_release(update, context, order_id, reason_code=reason_code)
     if data.startswith("order_release_"):
         # order_release_{order_id}
@@ -5765,22 +5765,22 @@ def handle_route_callback(update, context):
 
     if data.startswith("ruta_liberar_motivo_"):
         # ruta_liberar_motivo_{route_id}_{reason}
-        parts = data.split("_")
-        if len(parts) < 5:
+        parts = data.replace("ruta_liberar_motivo_", "", 1).split("_", 1)
+        if len(parts) < 2:
             query.edit_message_text("No se pudo procesar el motivo de liberacion.")
             return
-        route_id = int(parts[3])
-        reason_code = parts[4]
+        route_id = int(parts[0])
+        reason_code = parts[1]
         return _handle_route_release_reason_selected(update, context, route_id, reason_code)
 
     if data.startswith("ruta_liberar_confirmar_"):
         # ruta_liberar_confirmar_{route_id}_{reason}
-        parts = data.split("_")
-        if len(parts) < 5:
+        parts = data.replace("ruta_liberar_confirmar_", "", 1).split("_", 1)
+        if len(parts) < 2:
             query.edit_message_text("No se pudo confirmar la liberacion.")
             return
-        route_id = int(parts[3])
-        reason_code = parts[4]
+        route_id = int(parts[0])
+        reason_code = parts[1]
         return _handle_route_release_confirm(update, context, route_id, reason_code)
 
     if data.startswith("ruta_liberar_"):
