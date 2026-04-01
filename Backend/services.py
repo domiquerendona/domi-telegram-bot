@@ -122,8 +122,6 @@ from db import (
     update_courier_live_location,
     set_courier_availability,
     expire_stale_live_locations,
-    get_all_online_couriers,
-    get_active_orders_without_courier,
     get_pending_couriers,
     get_pending_couriers_by_admin,
     get_pending_allies_by_admin,

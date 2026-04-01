@@ -3121,53 +3121,6 @@ def expire_stale_live_locations(stale_timeout_seconds: int = 900):
     return []
 
 
-def get_all_online_couriers():
-    """Retorna repartidores con live_location activa para el mapa del panel web.
-    Incluye lat/lng, nombre, telegram_id, teléfono y ciudad del admin.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT c.id AS courier_id, c.full_name, u.telegram_id, c.phone,
-               c.live_lat, c.live_lng, c.live_location_updated_at,
-               a.city AS admin_city, ac.admin_id
-        FROM couriers c
-        JOIN users u ON u.id = c.user_id
-        LEFT JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
-        LEFT JOIN admins a ON a.id = ac.admin_id
-        WHERE c.live_location_active = 1
-          AND c.live_lat IS NOT NULL
-          AND c.live_lng IS NOT NULL
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_active_orders_without_courier(limit: int = 30):
-    """Retorna pedidos PUBLISHED (sin courier) con coordenadas de pickup para el mapa.
-    Incluye datos del aliado o admin creador.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT o.id, o.status, o.pickup_address, o.pickup_lat, o.pickup_lng,
-               o.customer_name, o.created_at,
-               COALESCE(al.business_name, adm.full_name, 'Admin') AS ally_name
-        FROM orders o
-        LEFT JOIN allies al ON al.id = o.ally_id
-        LEFT JOIN admins adm ON adm.id = o.creator_admin_id
-        WHERE o.status = 'PUBLISHED'
-          AND o.pickup_lat IS NOT NULL
-          AND o.pickup_lng IS NOT NULL
-        ORDER BY o.created_at DESC
-        LIMIT {P}
-    """, (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
 def get_active_courier_cash(courier_id: int) -> int:
     conn = get_connection()
     cur = conn.cursor()
@@ -3228,7 +3181,7 @@ def get_active_orders_without_courier(limit: int = 20):
             o.pickup_lng,
             o.customer_name,
             o.created_at,
-            al.name AS ally_name
+            COALESCE(al.business_name, 'Admin') AS ally_name
         FROM orders o
         LEFT JOIN allies al ON al.id = o.ally_id
         WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
