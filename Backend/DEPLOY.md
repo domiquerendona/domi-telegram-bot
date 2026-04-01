@@ -23,6 +23,7 @@ Nota:
 
 Actualmente el despliegue en Railway ejecuta solo el bot Telegram.
 La aplicacion web puede ejecutarse localmente o desplegarse en un proceso separado si se habilita un panel web en produccion.
+El archivo `Backend/railway.json` de este servicio debe apuntar a `python main.py`; si se desea desplegar `web_app.py`, debe hacerse en otro servicio separado.
 
 ## Arquitectura de Ambientes
 
