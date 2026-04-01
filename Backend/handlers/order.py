@@ -291,7 +291,28 @@ def pedido_selector_cliente_callback(update, context):
             context.user_data["customer_name"] = last_order["customer_name"]
             context.user_data["customer_phone"] = last_order["customer_phone"]
             context.user_data["customer_address"] = last_order["customer_address"]
+            context.user_data["customer_city"] = last_order["customer_city"] or ""
+            context.user_data["customer_barrio"] = last_order["customer_barrio"] or ""
+            context.user_data["dropoff_lat"] = last_order["dropoff_lat"]
+            context.user_data["dropoff_lng"] = last_order["dropoff_lng"]
             context.user_data["is_new_customer"] = False
+            has_dropoff = has_valid_coords(
+                context.user_data["dropoff_lat"],
+                context.user_data["dropoff_lng"],
+            )
+            logger.info(
+                "[pedido_repetir_ultimo] ally_id=%s order_id=%s has_dropoff=%s",
+                ally_id,
+                last_order["id"],
+                has_dropoff,
+            )
+
+            if not has_dropoff:
+                query.edit_message_text(
+                    "Ese ultimo pedido no tiene ubicacion confirmada en la entrega.\n\n"
+                    "Envia la ubicacion valida para continuar."
+                )
+                return PEDIDO_UBICACION
 
             # Ir al selector de pickup
             return mostrar_selector_pickup(query, context, edit=True)

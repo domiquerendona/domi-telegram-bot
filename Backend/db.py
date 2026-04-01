@@ -9352,7 +9352,15 @@ def get_last_order_by_ally(ally_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT id, customer_name, customer_phone, customer_address, customer_city, customer_barrio
+        SELECT
+            id,
+            customer_name,
+            customer_phone,
+            customer_address,
+            customer_city,
+            customer_barrio,
+            dropoff_lat,
+            dropoff_lng
         FROM orders
         WHERE ally_id = {P}
         ORDER BY id DESC
