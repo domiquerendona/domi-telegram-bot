@@ -69,6 +69,8 @@ from db import (
 from datetime import datetime, timezone, timedelta
 from db import (
     add_courier_rating,
+    _coerce_datetime,
+    _row_value,
     block_courier_for_ally,
     deactivate_courier,
     set_courier_arrived,
@@ -94,7 +96,7 @@ from db import (
     resolve_pending_fee_collection,
     get_pending_fee_collection,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -581,7 +583,7 @@ def _offer_no_response_job(context):
         logger.warning("Error enviando sugerencia para pedido %s: %s", order_id, e)
 
 
-def repost_order_to_couriers(order_id, context):
+def repost_order_to_couriers(order_id, context, excluded_courier_ids=None):
     """Re-oferta un pedido a todos los couriers activos (usado tras agregar incentivo).
 
     Limpia la cola existente, resetea los excluded_couriers y relanza el ciclo de ofertas.
@@ -591,11 +593,15 @@ def repost_order_to_couriers(order_id, context):
     if not order or order["status"] != "PUBLISHED":
         return 0
 
+    excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
+
     # Limpiar cola existente, excluded_couriers en memoria y en BD
     clear_offer_queue(order_id)
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
     try:
         reset_order_excluded_couriers(order_id)
+        for courier_id in excluded_courier_ids:
+            add_order_excluded_courier(order_id, courier_id)
     except Exception:
         pass
 
@@ -614,6 +620,300 @@ def repost_order_to_couriers(order_id, context):
         skip_fee_check=True,
     )
     return count
+
+
+def _build_cancel_preview(status, created_at, charge_owner_type, has_courier):
+    """Calcula el cargo esperado antes de confirmar una cancelacion."""
+    cfg = get_order_penalty_config()
+    preview = {
+        "fee_total": 0,
+        "courier_compensation": 0,
+        "platform_share": 0,
+        "code": "FREE",
+        "grace_seconds_left": cfg["ally_cancel_grace_seconds"],
+        "charged_owner_type": charge_owner_type or "",
+    }
+
+    if charge_owner_type not in ("ALLY", "ADMIN"):
+        return preview
+
+    if status == "ACCEPTED" and has_courier:
+        preview.update(
+            {
+                "fee_total": cfg["ally_cancel_with_courier_total"],
+                "courier_compensation": cfg["ally_cancel_with_courier_courier_share"],
+                "platform_share": cfg["ally_cancel_with_courier_platform_share"],
+                "code": "WITH_COURIER",
+                "grace_seconds_left": 0,
+            }
+        )
+        return preview
+
+    created_dt = _coerce_datetime(created_at)
+    elapsed_created = max(0, int((datetime.now(timezone.utc).replace(tzinfo=None) - created_dt).total_seconds()))
+    preview["grace_seconds_left"] = max(0, cfg["ally_cancel_grace_seconds"] - elapsed_created)
+    if elapsed_created > cfg["ally_cancel_grace_seconds"]:
+        preview.update(
+            {
+                "fee_total": cfg["ally_cancel_after_grace_total"],
+                "courier_compensation": 0,
+                "platform_share": cfg["ally_cancel_after_grace_total"],
+                "code": "AFTER_GRACE",
+            }
+        )
+    return preview
+
+
+def _build_order_cancel_preview(order):
+    """Calcula el cargo esperado antes de confirmar cancelacion del pedido."""
+    charge_owner_type = ""
+    if _row_value(order, "ally_id"):
+        charge_owner_type = "ALLY"
+    elif _row_value(order, "creator_admin_id"):
+        charge_owner_type = "ADMIN"
+    return _build_cancel_preview(
+        (_row_value(order, "status", 0) or "").strip().upper(),
+        _row_value(order, "created_at"),
+        charge_owner_type,
+        bool(_row_value(order, "courier_id")),
+    )
+
+
+def _build_route_cancel_preview(route):
+    """Calcula el cargo esperado antes de confirmar cancelacion de la ruta."""
+    charge_owner_type = "ALLY" if _row_value(route, "ally_id") else ""
+    return _build_cancel_preview(
+        (_row_value(route, "status", 0) or "").strip().upper(),
+        _row_value(route, "created_at"),
+        charge_owner_type,
+        bool(_row_value(route, "courier_id")),
+    )
+
+
+def _format_order_cancel_warning(order, actor_label="ally"):
+    """Arma el texto de advertencia previo a cancelar un pedido."""
+    preview = _build_order_cancel_preview(order)
+    order_id = _row_value(order, "id")
+    is_admin = actor_label == "admin"
+    owner_type = preview.get("charged_owner_type") or ""
+
+    if preview["fee_total"] <= 0:
+        if is_admin and owner_type == "ADMIN":
+            owner_line = "Cancelacion gratuita para el admin creador."
+        elif is_admin:
+            owner_line = "Cancelacion gratuita para el aliado."
+        else:
+            owner_line = "Cancelacion gratuita."
+        grace_left = preview["grace_seconds_left"]
+        return (
+            "Vas a cancelar el pedido #{}.\n\n"
+            "{}\n"
+            "Aun estas dentro de los primeros 60 segundos.\n"
+            "Te quedan {} segundos sin cargo."
+        ).format(order_id, owner_line, max(0, grace_left))
+
+    if is_admin and owner_type == "ADMIN" and preview["courier_compensation"] > 0:
+        return (
+            "Vas a cancelar el pedido #{}.\n\n"
+            "Penalidad de ${:,} (${:,.0f} para el repartidor).\n"
+            "Si confirmas, se descontaran ${:,} del saldo del admin creador del pedido.\n"
+            "Distribucion:\n"
+            "- Repartidor: ${:,}\n"
+            "- Plataforma: ${:,}"
+        ).format(
+            order_id,
+            preview["fee_total"],
+            preview["courier_compensation"],
+            preview["fee_total"],
+            preview["courier_compensation"],
+            preview["platform_share"],
+        )
+
+    if preview["courier_compensation"] > 0:
+        charge_line = (
+            "Si confirmas, se descontaran ${:,} del saldo del aliado dueño del servicio."
+            if is_admin else
+            "Si confirmas, se te descontaran ${:,} de tu saldo."
+        ).format(preview["fee_total"])
+        return (
+            "Vas a cancelar el pedido #{}.\n\n"
+            "Penalidad de ${:,} (${:,.0f} para el repartidor).\n"
+            "{}\n"
+            "Distribucion:\n"
+            "- Repartidor: ${:,}\n"
+            "- Plataforma: ${:,}"
+        ).format(
+            order_id,
+            preview["fee_total"],
+            preview["courier_compensation"],
+            charge_line,
+            preview["courier_compensation"],
+            preview["platform_share"],
+        )
+
+    if is_admin and owner_type == "ADMIN":
+        return (
+            "Vas a cancelar el pedido #{}.\n\n"
+            "Penalidad de ${:,}.\n"
+            "Si confirmas, se descontaran ${:,} del saldo del admin creador del pedido.\n"
+            "Ese valor ira a la Plataforma por cancelacion tardia."
+        ).format(order_id, preview["fee_total"], preview["fee_total"])
+
+    charge_line = (
+        "Si confirmas, se descontaran ${:,} del saldo del aliado dueño del servicio."
+        if is_admin else
+        "Si confirmas, se te descontaran ${:,} de tu saldo."
+    ).format(preview["fee_total"])
+    return (
+        "Vas a cancelar el pedido #{}.\n\n"
+        "Penalidad de ${:,}.\n"
+        "{}\n"
+        "Ese valor ira a la Plataforma por cancelacion tardia."
+    ).format(order_id, preview["fee_total"], charge_line)
+
+
+def _build_order_cancel_result_text(order_id, actor_label, outcome):
+    """Texto final despues de cancelar un pedido."""
+    owner_type = outcome.get("charged_owner_type") or ""
+    if outcome["fee_total"] <= 0:
+        return "Pedido #{} cancelado. No se aplico ningun cargo.".format(order_id)
+
+    if actor_label == "admin" and owner_type == "ADMIN":
+        if outcome["penalty_applied"] and outcome["courier_compensation"] > 0:
+            return (
+                "Pedido #{} cancelado.\n"
+                "Se desconto ${:,} al admin creador del pedido.\n"
+                "Compensacion al repartidor: ${:,}.\n"
+                "Plataforma: ${:,}."
+            ).format(
+                order_id,
+                outcome["fee_total"],
+                outcome["courier_compensation"],
+                outcome["platform_share"],
+            )
+        if outcome["penalty_applied"]:
+            return (
+                "Pedido #{} cancelado.\n"
+                "Se desconto ${:,} al admin creador del pedido.\n"
+                "Ese valor fue registrado para la Plataforma."
+            ).format(order_id, outcome["fee_total"])
+        return (
+            "Pedido #{} cancelado.\n"
+            "Se intento cobrar ${:,} al admin creador del pedido, pero no fue posible.\n{}"
+        ).format(
+            order_id,
+            outcome["fee_total"],
+            outcome["penalty_message"] or "No se pudo aplicar el cargo automatico.",
+        )
+
+    if outcome["penalty_applied"]:
+        if outcome["courier_compensation"] > 0:
+            owner_line = (
+                "Se desconto ${:,} al aliado dueño del servicio."
+                if actor_label == "admin" else
+                "Se descontaron ${:,} de tu saldo."
+            ).format(outcome["fee_total"])
+            return (
+                "Pedido #{} cancelado.\n{}\n"
+                "Compensacion al repartidor: ${:,}.\n"
+                "Plataforma: ${:,}."
+            ).format(
+                order_id,
+                owner_line,
+                outcome["courier_compensation"],
+                outcome["platform_share"],
+            )
+
+        owner_line = (
+            "Se desconto ${:,} al aliado dueño del servicio."
+            if actor_label == "admin" else
+            "Se descontaron ${:,} de tu saldo."
+        ).format(outcome["fee_total"])
+        return (
+            "Pedido #{} cancelado.\n{}\n"
+            "Ese valor fue registrado para la Plataforma."
+        ).format(order_id, owner_line)
+
+    owner_line = (
+        "Se intento cobrar ${:,} al aliado dueño del servicio, pero no fue posible."
+        if actor_label == "admin" else
+        "Se intento cobrar ${:,}, pero no fue posible."
+    ).format(outcome["fee_total"])
+    return (
+        "Pedido #{} cancelado.\n{}\n{}"
+    ).format(order_id, owner_line, outcome["penalty_message"] or "No se pudo aplicar el cargo automatico.")
+
+
+def _format_route_cancel_warning(route, actor_label="ally"):
+    """Arma el texto de advertencia previo a cancelar una ruta."""
+    preview = _build_route_cancel_preview(route)
+    route_id = _row_value(route, "id")
+
+    if preview["fee_total"] <= 0:
+        return (
+            "Vas a cancelar la ruta #{}.\n\n"
+            "Cancelacion gratuita.\n"
+            "Aun estas dentro de los primeros 60 segundos.\n"
+            "Te quedan {} segundos sin cargo."
+        ).format(route_id, max(0, preview["grace_seconds_left"]))
+
+    if preview["courier_compensation"] > 0:
+        return (
+            "Vas a cancelar la ruta #{}.\n\n"
+            "Penalidad de ${:,} (${:,.0f} para el repartidor).\n"
+            "Si confirmas, se te descontaran ${:,} de tu saldo.\n"
+            "Distribucion:\n"
+            "- Repartidor: ${:,}\n"
+            "- Plataforma: ${:,}"
+        ).format(
+            route_id,
+            preview["fee_total"],
+            preview["courier_compensation"],
+            preview["fee_total"],
+            preview["courier_compensation"],
+            preview["platform_share"],
+        )
+
+    return (
+        "Vas a cancelar la ruta #{}.\n\n"
+        "Penalidad de ${:,}.\n"
+        "Si confirmas, se te descontaran ${:,} de tu saldo.\n"
+        "Ese valor ira a la Plataforma por cancelacion tardia."
+    ).format(route_id, preview["fee_total"], preview["fee_total"])
+
+
+def _build_route_cancel_result_text(route_id, actor_label, outcome):
+    """Texto final despues de cancelar una ruta."""
+    if outcome["fee_total"] <= 0:
+        return "Ruta #{} cancelada. No se aplico ningun cargo.".format(route_id)
+
+    if outcome["penalty_applied"]:
+        if outcome["courier_compensation"] > 0:
+            return (
+                "Ruta #{} cancelada.\n"
+                "Se descontaron ${:,} de tu saldo.\n"
+                "Compensacion al repartidor: ${:,}.\n"
+                "Plataforma: ${:,}."
+            ).format(
+                route_id,
+                outcome["fee_total"],
+                outcome["courier_compensation"],
+                outcome["platform_share"],
+            )
+        return (
+            "Ruta #{} cancelada.\n"
+            "Se descontaron ${:,} de tu saldo.\n"
+            "Ese valor fue registrado para la Plataforma."
+        ).format(route_id, outcome["fee_total"])
+
+    return (
+        "Ruta #{} cancelada.\n"
+        "Se intento cobrar ${:,}, pero no fue posible.\n{}"
+    ).format(
+        route_id,
+        outcome["fee_total"],
+        outcome["penalty_message"] or "No se pudo aplicar el cargo automatico.",
+    )
 
 
 def _handle_repost_ally(update, context, order_id):
@@ -734,7 +1034,7 @@ def _route_no_response_job(context):
         logger.warning("Error enviando sugerencia para ruta %s: %s", route_id, e)
 
 
-def repost_route_to_couriers(route_id, context):
+def repost_route_to_couriers(route_id, context, excluded_courier_ids=None):
     """Re-oferta una ruta a todos los couriers con saldo (usado tras agregar incentivo).
 
     Limpia la cola existente y relanza el ciclo de ofertas.
@@ -743,6 +1043,7 @@ def repost_route_to_couriers(route_id, context):
     if not route or route["status"] != "PUBLISHED":
         return 0
 
+    excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
     delete_route_offer_queue(route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
 
@@ -756,6 +1057,7 @@ def repost_route_to_couriers(route_id, context):
         ally_id=ally_id,
         context=context,
         admin_id_override=admin_id_override,
+        excluded_courier_ids=excluded_courier_ids,
     )
     return count
 
@@ -1717,6 +2019,7 @@ def _admin_show_special_recent(query, admin_id):
         "EXPIRED": "Expirado",
     }
     lines = ["Mis pedidos especiales — Ultimos {} ({} pedidos)".format(15, len(orders)), ""]
+    action_rows = []
     for o in orders:
         created = str(_row_value(o, "created_at", "") or "")
         day = created[:10] if len(created) >= 10 else "?"
@@ -1727,11 +2030,17 @@ def _admin_show_special_recent(query, admin_id):
         commission = int(_row_value(o, "special_commission", 0) or 0)
         commission_str = " +com${:,}".format(commission) if commission > 0 else ""
         status_label = STATUS_LABELS.get(status, status)
+        if status in ("PUBLISHED", "ACCEPTED", "PICKED_UP"):
+            action_rows.append([InlineKeyboardButton(
+                "Ver pedido #{}".format(_row_value(o, "id", "?")),
+                callback_data="admpedidos_detail_{}_{}".format(_row_value(o, "id", "?"), admin_id),
+            )])
         lines.append("#{} {} {} — {} — {}{}  [{}]".format(
             _row_value(o, "id", "?"), day, hour, name,
             _fmt_pesos_ally(fee), commission_str, status_label,
         ))
-    query.edit_message_text("\n".join(lines), reply_markup=_admin_history_period_keyboard())
+    full_kb = InlineKeyboardMarkup(action_rows + _admin_history_period_keyboard().inline_keyboard)
+    query.edit_message_text("\n".join(lines), reply_markup=full_kb)
 
 
 def admin_special_orders_history_callback(update, context):
@@ -1856,6 +2165,8 @@ def admin_orders_callback(update, context):
       admpedidos_list_{filter}_{admin_id}
       admpedidos_detail_{order_id}_{admin_id}
       admpedidos_cancel_{order_id}_{admin_id}
+      admpedidos_cancel_confirm_{order_id}_{admin_id}
+      admpedidos_cancel_abort_{order_id}_{admin_id}
     """
     query = update.callback_query
     data = query.data or ""
@@ -1980,8 +2291,10 @@ def _admin_order_detail(update, context, data):
         "CANCELLED": "Cancelado",
     }
 
-    ally = get_ally_by_id(order["ally_id"])
-    ally_name = ally["full_name"] if ally else "N/A"
+    ally = get_ally_by_id(order["ally_id"]) if order["ally_id"] else None
+    creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
+    creator_admin = get_admin_by_id(int(creator_admin_id)) if creator_admin_id else None
+    ally_name = ally["full_name"] if ally else ("Pedido especial de admin" if creator_admin_id else "N/A")
 
     courier_name = "Sin asignar"
     if order["courier_id"]:
@@ -2068,6 +2381,14 @@ def _admin_order_detail(update, context, data):
         canceled_by,
     )
 
+    if creator_admin:
+        creator_label = creator_admin["full_name"] or "Admin #{}".format(creator_admin_id)
+        text = text.replace(
+            "Repartidor:",
+            "Admin creador: {}\nRepartidor:".format(creator_label),
+            1,
+        )
+
     if order["instructions"]:
         text += "Instrucciones: {}\n".format(order["instructions"])
 
@@ -2107,8 +2428,16 @@ def _admin_order_detail(update, context, data):
 def _admin_order_cancel(update, context, data):
     """Admin cancela un pedido desde el panel."""
     query = update.callback_query
-    # Parse: admpedidos_cancel_{order_id}_{admin_id}
-    parts = data.replace("admpedidos_cancel_", "").rsplit("_", 1)
+    payload = data.replace("admpedidos_cancel_", "")
+    action = "warn"
+    if payload.startswith("confirm_"):
+        action = "confirm"
+        payload = payload.replace("confirm_", "", 1)
+    elif payload.startswith("abort_"):
+        action = "abort"
+        payload = payload.replace("abort_", "", 1)
+
+    parts = payload.rsplit("_", 1)
     if len(parts) != 2:
         query.edit_message_text("Error de formato.")
         return
@@ -2119,6 +2448,9 @@ def _admin_order_cancel(update, context, data):
     except ValueError:
         query.edit_message_text("Error de formato.")
         return
+
+    if action == "abort":
+        return _admin_order_detail(update, context, "admpedidos_detail_{}_{}".format(order_id, admin_id))
 
     order = get_order_by_id(order_id)
     if not order:
@@ -2131,22 +2463,47 @@ def _admin_order_cancel(update, context, data):
         ))
         return
 
+    if action == "warn":
+        keyboard = [[
+            InlineKeyboardButton(
+                "✅ Confirmar",
+                callback_data="admpedidos_cancel_confirm_{}_{}".format(order_id, admin_id),
+            ),
+            InlineKeyboardButton(
+                "❌ Volver",
+                callback_data="admpedidos_cancel_abort_{}_{}".format(order_id, admin_id),
+            ),
+        ]]
+        query.edit_message_text(
+            _format_order_cancel_warning(order, actor_label="admin"),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
     had_courier = order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
+    current_offer = get_current_offer_for_order(order_id) if was_published else None
 
+    outcome = cancel_order_by_actor(
+        order_id,
+        "ADMIN",
+        actor_admin_id=admin_id,
+    )
+    if not outcome["ok"]:
+        query.edit_message_text(outcome["message"])
+        return
+
+    _cancel_arrival_jobs(context, order_id)
     _cancel_no_response_job(context, order_id)
     _cancel_order_expire_job(context, order_id)
-    if was_published:
-        current = get_current_offer_for_order(order_id)
-        if current:
-            jobs = context.job_queue.get_jobs_by_name(
-                "offer_timeout_{}_{}".format(order_id, current["queue_id"])
-            )
-            for job in jobs:
-                job.schedule_removal()
+    if current_offer:
+        jobs = context.job_queue.get_jobs_by_name(
+            "offer_timeout_{}_{}".format(order_id, current_offer["queue_id"])
+        )
+        for job in jobs:
+            job.schedule_removal()
 
     _cancel_delivery_reminder_jobs(context, order_id)
-    cancel_order(order_id, "ADMIN")
     delete_offer_queue(order_id)
 
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
@@ -2157,22 +2514,35 @@ def _admin_order_cancel(update, context, data):
         if ally:
             ally_user = get_user_by_id(ally["user_id"])
             if ally_user and ally_user["telegram_id"]:
+                ally_text = "Tu pedido #{} fue cancelado por el administrador.".format(order_id)
+                if outcome["fee_total"] > 0 and outcome["penalty_applied"]:
+                    ally_text += "\nSe desconto ${:,} de tu saldo por esta cancelacion.".format(outcome["fee_total"])
+                elif outcome["fee_total"] > 0:
+                    ally_text += "\nNo se pudo aplicar el cargo automatico: {}.".format(
+                        outcome["penalty_message"] or "saldo o vinculo no disponible"
+                    )
                 context.bot.send_message(
                     chat_id=ally_user["telegram_id"],
-                    text="Tu pedido #{} fue cancelado por el administrador.".format(order_id),
+                    text=ally_text,
                 )
     except Exception as e:
         logger.warning("No se pudo notificar cancelacion al aliado: %s", e)
 
     if had_courier:
-        _notify_courier_order_cancelled(context, order)
+        _notify_courier_order_cancelled(
+            context,
+            order,
+            actor_label="administrador",
+            compensation_amount=outcome["courier_compensation"],
+            compensation_applied=outcome["penalty_applied"],
+        )
 
     keyboard = [[InlineKeyboardButton(
         "Volver a pedidos activos",
         callback_data="admpedidos_list_ACTIVE_{}".format(admin_id),
     )]]
     query.edit_message_text(
-        "Pedido #{} cancelado exitosamente.".format(order_id),
+        _build_order_cancel_result_text(order_id, "admin", outcome),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -2182,6 +2552,7 @@ def order_courier_callback(update, context):
     Maneja botones de ofertas y ciclo de vida de pedidos.
     Patterns:
     - ^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel)_\\d+$
+    - ^order_(cancel_confirm|cancel_abort|find_another_confirm|find_another_abort)_\\d+$
     - ^order_pickupconfirm_(approve|reject)_\\d+$
     """
     query = update.callback_query
@@ -2195,6 +2566,12 @@ def order_courier_callback(update, context):
         order_id = int(data.replace("order_pickupconfirm_reject_", ""))
         return _handle_pickup_confirmation_by_ally(update, context, order_id, approve=False)
 
+    if data.startswith("order_find_another_confirm_"):
+        order_id = int(data.replace("order_find_another_confirm_", ""))
+        return _handle_find_another_courier(update, context, order_id, confirm=True)
+    if data.startswith("order_find_another_abort_"):
+        order_id = int(data.replace("order_find_another_abort_", ""))
+        return _handle_find_another_abort(update, context, order_id)
     if data.startswith("order_find_another_"):
         order_id = int(data.replace("order_find_another_", ""))
         return _handle_find_another_courier(update, context, order_id)
@@ -2269,6 +2646,12 @@ def order_courier_callback(update, context):
             return
         order_id = int(parts[2])
         return _handle_release_reason_menu(update, context, order_id)
+    if data.startswith("order_cancel_confirm_"):
+        order_id = int(data.replace("order_cancel_confirm_", ""))
+        return _handle_cancel_ally(update, context, order_id, confirm=True)
+    if data.startswith("order_cancel_abort_"):
+        order_id = int(data.replace("order_cancel_abort_", ""))
+        return _handle_cancel_ally_abort(update, context, order_id)
     if data.startswith("order_cancel_"):
         order_id = int(data.replace("order_cancel_", ""))
         return _handle_cancel_ally(update, context, order_id)
@@ -2619,7 +3002,9 @@ def _arrival_warn_ally_job(context):
                     chat_id=au["telegram_id"],
                     text=(
                         "Han pasado 15 minutos y {} no ha reportado su llegada "
-                        "al punto de recogida del pedido #{}.\n\nQue deseas hacer?"
+                        "al punto de recogida del pedido #{}.\n\n"
+                        "Si eliges buscar otro repartidor, se intentara aplicar la penalidad de demora.\n\n"
+                        "Que deseas hacer?"
                     ).format(courier_name, order_id),
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
@@ -3053,7 +3438,27 @@ def _handle_busy(update, context, order_id):
     _send_next_offer(order_id, context)
 
 
-def _handle_find_another_courier(update, context, order_id):
+def _handle_cancel_ally_abort(update, context, order_id):
+    """Cancela la advertencia y deja el pedido activo."""
+    query = update.callback_query
+    keyboard = [[InlineKeyboardButton("Cancelar pedido", callback_data="order_cancel_{}".format(order_id))]]
+    query.edit_message_text(
+        "Cancelacion anulada. El pedido #{} sigue activo.".format(order_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _handle_find_another_abort(update, context, order_id):
+    """Cancela la advertencia de quitar el pedido al courier."""
+    query = update.callback_query
+    keyboard = [[InlineKeyboardButton("Buscar otro repartidor", callback_data="order_find_another_{}".format(order_id))]]
+    query.edit_message_text(
+        "Seguimos esperando al repartidor del pedido #{}.".format(order_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _handle_find_another_courier(update, context, order_id, confirm=False):
     """Aliado solicita buscar otro repartidor cuando el courier no llega."""
     query = update.callback_query
     order = get_order_by_id(order_id)
@@ -3066,9 +3471,95 @@ def _handle_find_another_courier(update, context, order_id):
     if not ally or ally["id"] != order["ally_id"]:
         query.answer("No tienes permiso para esta accion.")
         return
-    query.edit_message_text("Buscando otro repartidor para el pedido #{}...".format(order_id))
-    _release_order_by_timeout(order_id, order["courier_id"], context,
-                              reason="solicitado por el aliado")
+    if not confirm:
+        cfg = get_order_penalty_config()
+        keyboard = [[
+            InlineKeyboardButton(
+                "Confirmar cambio",
+                callback_data="order_find_another_confirm_{}".format(order_id),
+            ),
+            InlineKeyboardButton(
+                "Seguir esperando",
+                callback_data="order_find_another_abort_{}".format(order_id),
+            ),
+        ]]
+        query.edit_message_text(
+            (
+                "Vas a quitarle el pedido #{} al repartidor actual.\n\n"
+                "Si confirmas, se intentara aplicar una penalidad de ${:,} al repartidor.\n"
+                "Distribucion:\n"
+                "- Aliado: ${:,}\n"
+                "- Plataforma: ${:,}\n\n"
+                "Luego el pedido se re-ofrecera automaticamente a otros repartidores."
+            ).format(
+                order_id,
+                cfg["courier_delay_penalty_total"],
+                cfg["courier_delay_penalty_ally_share"],
+                cfg["courier_delay_penalty_platform_share"],
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    outcome = penalize_courier_for_delay_and_release(
+        order_id,
+        reason="ALLY_DELAY_RELEASE_CONFIRMED",
+    )
+    if not outcome["ok"]:
+        query.edit_message_text(outcome["message"])
+        return
+
+    _cancel_arrival_jobs(context, order_id)
+    courier_id = outcome["courier_id"]
+    excluded_ids = {courier_id} if courier_id else set()
+    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded_ids)
+
+    if courier_id:
+        try:
+            courier = get_courier_by_id(courier_id)
+            courier_user = get_user_by_id(courier["user_id"]) if courier else None
+            if courier_user and courier_user["telegram_id"]:
+                courier_text = (
+                    "El pedido #{} te fue retirado por demora en la llegada al pickup."
+                    .format(order_id)
+                )
+                if outcome["penalty_applied"]:
+                    courier_text += (
+                        "\nSe descontaron ${:,} de tu saldo: ${:,} para el aliado y ${:,} para la Plataforma."
+                        .format(
+                            outcome["penalty_total"],
+                            outcome["ally_compensation"],
+                            outcome["platform_share"],
+                        )
+                    )
+                else:
+                    courier_text += "\nNo se pudo aplicar la penalidad automatica: {}.".format(
+                        outcome["penalty_message"] or "saldo o vinculo no disponible"
+                    )
+                context.bot.send_message(chat_id=courier_user["telegram_id"], text=courier_text)
+        except Exception as e:
+            logger.warning("No se pudo notificar penalidad de demora al courier: %s", e)
+
+    result_lines = ["Pedido #{} liberado del repartidor actual.".format(order_id)]
+    if outcome["penalty_applied"]:
+        result_lines.append(
+            "Se descontaron ${:,} al repartidor: ${:,} para tu saldo y ${:,} para la Plataforma.".format(
+                outcome["penalty_total"],
+                outcome["ally_compensation"],
+                outcome["platform_share"],
+            )
+        )
+    else:
+        result_lines.append(
+            "No se pudo aplicar la penalidad automatica: {}.".format(
+                outcome["penalty_message"] or "saldo o vinculo no disponible"
+            )
+        )
+    if repost_count > 0:
+        result_lines.append("El pedido ya fue re-ofrecido a otros repartidores.")
+    else:
+        result_lines.append("El pedido quedo publicado, pero por ahora no hay otro repartidor disponible.")
+    query.edit_message_text("\n".join(result_lines))
 
 
 def _handle_call_courier(update, context, order_id):
@@ -3219,7 +3710,7 @@ def _handle_release(update, context, order_id, reason_code=None):
         _schedule_order_expire_job(context, order_id)
 
 
-def _handle_cancel_ally(update, context, order_id):
+def _handle_cancel_ally(update, context, order_id, confirm=False):
     """Aliado cancela un pedido."""
     query = update.callback_query
     order = get_order_by_id(order_id)
@@ -3240,40 +3731,100 @@ def _handle_cancel_ally(update, context, order_id):
         query.edit_message_text("No tienes permiso para cancelar este pedido.")
         return
 
+    if not confirm:
+        keyboard = [[
+            InlineKeyboardButton(
+                "✅ Confirmar",
+                callback_data="order_cancel_confirm_{}".format(order_id),
+            ),
+            InlineKeyboardButton(
+                "❌ Volver",
+                callback_data="order_cancel_abort_{}".format(order_id),
+            ),
+        ]]
+        query.edit_message_text(
+            _format_order_cancel_warning(order, actor_label="ally"),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
     had_courier = order["status"] == "ACCEPTED" and order["courier_id"]
     was_published = order["status"] == "PUBLISHED"
+    current_offer = get_current_offer_for_order(order_id) if was_published else None
 
-    # Cancelar jobs de arrival si estaba en estado ACCEPTED
+    outcome = cancel_order_by_actor(
+        order_id,
+        "ALLY",
+    )
+    if not outcome["ok"]:
+        query.edit_message_text(outcome["message"])
+        return
+
     _cancel_arrival_jobs(context, order_id)
     _cancel_delivery_reminder_jobs(context, order_id)
-
-    # Cancelar jobs de timeout y sugerencia si estaba en ciclo de ofertas
     _cancel_no_response_job(context, order_id)
     _cancel_order_expire_job(context, order_id)
-    if was_published:
-        current = get_current_offer_for_order(order_id)
-        if current:
-            jobs = context.job_queue.get_jobs_by_name(
-                "offer_timeout_{}_{}".format(order_id, current["queue_id"])
-            )
-            for job in jobs:
-                job.schedule_removal()
+    if current_offer:
+        jobs = context.job_queue.get_jobs_by_name(
+            "offer_timeout_{}_{}".format(order_id, current_offer["queue_id"])
+        )
+        for job in jobs:
+            job.schedule_removal()
 
-    cancel_order(order_id, "ALLY")
     delete_offer_queue(order_id)
-
-    # Limpiar bot_data
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
     context.bot_data.get("offer_messages", {}).pop(order_id, None)
 
-    query.edit_message_text("Pedido cancelado. No se aplico ningun cargo.")
+    query.edit_message_text(_build_order_cancel_result_text(order_id, "ally", outcome))
 
     if had_courier:
-        _notify_courier_order_cancelled(context, order)
+        _notify_courier_order_cancelled(
+            context,
+            order,
+            actor_label="aliado",
+            compensation_amount=outcome["courier_compensation"],
+            compensation_applied=outcome["penalty_applied"],
+        )
 
 
-def _handle_cancel_ally_route(update, context, route_id):
-    """Aliado cancela una ruta. Mismo comportamiento que cancelar un pedido individual."""
+def _handle_cancel_ally_route_abort(update, context, route_id):
+    """Cancela la advertencia y deja la ruta activa."""
+    query = update.callback_query
+    keyboard = [[InlineKeyboardButton("Cancelar ruta", callback_data="ruta_cancelar_aliado_{}".format(route_id))]]
+    query.edit_message_text(
+        "Cancelacion anulada. La ruta #{} sigue activa.".format(route_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _notify_courier_route_cancelled(context, route, compensation_amount=0, compensation_applied=False):
+    """Notifica al repartidor que la ruta fue cancelada por el aliado."""
+    try:
+        courier_id = _row_value(route, "courier_id")
+        if not courier_id:
+            return
+        courier = get_courier_by_id(courier_id)
+        if not courier:
+            return
+        courier_user = get_user_by_id(courier["user_id"])
+        if not courier_user or not courier_user["telegram_id"]:
+            return
+
+        text = "La ruta #{} fue cancelada por el aliado.".format(_row_value(route, "id"))
+        if compensation_applied and compensation_amount:
+            text += "\nRecibiste una compensacion de ${:,} en tu saldo por esta cancelacion.".format(
+                int(compensation_amount)
+            )
+        elif compensation_amount:
+            text += "\nNo fue posible acreditar la compensacion automatica de ${:,}.".format(int(compensation_amount))
+
+        context.bot.send_message(chat_id=courier_user["telegram_id"], text=text)
+    except Exception as e:
+        logger.warning("No se pudo notificar cancelacion de ruta al courier: %s", e)
+
+
+def _handle_cancel_ally_route(update, context, route_id, confirm=False):
+    """Aliado cancela una ruta usando el mismo esquema de advertencia y cobro del pedido."""
     query = update.callback_query
     route = get_route_by_id(route_id)
     if not route:
@@ -3293,38 +3844,52 @@ def _handle_cancel_ally_route(update, context, route_id):
         query.edit_message_text("No tienes permiso para cancelar esta ruta.")
         return
 
+    if not confirm:
+        keyboard = [[
+            InlineKeyboardButton(
+                "✅ Confirmar",
+                callback_data="ruta_cancelar_aliado_confirm_{}".format(route_id),
+            ),
+            InlineKeyboardButton(
+                "❌ Volver",
+                callback_data="ruta_cancelar_aliado_abort_{}".format(route_id),
+            ),
+        ]]
+        query.edit_message_text(
+            _format_route_cancel_warning(route, actor_label="ally"),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
     had_courier = route["status"] == "ACCEPTED" and route["courier_id"]
     was_published = route["status"] == "PUBLISHED"
+    current = get_current_route_offer(route_id) if was_published else None
 
-    # Cancelar jobs de oferta y sugerencia T+5
+    outcome = cancel_route_by_actor(route_id, "ALLY")
+    if not outcome["ok"]:
+        query.edit_message_text(outcome["message"])
+        return
+
+    _cancel_route_arrival_jobs(context, route_id)
     _cancel_route_no_response_job(context, route_id)
-    if was_published:
-        current = get_current_route_offer(route_id)
-        if current:
-            _cancel_route_offer_jobs(context, route_id, current["queue_id"])
-            mark_route_offer_response(current["queue_id"], "CANCELLED")
+    if current:
+        _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+        mark_route_offer_response(current["queue_id"], "CANCELLED")
 
-    cancel_route(route_id, "ALLY")
     delete_route_offer_queue(route_id)
-
-    # Limpiar bot_data de oferta
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
     context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+    context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
 
-    query.edit_message_text("Ruta cancelada. No se aplico ningun cargo.")
+    query.edit_message_text(_build_route_cancel_result_text(route_id, "ally", outcome))
 
     if had_courier:
-        try:
-            courier = get_courier_by_id(route["courier_id"])
-            if courier:
-                courier_user = get_user_by_id(courier["user_id"])
-                if courier_user and courier_user["telegram_id"]:
-                    context.bot.send_message(
-                        chat_id=courier_user["telegram_id"],
-                        text="La ruta #{} fue cancelada por el aliado.".format(route_id),
-                    )
-        except Exception as e:
-            logger.warning("No se pudo notificar cancelacion de ruta al courier: %s", e)
+        _notify_courier_route_cancelled(
+            context,
+            route,
+            compensation_amount=outcome["courier_compensation"],
+            compensation_applied=outcome["penalty_applied"],
+        )
 
 
 def _handle_pickup(update, context, order_id):
@@ -4388,8 +4953,8 @@ def handle_rating_callback(update, context):
         )
 
 
-def _notify_courier_order_cancelled(context, order):
-    """Notifica al courier que el aliado cancelo el pedido."""
+def _notify_courier_order_cancelled(context, order, actor_label="aliado", compensation_amount=0, compensation_applied=False):
+    """Notifica al courier que el pedido fue cancelado y si hubo compensacion."""
     try:
         if not order["courier_id"]:
             return
@@ -4399,9 +4964,15 @@ def _notify_courier_order_cancelled(context, order):
         courier_user = get_user_by_id(courier["user_id"])
         if not courier_user or not courier_user["telegram_id"]:
             return
+        text = "El pedido #{} fue cancelado por el {}.".format(order["id"], actor_label)
+        if compensation_amount > 0:
+            if compensation_applied:
+                text += "\nRecibiste una compensacion de ${:,} en tu saldo por esta cancelacion.".format(compensation_amount)
+            else:
+                text += "\nSe intento acreditar una compensacion de ${:,}, pero no fue posible automaticamente.".format(compensation_amount)
         context.bot.send_message(
             chat_id=courier_user["telegram_id"],
-            text="El pedido #{} fue cancelado por el aliado.".format(order["id"]),
+            text=text,
         )
     except Exception as e:
         logger.warning("No se pudo notificar cancelacion al courier: %s", e)
@@ -4615,7 +5186,8 @@ def _expire_route(route_id, cycle_info, context):
                     chat_id=ally_user["telegram_id"],
                     text=(
                         "Tu ruta #{} fue cancelada porque ningun repartidor "
-                        "la acepto en 7 minutos."
+                        "la acepto en 7 minutos.\n"
+                        "No se aplico ningun cargo."
                     ).format(route_id),
                 )
     except Exception as e:
@@ -4663,7 +5235,7 @@ def _send_next_route_offer(route_id, context):
     )
 
 
-def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None):
+def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None, excluded_courier_ids=None):
     """Publica una ruta a la cola de couriers. Retorna cantidad de couriers en cola."""
     if admin_id_override:
         admin_id = admin_id_override
@@ -4700,6 +5272,8 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     except Exception:
         pass
 
+    excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
+
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
@@ -4718,6 +5292,8 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
     couriers_con_saldo = []
     for c in eligible:
         c_id = c["courier_id"]
+        if c_id in excluded_courier_ids:
+            continue
         c_admin_id = get_approved_admin_id_for_courier(c_id)
         if not c_admin_id:
             continue
@@ -5337,12 +5913,25 @@ def _route_arrival_warn_job(context):
             if ally:
                 au = get_user_by_id(ally["user_id"])
                 if au:
+                    keyboard = [
+                        [InlineKeyboardButton(
+                            "Buscar otro repartidor",
+                            callback_data="ruta_find_another_{}".format(route_id),
+                        )],
+                        [InlineKeyboardButton(
+                            "Seguir esperando",
+                            callback_data="ruta_wait_courier_{}".format(route_id),
+                        )],
+                    ]
                     context.bot.send_message(
                         chat_id=au["telegram_id"],
                         text=(
                             "Han pasado 15 minutos y {} no ha confirmado su llegada "
-                            "al punto de recogida de la ruta #{}.".format(courier_name, route_id)
+                            "al punto de recogida de la ruta #{}.\n\n"
+                            "Si eliges buscar otro repartidor, se intentara aplicar la penalidad de demora.\n\n"
+                            "Que deseas hacer?".format(courier_name, route_id)
                         ),
+                        reply_markup=InlineKeyboardMarkup(keyboard),
                     )
     except Exception:
         pass
@@ -5389,12 +5978,11 @@ def _release_route_by_timeout(route_id, courier_id, context):
     """Libera una ruta por timeout o inactividad y re-oferta."""
     _cancel_route_arrival_jobs(context, route_id)
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+    repost_count = 0
     try:
-        update_route_status(route_id, "PUBLISHED")
-        route = get_route_by_id(route_id)
-        if route:
-            ally_id = route["ally_id"]
-            publish_route_to_couriers(route_id, ally_id, context)
+        release_route_from_courier(route_id)
+        excluded_ids = {int(courier_id)} if courier_id else None
+        repost_count = repost_route_to_couriers(route_id, context, excluded_courier_ids=excluded_ids)
     except Exception as e:
         logger.warning("_release_route_by_timeout: %s", e)
     # Notificar al courier (equivalente a _release_order_by_timeout)
@@ -5419,10 +6007,146 @@ def _release_route_by_timeout(route_id, courier_id, context):
                 if au:
                     context.bot.send_message(
                         chat_id=au["telegram_id"],
-                        text="El repartidor fue liberado de la ruta #{} por inactividad. Buscando otro repartidor...".format(route_id),
+                        text=(
+                            "El repartidor fue liberado de la ruta #{} por inactividad. "
+                            "{}"
+                        ).format(
+                            route_id,
+                            "Buscando otro repartidor..." if repost_count > 0 else "No hay mas repartidores disponibles por ahora.",
+                        ),
                     )
     except Exception:
         pass
+
+
+def _handle_wait_route_courier(update, context, route_id):
+    """Aliado decide seguir esperando al repartidor de la ruta."""
+    query = update.callback_query
+    query.edit_message_text("Seguimos esperando al repartidor de la ruta #{}.".format(route_id))
+
+
+def _handle_find_another_route_abort(update, context, route_id):
+    """Cancela la advertencia de quitar la ruta al courier."""
+    query = update.callback_query
+    keyboard = [[InlineKeyboardButton("Buscar otro repartidor", callback_data="ruta_find_another_{}".format(route_id))]]
+    query.edit_message_text(
+        "Seguimos esperando al repartidor de la ruta #{}.".format(route_id),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _handle_find_another_route_courier(update, context, route_id, confirm=False):
+    """Aliado solicita buscar otro repartidor cuando el courier no llega a la ruta."""
+    query = update.callback_query
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        query.edit_message_text("Esta ruta ya no esta disponible para esta accion.")
+        return
+    telegram_id = update.effective_user.id
+    user = get_user_by_telegram_id(telegram_id)
+    ally = get_ally_by_user_id(user["id"]) if user else None
+    if not ally or ally["id"] != route["ally_id"]:
+        query.answer("No tienes permiso para esta accion.")
+        return
+
+    if not confirm:
+        cfg = get_order_penalty_config()
+        keyboard = [[
+            InlineKeyboardButton(
+                "Confirmar cambio",
+                callback_data="ruta_find_another_confirm_{}".format(route_id),
+            ),
+            InlineKeyboardButton(
+                "Seguir esperando",
+                callback_data="ruta_find_another_abort_{}".format(route_id),
+            ),
+        ]]
+        query.edit_message_text(
+            (
+                "Vas a quitarle la ruta #{} al repartidor actual.\n\n"
+                "Si confirmas, se intentara aplicar una penalidad de ${:,} al repartidor.\n"
+                "Distribucion:\n"
+                "- Aliado: ${:,}\n"
+                "- Plataforma: ${:,}\n\n"
+                "Luego la ruta se re-ofrecera automaticamente a otros repartidores."
+            ).format(
+                route_id,
+                cfg["courier_delay_penalty_total"],
+                cfg["courier_delay_penalty_ally_share"],
+                cfg["courier_delay_penalty_platform_share"],
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    outcome = penalize_route_courier_for_delay_and_release(
+        route_id,
+        reason="ALLY_DELAY_RELEASE_CONFIRMED",
+    )
+    if not outcome["ok"]:
+        query.edit_message_text(outcome["message"])
+        return
+
+    _cancel_route_arrival_jobs(context, route_id)
+    context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
+    courier_id = outcome["courier_id"]
+    excluded_ids = {courier_id} if courier_id else set()
+    repost_count = repost_route_to_couriers(route_id, context, excluded_courier_ids=excluded_ids)
+
+    if courier_id:
+        try:
+            courier = get_courier_by_id(courier_id)
+            courier_user = get_user_by_id(courier["user_id"]) if courier else None
+            if courier_user and courier_user["telegram_id"]:
+                courier_text = (
+                    "La ruta #{} te fue retirada por demora en la llegada al pickup."
+                    .format(route_id)
+                )
+                if outcome["penalty_applied"]:
+                    courier_text += (
+                        "\nSe descontaron ${:,} de tu saldo: ${:,} para el aliado y ${:,} para la Plataforma."
+                        .format(
+                            outcome["penalty_total"],
+                            outcome["ally_compensation"],
+                            outcome["platform_share"],
+                        )
+                    )
+                else:
+                    courier_text += "\nNo se pudo aplicar la penalidad automatica: {}.".format(
+                        outcome["penalty_message"] or "motivo no disponible"
+                    )
+                context.bot.send_message(chat_id=courier_user["telegram_id"], text=courier_text)
+        except Exception as e:
+            logger.warning("No se pudo notificar penalidad de ruta al courier: %s", e)
+
+    query.edit_message_text(
+        (
+            "La ruta #{} fue liberada del repartidor actual.\n"
+            "{}\n"
+            "Compensacion al aliado: ${:,}.\n"
+            "Plataforma: ${:,}."
+        ).format(
+            route_id,
+            "Penalidad aplicada." if outcome["penalty_applied"] else (
+                outcome["penalty_message"] or "No se pudo aplicar la penalidad automaticamente."
+            ),
+            outcome["ally_compensation"] if outcome["penalty_applied"] else 0,
+            outcome["platform_share"] if outcome["penalty_applied"] else 0,
+        )
+    )
+
+    if repost_count <= 0:
+        try:
+            route_fresh = get_route_by_id(route_id)
+            ally_row = get_ally_by_id(route_fresh["ally_id"]) if route_fresh and route_fresh["ally_id"] else None
+            ally_user = get_user_by_id(ally_row["user_id"]) if ally_row else None
+            if ally_user and ally_user["telegram_id"]:
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text="No hay mas repartidores disponibles para la ruta #{} en este momento.".format(route_id),
+                )
+        except Exception:
+            pass
 
 
 def _handle_route_arrival_enroute(update, context, route_id):
@@ -5729,6 +6453,22 @@ def handle_route_callback(update, context):
         route_id = int(data.replace("ruta_arrival_release_", ""))
         return _handle_route_arrival_release(update, context, route_id)
 
+    if data.startswith("ruta_find_another_confirm_"):
+        route_id = int(data.replace("ruta_find_another_confirm_", ""))
+        return _handle_find_another_route_courier(update, context, route_id, confirm=True)
+
+    if data.startswith("ruta_find_another_abort_"):
+        route_id = int(data.replace("ruta_find_another_abort_", ""))
+        return _handle_find_another_route_abort(update, context, route_id)
+
+    if data.startswith("ruta_find_another_"):
+        route_id = int(data.replace("ruta_find_another_", ""))
+        return _handle_find_another_route_courier(update, context, route_id)
+
+    if data.startswith("ruta_wait_courier_"):
+        route_id = int(data.replace("ruta_wait_courier_", ""))
+        return _handle_wait_route_courier(update, context, route_id)
+
     if data.startswith("ruta_orden_"):
         return _handle_route_reorder(update, context, data)
 
@@ -5812,6 +6552,12 @@ def handle_route_callback(update, context):
         if len(parts) == 2:
             return _handle_admin_route_pinissue_action(update, context, int(parts[0]), int(parts[1]), "cancel_ally")
 
+    if data.startswith("ruta_cancelar_aliado_confirm_"):
+        route_id = int(data.replace("ruta_cancelar_aliado_confirm_", ""))
+        return _handle_cancel_ally_route(update, context, route_id, confirm=True)
+    if data.startswith("ruta_cancelar_aliado_abort_"):
+        route_id = int(data.replace("ruta_cancelar_aliado_abort_", ""))
+        return _handle_cancel_ally_route_abort(update, context, route_id)
     if data.startswith("ruta_cancelar_aliado_"):
         route_id = int(data.replace("ruta_cancelar_aliado_", ""))
         return _handle_cancel_ally_route(update, context, route_id)

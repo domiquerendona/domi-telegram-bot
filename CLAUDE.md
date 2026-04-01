@@ -207,6 +207,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
+  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad.
 - **`profile_changes.py`**: flujo de solicitudes de cambio de perfil de usuarios.
 
 ### Regla Anti-Importación Circular

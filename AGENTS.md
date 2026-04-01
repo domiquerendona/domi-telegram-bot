@@ -445,6 +445,22 @@ No romper flujos existentes que ya funcionan.
 
 Cualquier ajuste debe ser compatible con el flujo actual del bot.
 
+4B. Regla obligatoria de expiración sin penalidad
+
+Cuando un pedido o una ruta se cancela automáticamente porque se agotó la ventana de respuesta del mercado
+(por ejemplo: nadie aceptó / nadie respondió dentro del tiempo configurado del flujo),
+NO debe aplicarse penalidad a ningún actor.
+
+Esto incluye:
+- aliado
+- admin creador de pedido especial
+- repartidor
+
+Reglas:
+- La cancelación automática por falta de respuesta SIEMPRE se considera sin culpa de los actores.
+- El mensaje al creador del servicio DEBE dejar explícito que no se aplicó ningún cargo.
+- PROHIBIDO reutilizar motores de cancelación con penalidad para expiraciones automáticas de mercado.
+
 5. Regla anti-duplicación (OBLIGATORIA)
 
 Antes de escribir código, el agente debe:
@@ -464,6 +480,28 @@ funciones no usadas
 handlers registrados dos veces
 
 callbacks duplicados con distinto patrón
+
+5B. Regla obligatoria de auditoría transversal de flujos
+
+Cuando se cree o cambie un flujo nuevo, el agente DEBE revisar explícitamente si esa misma lógica aplica
+también a otros flujos equivalentes ya existentes.
+
+Objetivo:
+- mantener uniformidad operativa entre flujos que representan la misma regla de negocio
+- evitar que una mejora quede implementada solo en un flujo y no en los demás
+- privilegiar un mismo motor lógico con adaptadores mínimos por flujo
+
+Obligaciones mínimas:
+- auditar los flujos hermanos antes de cerrar el cambio
+- identificar cuáles quedan cubiertos, cuáles no aplican y cuáles requieren adaptación
+- si la regla sí aplica a varios flujos, implementarla de forma uniforme en el mismo ciclo o dejar explícita la brecha y su razón
+- reutilizar helpers, servicios o motores existentes antes de duplicar lógica
+
+Ejemplos típicos de auditoría transversal:
+- pedido de aliado
+- pedido especial de admin
+- ruta multi-parada
+- panel admin vs panel aliado vs callbacks del courier
 
 6. Flujo de trabajo con IA (OBLIGATORIO)
 Antes de cambiar código

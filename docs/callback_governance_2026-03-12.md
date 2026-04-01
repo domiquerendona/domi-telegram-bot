@@ -25,7 +25,7 @@ Decision operativa:
 | `acust_` | `acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_{id}|restaurar_{id}|dirs|editar|dir_ver_{id}|...)` | `Backend/main.py` | `admin_clientes_*` | No documentado | Documentar tal como esta |
 | `adirs_` | `adirs_(nueva|volver_menu|cerrar|ver_{id}|archivar_{id}|editar_{id})` | `Backend/main.py` | `admin_dirs_*` | No documentado | Documentar tal como esta |
 | `admin_` | `admin_*`, `admin_pinissue_*`, `admin_ruta_pinissue_*` | `Backend/main.py`, `Backend/order_delivery.py`, `Backend/profile_changes.py` | `admin_menu_callback`, `order_courier_callback`, `handle_route_callback` | Documentado, pero muy amplio | Mantener tal como esta |
-| `admpedidos_` | `admpedidos_(list|detail|cancel|stats|statsdetail)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `admin_orders_callback` | Documentado | Mantener tal como esta |
+| `admpedidos_` | `admpedidos_(list|detail|cancel|cancel_confirm|cancel_abort|stats|statsdetail)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `admin_orders_callback` | Documentado | Mantener tal como esta |
 | `agenda_` | `agenda_(pickups|clientes|cerrar|volver|pickup_...)` | `Backend/main.py` | `agenda_menu_callback`, `agenda_pickups_*` | Documentado | Mantener tal como esta |
 | `ally_` | `ally_(approve|reject)_{id}`, `ally_block_(block|unblock)_{id}` | `Backend/main.py` | `ally_approval_callback`, `ally_block_callback` | Documentado | Mantener tal como esta |
 | `ally_team` | Estandar nuevo: `ally_team_{team_code}`. Legacy soportado: `ally_team:{team_code}` | `Backend/main.py` | `ally_team_callback` | Fuera de estandar legacy; compatibilidad dual activa | Migrar despues |
@@ -42,7 +42,7 @@ Decision operativa:
 | `local_` | `local_(check|status|couriers_pending|courier_approve|courier_block|allies_pending|team_...|recargas_pending)_...` | `Backend/main.py` | `admin_local_callback`, `local_recargas_pending_callback` | No documentado | Documentar tal como esta |
 | `menu_` | `menu_*` | `Backend/main.py` | `pendientes_callback` y navegacion principal | Documentado | Mantener tal como esta |
 | `offer_` | `offer_inc_{order_id}x{monto}`, `offer_inc_otro_{order_id}` | `Backend/main.py`, `Backend/order_delivery.py` | `offer_suggest_inc_*` | No documentado | Documentar tal como esta |
-| `order_` | `order_(accept|reject|busy|pickup|delivered|release|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue|pickupconfirm_...)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `order_courier_callback` | Documentado | Mantener tal como esta |
+| `order_` | `order_(accept|reject|busy|pickup|delivered|release|cancel|cancel_confirm|cancel_abort|find_another|find_another_confirm|find_another_abort|wait_courier|call_courier|confirm_pickup|pinissue|pickupconfirm_...)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `order_courier_callback` | Documentado | Mantener tal como esta |
 | `pagos_` | `pagos_(agregar|gestionar|cerrar|volver|ver_{id}|toggle_{id}_{flag}|delete_{id})` | `Backend/main.py` | `pagos_callback` | Documentado | Mantener tal como esta |
 | `pedido_` | `pedido_(cliente_*|sel_*|instr_*|tipo_*|base_*|retry_quote|inc_*|confirmar|cancelar|guardar_...)` | `Backend/main.py`, `Backend/order_delivery.py` | flujo de pedido y edicion de incentivo | Documentado | Mantener tal como esta |
 | `perfil_` | `perfil_change_*` | `Backend/main.py`, `Backend/profile_changes.py` | `perfil_change_*` | Documentado | Mantener tal como esta |
@@ -54,7 +54,7 @@ Decision operativa:
 | `recargar_` | `recargar_(role|admin|cancel)_...` | `Backend/main.py` | `recargar_rol_callback`, `recargar_admin_callback` | Documentado | Mantener tal como esta |
 | `recharge_` | `recharge_(approve|reject|proof)_{id}` | `Backend/main.py` | `recharge_callback`, `recharge_proof_callback` | Duplicado funcional de recargas; no documentado | Deprecar |
 | `ref_` | `ref_(list|view|approve|reject|setloc)_...` | `Backend/main.py` | `reference_validation_callback` | Documentado | Mantener tal como esta |
-| `ruta_` | `ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|pickup_*|sel_*|confirmar|cancelar|guardar_clientes_...)` | `Backend/main.py`, `Backend/order_delivery.py` | `handle_route_callback` y flujo de creacion de ruta | Documentado | Mantener tal como esta |
+| `ruta_` | `ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|arrival_*|find_another|find_another_confirm|find_another_abort|wait_courier|cancelar_aliado|cancelar_aliado_confirm|cancelar_aliado_abort|pinissue|pickup_*|sel_*|confirmar|cancelar|guardar_clientes_...)` | `Backend/main.py`, `Backend/order_delivery.py` | `handle_route_callback` y flujo de creacion de ruta | Documentado | Mantener tal como esta |
 | `solequipo_` | `solequipo_(start|courier_sel_{id}|ally_sel_{id})` | `Backend/main.py` | `solequipo_*` | No documentado | Documentar tal como esta |
 | `terms_` | `terms_(accept|decline)_{role}` | `Backend/main.py` | `terms_callback` | Documentado | Mantener tal como esta |
 | `ubicacion_` | `ubicacion_copiar_msg_cliente` | `Backend/main.py` | `pedido_ubicacion_copiar_msg_callback` | Documentado | Mantener tal como esta |

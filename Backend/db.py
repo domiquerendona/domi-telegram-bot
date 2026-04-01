@@ -310,6 +310,31 @@ def get_connection():
 
 STANDARD_ROLE_STATUSES = {"PENDING", "APPROVED", "REJECTED", "INACTIVE"}
 
+ORDER_CANCEL_GRACE_SECONDS = 60
+ORDER_CANCEL_AFTER_GRACE_TOTAL = 300
+ORDER_CANCEL_WITH_COURIER_TOTAL = 800
+ORDER_CANCEL_WITH_COURIER_COURIER_SHARE = 600
+ORDER_CANCEL_WITH_COURIER_PLATFORM_SHARE = 200
+ORDER_DELAY_PENALTY_SECONDS = 15 * 60
+ORDER_DELAY_PENALTY_TOTAL = 800
+ORDER_DELAY_PENALTY_ALLY_SHARE = 600
+ORDER_DELAY_PENALTY_PLATFORM_SHARE = 200
+
+
+def get_order_penalty_config() -> dict:
+    """Configuracion oficial de cargos por cancelacion y demora de pedidos."""
+    return {
+        "ally_cancel_grace_seconds": ORDER_CANCEL_GRACE_SECONDS,
+        "ally_cancel_after_grace_total": ORDER_CANCEL_AFTER_GRACE_TOTAL,
+        "ally_cancel_with_courier_total": ORDER_CANCEL_WITH_COURIER_TOTAL,
+        "ally_cancel_with_courier_courier_share": ORDER_CANCEL_WITH_COURIER_COURIER_SHARE,
+        "ally_cancel_with_courier_platform_share": ORDER_CANCEL_WITH_COURIER_PLATFORM_SHARE,
+        "courier_delay_penalty_seconds": ORDER_DELAY_PENALTY_SECONDS,
+        "courier_delay_penalty_total": ORDER_DELAY_PENALTY_TOTAL,
+        "courier_delay_penalty_ally_share": ORDER_DELAY_PENALTY_ALLY_SHARE,
+        "courier_delay_penalty_platform_share": ORDER_DELAY_PENALTY_PLATFORM_SHARE,
+    }
+
 
 def normalize_role_status(status: str) -> str:
     """
@@ -3205,12 +3230,6 @@ def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
-    
-    # Check if 'reason' column exists and add it if it doesn't
-    cur.execute("PRAGMA table_info(orders)")
-    columns = [col[1] for col in cur.fetchall()]
-    if 'reason' not in columns:
-        cur.execute("ALTER TABLE orders ADD COLUMN reason TEXT")
 
     cur.execute(f"""
         UPDATE orders
@@ -3219,6 +3238,993 @@ def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     """, (canceled_by, reason, order_id))
     conn.commit()
     conn.close()
+
+
+def _resolve_platform_penalty_receiver_id() -> int:
+    """Cuenta destino para la parte de plataforma en penalidades de pedidos."""
+    sociedad_id = get_platform_sociedad_id()
+    if sociedad_id:
+        return int(sociedad_id)
+    platform_admin_id = get_platform_admin_id()
+    if platform_admin_id:
+        return int(platform_admin_id)
+    platform_admin = get_platform_admin()
+    return int(_row_value(platform_admin, "id", 0, 0) or 0)
+
+
+def _resolve_link_admin_id_in_tx(cur, target_type: str, target_id: int, snapshot_admin_id=None) -> int:
+    """Resuelve el admin_id del vinculo dentro de la misma transaccion."""
+    if snapshot_admin_id:
+        return int(snapshot_admin_id)
+    if not target_id:
+        return 0
+
+    if target_type == "ALLY":
+        table = "admin_allies"
+        key = "ally_id"
+    elif target_type == "COURIER":
+        table = "admin_couriers"
+        key = "courier_id"
+    else:
+        return 0
+
+    cur.execute(
+        f"""
+        SELECT admin_id
+        FROM {table}
+        WHERE {key} = {P} AND status = 'APPROVED'
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (int(target_id),),
+    )
+    row = cur.fetchone()
+    return int(_row_value(row, "admin_id", 0, 0) or 0)
+
+
+def _get_link_balance_for_update_in_tx(cur, target_type: str, target_id: int, admin_id: int):
+    """Bloquea y retorna el saldo del vinculo target-admin en la transaccion actual."""
+    if not target_id or not admin_id:
+        return None
+
+    if target_type == "ALLY":
+        table = "admin_allies"
+        key = "ally_id"
+    elif target_type == "COURIER":
+        table = "admin_couriers"
+        key = "courier_id"
+    else:
+        return None
+
+    for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+    cur.execute(
+        f"""
+        SELECT balance
+        FROM {table}
+        WHERE {key} = {P} AND admin_id = {P}
+        {for_update}
+        """,
+        (int(target_id), int(admin_id)),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return int(_row_value(row, "balance", 0, 0) or 0)
+
+
+def _get_admin_balance_for_update_in_tx(cur, admin_id: int):
+    """Bloquea y retorna el saldo del admin destino para penalidades."""
+    if not admin_id:
+        return None
+    for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+    cur.execute(
+        "SELECT balance FROM admins WHERE id = " + P + for_update,
+        (int(admin_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return int(_row_value(row, "balance", 0, 0) or 0)
+
+
+def _update_admin_balance_in_tx(cur, admin_id: int, delta: int) -> bool:
+    """Actualiza el saldo de un admin dentro de una transaccion ya abierta."""
+    if not admin_id:
+        return False
+    cur.execute(
+        "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P + " AND balance + " + P + " >= 0",
+        (int(delta), int(admin_id), int(delta)),
+    )
+    return cur.rowcount == 1
+
+
+def _update_link_balance_in_tx(cur, target_type: str, target_id: int, admin_id: int, delta: int, now_sql: str) -> bool:
+    """Actualiza saldo de un vinculo dentro de una transaccion ya abierta."""
+    if not target_id or not admin_id:
+        return False
+
+    if target_type == "ALLY":
+        table = "admin_allies"
+        key = "ally_id"
+    elif target_type == "COURIER":
+        table = "admin_couriers"
+        key = "courier_id"
+    else:
+        return False
+
+    cur.execute(
+        f"""
+        UPDATE {table}
+        SET balance = balance + {P}, updated_at = {now_sql}
+        WHERE {key} = {P} AND admin_id = {P}
+          AND balance + {P} >= 0
+        """,
+        (int(delta), int(target_id), int(admin_id), int(delta)),
+    )
+    return cur.rowcount == 1
+
+
+def _insert_ledger_entry_in_tx(cur, kind: str, from_type: str, from_id: int, to_type: str, to_id: int,
+                               amount: int, ref_type: str = None, ref_id: int = None, note: str = None) -> int:
+    """Inserta un movimiento en ledger usando la transaccion actual."""
+    return _insert_returning_id(
+        cur,
+        f"""
+        INSERT INTO ledger (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note)
+        VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P})
+        """,
+        (kind, from_type, from_id, to_type, to_id, amount, ref_type, ref_id, note),
+    )
+
+
+def _calculate_cancellation_penalty_preview(
+    status_before: str,
+    created_at,
+    charge_owner_type: str,
+    has_courier: bool,
+    cfg: dict,
+) -> dict:
+    """Calcula el preview oficial de penalidad por cancelacion."""
+    preview = {
+        "fee_total": 0,
+        "courier_compensation": 0,
+        "platform_share": 0,
+        "penalty_code": "FREE_CANCEL",
+        "elapsed_created_seconds": 0,
+    }
+
+    if charge_owner_type not in ("ALLY", "ADMIN"):
+        return preview
+
+    created_dt = _coerce_datetime(created_at)
+    elapsed_created = max(
+        0,
+        int((datetime.now(timezone.utc).replace(tzinfo=None) - created_dt).total_seconds()),
+    )
+    preview["elapsed_created_seconds"] = elapsed_created
+
+    if status_before == "ACCEPTED" and has_courier:
+        preview.update(
+            {
+                "fee_total": cfg["ally_cancel_with_courier_total"],
+                "courier_compensation": cfg["ally_cancel_with_courier_courier_share"],
+                "platform_share": cfg["ally_cancel_with_courier_platform_share"],
+                "penalty_code": "WITH_COURIER",
+            }
+        )
+        return preview
+
+    if elapsed_created > cfg["ally_cancel_grace_seconds"]:
+        preview.update(
+            {
+                "fee_total": cfg["ally_cancel_after_grace_total"],
+                "courier_compensation": 0,
+                "platform_share": cfg["ally_cancel_after_grace_total"],
+                "penalty_code": "AFTER_GRACE",
+            }
+        )
+
+    return preview
+
+
+def _apply_cancellation_penalty_in_tx(
+    cur,
+    payer_type: str,
+    payer_id: int,
+    payer_admin_id: int,
+    courier_id: int,
+    courier_admin_id: int,
+    fee_total: int,
+    courier_compensation: int,
+    platform_share: int,
+    ref_type: str,
+    ref_id: int,
+    entity_label: str,
+    now_sql: str,
+) -> tuple:
+    """Aplica una penalidad de cancelacion al pagador configurado."""
+    if fee_total <= 0:
+        return False, ""
+
+    payer_type = (payer_type or "").strip().upper()
+    payer_label = "admin creador" if payer_type == "ADMIN" else "aliado"
+    platform_receiver_id = _resolve_platform_penalty_receiver_id()
+
+    if payer_type == "ADMIN":
+        source_balance = _get_admin_balance_for_update_in_tx(cur, payer_id)
+    else:
+        source_balance = _get_link_balance_for_update_in_tx(cur, "ALLY", payer_id, payer_admin_id)
+
+    courier_balance = None
+    if courier_compensation > 0:
+        courier_balance = _get_link_balance_for_update_in_tx(cur, "COURIER", courier_id, courier_admin_id)
+    platform_balance = _get_admin_balance_for_update_in_tx(cur, platform_receiver_id) if platform_share > 0 else 0
+
+    if source_balance is None:
+        return False, "No se encontro la cuenta del {} para aplicar el cargo.".format(payer_label)
+    if courier_compensation > 0 and courier_balance is None:
+        return False, "No se encontro el vinculo del repartidor para acreditar la compensacion."
+    if platform_share > 0 and platform_balance is None:
+        return False, "No se encontro la cuenta de plataforma para registrar la penalidad."
+    if source_balance < fee_total:
+        return (
+            False,
+            "Saldo insuficiente del {}. Disponible: ${:,}. Requerido: ${:,}.".format(
+                payer_label,
+                source_balance,
+                fee_total,
+            ),
+        )
+
+    if payer_type == "ADMIN":
+        if not _update_admin_balance_in_tx(cur, payer_id, -fee_total):
+            raise RuntimeError("No se pudo debitar el saldo del admin en cancelacion.")
+    else:
+        if not _update_link_balance_in_tx(cur, "ALLY", payer_id, payer_admin_id, -fee_total, now_sql):
+            raise RuntimeError("No se pudo debitar el saldo del aliado en cancelacion.")
+
+    if courier_compensation > 0:
+        if not _update_link_balance_in_tx(
+            cur,
+            "COURIER",
+            courier_id,
+            courier_admin_id,
+            courier_compensation,
+            now_sql,
+        ):
+            raise RuntimeError("No se pudo acreditar compensacion al repartidor.")
+        _insert_ledger_entry_in_tx(
+            cur,
+            "CANCELLATION_COMPENSATION",
+            payer_type,
+            payer_id,
+            "COURIER",
+            courier_id,
+            courier_compensation,
+            ref_type,
+            int(ref_id),
+            "Compensacion al repartidor por cancelacion de {}".format(entity_label),
+        )
+
+    if platform_share > 0:
+        cur.execute(
+            "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P,
+            (int(platform_share), int(platform_receiver_id)),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("No se pudo acreditar la parte de plataforma en cancelacion.")
+        _insert_ledger_entry_in_tx(
+            cur,
+            "CANCELLATION_FEE" if courier_compensation == 0 else "CANCELLATION_PLATFORM_FEE",
+            payer_type,
+            payer_id,
+            "ADMIN",
+            int(platform_receiver_id),
+            int(platform_share),
+            ref_type,
+            int(ref_id),
+            "Cargo de plataforma por cancelacion de {}".format(entity_label),
+        )
+
+    return True, "Cargo aplicado correctamente."
+
+
+def _apply_courier_delay_penalty_in_tx(
+    cur,
+    ref_type: str,
+    ref_id: int,
+    ally_id: int,
+    ally_admin_id: int,
+    courier_id: int,
+    courier_admin_id: int,
+    cfg: dict,
+    now_sql: str,
+) -> tuple:
+    """Aplica la penalidad oficial por demora critica del courier."""
+    platform_receiver_id = _resolve_platform_penalty_receiver_id()
+
+    source_balance = _get_link_balance_for_update_in_tx(cur, "COURIER", courier_id, courier_admin_id)
+    ally_balance = _get_link_balance_for_update_in_tx(cur, "ALLY", ally_id, ally_admin_id)
+    platform_balance = _get_admin_balance_for_update_in_tx(cur, platform_receiver_id)
+
+    if source_balance is None:
+        return False, "No se encontro el vinculo del repartidor para aplicar la penalidad."
+    if ally_balance is None:
+        return False, "No se encontro el vinculo del aliado para acreditar la compensacion."
+    if platform_balance is None:
+        return False, "No se encontro la cuenta de plataforma para registrar la penalidad."
+    if source_balance < cfg["courier_delay_penalty_total"]:
+        return (
+            False,
+            "Saldo insuficiente del repartidor. Disponible: ${:,}. Requerido: ${:,}.".format(
+                source_balance,
+                cfg["courier_delay_penalty_total"],
+            ),
+        )
+
+    if not _update_link_balance_in_tx(
+        cur,
+        "COURIER",
+        courier_id,
+        courier_admin_id,
+        -cfg["courier_delay_penalty_total"],
+        now_sql,
+    ):
+        raise RuntimeError("No se pudo debitar el saldo del repartidor en penalidad por demora.")
+    if not _update_link_balance_in_tx(
+        cur,
+        "ALLY",
+        ally_id,
+        ally_admin_id,
+        cfg["courier_delay_penalty_ally_share"],
+        now_sql,
+    ):
+        raise RuntimeError("No se pudo acreditar compensacion al aliado.")
+
+    cur.execute(
+        "UPDATE admins SET balance = balance + " + P + " WHERE id = " + P,
+        (int(cfg["courier_delay_penalty_platform_share"]), int(platform_receiver_id)),
+    )
+    if cur.rowcount != 1:
+        raise RuntimeError("No se pudo acreditar la parte de plataforma en penalidad por demora.")
+
+    entity_name = "pedido" if ref_type == "ORDER" else "ruta"
+    _insert_ledger_entry_in_tx(
+        cur,
+        "DELAY_PENALTY_COMPENSATION",
+        "COURIER",
+        courier_id,
+        "ALLY",
+        ally_id,
+        int(cfg["courier_delay_penalty_ally_share"]),
+        ref_type,
+        int(ref_id),
+        "Compensacion al aliado por demora critica de la {} #{}".format(entity_name, ref_id),
+    )
+    _insert_ledger_entry_in_tx(
+        cur,
+        "DELAY_PENALTY_PLATFORM_FEE",
+        "COURIER",
+        courier_id,
+        "ADMIN",
+        int(platform_receiver_id),
+        int(cfg["courier_delay_penalty_platform_share"]),
+        ref_type,
+        int(ref_id),
+        "Cargo de plataforma por demora critica de la {} #{}".format(entity_name, ref_id),
+    )
+
+    return True, "Penalidad aplicada correctamente."
+
+
+def cancel_order_by_actor(order_id: int, actor_type: str, actor_admin_id: int = None, reason: str = None) -> dict:
+    """Cancela un pedido y aplica penalidades de forma atomica cuando corresponde."""
+    actor = (actor_type or "").strip().upper()
+    if actor not in ("ALLY", "ADMIN", "SYSTEM", "COURIER"):
+        raise ValueError("actor_type invalido para cancel_order_by_actor")
+
+    cfg = get_order_penalty_config()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
+    result = {
+        "ok": False,
+        "code": "UNKNOWN",
+        "message": "No se pudo cancelar el pedido.",
+        "order_id": int(order_id),
+        "actor_type": actor,
+        "actor_admin_id": int(actor_admin_id or 0),
+        "status_before": None,
+        "status_after": None,
+        "owner_ally_id": 0,
+        "creator_admin_id": 0,
+        "courier_id": 0,
+        "charged_owner_type": "",
+        "charged_owner_id": 0,
+        "charged_admin_id": 0,
+        "courier_admin_id": 0,
+        "fee_total": 0,
+        "courier_compensation": 0,
+        "platform_share": 0,
+        "penalty_code": "FREE_CANCEL",
+        "penalty_applied": False,
+        "penalty_message": "",
+        "elapsed_created_seconds": 0,
+    }
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT * FROM orders WHERE id = " + P + for_update,
+            (int(order_id),),
+        )
+        order = cur.fetchone()
+        if not order:
+            conn.rollback()
+            result.update(code="NOT_FOUND", message="Pedido no encontrado.")
+            return result
+
+        status_before = (_row_value(order, "status", 0) or "").strip().upper()
+        result["status_before"] = status_before
+        if status_before in ("DELIVERED", "CANCELLED"):
+            conn.rollback()
+            result.update(
+                code="INVALID_STATUS",
+                message="No se puede cancelar un pedido en estado {}.".format(status_before),
+            )
+            return result
+        if status_before not in ("PENDING", "PUBLISHED", "ACCEPTED"):
+            conn.rollback()
+            result.update(
+                code="INVALID_STATUS",
+                message="El pedido no esta en un estado cancelable.",
+            )
+            return result
+
+        ally_id = int(_row_value(order, "ally_id", 0, 0) or 0)
+        creator_admin_id = int(_row_value(order, "creator_admin_id", 0, 0) or 0)
+        courier_id = int(_row_value(order, "courier_id", 0, 0) or 0)
+        result["owner_ally_id"] = ally_id
+        result["creator_admin_id"] = creator_admin_id
+        result["courier_id"] = courier_id
+
+        charge_owner_type = ""
+        charge_owner_id = 0
+        charge_owner_admin_id = 0
+        if ally_id:
+            charge_owner_type = "ALLY"
+            charge_owner_id = ally_id
+            charge_owner_admin_id = _resolve_link_admin_id_in_tx(
+                cur,
+                "ALLY",
+                ally_id,
+                _row_value(order, "ally_admin_id_snapshot"),
+            )
+        elif creator_admin_id:
+            charge_owner_type = "ADMIN"
+            charge_owner_id = creator_admin_id
+            charge_owner_admin_id = creator_admin_id
+
+        courier_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "COURIER",
+            courier_id,
+            _row_value(order, "courier_admin_id_snapshot"),
+        )
+        if actor not in ("ALLY", "ADMIN"):
+            charge_owner_type = ""
+            charge_owner_id = 0
+            charge_owner_admin_id = 0
+        elif charge_owner_type == "ADMIN" and actor != "ADMIN":
+            charge_owner_type = ""
+            charge_owner_id = 0
+            charge_owner_admin_id = 0
+
+        result["charged_owner_type"] = charge_owner_type
+        result["charged_owner_id"] = int(charge_owner_id or 0)
+        result["charged_admin_id"] = int(charge_owner_admin_id or 0)
+        result["courier_admin_id"] = int(courier_admin_id or 0)
+
+        preview = _calculate_cancellation_penalty_preview(
+            status_before,
+            _row_value(order, "created_at"),
+            charge_owner_type,
+            bool(courier_id),
+            cfg,
+        )
+        result["elapsed_created_seconds"] = int(preview["elapsed_created_seconds"])
+        result["fee_total"] = int(preview["fee_total"])
+        result["courier_compensation"] = int(preview["courier_compensation"])
+        result["platform_share"] = int(preview["platform_share"])
+        result["penalty_code"] = preview["penalty_code"]
+
+        if result["fee_total"] > 0:
+            penalty_applied, penalty_message = _apply_cancellation_penalty_in_tx(
+                cur,
+                charge_owner_type,
+                charge_owner_id,
+                charge_owner_admin_id,
+                courier_id,
+                courier_admin_id,
+                int(result["fee_total"]),
+                int(result["courier_compensation"]),
+                int(result["platform_share"]),
+                "ORDER",
+                int(order_id),
+                "pedido #{}".format(order_id),
+                now_sql,
+            )
+            result["penalty_applied"] = penalty_applied
+            result["penalty_message"] = penalty_message
+
+        reason_text = reason or "{}_{}".format(actor, result["penalty_code"])
+        cur.execute(
+            f"""
+            UPDATE orders
+            SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
+            WHERE id = {P}
+            """,
+            (actor, reason_text, int(order_id)),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            result.update(code="RACE", message="El pedido cambio de estado antes de cancelar.")
+            return result
+
+        conn.commit()
+        result.update(ok=True, code="OK", status_after="CANCELLED", message="Pedido cancelado.")
+        logger.info(
+            "order_cancel_by_actor order_id=%s actor=%s owner_type=%s status_before=%s fee_total=%s penalty_applied=%s penalty_code=%s",
+            order_id,
+            actor,
+            charge_owner_type or "NONE",
+            status_before,
+            result["fee_total"],
+            result["penalty_applied"],
+            result["penalty_code"],
+        )
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def penalize_courier_for_delay_and_release(order_id: int, actor_admin_id: int = None, reason: str = None) -> dict:
+    """Penaliza al courier por demora critica y libera el pedido para reofertarlo."""
+    cfg = get_order_penalty_config()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    result = {
+        "ok": False,
+        "code": "UNKNOWN",
+        "message": "No se pudo liberar el pedido.",
+        "order_id": int(order_id),
+        "actor_admin_id": int(actor_admin_id or 0),
+        "status_before": None,
+        "status_after": None,
+        "ally_id": 0,
+        "ally_admin_id": 0,
+        "courier_id": 0,
+        "courier_admin_id": 0,
+        "penalty_total": cfg["courier_delay_penalty_total"],
+        "ally_compensation": cfg["courier_delay_penalty_ally_share"],
+        "platform_share": cfg["courier_delay_penalty_platform_share"],
+        "penalty_applied": False,
+        "penalty_message": "",
+        "delay_seconds": 0,
+    }
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT * FROM orders WHERE id = " + P + for_update,
+            (int(order_id),),
+        )
+        order = cur.fetchone()
+        if not order:
+            conn.rollback()
+            result.update(code="NOT_FOUND", message="Pedido no encontrado.")
+            return result
+
+        status_before = (_row_value(order, "status", 0) or "").strip().upper()
+        result["status_before"] = status_before
+        if status_before != "ACCEPTED":
+            conn.rollback()
+            result.update(code="INVALID_STATUS", message="El pedido no esta en estado ACCEPTED.")
+            return result
+
+        if _row_value(order, "courier_arrived_at"):
+            conn.rollback()
+            result.update(code="COURIER_ARRIVED", message="El repartidor ya reporto llegada al pickup.")
+            return result
+
+        accepted_at = _coerce_datetime(_row_value(order, "accepted_at"))
+        delay_seconds = max(0, int((now_dt - accepted_at).total_seconds()))
+        result["delay_seconds"] = delay_seconds
+        if delay_seconds < cfg["courier_delay_penalty_seconds"]:
+            conn.rollback()
+            result.update(
+                code="TOO_EARLY",
+                message="La penalidad por demora solo aplica despues de {} minutos.".format(
+                    cfg["courier_delay_penalty_seconds"] // 60
+                ),
+            )
+            return result
+
+        ally_id = int(_row_value(order, "ally_id", 0, 0) or 0)
+        courier_id = int(_row_value(order, "courier_id", 0, 0) or 0)
+        ally_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "ALLY",
+            ally_id,
+            _row_value(order, "ally_admin_id_snapshot"),
+        )
+        courier_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "COURIER",
+            courier_id,
+            _row_value(order, "courier_admin_id_snapshot"),
+        )
+        result["ally_id"] = ally_id
+        result["ally_admin_id"] = int(ally_admin_id or 0)
+        result["courier_id"] = courier_id
+        result["courier_admin_id"] = int(courier_admin_id or 0)
+
+        penalty_applied, penalty_message = _apply_courier_delay_penalty_in_tx(
+            cur,
+            "ORDER",
+            int(order_id),
+            ally_id,
+            ally_admin_id,
+            courier_id,
+            courier_admin_id,
+            cfg,
+            now_sql,
+        )
+        result["penalty_applied"] = penalty_applied
+        result["penalty_message"] = penalty_message
+
+        reason_text = reason or "ALLY_DELAY_RELEASE"
+        cur.execute(
+            f"""
+            UPDATE orders
+            SET status = 'PUBLISHED',
+                courier_id = NULL,
+                accepted_at = NULL,
+                courier_arrived_at = NULL,
+                reason = {P}
+            WHERE id = {P} AND status = 'ACCEPTED'
+            """,
+            (reason_text, int(order_id)),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            result.update(code="RACE", message="El pedido cambio de estado antes de liberarse.")
+            return result
+
+        conn.commit()
+        result.update(ok=True, code="OK", status_after="PUBLISHED", message="Pedido liberado y listo para reoferta.")
+        logger.info(
+            "order_delay_penalty_release order_id=%s delay_seconds=%s penalty_total=%s penalty_applied=%s",
+            order_id,
+            delay_seconds,
+            cfg["courier_delay_penalty_total"],
+            result["penalty_applied"],
+        )
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def cancel_route_by_actor(route_id: int, actor_type: str, actor_admin_id: int = None, reason: str = None) -> dict:
+    """Cancela una ruta y aplica penalidades de forma atomica cuando corresponde."""
+    actor = (actor_type or "").strip().upper()
+    if actor not in ("ALLY", "ADMIN", "SYSTEM", "COURIER"):
+        raise ValueError("actor_type invalido para cancel_route_by_actor")
+
+    cfg = get_order_penalty_config()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+
+    result = {
+        "ok": False,
+        "code": "UNKNOWN",
+        "message": "No se pudo cancelar la ruta.",
+        "route_id": int(route_id),
+        "actor_type": actor,
+        "actor_admin_id": int(actor_admin_id or 0),
+        "status_before": None,
+        "status_after": None,
+        "owner_ally_id": 0,
+        "courier_id": 0,
+        "charged_owner_type": "",
+        "charged_owner_id": 0,
+        "charged_admin_id": 0,
+        "courier_admin_id": 0,
+        "fee_total": 0,
+        "courier_compensation": 0,
+        "platform_share": 0,
+        "penalty_code": "FREE_CANCEL",
+        "penalty_applied": False,
+        "penalty_message": "",
+        "elapsed_created_seconds": 0,
+    }
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT * FROM routes WHERE id = " + P + for_update,
+            (int(route_id),),
+        )
+        route = cur.fetchone()
+        if not route:
+            conn.rollback()
+            result.update(code="NOT_FOUND", message="Ruta no encontrada.")
+            return result
+
+        status_before = (_row_value(route, "status", 0) or "").strip().upper()
+        result["status_before"] = status_before
+        if status_before in ("DELIVERED", "CANCELLED"):
+            conn.rollback()
+            result.update(
+                code="INVALID_STATUS",
+                message="No se puede cancelar una ruta en estado {}.".format(status_before),
+            )
+            return result
+        if status_before not in ("PUBLISHED", "ACCEPTED"):
+            conn.rollback()
+            result.update(
+                code="INVALID_STATUS",
+                message="La ruta no esta en un estado cancelable.",
+            )
+            return result
+
+        ally_id = int(_row_value(route, "ally_id", 0, 0) or 0)
+        courier_id = int(_row_value(route, "courier_id", 0, 0) or 0)
+        ally_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "ALLY",
+            ally_id,
+            _row_value(route, "ally_admin_id_snapshot"),
+        )
+        courier_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "COURIER",
+            courier_id,
+            _row_value(route, "courier_admin_id_snapshot"),
+        )
+
+        result["owner_ally_id"] = ally_id
+        result["courier_id"] = courier_id
+        result["charged_owner_type"] = "ALLY" if actor in ("ALLY", "ADMIN") and ally_id else ""
+        result["charged_owner_id"] = ally_id
+        result["charged_admin_id"] = int(ally_admin_id or 0)
+        result["courier_admin_id"] = int(courier_admin_id or 0)
+
+        preview = _calculate_cancellation_penalty_preview(
+            status_before,
+            _row_value(route, "created_at"),
+            result["charged_owner_type"],
+            bool(courier_id),
+            cfg,
+        )
+        result["elapsed_created_seconds"] = int(preview["elapsed_created_seconds"])
+        result["fee_total"] = int(preview["fee_total"])
+        result["courier_compensation"] = int(preview["courier_compensation"])
+        result["platform_share"] = int(preview["platform_share"])
+        result["penalty_code"] = preview["penalty_code"]
+
+        if result["fee_total"] > 0:
+            penalty_applied, penalty_message = _apply_cancellation_penalty_in_tx(
+                cur,
+                "ALLY",
+                ally_id,
+                ally_admin_id,
+                courier_id,
+                courier_admin_id,
+                int(result["fee_total"]),
+                int(result["courier_compensation"]),
+                int(result["platform_share"]),
+                "ROUTE",
+                int(route_id),
+                "ruta #{}".format(route_id),
+                now_sql,
+            )
+            result["penalty_applied"] = penalty_applied
+            result["penalty_message"] = penalty_message
+
+        cur.execute(
+            f"""
+            UPDATE routes
+            SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
+            WHERE id = {P}
+            """,
+            (actor, int(route_id)),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            result.update(code="RACE", message="La ruta cambio de estado antes de cancelar.")
+            return result
+
+        conn.commit()
+        result.update(ok=True, code="OK", status_after="CANCELLED", message="Ruta cancelada.")
+        logger.info(
+            "route_cancel_by_actor route_id=%s actor=%s status_before=%s fee_total=%s penalty_applied=%s penalty_code=%s",
+            route_id,
+            actor,
+            status_before,
+            result["fee_total"],
+            result["penalty_applied"],
+            result["penalty_code"],
+        )
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def penalize_route_courier_for_delay_and_release(route_id: int, actor_admin_id: int = None, reason: str = None) -> dict:
+    """Penaliza al courier por demora critica en una ruta y la libera para reoferta."""
+    cfg = get_order_penalty_config()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    result = {
+        "ok": False,
+        "code": "UNKNOWN",
+        "message": "No se pudo liberar la ruta.",
+        "route_id": int(route_id),
+        "actor_admin_id": int(actor_admin_id or 0),
+        "status_before": None,
+        "status_after": None,
+        "ally_id": 0,
+        "ally_admin_id": 0,
+        "courier_id": 0,
+        "courier_admin_id": 0,
+        "penalty_total": cfg["courier_delay_penalty_total"],
+        "ally_compensation": cfg["courier_delay_penalty_ally_share"],
+        "platform_share": cfg["courier_delay_penalty_platform_share"],
+        "penalty_applied": False,
+        "penalty_message": "",
+        "delay_seconds": 0,
+    }
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+
+        for_update = " FOR UPDATE" if DB_ENGINE == "postgres" else ""
+        cur.execute(
+            "SELECT * FROM routes WHERE id = " + P + for_update,
+            (int(route_id),),
+        )
+        route = cur.fetchone()
+        if not route:
+            conn.rollback()
+            result.update(code="NOT_FOUND", message="Ruta no encontrada.")
+            return result
+
+        status_before = (_row_value(route, "status", 0) or "").strip().upper()
+        result["status_before"] = status_before
+        if status_before != "ACCEPTED":
+            conn.rollback()
+            result.update(code="INVALID_STATUS", message="La ruta no esta en estado ACCEPTED.")
+            return result
+
+        if _row_value(route, "courier_arrived_at"):
+            conn.rollback()
+            result.update(code="COURIER_ARRIVED", message="El repartidor ya reporto llegada al pickup.")
+            return result
+
+        accepted_at = _coerce_datetime(_row_value(route, "accepted_at"))
+        delay_seconds = max(0, int((now_dt - accepted_at).total_seconds()))
+        result["delay_seconds"] = delay_seconds
+        if delay_seconds < cfg["courier_delay_penalty_seconds"]:
+            conn.rollback()
+            result.update(
+                code="TOO_EARLY",
+                message="La penalidad por demora solo aplica despues de {} minutos.".format(
+                    cfg["courier_delay_penalty_seconds"] // 60
+                ),
+            )
+            return result
+
+        ally_id = int(_row_value(route, "ally_id", 0, 0) or 0)
+        courier_id = int(_row_value(route, "courier_id", 0, 0) or 0)
+        ally_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "ALLY",
+            ally_id,
+            _row_value(route, "ally_admin_id_snapshot"),
+        )
+        courier_admin_id = _resolve_link_admin_id_in_tx(
+            cur,
+            "COURIER",
+            courier_id,
+            _row_value(route, "courier_admin_id_snapshot"),
+        )
+        result["ally_id"] = ally_id
+        result["ally_admin_id"] = int(ally_admin_id or 0)
+        result["courier_id"] = courier_id
+        result["courier_admin_id"] = int(courier_admin_id or 0)
+
+        penalty_applied, penalty_message = _apply_courier_delay_penalty_in_tx(
+            cur,
+            "ROUTE",
+            int(route_id),
+            ally_id,
+            ally_admin_id,
+            courier_id,
+            courier_admin_id,
+            cfg,
+            now_sql,
+        )
+        result["penalty_applied"] = penalty_applied
+        result["penalty_message"] = penalty_message
+
+        cur.execute(
+            f"""
+            UPDATE routes
+            SET status = 'PUBLISHED',
+                courier_id = NULL,
+                accepted_at = NULL,
+                courier_arrived_at = NULL,
+                courier_admin_id_snapshot = NULL
+            WHERE id = {P} AND status = 'ACCEPTED'
+            """,
+            (int(route_id),),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            result.update(code="RACE", message="La ruta cambio de estado antes de liberarse.")
+            return result
+
+        conn.commit()
+        result.update(ok=True, code="OK", status_after="PUBLISHED", message="Ruta liberada y lista para reoferta.")
+        logger.info(
+            "route_delay_penalty_release route_id=%s delay_seconds=%s penalty_total=%s penalty_applied=%s",
+            route_id,
+            delay_seconds,
+            cfg["courier_delay_penalty_total"],
+            result["penalty_applied"],
+        )
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_order_status_by_id(order_id: int):
@@ -5940,18 +6946,25 @@ def get_orders_by_courier(courier_id: int, limit: int = 50):
 
 def get_orders_by_admin_team(admin_id: int, status_filter: str = None, limit: int = 20):
     """
-    Devuelve pedidos de aliados vinculados al admin.
+    Devuelve pedidos del admin: aliados vinculados y pedidos especiales creados por el mismo admin.
     status_filter: 'ACTIVE' (no DELIVERED/CANCELLED), 'DELIVERED', 'CANCELLED', o None (todos).
     """
     conn = get_connection()
     cur = conn.cursor()
 
     query = f"""
-        SELECT o.* FROM orders o
-        JOIN admin_allies aa ON aa.ally_id = o.ally_id
-        WHERE aa.admin_id = {P} AND aa.status = 'APPROVED'
+        SELECT DISTINCT o.*
+        FROM orders o
+        LEFT JOIN admin_allies aa
+          ON aa.ally_id = o.ally_id
+         AND aa.status = 'APPROVED'
+        WHERE (
+            (o.ally_id IS NOT NULL AND aa.admin_id = {P})
+            OR
+            (o.ally_id IS NULL AND o.creator_admin_id = {P})
+        )
     """
-    params = [admin_id]
+    params = [admin_id, admin_id]
 
     if status_filter == "ACTIVE":
         query += " AND o.status NOT IN ('DELIVERED', 'CANCELLED')"
@@ -10616,20 +11629,14 @@ def cancel_route(route_id: int, canceled_by: str, reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
-    
-    # Check if 'reason' column exists and add it if it doesn't
-    cur.execute("PRAGMA table_info(routes)")
-    columns = [col[1] for col in cur.fetchall()]
-    if 'reason' not in columns:
-        cur.execute("ALTER TABLE routes ADD COLUMN reason TEXT")
 
     cur.execute(
         f"""
         UPDATE routes
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}
         WHERE id = {P}
         """,
-        (canceled_by, reason, route_id)
+        (canceled_by, route_id)
     )
     conn.commit()
     conn.close()

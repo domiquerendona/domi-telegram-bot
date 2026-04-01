@@ -38,7 +38,12 @@ from db import (
     P,
     DB_ENGINE,
     get_order_status_by_id,
+    get_order_penalty_config,
     cancel_order,
+    cancel_order_by_actor,
+    cancel_route_by_actor,
+    penalize_courier_for_delay_and_release,
+    penalize_route_courier_for_delay_and_release,
     get_admin_by_telegram_id,
     get_ally_by_telegram_id,
     get_user_by_telegram_id,
@@ -3430,12 +3435,14 @@ def update_admin_panel_pricing_settings(payload: dict) -> None:
 
 def cancel_order_from_admin_panel(order_id: int) -> str:
     """Cancela un pedido desde el panel web si todavia no esta finalizado."""
-    status = get_order_status_by_id(order_id)
-    if status is None:
+    outcome = cancel_order_by_actor(order_id, "ADMIN")
+    status = outcome["status_before"]
+    if outcome["code"] == "NOT_FOUND":
         raise LookupError("Pedido no encontrado")
-    if status in ("DELIVERED", "CANCELLED"):
+    if outcome["code"] == "INVALID_STATUS":
         raise ValueError(status)
-    cancel_order(order_id, "ADMIN")
+    if not outcome["ok"]:
+        raise RuntimeError(outcome["message"])
     return status
 
 
