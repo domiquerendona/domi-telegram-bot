@@ -6217,11 +6217,20 @@ def get_admin_panel_earnings_data(admin_id=None):
     admin_where = f"AND l.to_id = {P} AND l.to_type = 'ADMIN'" if admin_id is not None else ""
     admin_params = (admin_id,) if admin_id is not None else ()
 
+    if DB_ENGINE == "postgres":
+        hoy_expr   = "created_at::date = CURRENT_DATE"
+        semana_expr = "created_at >= DATE_TRUNC('week', CURRENT_DATE)"
+        mes_expr   = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+    else:
+        hoy_expr   = "date(created_at) = date('now')"
+        semana_expr = "created_at >= date('now', 'weekday 0', '-7 days')"
+        mes_expr   = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+
     cur.execute(f"""
         SELECT
-            SUM(CASE WHEN date(created_at) = date('now') THEN amount ELSE 0 END) AS hoy,
-            SUM(CASE WHEN created_at >= date('now', 'weekday 0', '-7 days') THEN amount ELSE 0 END) AS semana,
-            SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now') THEN amount ELSE 0 END) AS mes,
+            SUM(CASE WHEN {hoy_expr} THEN amount ELSE 0 END) AS hoy,
+            SUM(CASE WHEN {semana_expr} THEN amount ELSE 0 END) AS semana,
+            SUM(CASE WHEN {mes_expr} THEN amount ELSE 0 END) AS mes,
             SUM(amount) AS total
         FROM ledger l
         WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') {admin_where}
