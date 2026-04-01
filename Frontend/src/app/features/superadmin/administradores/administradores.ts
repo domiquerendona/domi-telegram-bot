@@ -22,6 +22,15 @@ interface WebPanelUser {
   role: string;
   status: string;
   admin_id: number | null;
+  courier_id?: number | null;
+}
+
+interface Courier {
+  id: number;
+  full_name: string;
+  phone: string;
+  city: string;
+  status: string;
 }
 
 @Component({
@@ -128,6 +137,7 @@ interface WebPanelUser {
             <select [(ngModel)]="nuevoRole">
               <option value="ADMIN_PLATFORM">Admin Plataforma</option>
               <option value="ADMIN_LOCAL">Admin Local</option>
+              <option value="COURIER">Repartidor</option>
             </select>
           </div>
           <div class="form-fila" *ngIf="nuevoRole === 'ADMIN_LOCAL'">
@@ -139,6 +149,16 @@ interface WebPanelUser {
               </option>
             </select>
             <small>El ID del admin del bot al que pertenece este usuario.</small>
+          </div>
+          <div class="form-fila" *ngIf="nuevoRole === 'COURIER'">
+            <label>Repartidor vinculado</label>
+            <select [(ngModel)]="nuevoCourierId">
+              <option value="">— Selecciona un repartidor —</option>
+              <option *ngFor="let c of couriersAprobados()" [value]="c.id">
+                {{ c.full_name }} — {{ c.phone }} ({{ c.city }})
+              </option>
+            </select>
+            <small>El repartidor del bot que usará este acceso al panel.</small>
           </div>
           <div class="form-error" *ngIf="errorCrear()">{{ errorCrear() }}</div>
           <div class="form-acciones">
@@ -159,7 +179,7 @@ interface WebPanelUser {
               <tr>
                 <th>Usuario</th>
                 <th>Rol</th>
-                <th>Admin Bot</th>
+                <th>Vínculo</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
@@ -168,11 +188,11 @@ interface WebPanelUser {
               <tr *ngFor="let u of webUsers()">
                 <td><div class="nombre">{{ u.username }}</div></td>
                 <td>
-                  <span class="badge" [ngClass]="u.role === 'ADMIN_PLATFORM' ? 'plataforma' : 'local'">
-                    {{ u.role === 'ADMIN_PLATFORM' ? 'Plataforma' : 'Local' }}
+                  <span class="badge" [ngClass]="roleBadgeClass(u.role)">
+                    {{ roleLabel(u.role) }}
                   </span>
                 </td>
-                <td>{{ nombreAdmin(u.admin_id) }}</td>
+                <td>{{ vinculoLabel(u) }}</td>
                 <td>
                   <span class="badge" [ngClass]="u.status.toLowerCase()">
                     {{ u.status === 'APPROVED' ? 'Activo' : 'Inactivo' }}
@@ -383,6 +403,7 @@ interface WebPanelUser {
     .badge.rejected  { background: #fee2e2; color: #991b1b; }
     .badge.plataforma { background: #ede9fe; color: #5b21b6; }
     .badge.local      { background: #dbeafe; color: #1e40af; }
+    .badge.courier    { background: #d1fae5; color: #065f46; }
 
     .acciones { display: flex; gap: 8px; align-items: center; }
 
@@ -432,6 +453,9 @@ export class AdministradoresComponent implements OnInit {
   cargandoPanel = signal(false);
   errorPanel = signal('');
 
+  // Couriers (para vinculación)
+  couriers = signal<Courier[]>([]);
+
   // Vista activa
   vista = signal<'bot' | 'panel'>('bot');
 
@@ -443,11 +467,16 @@ export class AdministradoresComponent implements OnInit {
   nuevoPassword = '';
   nuevoRole = 'ADMIN_LOCAL';
   nuevoAdminId: string | number = '';
+  nuevoCourierId: string | number = '';
 
   adminsAprobados = computed(() => this.admins().filter(a => a.status === 'APPROVED'));
-  // Map admin_id → full_name for display
+  couriersAprobados = computed(() => this.couriers().filter(c => c.status === 'APPROVED'));
+
   private adminMap = computed<Record<number, string>>(() =>
     Object.fromEntries(this.admins().map(a => [a.id, a.full_name]))
+  );
+  private courierMap = computed<Record<number, string>>(() =>
+    Object.fromEntries(this.couriers().map(c => [c.id, c.full_name]))
   );
 
   constructor(private http: HttpClient) {}
@@ -458,8 +487,9 @@ export class AdministradoresComponent implements OnInit {
 
   cambiarVista(v: 'bot' | 'panel') {
     this.vista.set(v);
-    if (v === 'panel' && this.webUsers().length === 0 && !this.cargandoPanel()) {
-      this.cargarPanel();
+    if (v === 'panel') {
+      if (this.webUsers().length === 0 && !this.cargandoPanel()) this.cargarPanel();
+      if (this.couriers().length === 0) this.cargarCouriers();
     }
   }
 
@@ -501,6 +531,15 @@ export class AdministradoresComponent implements OnInit {
     });
   }
 
+  // ── Couriers ────────────────────────────────────────────────────────────────
+
+  cargarCouriers() {
+    this.http.get<Courier[]>(`${environment.apiBaseUrl}/admin/couriers`).subscribe({
+      next: (data) => this.couriers.set(data),
+      error: () => {}
+    });
+  }
+
   // ── Web panel users ─────────────────────────────────────────────────────────
 
   cargarPanel() {
@@ -522,6 +561,8 @@ export class AdministradoresComponent implements OnInit {
     this.nuevoPassword = '';
     this.nuevoRole = 'ADMIN_LOCAL';
     this.nuevoAdminId = '';
+    this.nuevoCourierId = '';
+    if (this.couriers().length === 0) this.cargarCouriers();
   }
 
   crearUsuario() {
@@ -531,6 +572,10 @@ export class AdministradoresComponent implements OnInit {
       this.errorCrear.set('El usuario y la contraseña son obligatorios.');
       return;
     }
+    if (this.nuevoRole === 'COURIER' && !this.nuevoCourierId) {
+      this.errorCrear.set('Debes seleccionar un repartidor.');
+      return;
+    }
     this.creando.set(true);
     this.errorCrear.set('');
     const body: Record<string, unknown> = {
@@ -538,6 +583,7 @@ export class AdministradoresComponent implements OnInit {
       password,
       role: this.nuevoRole,
       admin_id: this.nuevoRole === 'ADMIN_LOCAL' && this.nuevoAdminId ? Number(this.nuevoAdminId) : null,
+      courier_id: this.nuevoRole === 'COURIER' && this.nuevoCourierId ? Number(this.nuevoCourierId) : null,
     };
     this.http.post(`${environment.apiBaseUrl}/admin/web-users`, body).subscribe({
       next: () => {
@@ -561,8 +607,30 @@ export class AdministradoresComponent implements OnInit {
     });
   }
 
-  nombreAdmin(admin_id: number | null): string {
-    if (!admin_id) return '—';
-    return this.adminMap()[admin_id] ?? `#${admin_id}`;
+  roleLabel(role: string): string {
+    const map: Record<string, string> = {
+      ADMIN_PLATFORM: 'Plataforma',
+      ADMIN_LOCAL: 'Local',
+      COURIER: 'Repartidor',
+    };
+    return map[role] ?? role;
+  }
+
+  roleBadgeClass(role: string): string {
+    const map: Record<string, string> = {
+      ADMIN_PLATFORM: 'badge plataforma',
+      ADMIN_LOCAL: 'badge local',
+      COURIER: 'badge courier',
+    };
+    return map[role] ?? 'badge';
+  }
+
+  vinculoLabel(u: WebPanelUser): string {
+    if (u.role === 'COURIER') {
+      if (!u.courier_id) return '—';
+      return this.courierMap()[u.courier_id] ?? `#${u.courier_id}`;
+    }
+    if (!u.admin_id) return '—';
+    return this.adminMap()[u.admin_id] ?? `#${u.admin_id}`;
   }
 }
