@@ -1476,6 +1476,12 @@ def _try_restart_cycle(order_id, context):
     elapsed = time.time() - cycle_info["started_at"]
 
     if elapsed >= MAX_CYCLE_SECONDS:
+        logger.info(
+            "_try_restart_cycle: pedido %s elapsed=%.0fs supera max=%ss; se expirara",
+            order_id,
+            elapsed,
+            MAX_CYCLE_SECONDS,
+        )
         _expire_order(order_id, cycle_info, context)
         return
 
@@ -1520,6 +1526,7 @@ def _expire_order(order_id, cycle_info, context):
     order = get_order_by_id(order_id)
     if not order or order["status"] != "PUBLISHED":
         return
+    logger.info("_expire_order: pedido %s en PUBLISHED sera cancelado sin cargo", order_id)
 
     _cancel_no_response_job(context, order_id)
     _cancel_order_expire_job(context, order_id)
@@ -5183,6 +5190,12 @@ def _try_restart_route_cycle(route_id, context):
     logger.info("_try_restart_route_cycle: ruta %s elapsed=%.0fs", route_id, elapsed)
 
     if elapsed >= ROUTE_MAX_CYCLE_SECONDS:
+        logger.info(
+            "_try_restart_route_cycle: ruta %s elapsed=%.0fs supera max=%ss; se expirara",
+            route_id,
+            elapsed,
+            ROUTE_MAX_CYCLE_SECONDS,
+        )
         _expire_route(route_id, cycle_info, context)
         return
 
@@ -5192,6 +5205,7 @@ def _try_restart_route_cycle(route_id, context):
 
 def _expire_route(route_id, cycle_info, context):
     """Nadie acepto la ruta en 7 minutos. Cancela la ruta."""
+    logger.info("_expire_route: ruta %s en PUBLISHED sera cancelada sin cargo", route_id)
     _cancel_route_no_response_job(context, route_id)
     cancel_route(route_id, "SYSTEM")
     delete_route_offer_queue(route_id)
