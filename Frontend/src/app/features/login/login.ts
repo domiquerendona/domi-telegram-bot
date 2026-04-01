@@ -240,7 +240,7 @@ localStorage.setItem('admin_username', res.username);
 }
 
 this.authService.setUser(res.role);
-this.router.navigate(['/superadmin']);
+this.router.navigate([this.authService.homeRoute()]);
 },
 
 error: (e) => {

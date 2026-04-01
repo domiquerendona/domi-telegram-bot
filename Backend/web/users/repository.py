@@ -10,7 +10,8 @@ class WebUser:
     username: str
     role: UserRole
     status: UserStatus
-    admin_id: Optional[int] = None  # admins.id del equipo; None para PLATFORM_ADMIN
+    admin_id: Optional[int] = None    # admins.id del equipo; None para PLATFORM_ADMIN
+    courier_id: Optional[int] = None  # couriers.id; solo para rol COURIER
 
 
 def _row_to_web_user(row) -> Optional["WebUser"]:
@@ -23,14 +24,16 @@ def _row_to_web_user(row) -> Optional["WebUser"]:
             role=UserRole(row["role"]),
             status=UserStatus(row["status"]),
             admin_id=row.get("admin_id"),
+            courier_id=row.get("courier_id"),
         )
-    # SQLite row por índice: id, username, password_hash, role, status, admin_id
+    # SQLite row por índice: id, username, password_hash, role, status, admin_id, courier_id
     return WebUser(
         id=row[0],
         username=row[1],
         role=UserRole(row[3]),
         status=UserStatus(row[4]),
         admin_id=row[5] if len(row) > 5 else None,
+        courier_id=row[6] if len(row) > 6 else None,
     )
 
 

@@ -1843,6 +1843,7 @@ def init_db():
             role TEXT NOT NULL DEFAULT 'ADMIN_LOCAL',
             status TEXT NOT NULL DEFAULT 'APPROVED',
             admin_id INTEGER,
+            courier_id INTEGER,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -1854,6 +1855,8 @@ def init_db():
     _wu_cols = [col[1] for col in cur.fetchall()]
     if "admin_id" not in _wu_cols:
         cur.execute("ALTER TABLE web_users ADD COLUMN admin_id INTEGER")
+    if "courier_id" not in _wu_cols:
+        cur.execute("ALTER TABLE web_users ADD COLUMN courier_id INTEGER")
 
     # Migración: agregar vehicle_type a couriers (MOTO por defecto para registros previos)
     try:
@@ -2121,11 +2124,13 @@ def _init_db_postgres():
             role TEXT NOT NULL DEFAULT 'ADMIN_LOCAL',
             status TEXT NOT NULL DEFAULT 'APPROVED',
             admin_id BIGINT,
+            courier_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
     """)
     _pg_add_col("web_users", "admin_id", "BIGINT")
+    _pg_add_col("web_users", "courier_id", "BIGINT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_username ON web_users(username)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_status ON web_users(status)")
 
@@ -4760,7 +4765,7 @@ def ensure_pricing_defaults():
 
 # ---------- WEB USERS (PANEL WEB MULTIUSUARIO) ----------
 
-def create_web_user(username: str, password_hash: str, role: str = "ADMIN_LOCAL", admin_id: int = None) -> int:
+def create_web_user(username: str, password_hash: str, role: str = "ADMIN_LOCAL", admin_id: int = None, courier_id: int = None) -> int:
     """Crea un usuario del panel web. Retorna el id generado."""
     conn = get_connection()
     cur = conn.cursor()
@@ -4768,9 +4773,9 @@ def create_web_user(username: str, password_hash: str, role: str = "ADMIN_LOCAL"
     try:
         new_id = _insert_returning_id(
             cur,
-            f"INSERT INTO web_users (username, password_hash, role, status, admin_id, created_at, updated_at)"
-            f" VALUES ({P}, {P}, {P}, 'APPROVED', {P}, {now_sql}, {now_sql})",
-            (username, password_hash, role, admin_id),
+            f"INSERT INTO web_users (username, password_hash, role, status, admin_id, courier_id, created_at, updated_at)"
+            f" VALUES ({P}, {P}, {P}, 'APPROVED', {P}, {P}, {now_sql}, {now_sql})",
+            (username, password_hash, role, admin_id, courier_id),
         )
         conn.commit()
         return new_id
@@ -4784,7 +4789,7 @@ def get_web_user_by_username(username: str):
     cur = conn.cursor()
     try:
         cur.execute(
-            f"SELECT id, username, password_hash, role, status, admin_id FROM web_users WHERE username = {P}",
+            f"SELECT id, username, password_hash, role, status, admin_id, courier_id FROM web_users WHERE username = {P}",
             (username,),
         )
         return cur.fetchone()
@@ -4798,10 +4803,142 @@ def get_web_user_by_id(user_id: int):
     cur = conn.cursor()
     try:
         cur.execute(
-            f"SELECT id, username, password_hash, role, status, admin_id FROM web_users WHERE id = {P}",
+            f"SELECT id, username, password_hash, role, status, admin_id, courier_id FROM web_users WHERE id = {P}",
             (user_id,),
         )
         return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_courier_web_dashboard(courier_id: int) -> dict:
+    """Dashboard del repartidor para el panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if DB_ENGINE == "postgres":
+            today_filter = "DATE(created_at) = CURRENT_DATE"
+            month_filter = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+        else:
+            today_filter = "date(created_at) = date('now')"
+            month_filter = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+
+        cur.execute(
+            f"SELECT COUNT(*) FROM orders WHERE courier_id = {P} AND status = 'DELIVERED' AND {today_filter}",
+            (courier_id,)
+        )
+        entregas_hoy = _row_value(cur.fetchone(), 0) or 0
+
+        cur.execute(
+            f"SELECT COUNT(*) FROM orders WHERE courier_id = {P} AND status = 'DELIVERED' AND {month_filter}",
+            (courier_id,)
+        )
+        entregas_mes = _row_value(cur.fetchone(), 0) or 0
+
+        cur.execute(
+            f"SELECT COALESCE(SUM(total_fee), 0) FROM orders WHERE courier_id = {P} AND status = 'DELIVERED' AND {month_filter}",
+            (courier_id,)
+        )
+        tarifa_mes = _row_value(cur.fetchone(), 0) or 0
+
+        cur.execute(
+            f"SELECT COALESCE(balance, 0) FROM admin_couriers WHERE courier_id = {P} AND status = 'APPROVED' LIMIT 1",
+            (courier_id,)
+        )
+        row = cur.fetchone()
+        saldo = _row_value(row, 0) if row else 0
+
+        cur.execute(
+            f"SELECT COUNT(*) FROM orders WHERE courier_id = {P} AND status = 'DELIVERED'",
+            (courier_id,)
+        )
+        total_entregas = _row_value(cur.fetchone(), 0) or 0
+
+        return {
+            "entregas_hoy": entregas_hoy,
+            "entregas_mes": entregas_mes,
+            "tarifa_mes": tarifa_mes,
+            "saldo": saldo,
+            "total_entregas": total_entregas,
+        }
+    finally:
+        conn.close()
+
+
+def get_courier_web_earnings(courier_id: int, start_s: str, end_s: str) -> list:
+    """Ganancias del repartidor en un rango de fechas para el panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""SELECT o.id, o.total_fee, o.incentivo, o.created_at, o.status,
+                       a.name as ally_name, o.dropoff_city
+                FROM orders o
+                LEFT JOIN allies a ON o.ally_id = a.id
+                WHERE o.courier_id = {P} AND o.status = 'DELIVERED'
+                AND o.created_at >= {P} AND o.created_at <= {P}
+                ORDER BY o.created_at DESC""",
+            (courier_id, start_s, end_s)
+        )
+        rows = cur.fetchall()
+        result = []
+        for row in rows:
+            if isinstance(row, dict):
+                result.append({
+                    "id": row["id"],
+                    "total_fee": row["total_fee"] or 0,
+                    "incentivo": row["incentivo"] or 0,
+                    "created_at": str(row["created_at"]),
+                    "ally_name": row["ally_name"] or "Pedido especial",
+                    "dropoff_city": row["dropoff_city"] or "",
+                })
+            else:
+                result.append({
+                    "id": row[0],
+                    "total_fee": row[1] or 0,
+                    "incentivo": row[2] or 0,
+                    "created_at": str(row[3]),
+                    "ally_name": row[5] or "Pedido especial",
+                    "dropoff_city": row[6] or "",
+                })
+        return result
+    finally:
+        conn.close()
+
+
+def get_courier_web_profile(courier_id: int) -> dict:
+    """Perfil del repartidor para el panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""SELECT c.id, c.full_name, c.phone, c.city, c.status, c.vehicle_type,
+                       u.telegram_id
+                FROM couriers c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = {P}""",
+            (courier_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return {}
+        if isinstance(row, dict):
+            return {
+                "id": row["id"],
+                "full_name": row["full_name"],
+                "phone": row["phone"],
+                "city": row["city"],
+                "status": row["status"],
+                "vehicle_type": row.get("vehicle_type", "MOTO"),
+            }
+        return {
+            "id": row[0],
+            "full_name": row[1],
+            "phone": row[2],
+            "city": row[3],
+            "status": row[4],
+            "vehicle_type": row[5] or "MOTO",
+        }
     finally:
         conn.close()
 

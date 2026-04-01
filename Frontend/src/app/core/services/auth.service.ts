@@ -13,6 +13,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'view_couriers_map',
     'view_unassigned_orders',
     'manage_settings',
+    'view_own_profile',
   ],
   ADMIN_LOCAL: [
     'view_dashboard',
@@ -22,6 +23,12 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'reactivate_user',
     'view_couriers_map',
     'view_unassigned_orders',
+    'view_own_profile',
+  ],
+  COURIER: [
+    'view_dashboard',
+    'view_own_earnings',
+    'view_own_profile',
   ],
 };
 
@@ -62,6 +69,14 @@ export class AuthService {
 
   isPlatformAdmin(): boolean {
     return this._role() === 'ADMIN_PLATFORM';
+  }
+
+  isCourier(): boolean {
+    return this._role() === 'COURIER';
+  }
+
+  homeRoute(): string {
+    return this._role() === 'COURIER' ? '/courier' : '/superadmin';
   }
 
   clear(): void {
