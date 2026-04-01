@@ -135,12 +135,23 @@ def _sync_courier_link_status(cur, courier_id: int, status: str, now_sql: str):
 
 
 def _row_value(row, key, index=0, default=None):
-    """Lee un campo por clave (dict/Row) y fallback por índice."""
+    """Lee un campo por clave (dict/Row) y fallback por índice.
+
+    Para filas dict (PostgreSQL RealDictCursor): intenta la clave primero;
+    si no existe, cae al índice posicional. Esto es necesario para queries de
+    agregación como COUNT(*) o COALESCE(SUM(...)) donde PostgreSQL normaliza el
+    nombre de columna a 'count' o 'coalesce' en lugar de preservar el texto literal.
+    """
     if row is None:
         return default
+    if isinstance(row, dict):
+        if key in row:
+            return row[key]
+        try:
+            return list(row.values())[index]
+        except Exception:
+            return default
     try:
-        if isinstance(row, dict):
-            return row.get(key, default)
         return row[key]
     except Exception:
         try:
@@ -6305,8 +6316,10 @@ def get_dashboard_stats_data(admin_id=None):
     cur = conn.cursor()
     if DB_ENGINE == "postgres":
         mes_actual_filter = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+        hoy_filter = "delivered_at::date = CURRENT_DATE"
     else:
         mes_actual_filter = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+        hoy_filter = "DATE(delivered_at) = DATE('now')"
 
     if admin_id is None:
         cur.execute("""
@@ -6348,7 +6361,7 @@ def get_dashboard_stats_data(admin_id=None):
 
         cur.execute("SELECT COUNT(*) FROM orders WHERE status IN ('PUBLISHED','ACCEPTED','PICKED_UP')")
         pedidos_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
-        cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND DATE(delivered_at) = DATE('now')")
+        cur.execute(f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND {hoy_filter}")
         pedidos_entregados_hoy = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
         cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED'")
         pedidos_total_entregados = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
@@ -6407,7 +6420,7 @@ def get_dashboard_stats_data(admin_id=None):
         )
         pedidos_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
         cur.execute(
-            f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND DATE(delivered_at) = DATE('now')"
+            f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND {hoy_filter}"
             f" AND (ally_admin_id_snapshot = {P} OR courier_admin_id_snapshot = {P} OR creator_admin_id = {P})",
             (admin_id, admin_id, admin_id),
         )
