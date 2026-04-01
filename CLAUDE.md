@@ -716,7 +716,7 @@ Aquí solo se mantiene un resumen explicativo de las ramas que existen hoy en el
 | `main` | Permanente | Producción (Railway PROD) |
 | `staging` | Permanente | Integración y trabajo diario |
 | `claude/` | Temporal | Ramas temporales de asistentes |
-| `verify/` | Temporal | Validaciones acotadas, especialmente de BD |
+| `verify/` | Temporal | Validaciones acotadas cuando se quiera aislar un cambio |
 | `luisa-web` | Permanente | Rama de trabajo de la colaboradora Luisa |
 
 ### Flujo de Trabajo
@@ -724,6 +724,7 @@ Aquí solo se mantiene un resumen explicativo de las ramas que existen hoy en el
 ```
 staging   ──(validado)──►  main
 verify/*  ──merge──►  staging  ──(validado)──►  main
+           (opcional)
                         (entorno DEV:
                          BOT_TOKEN DEV
                          DATABASE_URL separada)

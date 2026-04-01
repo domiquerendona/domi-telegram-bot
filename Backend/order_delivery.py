@@ -75,6 +75,8 @@ from db import (
     deactivate_courier,
     set_courier_arrived,
     set_route_courier_arrived,
+    set_order_arrival_wait_override,
+    set_route_arrival_wait_override,
     set_courier_accepted_location,
     get_active_order_for_courier,
     get_active_route_for_courier,
@@ -111,8 +113,10 @@ def _schedule_persistent_job(context, callback, when_seconds, name, job_data=Non
 
 def _cancel_persistent_job(context, name):
     """Cancela un job del queue y lo marca cancelado en BD."""
-    for job in context.job_queue.get_jobs_by_name(name):
-        job.schedule_removal()
+    job_queue = getattr(context, "job_queue", None)
+    if job_queue and hasattr(job_queue, "get_jobs_by_name"):
+        for job in job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
     try:
         cancel_scheduled_job(name)
     except Exception as e:
@@ -220,6 +224,12 @@ DELIVERY_REMINDER_SECONDS = 30 * 60   # 30 min en PICKED_UP → recordar al repa
 DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al admin
 DELIVERY_RADIUS_KM = 0.15              # 150 metros para validar entrega GPS
 PICKUP_AUTOCONFIRM_SECONDS = 120        # 2 min → auto-confirmar llegada al pickup si aliado no responde
+WAITING_OVERRIDE_REMINDER_SECONDS = 10 * 60
+
+WAITING_OVERRIDE_NOTE = (
+    "La liberacion automatica por demora quedo anulada porque decidiste esperar mas."
+)
+WAITING_OVERRIDE_REVERT_LABEL = "Buscar otro repartidor"
 
 GPS_INACTIVE_MSG = (
     "Tu ubicacion GPS no esta activa.\n\n"
@@ -270,10 +280,49 @@ def _cancel_arrival_jobs(context, order_id):
     for name in [
         "arr_inactive_{}".format(order_id),
         "arr_warn_{}".format(order_id),
-        "arr_deadline_{}".format(order_id),
     ]:
         _cancel_persistent_job(context, name)
+    _cancel_arrival_deadline_job(context, order_id)
+    _cancel_wait_override_reminder_job(context, order_id)
     context.bot_data.get("arrival_manual_prompted", {}).pop(order_id, None)
+
+
+def _cancel_arrival_deadline_job(context, order_id):
+    """Cancela solo la liberacion automatica T+20 de llegada para un pedido."""
+    _cancel_persistent_job(context, "arr_deadline_{}".format(order_id))
+
+
+def _cancel_wait_override_reminder_job(context, order_id):
+    """Cancela el recordatorio suave posterior a la espera manual del pedido."""
+    _cancel_persistent_job(context, "arr_wait_reminder_{}".format(order_id))
+
+
+def _build_waiting_override_markup(callback_data):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(WAITING_OVERRIDE_REVERT_LABEL, callback_data=callback_data)
+    ]])
+
+
+def _schedule_wait_override_reminder_job(context, order_id):
+    _cancel_wait_override_reminder_job(context, order_id)
+    _schedule_persistent_job(
+        context,
+        _arrival_wait_override_reminder_job,
+        WAITING_OVERRIDE_REMINDER_SECONDS,
+        "arr_wait_reminder_{}".format(order_id),
+        {"order_id": order_id},
+    )
+
+
+def _enable_order_wait_override(context, order_id, source):
+    set_order_arrival_wait_override(order_id, True)
+    _cancel_arrival_deadline_job(context, order_id)
+    _schedule_wait_override_reminder_job(context, order_id)
+    logger.info(
+        "arrival_deadline_suppressed_by_ally order_id=%s source=%s",
+        order_id,
+        source,
+    )
 
 
 def _cancel_delivery_reminder_jobs(context, order_id):
@@ -476,15 +525,27 @@ def _build_cycle_info_for_expire(order):
     return {"ally_id": ally_id, "admin_id": admin_id}
 
 
-def _schedule_order_expire_job(context, order_id):
+def _schedule_order_expire_job(context, order_id, reset_window=False):
     """
-    Programa expiración automática del pedido a T+10 desde created_at.
-    No debe extenderse por re-ofertas o reinicios del ciclo.
+    Programa la expiracion automatica del mercado para el pedido.
+    En re-ofertas tras liberar un courier asignado se puede reiniciar la ventana.
     """
     _cancel_order_expire_job(context, order_id)
 
     order = get_order_by_id(order_id)
     if not order or order["status"] != "PUBLISHED":
+        return
+
+    if reset_window:
+        logger.info(
+            "order_expire_reset_after_reoffer order_id=%s window=%ss",
+            order_id,
+            MAX_CYCLE_SECONDS,
+        )
+        _schedule_persistent_job(
+            context, _order_expire_job, MAX_CYCLE_SECONDS,
+            "order_expire_{}".format(order_id), {"order_id": order_id},
+        )
         return
 
     created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
@@ -645,7 +706,47 @@ def _offer_no_response_job(context):
         logger.warning("Error enviando sugerencia para pedido %s: %s", order_id, e)
 
 
-def repost_order_to_couriers(order_id, context, excluded_courier_ids=None):
+def _arrival_wait_override_reminder_job(context):
+    """Recordatorio suave cuando el aliado decidio esperar mas al courier."""
+    mark_job_executed(context.job.name)
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "ACCEPTED":
+        return
+    if not int(_row_value(order, "arrival_wait_override", 0) or 0):
+        return
+
+    try:
+        ally = get_ally_by_id(order["ally_id"]) if order["ally_id"] else None
+        ally_user = get_user_by_id(ally["user_id"]) if ally else None
+        courier = get_courier_by_id(order["courier_id"]) if order["courier_id"] else None
+        if ally_user and ally_user["telegram_id"]:
+            keyboard_rows = [[InlineKeyboardButton(
+                "Buscar otro repartidor",
+                callback_data="order_find_another_{}".format(order_id),
+            )]]
+            if courier:
+                keyboard_rows.append([InlineKeyboardButton(
+                    "Llamar al repartidor",
+                    callback_data="order_call_courier_{}".format(order_id),
+                )])
+            context.bot.send_message(
+                chat_id=ally_user["telegram_id"],
+                text=(
+                    "Recordatorio del pedido #{}: sigues en espera manual del repartidor.\n\n"
+                    "Si ya no deseas esperar, puedes buscar otro repartidor."
+                ).format(order_id),
+                reply_markup=InlineKeyboardMarkup(keyboard_rows),
+            )
+            logger.info("arrival_wait_override_reminder_sent order_id=%s", order_id)
+    except Exception as e:
+        logger.warning("_arrival_wait_override_reminder_job: %s", e)
+
+
+def repost_order_to_couriers(order_id, context, excluded_courier_ids=None, reset_expire_window=False):
     """Re-oferta un pedido a todos los couriers activos (usado tras agregar incentivo).
 
     Limpia la cola existente, resetea los excluded_couriers y relanza el ciclo de ofertas.
@@ -681,6 +782,7 @@ def repost_order_to_couriers(order_id, context, excluded_courier_ids=None):
         context=context,
         admin_id_override=admin_id_override,
         skip_fee_check=True,
+        reset_expire_window=reset_expire_window,
     )
     return count
 
@@ -1343,6 +1445,7 @@ def publish_order_to_couriers(
     dropoff_city=None,
     dropoff_barrio=None,
     skip_fee_check=False,
+    reset_expire_window=False,
 ):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
@@ -1521,8 +1624,8 @@ def publish_order_to_couriers(
         "offer_no_response_{}".format(order_id), {"order_id": order_id},
     )
 
-    # Programar expiración automática T+10 (desde created_at)
-    _schedule_order_expire_job(context, order_id)
+    # Programar expiracion automatica del mercado.
+    _schedule_order_expire_job(context, order_id, reset_window=reset_expire_window)
 
     return len(courier_ids)
 
@@ -1971,6 +2074,8 @@ def ally_active_orders(update, context):
             text = "Ruta #{}\nEstado: {}\nParadas: {}".format(
                 route["id"], status_label, n_stops
             )
+            if route["status"] == "ACCEPTED" and int(_row_value(route, "arrival_wait_override", 0) or 0):
+                text += "\nEspera manual: activa"
             if route["status"] == "PUBLISHED":
                 keyboard = [
                     [InlineKeyboardButton(
@@ -2002,6 +2107,8 @@ def ally_active_orders(update, context):
                 order["customer_name"] or "N/A",
                 order["customer_address"] or "N/A",
             )
+            if order["status"] == "ACCEPTED" and int(_row_value(order, "arrival_wait_override", 0) or 0):
+                text += "\nEspera manual: activa"
             if order["status"] in ("PENDING", "PUBLISHED"):
                 keyboard = [
                     [InlineKeyboardButton(
@@ -3009,6 +3116,12 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
     if not order or order["status"] != "ACCEPTED":
         return
 
+    logger.info(
+        "order_release_for_reoffer order_id=%s courier_id=%s reason=%s",
+        order_id,
+        courier_id,
+        reason,
+    )
     _cancel_arrival_jobs(context, order_id)
     release_order_from_courier(order_id)
 
@@ -3049,7 +3162,12 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
     except Exception:
         pass
 
-    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded)
+    repost_count = repost_order_to_couriers(
+        order_id,
+        context,
+        excluded_courier_ids=excluded,
+        reset_expire_window=True,
+    )
     if repost_count <= 0:
         try:
             ally = get_ally_by_id(order["ally_id"])
@@ -3238,6 +3356,18 @@ def _arrival_deadline_job(context):
         return
     if order["courier_arrived_at"]:
         return
+    if int(_row_value(order, "arrival_wait_override", 0) or 0):
+        logger.info(
+            "arrival_deadline_suppressed_by_ally order_id=%s override_at=%s",
+            order_id,
+            _row_value(order, "arrival_wait_override_at"),
+        )
+        return
+    logger.info(
+        "arrival_deadline_released order_id=%s courier_id=%s",
+        order_id,
+        order["courier_id"],
+    )
     _release_order_by_timeout(order_id, order["courier_id"], context,
                                reason="timeout de llegada (20 min)")
 
@@ -3640,10 +3770,13 @@ def _handle_cancel_ally_abort(update, context, order_id):
 def _handle_find_another_abort(update, context, order_id):
     """Cancela la advertencia de quitar el pedido al courier."""
     query = update.callback_query
-    keyboard = [[InlineKeyboardButton("Buscar otro repartidor", callback_data="order_find_another_{}".format(order_id))]]
+    _enable_order_wait_override(context, order_id, "order_find_another_abort")
     query.edit_message_text(
-        "Seguimos esperando al repartidor del pedido #{}.".format(order_id),
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        (
+            "Seguimos esperando al repartidor del pedido #{}.\n\n"
+            "{}"
+        ).format(order_id, WAITING_OVERRIDE_NOTE),
+        reply_markup=_build_waiting_override_markup("order_find_another_{}".format(order_id)),
     )
 
 
@@ -3701,7 +3834,12 @@ def _handle_find_another_courier(update, context, order_id, confirm=False):
     _cancel_arrival_jobs(context, order_id)
     courier_id = outcome["courier_id"]
     excluded_ids = {courier_id} if courier_id else set()
-    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded_ids)
+    repost_count = repost_order_to_couriers(
+        order_id,
+        context,
+        excluded_courier_ids=excluded_ids,
+        reset_expire_window=True,
+    )
 
     if courier_id:
         try:
@@ -3790,8 +3928,13 @@ def _handle_call_courier(update, context, order_id):
 def _handle_wait_courier(update, context, order_id):
     """Aliado decide seguir esperando al courier."""
     query = update.callback_query
+    _enable_order_wait_override(context, order_id, "order_wait_courier")
     query.edit_message_text(
-        "De acuerdo, seguimos esperando al repartidor para el pedido #{}.".format(order_id)
+        (
+            "Seguimos esperando al repartidor del pedido #{}.\n\n"
+            "{}"
+        ).format(order_id, WAITING_OVERRIDE_NOTE),
+        reply_markup=_build_waiting_override_markup("order_find_another_{}".format(order_id)),
     )
 
 
@@ -3846,7 +3989,12 @@ def _handle_release(update, context, order_id, reason_code=None):
     except Exception:
         pass
 
-    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded)
+    repost_count = repost_order_to_couriers(
+        order_id,
+        context,
+        excluded_courier_ids=excluded,
+        reset_expire_window=True,
+    )
     if repost_count <= 0:
         try:
             ally_row = get_ally_by_id(order["ally_id"])
@@ -5878,7 +6026,43 @@ def _route_pickup_autoconfirm_job(context):
 
 def _cancel_route_arrival_jobs(context, route_id):
     for suffix in ("inactive", "warn", "deadline"):
+        if suffix == "deadline":
+            continue
         _cancel_persistent_job(context, "ruta_arr_{}_{}".format(suffix, route_id))
+    _cancel_route_arrival_deadline_job(context, route_id)
+    _cancel_route_wait_override_reminder_job(context, route_id)
+
+
+def _cancel_route_arrival_deadline_job(context, route_id):
+    """Cancela solo la liberacion automatica T+20 de llegada para una ruta."""
+    _cancel_persistent_job(context, "ruta_arr_deadline_{}".format(route_id))
+
+
+def _cancel_route_wait_override_reminder_job(context, route_id):
+    """Cancela el recordatorio suave posterior a la espera manual de la ruta."""
+    _cancel_persistent_job(context, "ruta_arr_wait_reminder_{}".format(route_id))
+
+
+def _schedule_route_wait_override_reminder_job(context, route_id):
+    _cancel_route_wait_override_reminder_job(context, route_id)
+    _schedule_persistent_job(
+        context,
+        _route_wait_override_reminder_job,
+        WAITING_OVERRIDE_REMINDER_SECONDS,
+        "ruta_arr_wait_reminder_{}".format(route_id),
+        {"route_id": route_id},
+    )
+
+
+def _enable_route_wait_override(context, route_id, source):
+    set_route_arrival_wait_override(route_id, True)
+    _cancel_route_arrival_deadline_job(context, route_id)
+    _schedule_route_wait_override_reminder_job(context, route_id)
+    logger.info(
+        "route_arrival_deadline_suppressed_by_ally route_id=%s source=%s",
+        route_id,
+        source,
+    )
 
 
 def _handle_route_pickup_confirm(update, context, route_id):
@@ -6166,6 +6350,36 @@ def _route_arrival_warn_job(context):
             pass
 
 
+def _route_wait_override_reminder_job(context):
+    """Recordatorio suave cuando el aliado decidio esperar mas en una ruta."""
+    mark_job_executed(context.job.name)
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    if not route_id:
+        return
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "ACCEPTED":
+        return
+    if not int(_row_value(route, "arrival_wait_override", 0) or 0):
+        return
+
+    try:
+        ally = get_ally_by_id(route["ally_id"]) if route["ally_id"] else None
+        ally_user = get_user_by_id(ally["user_id"]) if ally else None
+        if ally_user and ally_user["telegram_id"]:
+            context.bot.send_message(
+                chat_id=ally_user["telegram_id"],
+                text=(
+                    "Recordatorio de la ruta #{}: sigues en espera manual del repartidor.\n\n"
+                    "Si ya no deseas esperar, puedes buscar otro repartidor."
+                ).format(route_id),
+                reply_markup=_build_waiting_override_markup("ruta_find_another_{}".format(route_id)),
+            )
+            logger.info("route_wait_override_reminder_sent route_id=%s", route_id)
+    except Exception as e:
+        logger.warning("_route_wait_override_reminder_job: %s", e)
+
+
 def _route_arrival_deadline_job(context):
     """T+20 ruta: libera la ruta si el courier no llego."""
     mark_job_executed(context.job.name)
@@ -6177,11 +6391,28 @@ def _route_arrival_deadline_job(context):
     route = get_route_by_id(route_id)
     if not route or route["status"] != "ACCEPTED":
         return
+    if int(_row_value(route, "arrival_wait_override", 0) or 0):
+        logger.info(
+            "route_arrival_deadline_suppressed_by_ally route_id=%s override_at=%s",
+            route_id,
+            _row_value(route, "arrival_wait_override_at"),
+        )
+        return
+    logger.info(
+        "route_arrival_deadline_released route_id=%s courier_id=%s",
+        route_id,
+        courier_id,
+    )
     _release_route_by_timeout(route_id, courier_id, context)
 
 
 def _release_route_by_timeout(route_id, courier_id, context):
     """Libera una ruta por timeout o inactividad y re-oferta."""
+    logger.info(
+        "route_release_for_reoffer route_id=%s courier_id=%s",
+        route_id,
+        courier_id,
+    )
     _cancel_route_arrival_jobs(context, route_id)
     context.bot_data.get("route_accepted_pos", {}).pop(route_id, None)
     repost_count = 0
@@ -6232,16 +6463,26 @@ def _release_route_by_timeout(route_id, courier_id, context):
 def _handle_wait_route_courier(update, context, route_id):
     """Aliado decide seguir esperando al repartidor de la ruta."""
     query = update.callback_query
-    query.edit_message_text("Seguimos esperando al repartidor de la ruta #{}.".format(route_id))
+    _enable_route_wait_override(context, route_id, "ruta_wait_courier")
+    query.edit_message_text(
+        (
+            "Seguimos esperando al repartidor de la ruta #{}.\n\n"
+            "{}"
+        ).format(route_id, WAITING_OVERRIDE_NOTE),
+        reply_markup=_build_waiting_override_markup("ruta_find_another_{}".format(route_id)),
+    )
 
 
 def _handle_find_another_route_abort(update, context, route_id):
     """Cancela la advertencia de quitar la ruta al courier."""
     query = update.callback_query
-    keyboard = [[InlineKeyboardButton("Buscar otro repartidor", callback_data="ruta_find_another_{}".format(route_id))]]
+    _enable_route_wait_override(context, route_id, "ruta_find_another_abort")
     query.edit_message_text(
-        "Seguimos esperando al repartidor de la ruta #{}.".format(route_id),
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        (
+            "Seguimos esperando al repartidor de la ruta #{}.\n\n"
+            "{}"
+        ).format(route_id, WAITING_OVERRIDE_NOTE),
+        reply_markup=_build_waiting_override_markup("ruta_find_another_{}".format(route_id)),
     )
 
 
@@ -8027,6 +8268,7 @@ JOB_REGISTRY = {
     "_arrival_inactivity_job": _arrival_inactivity_job,
     "_arrival_warn_ally_job": _arrival_warn_ally_job,
     "_arrival_deadline_job": _arrival_deadline_job,
+    "_arrival_wait_override_reminder_job": _arrival_wait_override_reminder_job,
     "_delivery_reminder_job": _delivery_reminder_job,
     "_delivery_admin_alert_job": _delivery_admin_alert_job,
     "_route_no_response_job": _route_no_response_job,
@@ -8034,6 +8276,7 @@ JOB_REGISTRY = {
     "_route_arrival_inactivity_job": _route_arrival_inactivity_job,
     "_route_arrival_warn_job": _route_arrival_warn_job,
     "_route_arrival_deadline_job": _route_arrival_deadline_job,
+    "_route_wait_override_reminder_job": _route_wait_override_reminder_job,
 }
 
 
