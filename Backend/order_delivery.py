@@ -13,6 +13,7 @@ from db import (
     delete_offer_queue,
     get_all_orders,
     get_active_orders_by_ally,
+    get_routes_by_status,
     get_admin_by_id,
     get_ally_by_id,
     get_ally_by_user_id,
@@ -7871,3 +7872,142 @@ def recover_scheduled_jobs(job_queue):
             skipped += 1
 
     logger.info("recover_scheduled_jobs: %d jobs recuperados, %d omitidos", recovered, skipped)
+
+
+def _restore_cycle_started_at(record):
+    import time
+
+    started_at = time.time()
+    started_raw = _row_value(record, "published_at") or _row_value(record, "created_at")
+    started_dt = _to_naive_utc(_parse_dt(started_raw))
+    if started_dt is None:
+        return started_at
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        elapsed = max(0, (now - started_dt).total_seconds())
+    except Exception:
+        return started_at
+    return started_at - elapsed
+
+
+def _remaining_timeout_seconds(offered_at_raw, timeout_seconds):
+    offered_at = _to_naive_utc(_parse_dt(offered_at_raw))
+    if offered_at is None:
+        return timeout_seconds
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        elapsed = max(0, (now - offered_at).total_seconds())
+    except Exception:
+        return timeout_seconds
+    return max(0, timeout_seconds - elapsed)
+
+
+def _build_recovered_order_cycle_info(order):
+    cycle_info = _build_cycle_info_for_expire(order)
+    cycle_info.update(
+        {
+            "started_at": _restore_cycle_started_at(order),
+            "pickup_lat": _row_value(order, "pickup_lat"),
+            "pickup_lng": _row_value(order, "pickup_lng"),
+            "pickup_city": _row_value(order, "pickup_city"),
+            "pickup_barrio": _row_value(order, "pickup_barrio"),
+            "dropoff_city": _row_value(order, "customer_city"),
+            "dropoff_barrio": _row_value(order, "customer_barrio"),
+            "requires_cash": bool(_row_value(order, "requires_cash", False)),
+            "cash_amount": int(_row_value(order, "cash_required_amount", 0) or 0),
+            "excluded_couriers": get_order_excluded_couriers(_row_value(order, "id")),
+            "order_distance_km": _row_value(order, "distance_km"),
+        }
+    )
+    return cycle_info
+
+
+def _build_recovered_route_cycle_info(route):
+    ally_id = _row_value(route, "ally_id")
+    admin_id = _row_value(route, "ally_admin_id_snapshot")
+    if admin_id is None and ally_id is not None:
+        try:
+            admin_link = get_approved_admin_link_for_ally(int(ally_id))
+            admin_id = admin_link["admin_id"] if admin_link else None
+        except Exception:
+            admin_id = None
+
+    return {
+        "started_at": _restore_cycle_started_at(route),
+        "admin_id": admin_id,
+        "ally_id": ally_id,
+    }
+
+
+def recover_active_offer_dispatches(updater):
+    """Rehidrata ofertas activas tras reinicio para que pedidos y rutas no queden huerfanos."""
+    from types import SimpleNamespace
+
+    runtime = SimpleNamespace(
+        bot=updater.bot,
+        job_queue=updater.job_queue,
+        bot_data=updater.dispatcher.bot_data,
+    )
+
+    recovered_orders = 0
+    rescheduled_order_timeouts = 0
+    for order in get_all_orders(status_filter="ACTIVE", limit=500):
+        if _row_value(order, "status") != "PUBLISHED":
+            continue
+
+        order_id = int(_row_value(order, "id"))
+        runtime.bot_data.setdefault("offer_cycles", {}).setdefault(
+            order_id, _build_recovered_order_cycle_info(order)
+        )
+
+        current = get_current_offer_for_order(order_id)
+        if current:
+            job_name = "offer_timeout_{}_{}".format(order_id, current["queue_id"])
+            for job in runtime.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
+            runtime.job_queue.run_once(
+                _offer_timeout_job,
+                when=_remaining_timeout_seconds(current.get("offered_at"), OFFER_TIMEOUT_SECONDS),
+                context={"order_id": order_id, "queue_id": current["queue_id"]},
+                name=job_name,
+            )
+            rescheduled_order_timeouts += 1
+            continue
+
+        _send_next_offer(order_id, runtime)
+        recovered_orders += 1
+
+    recovered_routes = 0
+    rescheduled_route_timeouts = 0
+    for route in get_routes_by_status("PUBLISHED", limit=500):
+        route_id = int(_row_value(route, "id"))
+        runtime.bot_data.setdefault("route_offer_cycles", {}).setdefault(
+            route_id, _build_recovered_route_cycle_info(route)
+        )
+
+        current = get_current_route_offer(route_id)
+        if current:
+            job_name = "route_offer_timeout_{}_{}".format(route_id, current["queue_id"])
+            for job in runtime.job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
+            runtime.job_queue.run_once(
+                _route_offer_timeout_job,
+                when=_remaining_timeout_seconds(current.get("offered_at"), ROUTE_OFFER_TIMEOUT_SECONDS),
+                context={"route_id": route_id, "queue_id": current["queue_id"]},
+                name=job_name,
+            )
+            rescheduled_route_timeouts += 1
+            continue
+
+        _send_next_route_offer(route_id, runtime)
+        recovered_routes += 1
+
+    logger.info(
+        "recover_active_offer_dispatches: pedidos_reactivados=%s, timeouts_pedidos=%s, rutas_reactivadas=%s, timeouts_rutas=%s",
+        recovered_orders,
+        rescheduled_order_timeouts,
+        recovered_routes,
+        rescheduled_route_timeouts,
+    )

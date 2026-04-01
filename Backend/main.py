@@ -268,7 +268,7 @@ from services import (
     expire_old_ally_subscriptions,
     get_all_pending_fee_collections,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, admin_special_orders_history_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback
 from db import (
     init_db,
     force_platform_admin,
@@ -2529,6 +2529,9 @@ def main():
 
     # Recuperar jobs persistidos tras reinicio
     recover_scheduled_jobs(updater.job_queue)
+
+    # Rehidratar ofertas activas que pudieron quedar a mitad del ciclo por reinicio
+    recover_active_offer_dispatches(updater)
 
     # Reenviar notificaciones de cobros de fees pendientes (sobreviven reinicios)
     _recover_pending_fee_collections(updater.bot)

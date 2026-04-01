@@ -2871,7 +2871,7 @@ def get_current_offer_for_order(order_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"""
-        SELECT oq.id, oq.courier_id, oq.position, u.telegram_id
+        SELECT oq.id, oq.courier_id, oq.position, oq.offered_at, u.telegram_id
         FROM order_offer_queue oq
         JOIN couriers c ON c.id = oq.courier_id
         JOIN users u ON u.id = c.user_id
@@ -2886,6 +2886,7 @@ def get_current_offer_for_order(order_id: int):
         "queue_id": row["id"],
         "courier_id": row["courier_id"],
         "position": row["position"],
+        "offered_at": row["offered_at"],
         "telegram_id": row["telegram_id"],
     }
 
@@ -11537,6 +11538,19 @@ def get_active_routes_by_ally(ally_id):
     return [dict(r) for r in rows]
 
 
+def get_routes_by_status(status: str, limit: int = 20):
+    """Retorna rutas por estado exacto, ordenadas de mas reciente a mas antigua."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT * FROM routes WHERE status = {P} ORDER BY created_at DESC LIMIT {P}",
+        (status, limit),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_route_destinations(route_id):
     """Lista todas las paradas de la ruta ordenadas por sequence."""
     conn = get_connection()
@@ -11742,7 +11756,7 @@ def get_current_route_offer(route_id):
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT q.id AS queue_id, q.courier_id, q.position, u.telegram_id
+        SELECT q.id AS queue_id, q.courier_id, q.position, q.offered_at, u.telegram_id
         FROM route_offer_queue q
         JOIN couriers c ON c.id = q.courier_id
         JOIN users u ON u.id = c.user_id
