@@ -400,6 +400,8 @@ CREATE TABLE IF NOT EXISTS orders (
     quote_source TEXT,
     canceled_by TEXT,
     courier_arrived_at TIMESTAMP,
+    arrival_wait_override INTEGER DEFAULT 0,
+    arrival_wait_override_at TIMESTAMP,
     courier_accepted_lat REAL,
     courier_accepted_lng REAL,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -697,7 +699,9 @@ CREATE TABLE IF NOT EXISTS routes (
     accepted_at TIMESTAMP,
     delivered_at TIMESTAMP,
     canceled_at TIMESTAMP,
-    courier_arrived_at TIMESTAMP
+    courier_arrived_at TIMESTAMP,
+    arrival_wait_override INTEGER DEFAULT 0,
+    arrival_wait_override_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS route_destinations (

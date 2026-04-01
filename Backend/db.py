@@ -1061,6 +1061,8 @@ def init_db():
             canceled_at TEXT,
             ally_admin_id_snapshot INTEGER,
             courier_admin_id_snapshot INTEGER,
+            arrival_wait_override INTEGER DEFAULT 0,
+            arrival_wait_override_at TEXT,
             FOREIGN KEY (ally_id) REFERENCES allies(id),
             FOREIGN KEY (courier_id) REFERENCES couriers(id),
             FOREIGN KEY (pickup_location_id) REFERENCES ally_locations(id)
@@ -1362,6 +1364,10 @@ def init_db():
         cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lat REAL")
     if 'courier_accepted_lng' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN courier_accepted_lng REAL")
+    if 'arrival_wait_override' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN arrival_wait_override INTEGER DEFAULT 0")
+    if 'arrival_wait_override_at' not in order_cols:
+        cur.execute("ALTER TABLE orders ADD COLUMN arrival_wait_override_at TEXT")
     if 'creator_admin_id' not in order_cols:
         cur.execute("ALTER TABLE orders ADD COLUMN creator_admin_id INTEGER")
     if 'purchase_amount' not in order_cols:
@@ -1399,6 +1405,10 @@ def init_db():
         route_cols = [col[1] for col in cur.fetchall()]
         if 'courier_arrived_at' not in route_cols:
             cur.execute("ALTER TABLE routes ADD COLUMN courier_arrived_at TEXT")
+        if 'arrival_wait_override' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN arrival_wait_override INTEGER DEFAULT 0")
+        if 'arrival_wait_override_at' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN arrival_wait_override_at TEXT")
     except Exception:
         pass
 
@@ -1796,7 +1806,9 @@ def init_db():
             accepted_at TEXT,
             delivered_at TEXT,
             canceled_at TEXT,
-            courier_arrived_at TEXT
+            courier_arrived_at TEXT,
+            arrival_wait_override INTEGER DEFAULT 0,
+            arrival_wait_override_at TEXT
         );
     """)
     cur.execute("""
@@ -1843,14 +1855,13 @@ def init_db():
             role TEXT NOT NULL DEFAULT 'ADMIN_LOCAL',
             status TEXT NOT NULL DEFAULT 'APPROVED',
             admin_id INTEGER,
-            courier_id INTEGER,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_username ON web_users(username)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_web_users_status ON web_users(status)")
-    # Migración: agregar admin_id a web_users si no existe
+    # Migración: agregar admin_id y courier_id a web_users si no existen
     cur.execute("PRAGMA table_info(web_users)")
     _wu_cols = [col[1] for col in cur.fetchall()]
     if "admin_id" not in _wu_cols:
@@ -2066,6 +2077,8 @@ def _init_db_postgres():
         ("payment_changed_at", "TIMESTAMP DEFAULT NULL"),
         ("payment_changed_by", "BIGINT DEFAULT NULL"),
         ("payment_prev_method", "TEXT DEFAULT NULL"),
+        ("arrival_wait_override", "INTEGER DEFAULT 0"),
+        ("arrival_wait_override_at", "TIMESTAMP"),
     ]:
         _pg_add_col("orders", col, ctype)
 
@@ -2109,6 +2122,8 @@ def _init_db_postgres():
     _pg_add_col("orders", "special_commission", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "team_only", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
+    _pg_add_col("routes", "arrival_wait_override", "INTEGER DEFAULT 0")
+    _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
 
@@ -2124,7 +2139,6 @@ def _init_db_postgres():
             role TEXT NOT NULL DEFAULT 'ADMIN_LOCAL',
             status TEXT NOT NULL DEFAULT 'APPROVED',
             admin_id BIGINT,
-            courier_id BIGINT,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
@@ -3957,7 +3971,9 @@ def penalize_courier_for_delay_and_release(order_id: int, actor_admin_id: int = 
             SET status = 'PUBLISHED',
                 courier_id = NULL,
                 accepted_at = NULL,
-                courier_arrived_at = NULL{reason_sql}
+                courier_arrived_at = NULL,
+                arrival_wait_override = 0,
+                arrival_wait_override_at = NULL{reason_sql}
             WHERE id = {P} AND status = 'ACCEPTED'
             """,
             tuple(params),
@@ -4249,7 +4265,9 @@ def penalize_route_courier_for_delay_and_release(route_id: int, actor_admin_id: 
                 courier_id = NULL,
                 accepted_at = NULL,
                 courier_arrived_at = NULL,
-                courier_admin_id_snapshot = NULL
+                courier_admin_id_snapshot = NULL,
+                arrival_wait_override = 0,
+                arrival_wait_override_at = NULL
             WHERE id = {P} AND status = 'ACCEPTED'
             """,
             (int(route_id),),
@@ -4292,9 +4310,43 @@ def release_order_from_courier(order_id: int):
     cur = conn.cursor()
     cur.execute(f"""
         UPDATE orders
-        SET status = 'PUBLISHED', courier_id = NULL, accepted_at = NULL
+        SET status = 'PUBLISHED',
+            courier_id = NULL,
+            accepted_at = NULL,
+            courier_arrived_at = NULL,
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
         WHERE id = {P};
     """, (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_order_arrival_wait_override(order_id: int, enabled: bool):
+    """Persiste si el creador decidio seguir esperando y anular la liberacion T+20."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if enabled:
+        cur.execute(
+            f"""
+            UPDATE orders
+            SET arrival_wait_override = 1,
+                arrival_wait_override_at = {now_sql}
+            WHERE id = {P}
+            """,
+            (order_id,),
+        )
+    else:
+        cur.execute(
+            f"""
+            UPDATE orders
+            SET arrival_wait_override = 0,
+                arrival_wait_override_at = NULL
+            WHERE id = {P}
+            """,
+            (order_id,),
+        )
     conn.commit()
     conn.close()
 
@@ -4305,9 +4357,44 @@ def set_courier_arrived(order_id: int):
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     cur.execute(
-        f"UPDATE orders SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        f"""
+        UPDATE orders
+        SET courier_arrived_at = {now_sql},
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
+        WHERE id = {P} AND courier_arrived_at IS NULL;
+        """,
         (order_id,),
     )
+    conn.commit()
+    conn.close()
+
+
+def set_route_arrival_wait_override(route_id: int, enabled: bool):
+    """Persiste si el aliado decidio seguir esperando en la ruta y anular la liberacion T+20."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    if enabled:
+        cur.execute(
+            f"""
+            UPDATE routes
+            SET arrival_wait_override = 1,
+                arrival_wait_override_at = {now_sql}
+            WHERE id = {P}
+            """,
+            (route_id,),
+        )
+    else:
+        cur.execute(
+            f"""
+            UPDATE routes
+            SET arrival_wait_override = 0,
+                arrival_wait_override_at = NULL
+            WHERE id = {P}
+            """,
+            (route_id,),
+        )
     conn.commit()
     conn.close()
 
@@ -4318,7 +4405,13 @@ def set_route_courier_arrived(route_id: int):
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
     cur.execute(
-        f"UPDATE routes SET courier_arrived_at = {now_sql} WHERE id = {P} AND courier_arrived_at IS NULL;",
+        f"""
+        UPDATE routes
+        SET courier_arrived_at = {now_sql},
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
+        WHERE id = {P} AND courier_arrived_at IS NULL;
+        """,
         (route_id,),
     )
     conn.commit()
@@ -4885,19 +4978,19 @@ def get_courier_web_earnings(courier_id: int, start_s: str, end_s: str) -> list:
         for row in rows:
             if isinstance(row, dict):
                 result.append({
-                    "id": row["id"],
+                    "order_id": row["id"],
                     "total_fee": row["total_fee"] or 0,
                     "incentivo": row["incentivo"] or 0,
-                    "created_at": str(row["created_at"]),
+                    "delivered_at": str(row["created_at"]),
                     "ally_name": row["ally_name"] or "Pedido especial",
                     "dropoff_city": row["dropoff_city"] or "",
                 })
             else:
                 result.append({
-                    "id": row[0],
+                    "order_id": row[0],
                     "total_fee": row[1] or 0,
                     "incentivo": row[2] or 0,
-                    "created_at": str(row[3]),
+                    "delivered_at": str(row[3]),
                     "ally_name": row[5] or "Pedido especial",
                     "dropoff_city": row[6] or "",
                 })
@@ -4912,10 +5005,8 @@ def get_courier_web_profile(courier_id: int) -> dict:
     cur = conn.cursor()
     try:
         cur.execute(
-            f"""SELECT c.id, c.full_name, c.phone, c.city, c.status, c.vehicle_type,
-                       u.telegram_id
+            f"""SELECT c.id, c.full_name, c.phone, c.city, c.status, c.vehicle_type
                 FROM couriers c
-                JOIN users u ON c.user_id = u.id
                 WHERE c.id = {P}""",
             (courier_id,)
         )
@@ -6933,7 +7024,10 @@ def assign_order_to_courier(order_id: int, courier_id: int, courier_admin_id_sna
     cur.execute(f"""
         UPDATE orders
         SET courier_id = {P}, status = 'ACCEPTED', accepted_at = {now_sql},
-            courier_admin_id_snapshot = {P}
+            courier_admin_id_snapshot = {P},
+            courier_arrived_at = NULL,
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
         WHERE id = {P};
     """, (courier_id, courier_admin_id_snapshot, order_id))
     conn.commit()
@@ -11794,7 +11888,10 @@ def assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot):
         f"""
         UPDATE routes
         SET courier_id = {P}, courier_admin_id_snapshot = {P},
-            status = 'ACCEPTED', accepted_at = {now_sql}
+            status = 'ACCEPTED', accepted_at = {now_sql},
+            courier_arrived_at = NULL,
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
         WHERE id = {P}
         """,
         (courier_id, courier_admin_id_snapshot, route_id)
@@ -11815,7 +11912,10 @@ def release_route_from_courier(route_id):
             courier_admin_id_snapshot = NULL,
             status = 'PUBLISHED',
             accepted_at = NULL,
-            published_at = {now_sql}
+            published_at = {now_sql},
+            courier_arrived_at = NULL,
+            arrival_wait_override = 0,
+            arrival_wait_override_at = NULL
         WHERE id = {P}
         """,
         (route_id,),

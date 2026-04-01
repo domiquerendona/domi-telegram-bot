@@ -565,8 +565,8 @@ Siempre se trabaja sobre la rama staging.
 
 Todo commit y push del trabajo se hace directamente a origin/staging.
 
-Excepción única:
-- Cambios estructurales de base de datos (ver 7B) se implementan en verify/* y luego se mergean a staging.
+Las ramas temporales `verify/*` o `claude/*` pueden usarse cuando se necesite aislar una validación puntual,
+pero NO son obligatorias para cambios estructurales de base de datos.
 
 Si un bloque se reemplaza, el código anterior debe desaparecer.
 
@@ -596,7 +596,9 @@ afecte lógica de persistencia
 
 Todo cambio estructural de BD debe:
 
-Implementarse en rama verify/*
+Implementarse y validarse en staging por defecto.
+
+Usar rama verify/* solo si el usuario lo pide explícitamente o si hace falta aislar una validación puntual.
 
 Desplegarse en entorno de prueba
 
@@ -610,7 +612,7 @@ persistencia tras redeploy
 
 Solo después puede mergearse a main.
 
-PROHIBIDO saltarse la rama verify/* en cambios de base de datos.
+PROHIBIDO promover a main un cambio de base de datos sin validación funcional previa en staging.
 
 7C. Checklist obligatorio antes de merge a main
 
@@ -680,12 +682,14 @@ Flujo oficial de ramas:
 
   staging   ──(validado)──►  main
   verify/*  ──merge──►  staging  ──(validado)──►  main
+  (opcional)
                          (entorno DEV:
                           BOT_TOKEN DEV
                           DATABASE_URL separada)
 
 Reglas de flujo:
 - PROHIBIDO mergear verify/* directamente a main sin pasar por staging.
+- verify/* es opcional y solo se usa si hace falta aislar una validación puntual.
 - Un cambio puede ir de staging a main solo cuando fue validado funcionalmente en staging.
 - staging debe mantenerse al día con origin/staging.
 
