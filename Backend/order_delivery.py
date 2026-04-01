@@ -1366,6 +1366,7 @@ def _send_next_offer(order_id, context):
     next_offer = get_next_pending_offer(order_id)
     if not next_offer:
         # No quedan couriers en la cola, intentar reiniciar ciclo
+        logger.info("_send_next_offer: pedido %s sin couriers pendientes; se intentara reiniciar el ciclo", order_id)
         _try_restart_cycle(order_id, context)
         return
 
@@ -1463,7 +1464,13 @@ def _try_restart_cycle(order_id, context):
     Captura repartidores que hayan entrado al radio desde el inicio del ciclo."""
     cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
     if not cycle_info:
-        return
+        order = get_order_by_id(order_id)
+        if not order or order["status"] != "PUBLISHED":
+            logger.warning("_try_restart_cycle: pedido %s sin cycle_info y fuera de PUBLISHED", order_id)
+            return
+        cycle_info = _build_recovered_order_cycle_info(order)
+        context.bot_data.setdefault("offer_cycles", {})[order_id] = cycle_info
+        logger.warning("_try_restart_cycle: pedido %s sin cycle_info; reconstruido desde BD", order_id)
 
     import time
     elapsed = time.time() - cycle_info["started_at"]
@@ -1490,6 +1497,14 @@ def _try_restart_cycle(order_id, context):
         order_distance_km=cycle_info.get("order_distance_km"),
     )
     courier_ids = [c["courier_id"] for c in fresh if c["courier_id"] not in excluded]
+    logger.info(
+        "_try_restart_cycle: pedido %s elapsed=%.0fs fresh=%s excluded=%s relanzables=%s",
+        order_id,
+        elapsed,
+        len(fresh),
+        len(excluded),
+        len(courier_ids),
+    )
 
     if not courier_ids:
         _expire_order(order_id, cycle_info, context)
@@ -5155,10 +5170,17 @@ def _route_offer_timeout_job(context):
 def _try_restart_route_cycle(route_id, context):
     cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id)
     if not cycle_info:
-        return
+        route = get_route_by_id(route_id)
+        if not route or route["status"] != "PUBLISHED":
+            logger.warning("_try_restart_route_cycle: ruta %s sin cycle_info y fuera de PUBLISHED", route_id)
+            return
+        cycle_info = _build_recovered_route_cycle_info(route)
+        context.bot_data.setdefault("route_offer_cycles", {})[route_id] = cycle_info
+        logger.warning("_try_restart_route_cycle: ruta %s sin cycle_info; reconstruida desde BD", route_id)
 
     import time
     elapsed = time.time() - cycle_info["started_at"]
+    logger.info("_try_restart_route_cycle: ruta %s elapsed=%.0fs", route_id, elapsed)
 
     if elapsed >= ROUTE_MAX_CYCLE_SECONDS:
         _expire_route(route_id, cycle_info, context)
@@ -5203,6 +5225,7 @@ def _send_next_route_offer(route_id, context):
 
     next_offer = get_next_pending_route_offer(route_id)
     if not next_offer:
+        logger.info("_send_next_route_offer: ruta %s sin couriers pendientes; se intentara reiniciar el ciclo", route_id)
         _try_restart_route_cycle(route_id, context)
         return
 
