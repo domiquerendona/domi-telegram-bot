@@ -232,6 +232,23 @@ DB_ENGINE = "postgres" if DATABASE_URL else "sqlite"
 P = "%s" if DB_ENGINE == "postgres" else "?"
 ```
 
+### Compatibilidad de expresiones de fecha en funciones web (`db.py`)
+
+Las funciones del panel web que filtran por fecha **deben usar el patrón `DB_ENGINE`** porque SQLite y PostgreSQL tienen sintaxis incompatible:
+
+| Expresión | SQLite | PostgreSQL |
+|-----------|--------|------------|
+| Fecha de hoy | `date(created_at) = date('now')` | `created_at::date = CURRENT_DATE` |
+| Inicio de semana | `created_at >= date('now', 'weekday 0', '-7 days')` | `created_at >= DATE_TRUNC('week', CURRENT_DATE)` |
+| Mes actual | `strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')` | `TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')` |
+
+**Funciones que ya aplican el patrón correctamente:**
+- `get_dashboard_stats_data()` — filtro mes actual
+- `get_admin_panel_earnings_data()` — filtros hoy / semana / mes
+- `get_courier_delivery_time_stats()` — filtro ventana de N días
+
+**Síntoma cuando falta el patrón:** la API lanza excepción en PostgreSQL → FastAPI responde 500 sin cabeceras CORS → Angular recibe `status 0` ("Error 0: sin conexión"). **PROHIBIDO** usar `strftime` o `date('now')` directamente en queries de funciones de panel web sin el bloque `if DB_ENGINE == "postgres"`.
+
 ### Estados Estándar
 
 Todos los roles (admin, aliado, repartidor) usan exactamente estos estados:
@@ -495,6 +512,31 @@ npm test
 
 El backend permite CORS desde `http://localhost:4200` en modo desarrollo.
 
+#### Configuración SSR (archivos críticos)
+
+| Archivo | Propósito | Regla |
+|---------|-----------|-------|
+| `src/app/app.routes.server.ts` | Define `renderMode` por ruta | Todas las rutas deben usar `RenderMode.Client` para evitar errores SSRF en Railway |
+| `src/server.ts` | Configura `AngularNodeAppEngine` | Debe incluir `allowedHosts` con el dominio de Railway en producción |
+| `src/environments/environment.ts` | Variables de desarrollo | `apiBaseUrl` debe apuntar al backend de producción (Railway); el Dockerfile lo sobreescribe antes de compilar |
+| `src/environments/environment.prod.ts` | Variables de producción | Ídem |
+
+**`app.routes.server.ts` — configuración actual:**
+```typescript
+export const serverRoutes: ServerRoute[] = [
+  { path: '**', renderMode: RenderMode.Client }
+];
+```
+`RenderMode.Server` hace que Angular SSR intente hacer HTTP desde el servidor a la propia URL del host, lo cual falla por SSRF en Railway (el hostname no está en la allowlist interna de Angular).
+
+**`server.ts` — fragmento clave:**
+```typescript
+const angularApp = new AngularNodeAppEngine({
+  allowedHosts: ['angular-production-44c8.up.railway.app', 'localhost'],
+});
+```
+Sin `allowedHosts`, Angular SSR rechaza cualquier request cuyo `Host` header no sea `localhost`.
+
 ### Inicializar/Reiniciar Base de Datos (LOCAL)
 
 ```bash
@@ -593,6 +635,46 @@ Endpoints principales:
 - Endpoints de `/users/` y `/dashboard/`
 
 CORS configurado para permitir `http://localhost:4200` en desarrollo.
+
+### Panel Web Angular (Railway) — CONFIGURADO 2026-03-31
+
+El panel Angular se despliega en Railway como servicio independiente del backend. Servicio de producción: `https://angular-production-44c8.up.railway.app`.
+
+#### Archivos de configuración de despliegue
+
+**`Frontend/railway.json`** — debe usar `DOCKERFILE` builder obligatoriamente:
+```json
+{
+  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "deploy": { "restartPolicyType": "ON_FAILURE" }
+}
+```
+**CRÍTICO:** Si `builder` es `NIXPACKS` (el default de Railway), Railway ignora el `Dockerfile` y también ignora `fileReplacements` de `angular.json`. El resultado es que el frontend compila con las variables de entorno de desarrollo (apuntando a `localhost:8000` en lugar del backend de Railway).
+
+**`Frontend/.dockerignore`** — excluye caché de Angular del contexto Docker:
+```
+.angular/
+dist/
+node_modules/
+```
+**CRÍTICO:** Sin este archivo, `COPY . .` incluye `.angular/cache/` del desarrollador local. Angular detecta la caché como válida y reutiliza el build anterior (el build tarda ~9 seg en vez de ~60 seg), manteniendo los env files stale del commit anterior aunque el `Dockerfile` los sobreescriba. Síntoma: el archivo `main-XXXXXXXX.js` no cambia entre deploys.
+
+**`Frontend/Dockerfile`** — fragmento crítico:
+```dockerfile
+COPY . .
+RUN printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.ts \
+ && printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.prod.ts
+RUN npm run build -- --configuration production
+```
+Los `printf` sobreescriben los env files **después** de copiar el código fuente y **antes** de compilar. `--configuration production` es obligatorio para que Angular use `environment.prod.ts`.
+
+#### Reglas de deployment del frontend
+
+1. **NUNCA** cambiar `builder` en `railway.json` a `NIXPACKS` — rompe las variables de entorno.
+2. **SIEMPRE** verificar que `.angular/` esté en `.dockerignore` antes de hacer deploy.
+3. Si el build en Railway tarda menos de 20 segundos, es señal de que usó caché stale.
+4. Si `apiBaseUrl` aparece como `localhost:8000` en el navegador (ver DevTools → Network), la causa es alguno de los dos puntos anteriores.
+5. Al cambiar el dominio de producción del backend, actualizar los `printf` en el `Dockerfile`.
 
 ---
 
