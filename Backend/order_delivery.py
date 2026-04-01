@@ -65,7 +65,6 @@ from db import (
     mark_route_offer_response,
     get_current_route_offer,
     delete_route_offer_queue,
-    reset_route_offer_queue,
 )
 from datetime import datetime, timezone, timedelta
 from db import (
@@ -207,6 +206,7 @@ def _get_route_durations(route, delivered_now=False):
 
 
 OFFER_TIMEOUT_SECONDS = 30
+OFFER_RETRY_SECONDS = 30
 MAX_CYCLE_SECONDS = 600  # 10 minutos
 
 ARRIVAL_INACTIVITY_SECONDS = 5 * 60    # 5 min: Rappi-style
@@ -348,6 +348,11 @@ def _cancel_no_response_job(context, order_id):
     _cancel_persistent_job(context, "offer_no_response_{}".format(order_id))
 
 
+def _cancel_offer_retry_job(context, order_id):
+    """Cancela el job de reintento cuando un pedido esta esperando couriers elegibles."""
+    _cancel_persistent_job(context, "offer_retry_{}".format(order_id))
+
+
 def _cancel_pickup_autoconfirm_job(context, order_id):
     """Cancela el job de auto-confirmacion de llegada al pickup (pedido)."""
     _cancel_persistent_job(context, "pickup_autoconfirm_{}".format(order_id))
@@ -361,6 +366,11 @@ def _cancel_route_pickup_autoconfirm_job(context, route_id):
 def _cancel_route_no_response_job(context, route_id):
     """Cancela el job de sugerencia de incentivo T+5 para una ruta."""
     _cancel_persistent_job(context, "route_no_response_{}".format(route_id))
+
+
+def _cancel_route_offer_retry_job(context, route_id):
+    """Cancela el job de reintento cuando una ruta esta esperando couriers elegibles."""
+    _cancel_persistent_job(context, "route_offer_retry_{}".format(route_id))
 
 
 def _cancel_order_expire_job(context, order_id):
@@ -514,6 +524,57 @@ def _order_expire_job(context):
     _expire_order(order_id, cycle_info, context)
 
 
+def _schedule_offer_retry_job(context, order_id, delay_seconds=OFFER_RETRY_SECONDS):
+    """Programa un reintento del ciclo cuando no hay couriers elegibles en este momento."""
+    _cancel_offer_retry_job(context, order_id)
+    _schedule_persistent_job(
+        context,
+        _offer_retry_job,
+        delay_seconds,
+        "offer_retry_{}".format(order_id),
+        {"order_id": order_id},
+    )
+
+
+def _offer_retry_job(context):
+    """Reintenta publicar o reactivar la siguiente oferta de un pedido PUBLISHED."""
+    mark_job_executed(context.job.name)
+    data = context.job.context or {}
+    order_id = data.get("order_id")
+    if not order_id:
+        return
+
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        return
+
+    if get_current_offer_for_order(order_id):
+        return
+
+    _send_next_offer(order_id, context)
+
+
+def _activate_order_offer_dispatch(order_id, context, cycle_info, courier_ids):
+    """Deja el pedido activo aunque temporalmente no haya couriers relanzables."""
+    delete_offer_queue(order_id)
+    if courier_ids:
+        create_offer_queue(order_id, courier_ids)
+        _cancel_offer_retry_job(context, order_id)
+    else:
+        logger.info(
+            "publish_order_to_couriers: pedido %s activo sin couriers relanzables; reintentara en %ss",
+            order_id,
+            OFFER_RETRY_SECONDS,
+        )
+        _schedule_offer_retry_job(context, order_id)
+
+    set_order_status(order_id, "PUBLISHED", "published_at")
+    context.bot_data.setdefault("offer_cycles", {})[order_id] = cycle_info
+
+    if courier_ids:
+        _send_next_offer(order_id, context)
+
+
 def _offer_no_response_job(context):
     """Job T+5: si el pedido sigue PUBLISHED, sugiere al creador que agregue incentivo."""
     mark_job_executed(context.job.name)
@@ -598,6 +659,7 @@ def repost_order_to_couriers(order_id, context, excluded_courier_ids=None):
 
     # Limpiar cola existente, excluded_couriers en memoria y en BD
     clear_offer_queue(order_id)
+    _cancel_offer_retry_job(context, order_id)
     context.bot_data.get("offer_cycles", {}).pop(order_id, None)
     try:
         reset_order_excluded_couriers(order_id)
@@ -944,6 +1006,7 @@ def _handle_repost_ally(update, context, order_id):
     if status == "PUBLISHED":
         _cancel_no_response_job(context, order_id)
         _cancel_order_expire_job(context, order_id)
+        _cancel_offer_retry_job(context, order_id)
         current = get_current_offer_for_order(order_id)
         if current:
             _cancel_offer_jobs(context, order_id, current["queue_id"])
@@ -968,7 +1031,7 @@ def _handle_repost_ally(update, context, order_id):
         )
     else:
         query.answer(
-            "No hay repartidores disponibles en este momento.",
+            "Por ahora no hay repartidores disponibles. El pedido sigue activo y se reintentara automaticamente.",
             show_alert=True,
         )
 
@@ -1035,6 +1098,111 @@ def _route_no_response_job(context):
         logger.warning("Error enviando sugerencia para ruta %s: %s", route_id, e)
 
 
+def _schedule_route_offer_retry_job(context, route_id, delay_seconds=ROUTE_OFFER_RETRY_SECONDS):
+    """Programa un reintento del ciclo cuando no hay couriers elegibles para la ruta."""
+    _cancel_route_offer_retry_job(context, route_id)
+    _schedule_persistent_job(
+        context,
+        _route_offer_retry_job,
+        delay_seconds,
+        "route_offer_retry_{}".format(route_id),
+        {"route_id": route_id},
+    )
+
+
+def _route_offer_retry_job(context):
+    """Reintenta publicar o reactivar la siguiente oferta de una ruta PUBLISHED."""
+    mark_job_executed(context.job.name)
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    if not route_id:
+        return
+
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    if get_current_route_offer(route_id):
+        return
+
+    _send_next_route_offer(route_id, context)
+
+
+def _get_route_candidate_courier_ids(route_id, ally_id, admin_id, excluded_courier_ids=None):
+    """Recalcula los couriers relanzables de una ruta con las reglas actuales."""
+    route = get_route_by_id(route_id)
+    if not route:
+        return None, [], 0
+
+    pickup_lat = route["pickup_lat"]
+    pickup_lng = route["pickup_lng"]
+
+    route_max_dist_km = None
+    try:
+        import math as _rmath
+        route_destinations = get_route_destinations(route_id)
+        for destination in route_destinations:
+            d_lat = destination.get("dropoff_lat") if hasattr(destination, "get") else destination["dropoff_lat"]
+            d_lng = destination.get("dropoff_lng") if hasattr(destination, "get") else destination["dropoff_lng"]
+            if d_lat is not None and d_lng is not None and pickup_lat is not None and pickup_lng is not None:
+                r_lat = _rmath.radians(d_lat - pickup_lat)
+                r_lng = _rmath.radians(d_lng - pickup_lng)
+                a_val = (_rmath.sin(r_lat / 2) ** 2
+                         + _rmath.cos(_rmath.radians(pickup_lat)) * _rmath.cos(_rmath.radians(d_lat))
+                         * _rmath.sin(r_lng / 2) ** 2)
+                seg_km = 6371.0 * 2 * _rmath.atan2(_rmath.sqrt(a_val), _rmath.sqrt(1 - a_val))
+                if route_max_dist_km is None or seg_km > route_max_dist_km:
+                    route_max_dist_km = seg_km
+    except Exception:
+        route_max_dist_km = None
+
+    excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
+    eligible = get_eligible_couriers_for_order(
+        admin_id=admin_id,
+        ally_id=ally_id,
+        requires_cash=False,
+        cash_required_amount=0,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        order_distance_km=route_max_dist_km,
+    )
+
+    courier_ids = []
+    for courier in eligible:
+        courier_id = courier["courier_id"]
+        if courier_id in excluded_courier_ids:
+            continue
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if not courier_admin_id:
+            continue
+        fee_ok, _ = check_service_fee_available("COURIER", courier_id, courier_admin_id)
+        if fee_ok:
+            courier_ids.append(courier_id)
+
+    return route, courier_ids, len(eligible)
+
+
+def _activate_route_offer_dispatch(route_id, context, cycle_info, courier_ids):
+    """Deja la ruta activa aunque temporalmente no haya couriers relanzables."""
+    delete_route_offer_queue(route_id)
+    if courier_ids:
+        create_route_offer_queue(route_id, courier_ids)
+        _cancel_route_offer_retry_job(context, route_id)
+    else:
+        logger.info(
+            "publish_route_to_couriers: ruta %s activa sin couriers relanzables; reintentara en %ss",
+            route_id,
+            ROUTE_OFFER_RETRY_SECONDS,
+        )
+        _schedule_route_offer_retry_job(context, route_id)
+
+    update_route_status(route_id, "PUBLISHED", "published_at")
+    context.bot_data.setdefault("route_offer_cycles", {})[route_id] = cycle_info
+
+    if courier_ids:
+        _send_next_route_offer(route_id, context)
+
+
 def repost_route_to_couriers(route_id, context, excluded_courier_ids=None):
     """Re-oferta una ruta a todos los couriers con saldo (usado tras agregar incentivo).
 
@@ -1046,6 +1214,7 @@ def repost_route_to_couriers(route_id, context, excluded_courier_ids=None):
 
     excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
     delete_route_offer_queue(route_id)
+    _cancel_route_offer_retry_job(context, route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
 
     ally_id = route["ally_id"]
@@ -1087,6 +1256,7 @@ def _handle_repost_ally_route(update, context, route_id):
 
     # Cancelar job de sugerencia y limpiar cola existente
     _cancel_route_no_response_job(context, route_id)
+    _cancel_route_offer_retry_job(context, route_id)
     delete_route_offer_queue(route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
     context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
@@ -1108,7 +1278,7 @@ def _handle_repost_ally_route(update, context, route_id):
         )
     else:
         query.answer(
-            "No hay repartidores disponibles en este momento.",
+            "Por ahora no hay repartidores disponibles. La ruta sigue activa y se reintentara automaticamente.",
             show_alert=True,
         )
 
@@ -1253,16 +1423,11 @@ def publish_order_to_couriers(
         pickup_lng=p_lng,
         order_distance_km=_order_distance_km,
     )
-    if not eligible:
-        logger.warning("No hay couriers elegibles para pedido %s", order_id)
-        return 0
+    eligible_count = len(eligible)
 
     # Filtro team_only: pedidos especiales que el admin quiere ofrecer solo a su equipo.
     if team_only and admin_id:
         eligible = [c for c in eligible if get_approved_admin_id_for_courier(c["courier_id"]) == admin_id]
-        if not eligible:
-            logger.warning("Pedido %s team_only: no hay couriers del equipo admin_id=%s", order_id, admin_id)
-            return 0
 
     # Verificacion previa de saldo por courier usando el admin PROPIO de cada courier.
     # Siempre se verifica saldo para el fee estandar ($300).
@@ -1294,15 +1459,7 @@ def publish_order_to_couriers(
     for courier_id in couriers_without_balance:
         _notify_recharge_needed_to_courier(context, courier_id)
 
-    if not filtered:
-        logger.warning("Pedido %s sin oferta: todos los couriers sin saldo operativo", order_id)
-        if ally_id is not None:
-            _notify_recharge_needed_to_ally(context, ally_id)
-        return 0
-
     courier_ids = [c["courier_id"] for c in filtered]
-    create_offer_queue(order_id, courier_ids)
-    set_order_status(order_id, "PUBLISHED", "published_at")
 
     # Guardar datos del ciclo para re-consulta en reintentos
     if pickup_loc_row is None and pickup_location_id and ally_id is not None:
@@ -1326,7 +1483,7 @@ def publish_order_to_couriers(
     if dropoff_barrio is None:
         dropoff_barrio = _row_value(order, "customer_barrio")
 
-    context.bot_data.setdefault("offer_cycles", {})[order_id] = {
+    cycle_info = {
         "started_at": __import__("time").time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
@@ -1342,7 +1499,18 @@ def publish_order_to_couriers(
         "order_distance_km": _order_distance_km,
     }
 
-    _send_next_offer(order_id, context)
+    if not courier_ids:
+        logger.info(
+            "publish_order_to_couriers: pedido %s sin couriers relanzables (eligible=%s filtered=%s team_only=%s)",
+            order_id,
+            eligible_count,
+            len(filtered),
+            int(bool(team_only)),
+        )
+        if ally_id is not None and eligible and not filtered:
+            _notify_recharge_needed_to_ally(context, ally_id)
+
+    _activate_order_offer_dispatch(order_id, context, cycle_info, courier_ids)
 
     # Programar sugerencia de incentivo si nadie acepta en T+5
     _cancel_no_response_job(context, order_id)
@@ -1370,6 +1538,7 @@ def _send_next_offer(order_id, context):
         _try_restart_cycle(order_id, context)
         return
 
+    _cancel_offer_retry_job(context, order_id)
     mark_offer_as_offered(next_offer["queue_id"])
 
     pickup_lat, pickup_lng = _get_pickup_coords(order)
@@ -1487,6 +1656,10 @@ def _try_restart_cycle(order_id, context):
 
     admin_id = cycle_info["admin_id"]
     ally_id = cycle_info["ally_id"]
+    order = get_order_by_id(order_id)
+    if not order or order["status"] != "PUBLISHED":
+        logger.warning("_try_restart_cycle: pedido %s ya no esta en PUBLISHED al recalcular", order_id)
+        return
     p_lat = cycle_info.get("pickup_lat")
     p_lng = cycle_info.get("pickup_lng")
     requires_cash = cycle_info.get("requires_cash", False)
@@ -1502,7 +1675,28 @@ def _try_restart_cycle(order_id, context):
         pickup_lng=p_lng,
         order_distance_km=cycle_info.get("order_distance_km"),
     )
-    courier_ids = [c["courier_id"] for c in fresh if c["courier_id"] not in excluded]
+    special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
+    fee_cfg_pub = get_fee_config() if special_commission > 0 else None
+    courier_ids = []
+    for courier in fresh:
+        courier_id = courier["courier_id"]
+        if courier_id in excluded:
+            continue
+        courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+        if courier_admin_id is None:
+            continue
+        if special_commission > 0:
+            ok, _ = check_special_commission_available(
+                courier_id, special_commission, fee_cfg_pub["fee_service_total"]
+            )
+        else:
+            ok, _ = check_service_fee_available(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+            )
+        if ok:
+            courier_ids.append(courier_id)
     logger.info(
         "_try_restart_cycle: pedido %s elapsed=%.0fs fresh=%s excluded=%s relanzables=%s",
         order_id,
@@ -1513,7 +1707,13 @@ def _try_restart_cycle(order_id, context):
     )
 
     if not courier_ids:
-        _expire_order(order_id, cycle_info, context)
+        delete_offer_queue(order_id)
+        logger.info(
+            "_try_restart_cycle: pedido %s sigue activo sin couriers relanzables; reintentara en %ss",
+            order_id,
+            OFFER_RETRY_SECONDS,
+        )
+        _schedule_offer_retry_job(context, order_id)
         return
 
     delete_offer_queue(order_id)
@@ -1530,6 +1730,7 @@ def _expire_order(order_id, cycle_info, context):
 
     _cancel_no_response_job(context, order_id)
     _cancel_order_expire_job(context, order_id)
+    _cancel_offer_retry_job(context, order_id)
     current = get_current_offer_for_order(order_id)
     if current:
         _cancel_offer_jobs(context, order_id, current["queue_id"])
@@ -2802,7 +3003,6 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
     y reinicia el ciclo de ofertas. Usado por T+5, T+20 y cuando el aliado
     solicita otro repartidor.
     """
-    import time as _time
     order = get_order_by_id(order_id)
     if not order or order["status"] != "ACCEPTED":
         return
@@ -2847,55 +3047,19 @@ def _release_order_by_timeout(order_id, courier_id, context, reason="timeout"):
     except Exception:
         pass
 
-    # Reiniciar ciclo excluyendo al courier liberado
-    ally_id = order["ally_id"]
-    admin_link = get_approved_admin_link_for_ally(ally_id)
-    admin_id = admin_link["admin_id"] if admin_link else cycle.get("admin_id")
-    if not admin_id:
-        return
-
-    p_lat = cycle.get("pickup_lat")
-    p_lng = cycle.get("pickup_lng")
-    if p_lat is None or p_lng is None:
-        p_lat, p_lng = _get_pickup_coords(order)
-
-    requires_cash = bool(order["requires_cash"])
-    cash_amount = int(order["cash_required_amount"] or 0)
-
-    eligible = get_eligible_couriers_for_order(
-        admin_id=admin_id, ally_id=ally_id,
-        requires_cash=requires_cash, cash_required_amount=cash_amount,
-        pickup_lat=p_lat, pickup_lng=p_lng,
-        order_distance_km=cycle.get("order_distance_km") if cycle else None,
-    )
-    eligible = [c for c in eligible if c["courier_id"] not in excluded]
-
-    if eligible:
-        courier_ids = [c["courier_id"] for c in eligible]
-        delete_offer_queue(order_id)
-        create_offer_queue(order_id, courier_ids)
-        context.bot_data.setdefault("offer_cycles", {})[order_id] = {
-            "started_at": _time.time(),
-            "admin_id": admin_id, "ally_id": ally_id,
-            "pickup_lat": p_lat, "pickup_lng": p_lng,
-            "pickup_city": cycle.get("pickup_city") if cycle else None,
-            "pickup_barrio": cycle.get("pickup_barrio") if cycle else None,
-            "dropoff_city": cycle.get("dropoff_city") if cycle else None,
-            "dropoff_barrio": cycle.get("dropoff_barrio") if cycle else None,
-            "requires_cash": requires_cash, "cash_amount": cash_amount,
-            "excluded_couriers": excluded,
-            "order_distance_km": cycle.get("order_distance_km") if cycle else None,
-        }
-        _send_next_offer(order_id, context)
-    else:
+    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded)
+    if repost_count <= 0:
         try:
-            ally = get_ally_by_id(ally_id)
+            ally = get_ally_by_id(order["ally_id"])
             if ally:
                 au = get_user_by_id(ally["user_id"])
                 if au:
                     context.bot.send_message(
                         chat_id=au["telegram_id"],
-                        text="No hay mas repartidores disponibles para el pedido #{}.".format(order_id),
+                        text=(
+                            "No hay otro repartidor disponible para el pedido #{} por ahora. "
+                            "El pedido sigue activo y se reintentara automaticamente."
+                        ).format(order_id),
                     )
         except Exception:
             pass
@@ -3581,7 +3745,9 @@ def _handle_find_another_courier(update, context, order_id, confirm=False):
     if repost_count > 0:
         result_lines.append("El pedido ya fue re-ofrecido a otros repartidores.")
     else:
-        result_lines.append("El pedido quedo publicado, pero por ahora no hay otro repartidor disponible.")
+        result_lines.append(
+            "El pedido sigue activo; por ahora no hay otro repartidor disponible y se reintentara automaticamente."
+        )
     query.edit_message_text("\n".join(result_lines))
 
 
@@ -3669,19 +3835,6 @@ def _handle_release(update, context, order_id, reason_code=None):
     _notify_ally_order_released(context, order, reason_label=reason_label)
     _notify_admin_order_released(context, order, courier, reason_label=reason_label, arrived_flag=arrived_flag)
 
-    # Re-iniciar ciclo de ofertas
-    ally_id = order["ally_id"]
-    admin_link = get_approved_admin_link_for_ally(ally_id)
-    if admin_link:
-        admin_id = admin_link["admin_id"]
-    else:
-        courier_admin_link = get_approved_admin_link_for_courier(courier["id"])
-        admin_id = courier_admin_link["admin_id"] if courier_admin_link else None
-
-    if not admin_id:
-        logger.warning("No se pudo reofertar pedido %s: sin admin operativo", order_id)
-        return
-
     # Preservar couriers excluidos del ciclo anterior y agregar el que libero el pedido
     prev_cycle = context.bot_data.get("offer_cycles", {}).get(order_id, {})
     excluded = set(prev_cycle.get("excluded_couriers", set()))
@@ -3691,46 +3844,21 @@ def _handle_release(update, context, order_id, reason_code=None):
     except Exception:
         pass
 
-    # Recuperar coordenadas de recogida del ciclo anterior
-    p_lat = prev_cycle.get("pickup_lat")
-    p_lng = prev_cycle.get("pickup_lng")
-
-    requires_cash = bool(order["requires_cash"])
-    cash_amount = int(order["cash_required_amount"] or 0)
-
-    eligible = get_eligible_couriers_for_order(
-        admin_id=admin_id,
-        ally_id=ally_id,
-        requires_cash=requires_cash,
-        cash_required_amount=cash_amount,
-        pickup_lat=p_lat,
-        pickup_lng=p_lng,
-    )
-    # Excluir al courier que libero y a cualquier otro excluido previamente
-    eligible = [c for c in eligible if c["courier_id"] not in excluded]
-
-    if eligible:
-        import time
-        courier_ids = [c["courier_id"] for c in eligible]
-        delete_offer_queue(order_id)
-        create_offer_queue(order_id, courier_ids)
-
-        context.bot_data.setdefault("offer_cycles", {})[order_id] = {
-            "started_at": time.time(),
-            "admin_id": admin_id,
-            "ally_id": ally_id,
-            "pickup_lat": p_lat,
-            "pickup_lng": p_lng,
-            "pickup_city": prev_cycle.get("pickup_city"),
-            "pickup_barrio": prev_cycle.get("pickup_barrio"),
-            "dropoff_city": prev_cycle.get("dropoff_city"),
-            "dropoff_barrio": prev_cycle.get("dropoff_barrio"),
-            "requires_cash": requires_cash,
-            "cash_amount": cash_amount,
-            "excluded_couriers": excluded,
-        }
-        _send_next_offer(order_id, context)
-        _schedule_order_expire_job(context, order_id)
+    repost_count = repost_order_to_couriers(order_id, context, excluded_courier_ids=excluded)
+    if repost_count <= 0:
+        try:
+            ally_row = get_ally_by_id(order["ally_id"])
+            ally_user = get_user_by_id(ally_row["user_id"]) if ally_row else None
+            if ally_user and ally_user["telegram_id"]:
+                context.bot.send_message(
+                    chat_id=ally_user["telegram_id"],
+                    text=(
+                        "Por ahora no hay otro repartidor disponible para el pedido #{}. "
+                        "El pedido sigue activo y se reintentara automaticamente."
+                    ).format(order_id),
+                )
+        except Exception:
+            pass
 
 
 def _handle_cancel_ally(update, context, order_id, confirm=False):
@@ -5063,6 +5191,7 @@ def _notify_admin_order_released(context, order, courier, reason_label, arrived_
 # ===== FLUJO DE RUTAS MULTI-PARADA =====
 
 ROUTE_OFFER_TIMEOUT_SECONDS = 30
+ROUTE_OFFER_RETRY_SECONDS = 30
 ROUTE_MAX_CYCLE_SECONDS = 420  # 7 minutos
 
 
@@ -5199,7 +5328,41 @@ def _try_restart_route_cycle(route_id, context):
         _expire_route(route_id, cycle_info, context)
         return
 
-    reset_route_offer_queue(route_id)
+    admin_id = cycle_info.get("admin_id")
+    ally_id = cycle_info.get("ally_id")
+    excluded = cycle_info.get("excluded_couriers", set())
+    route, courier_ids, eligible_count = _get_route_candidate_courier_ids(
+        route_id,
+        ally_id,
+        admin_id,
+        excluded_courier_ids=excluded,
+    )
+    if not route or route["status"] != "PUBLISHED":
+        logger.warning("_try_restart_route_cycle: ruta %s ya no esta en PUBLISHED al recalcular", route_id)
+        return
+
+    logger.info(
+        "_try_restart_route_cycle: ruta %s elapsed=%.0fs eligible=%s excluded=%s relanzables=%s",
+        route_id,
+        elapsed,
+        eligible_count,
+        len(excluded),
+        len(courier_ids),
+    )
+
+    if not courier_ids:
+        delete_route_offer_queue(route_id)
+        logger.info(
+            "_try_restart_route_cycle: ruta %s sigue activa sin couriers relanzables; reintentara en %ss",
+            route_id,
+            ROUTE_OFFER_RETRY_SECONDS,
+        )
+        _schedule_route_offer_retry_job(context, route_id)
+        return
+
+    delete_route_offer_queue(route_id)
+    create_route_offer_queue(route_id, courier_ids)
+    _cancel_route_offer_retry_job(context, route_id)
     _send_next_route_offer(route_id, context)
 
 
@@ -5207,6 +5370,7 @@ def _expire_route(route_id, cycle_info, context):
     """Nadie acepto la ruta en 7 minutos. Cancela la ruta."""
     logger.info("_expire_route: ruta %s en PUBLISHED sera cancelada sin cargo", route_id)
     _cancel_route_no_response_job(context, route_id)
+    _cancel_route_offer_retry_job(context, route_id)
     cancel_route(route_id, "SYSTEM")
     delete_route_offer_queue(route_id)
 
@@ -5243,6 +5407,7 @@ def _send_next_route_offer(route_id, context):
         _try_restart_route_cycle(route_id, context)
         return
 
+    _cancel_route_offer_retry_job(context, route_id)
     mark_route_offer_as_offered(next_offer["queue_id"])
 
     destinations = get_route_destinations(route_id)
@@ -5322,9 +5487,6 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
         order_distance_km=_route_max_dist_km,
     )
 
-    if not eligible:
-        return 0
-
     # Filtrar couriers sin saldo suficiente para el fee de servicio ($300)
     # El sistema no ofrece el servicio a couriers que no puedan pagarlo al finalizar
     couriers_con_saldo = []
@@ -5339,21 +5501,25 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
         if fee_ok:
             couriers_con_saldo.append(c_id)
 
-    if not couriers_con_saldo:
-        return 0
-
     courier_ids = couriers_con_saldo
-    create_route_offer_queue(route_id, courier_ids)
-    update_route_status(route_id, "PUBLISHED", "published_at")
 
     import time
-    context.bot_data.setdefault("route_offer_cycles", {})[route_id] = {
+    cycle_info = {
         "started_at": time.time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
+        "excluded_couriers": excluded_courier_ids,
     }
 
-    _send_next_route_offer(route_id, context)
+    if not courier_ids:
+        logger.info(
+            "publish_route_to_couriers: ruta %s sin couriers relanzables (eligible=%s excluded=%s)",
+            route_id,
+            len(eligible),
+            len(excluded_courier_ids),
+        )
+
+    _activate_route_offer_dispatch(route_id, context, cycle_info, courier_ids)
 
     # Programar sugerencia de incentivo T+5 si nadie acepta la ruta
     _cancel_route_no_response_job(context, route_id)
@@ -6050,7 +6216,11 @@ def _release_route_by_timeout(route_id, courier_id, context):
                             "{}"
                         ).format(
                             route_id,
-                            "Buscando otro repartidor..." if repost_count > 0 else "No hay mas repartidores disponibles por ahora.",
+                            (
+                                "Buscando otro repartidor..."
+                                if repost_count > 0
+                                else "Por ahora no hay otro repartidor disponible, pero la ruta sigue activa y se reintentara automaticamente."
+                            ),
                         ),
                     )
     except Exception:
@@ -6181,7 +6351,10 @@ def _handle_find_another_route_courier(update, context, route_id, confirm=False)
             if ally_user and ally_user["telegram_id"]:
                 context.bot.send_message(
                     chat_id=ally_user["telegram_id"],
-                    text="No hay mas repartidores disponibles para la ruta #{} en este momento.".format(route_id),
+                    text=(
+                        "Por ahora no hay otro repartidor disponible para la ruta #{}. "
+                        "La ruta sigue activa y se reintentara automaticamente."
+                    ).format(route_id),
                 )
         except Exception:
             pass
@@ -7848,12 +8021,14 @@ def _handle_admin_route_pickup_pinissue_action(update, context, route_id, suppor
 JOB_REGISTRY = {
     "_order_expire_job": _order_expire_job,
     "_offer_no_response_job": _offer_no_response_job,
+    "_offer_retry_job": _offer_retry_job,
     "_arrival_inactivity_job": _arrival_inactivity_job,
     "_arrival_warn_ally_job": _arrival_warn_ally_job,
     "_arrival_deadline_job": _arrival_deadline_job,
     "_delivery_reminder_job": _delivery_reminder_job,
     "_delivery_admin_alert_job": _delivery_admin_alert_job,
     "_route_no_response_job": _route_no_response_job,
+    "_route_offer_retry_job": _route_offer_retry_job,
     "_route_arrival_inactivity_job": _route_arrival_inactivity_job,
     "_route_arrival_warn_job": _route_arrival_warn_job,
     "_route_arrival_deadline_job": _route_arrival_deadline_job,
@@ -7975,6 +8150,7 @@ def _build_recovered_route_cycle_info(route):
         "started_at": _restore_cycle_started_at(route),
         "admin_id": admin_id,
         "ally_id": ally_id,
+        "excluded_couriers": set(),
     }
 
 
