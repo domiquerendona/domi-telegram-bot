@@ -160,6 +160,20 @@ def _row_value(row, key, index=0, default=None):
             return default
 
 
+def _column_exists(cur, table: str, column: str) -> bool:
+    """Verifica si una columna existe en el motor activo usando la introspeccion oficial."""
+    if DB_ENGINE == "postgres":
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        )
+        return bool(cur.fetchone())
+
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(col[1] == column for col in cur.fetchall())
+
+
 # ----------------- Identidad global -----------------
 
 def get_or_create_identity(phone: str, document_number: str, full_name: str = None) -> int:
@@ -3243,12 +3257,18 @@ def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    reason_sql = ""
+    params = [canceled_by]
+    if _column_exists(cur, "orders", "reason"):
+        reason_sql = f", reason = {P}"
+        params.append(reason)
+    params.append(order_id)
 
     cur.execute(f"""
         UPDATE orders
-        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
+        SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}{reason_sql}
         WHERE id = {P};
-    """, (canceled_by, reason, order_id))
+    """, tuple(params))
     conn.commit()
     conn.close()
 
@@ -3777,13 +3797,19 @@ def cancel_order_by_actor(order_id: int, actor_type: str, actor_admin_id: int = 
             result["penalty_message"] = penalty_message
 
         reason_text = reason or "{}_{}".format(actor, result["penalty_code"])
+        reason_sql = ""
+        params = [actor]
+        if _column_exists(cur, "orders", "reason"):
+            reason_sql = f", reason = {P}"
+            params.append(reason_text)
+        params.append(int(order_id))
         cur.execute(
             f"""
             UPDATE orders
-            SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}, reason = {P}
+            SET status = 'CANCELLED', canceled_at = {now_sql}, canceled_by = {P}{reason_sql}
             WHERE id = {P}
             """,
-            (actor, reason_text, int(order_id)),
+            tuple(params),
         )
         if cur.rowcount != 1:
             conn.rollback()
@@ -3914,17 +3940,22 @@ def penalize_courier_for_delay_and_release(order_id: int, actor_admin_id: int = 
         result["penalty_message"] = penalty_message
 
         reason_text = reason or "ALLY_DELAY_RELEASE"
+        reason_sql = ""
+        params = []
+        if _column_exists(cur, "orders", "reason"):
+            reason_sql = f",\n                reason = {P}"
+            params.append(reason_text)
+        params.append(int(order_id))
         cur.execute(
             f"""
             UPDATE orders
             SET status = 'PUBLISHED',
                 courier_id = NULL,
                 accepted_at = NULL,
-                courier_arrived_at = NULL,
-                reason = {P}
+                courier_arrived_at = NULL{reason_sql}
             WHERE id = {P} AND status = 'ACCEPTED'
             """,
-            (reason_text, int(order_id)),
+            tuple(params),
         )
         if cur.rowcount != 1:
             conn.rollback()
