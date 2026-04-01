@@ -40,6 +40,29 @@ from services import (
     get_user_db_id_from_update,
 )
 
+
+def _cotizar_prompt_entrega():
+    return (
+        "Ahora enviame el punto de ENTREGA.\n"
+        "Puedes enviar:\n"
+        "- Un PIN de ubicacion de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Una direccion de texto"
+    )
+
+
+def _cotizar_no_more_text(point_label: str):
+    return (
+        "No encontre mas opciones para {}.\n\n"
+        "Envia otra ubicacion para continuar:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Una direccion con ciudad"
+    ).format(point_label)
+
+
 def cotizar_start(update, context):
     telegram_id = update.effective_user.id
     ok, msg = can_use_cotizador(telegram_id)
@@ -278,26 +301,21 @@ def cotizar_recogida(update, context):
         )
         return COTIZAR_RECOGIDA
 
-    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+    if loc.get("lat") is not None and loc.get("lng") is not None:
         original_text = update.message.text.strip() if update.message and update.message.text else ""
         _mostrar_confirmacion_geocode(
-            update.message, context,
-            loc, original_text,
+            update.message,
+            context,
+            loc,
+            original_text,
             "cotizar_recogida_geo_si", "cotizar_recogida_geo_no",
+            header_text="Confirma el punto exacto de recogida antes de continuar.",
+            question_text="Es esta la ubicacion de recogida correcta?",
         )
         return COTIZAR_RECOGIDA
 
-    context.user_data["cotizar_pickup"] = loc
-    update.message.reply_text(
-        "Recogida registrada.\n\n"
-        "Ahora enviame el punto de ENTREGA.\n"
-        "Puedes enviar:\n"
-        "- Un PIN de ubicacion de Telegram\n"
-        "- Un link de Google Maps\n"
-        "- Coordenadas (ej: 4.81,-75.69)\n"
-        "- Una direccion de texto"
-    )
-    return COTIZAR_ENTREGA
+    update.message.reply_text("No pude confirmar ese punto. Envia otra ubicacion para la recogida.")
+    return COTIZAR_RECOGIDA
 
 
 def cotizar_recogida_location(update, context):
@@ -318,19 +336,22 @@ def cotizar_recogida_geo_callback(update, context):
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Intenta /cotizar de nuevo.")
             return COTIZAR_RECOGIDA
-        context.user_data["cotizar_pickup"] = {"lat": lat, "lng": lng, "method": "geocode"}
+        context.user_data["cotizar_pickup"] = {"lat": lat, "lng": lng, "method": "confirmed"}
         query.edit_message_text(
-            "Recogida confirmada.\n\n"
-            "Ahora enviame el punto de ENTREGA.\n"
-            "Puedes enviar:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps\n"
-            "- Coordenadas (ej: 4.81,-75.69)\n"
-            "- Una direccion de texto"
+            "Recogida confirmada.\n\n{}".format(_cotizar_prompt_entrega())
         )
         return COTIZAR_ENTREGA
     else:  # cotizar_recogida_geo_no
-        return _geo_siguiente_o_gps(query, context, "cotizar_recogida_geo_si", "cotizar_recogida_geo_no", COTIZAR_RECOGIDA)
+        return _geo_siguiente_o_gps(
+            query,
+            context,
+            "cotizar_recogida_geo_si",
+            "cotizar_recogida_geo_no",
+            COTIZAR_RECOGIDA,
+            header_text="Confirma el punto exacto de recogida antes de continuar.",
+            question_text="Es esta la ubicacion de recogida correcta?",
+            no_more_text=_cotizar_no_more_text("la recogida"),
+        )
 
 
 def cotizar_entrega(update, context):
@@ -346,51 +367,21 @@ def cotizar_entrega(update, context):
         )
         return COTIZAR_ENTREGA
 
-    if loc.get("method") == "geocode" and loc.get("formatted_address"):
+    if loc.get("lat") is not None and loc.get("lng") is not None:
         original_text = update.message.text.strip() if update.message and update.message.text else ""
         _mostrar_confirmacion_geocode(
-            update.message, context,
-            loc, original_text,
+            update.message,
+            context,
+            loc,
+            original_text,
             "cotizar_entrega_geo_si", "cotizar_entrega_geo_no",
+            header_text="Confirma el punto exacto de entrega antes de cotizar.",
+            question_text="Es esta la ubicacion de entrega correcta?",
         )
         return COTIZAR_ENTREGA
 
-    pickup = context.user_data.get("cotizar_pickup")
-    if not pickup:
-        update.message.reply_text("Error: no se encontro el punto de recogida. Usa /cotizar de nuevo.")
-        return ConversationHandler.END
-
-    result = get_smart_distance(pickup["lat"], pickup["lng"], loc["lat"], loc["lng"])
-    distance_km = result["distance_km"]
-    config = get_pricing_config()
-    precio = calcular_precio_distancia(distance_km, config)
-
-    source = result["source"]
-    if "google" in source:
-        nota_fuente = "Distancia por ruta (Google Maps)"
-    elif "haversine" in source:
-        nota_fuente = "Distancia estimada (calculo local)"
-    else:
-        nota_fuente = f"Distancia desde cache ({source})"
-
-    context.user_data["cotizar_result_pickup_lat"] = pickup["lat"]
-    context.user_data["cotizar_result_pickup_lng"] = pickup["lng"]
-    context.user_data["cotizar_result_dropoff_lat"] = loc["lat"]
-    context.user_data["cotizar_result_dropoff_lng"] = loc["lng"]
-    keyboard = [
-        [InlineKeyboardButton("Crear pedido con esta ruta", callback_data="cotizar_crear_pedido")],
-        [InlineKeyboardButton("Varias entregas (ruta)", callback_data="cotizar_crear_ruta")],
-        [InlineKeyboardButton("Solo consulta", callback_data="cotizar_cerrar")],
-    ]
-    update.message.reply_text(
-        f"COTIZACION\n\n"
-        f"Distancia: {distance_km:.1f} km\n"
-        f"Precio: ${precio:,}\n\n".replace(",", ".")
-        + f"{nota_fuente}\n\n"
-        + "Deseas crear el pedido?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return COTIZAR_RESULTADO
+    update.message.reply_text("No pude confirmar ese punto. Envia otra ubicacion para la entrega.")
+    return COTIZAR_ENTREGA
 
 
 def cotizar_entrega_location(update, context):
@@ -450,7 +441,16 @@ def cotizar_entrega_geo_callback(update, context):
         context.user_data.pop("cotizar_ally_id", None)
         return COTIZAR_RESULTADO
     else:  # cotizar_entrega_geo_no
-        return _geo_siguiente_o_gps(query, context, "cotizar_entrega_geo_si", "cotizar_entrega_geo_no", COTIZAR_ENTREGA)
+        return _geo_siguiente_o_gps(
+            query,
+            context,
+            "cotizar_entrega_geo_si",
+            "cotizar_entrega_geo_no",
+            COTIZAR_ENTREGA,
+            header_text="Confirma el punto exacto de entrega antes de cotizar.",
+            question_text="Es esta la ubicacion de entrega correcta?",
+            no_more_text=_cotizar_no_more_text("la entrega"),
+        )
 
 
 def cotizar_resultado_callback(update, context):

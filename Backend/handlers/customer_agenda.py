@@ -4,6 +4,9 @@
 # Contiene: clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
 # =============================================================================
 
+import logging
+logger = logging.getLogger(__name__)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackQueryHandler,
@@ -133,6 +136,38 @@ from services import (
     update_customer_address,
     update_customer_address_coords,
 )
+
+
+def _agenda_geo_no_more_text():
+    return (
+        "No encontre mas opciones para esa direccion.\n\n"
+        "Envia otra ubicacion para continuar:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Una direccion con ciudad"
+    )
+
+
+def _agenda_emit_geo_confirmation(update, context, loc, texto, cb_si, cb_no, formatted_key, log_tag):
+    logger.info(
+        "[%s] status=pending lat=%s lng=%s",
+        log_tag,
+        loc.get("lat"),
+        loc.get("lng"),
+    )
+    _mostrar_confirmacion_geocode(
+        update.message,
+        context,
+        loc,
+        texto,
+        cb_si,
+        cb_no,
+        header_text="Confirma este punto exacto antes de guardar la direccion.",
+        question_text="Es esta la ubicacion correcta?",
+        formatted_storage_key=formatted_key,
+    )
+
 
 # ============================================================
 # COMANDO /clientes - AGENDA DE CLIENTES RECURRENTES
@@ -515,8 +550,16 @@ def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_n
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
-        context.user_data["clientes_geo_formatted"] = loc.get("formatted_address", "")
-        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        _agenda_emit_geo_confirmation(
+            update,
+            context,
+            loc,
+            texto,
+            cb_si,
+            cb_no,
+            "clientes_geo_formatted",
+            "clientes_location_confirm",
+        )
         return estado
 
     return loc
@@ -698,14 +741,20 @@ def clientes_geo_callback(update, context):
         return CLIENTES_MENU
 
     if query.data == "cust_geo_si":
+        formatted = context.user_data.pop("clientes_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
-        context.user_data.pop("clientes_geo_formatted", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
             return CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
+        logger.info(
+            "[clientes_location_confirm] status=confirmed mode=%s lat=%s lng=%s",
+            mode,
+            lat,
+            lng,
+        )
 
         if mode == "corregir_coords":
             context.user_data.pop("clientes_geo_mode", None)
@@ -735,22 +784,32 @@ def clientes_geo_callback(update, context):
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return clientes_mostrar_menu(update, context, edit_message=False)
 
+        address_to_save = (formatted or context.user_data.get("clientes_geo_address_input", "")).strip()
         if mode == "nuevo_cliente":
-            original_text = context.user_data.get("clientes_geo_address_input", "")
             context.user_data.pop("clientes_geo_mode", None)
             context.user_data.pop("clientes_geo_address_input", None)
-            return _clientes_guardar_nuevo(query, context, original_text, lat, lng)
+            return _clientes_guardar_nuevo(query, context, address_to_save, lat, lng)
 
-        original_text = context.user_data.get("clientes_geo_address_input", "")
         context.user_data["clientes_pending_mode"] = mode
-        context.user_data["clientes_pending_address_text"] = original_text
+        context.user_data["clientes_pending_address_text"] = address_to_save
         context.user_data["clientes_pending_lat"] = lat
         context.user_data["clientes_pending_lng"] = lng
         query.edit_message_text("Escribe la ciudad de la direccion:")
         return CLIENTES_DIR_CIUDAD
 
     estado = CLIENTES_NUEVO_DIRECCION_TEXT if mode == "nuevo_cliente" else CLIENTES_DIR_NUEVA_TEXT
-    return _geo_siguiente_o_gps(query, context, "cust_geo_si", "cust_geo_no", estado)
+    logger.info("[clientes_location_confirm] status=rejected mode=%s", mode)
+    return _geo_siguiente_o_gps(
+        query,
+        context,
+        "cust_geo_si",
+        "cust_geo_no",
+        estado,
+        header_text="Confirma este punto exacto antes de guardar la direccion.",
+        question_text="Es esta la ubicacion correcta?",
+        no_more_text=_agenda_geo_no_more_text(),
+        formatted_storage_key="clientes_geo_formatted",
+    )
 
 
 def clientes_dir_ciudad_handler(update, context):
@@ -1504,8 +1563,16 @@ def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
-        context.user_data["acust_geo_formatted"] = loc.get("formatted_address", "")
-        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        _agenda_emit_geo_confirmation(
+            update,
+            context,
+            loc,
+            texto,
+            cb_si,
+            cb_no,
+            "acust_geo_formatted",
+            "admin_clientes_location_confirm",
+        )
         return estado
 
     return loc
@@ -1654,14 +1721,20 @@ def admin_clientes_geo_callback(update, context):
         return ADMIN_CUST_MENU
 
     if query.data == "acust_geo_si":
+        formatted = context.user_data.pop("acust_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
-        context.user_data.pop("acust_geo_formatted", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
             return ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
+        logger.info(
+            "[admin_clientes_location_confirm] status=confirmed mode=%s lat=%s lng=%s",
+            mode,
+            lat,
+            lng,
+        )
 
         if mode == "corregir_coords":
             context.user_data.pop("acust_geo_mode", None)
@@ -1691,22 +1764,32 @@ def admin_clientes_geo_callback(update, context):
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return _admin_clientes_mostrar_menu(update, context, edit_message=False)
 
+        address_to_save = (formatted or context.user_data.get("acust_geo_address_input", "")).strip()
         if mode == "nuevo_cliente":
-            original_text = context.user_data.get("acust_geo_address_input", "")
             context.user_data.pop("acust_geo_mode", None)
             context.user_data.pop("acust_geo_address_input", None)
-            return _admin_clientes_guardar_nuevo(query, context, original_text, lat, lng)
+            return _admin_clientes_guardar_nuevo(query, context, address_to_save, lat, lng)
 
-        original_text = context.user_data.get("acust_geo_address_input", "")
         context.user_data["acust_pending_mode"] = mode
-        context.user_data["acust_pending_address_text"] = original_text
+        context.user_data["acust_pending_address_text"] = address_to_save
         context.user_data["acust_pending_lat"] = lat
         context.user_data["acust_pending_lng"] = lng
         query.edit_message_text("Escribe la ciudad de la direccion:")
         return ADMIN_CUST_DIR_CIUDAD
 
     estado = ADMIN_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ADMIN_CUST_DIR_NUEVA_TEXT
-    return _geo_siguiente_o_gps(query, context, "acust_geo_si", "acust_geo_no", estado)
+    logger.info("[admin_clientes_location_confirm] status=rejected mode=%s", mode)
+    return _geo_siguiente_o_gps(
+        query,
+        context,
+        "acust_geo_si",
+        "acust_geo_no",
+        estado,
+        header_text="Confirma este punto exacto antes de guardar la direccion.",
+        question_text="Es esta la ubicacion correcta?",
+        no_more_text=_agenda_geo_no_more_text(),
+        formatted_storage_key="acust_geo_formatted",
+    )
 
 
 def admin_clientes_dir_ciudad_handler(update, context):
@@ -2425,8 +2508,16 @@ def _ally_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
-        context.user_data["allycust_geo_formatted"] = loc.get("formatted_address", "")
-        _mostrar_confirmacion_geocode(update.message, context, loc, texto, cb_si, cb_no)
+        _agenda_emit_geo_confirmation(
+            update,
+            context,
+            loc,
+            texto,
+            cb_si,
+            cb_no,
+            "allycust_geo_formatted",
+            "ally_clientes_location_confirm",
+        )
         return estado
 
     return loc
@@ -2558,14 +2649,20 @@ def ally_clientes_geo_callback(update, context):
         return ALLY_CUST_MENU
 
     if query.data == "allycust_geo_si":
+        formatted = context.user_data.pop("allycust_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
-        context.user_data.pop("allycust_geo_formatted", None)
         if lat is None or lng is None:
             query.edit_message_text("Error: datos perdidos. Escribe la ubicacion nuevamente.")
             return ALLY_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ALLY_CUST_DIR_NUEVA_TEXT
+        logger.info(
+            "[ally_clientes_location_confirm] status=confirmed mode=%s lat=%s lng=%s",
+            mode,
+            lat,
+            lng,
+        )
 
         if mode == "corregir_coords":
             context.user_data.pop("allycust_geo_mode", None)
@@ -2589,22 +2686,32 @@ def ally_clientes_geo_callback(update, context):
                 query.edit_message_text("Error al actualizar: {}".format(str(e)))
             return _ally_clientes_mostrar_menu(update, context, edit_message=False)
 
+        address_to_save = (formatted or context.user_data.get("allycust_geo_address_input", "")).strip()
         if mode == "nuevo_cliente":
-            original_text = context.user_data.get("allycust_geo_address_input", "")
             context.user_data.pop("allycust_geo_mode", None)
             context.user_data.pop("allycust_geo_address_input", None)
-            return _ally_clientes_guardar_nuevo(query, context, original_text, lat, lng)
+            return _ally_clientes_guardar_nuevo(query, context, address_to_save, lat, lng)
 
-        original_text = context.user_data.get("allycust_geo_address_input", "")
         context.user_data["allycust_pending_mode"] = mode
-        context.user_data["allycust_pending_address_text"] = original_text
+        context.user_data["allycust_pending_address_text"] = address_to_save
         context.user_data["allycust_pending_lat"] = lat
         context.user_data["allycust_pending_lng"] = lng
         query.edit_message_text("Escribe la ciudad de la direccion:")
         return ALLY_CUST_DIR_CIUDAD
 
     estado = ALLY_CUST_NUEVO_DIR_TEXT if mode == "nuevo_cliente" else ALLY_CUST_DIR_NUEVA_TEXT
-    return _geo_siguiente_o_gps(query, context, "allycust_geo_si", "allycust_geo_no", estado)
+    logger.info("[ally_clientes_location_confirm] status=rejected mode=%s", mode)
+    return _geo_siguiente_o_gps(
+        query,
+        context,
+        "allycust_geo_si",
+        "allycust_geo_no",
+        estado,
+        header_text="Confirma este punto exacto antes de guardar la direccion.",
+        question_text="Es esta la ubicacion correcta?",
+        no_more_text=_agenda_geo_no_more_text(),
+        formatted_storage_key="allycust_geo_formatted",
+    )
 
 
 def ally_clientes_dir_ciudad_handler(update, context):

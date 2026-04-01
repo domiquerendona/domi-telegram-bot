@@ -83,6 +83,52 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
+def _registration_invalid_location_text():
+    return (
+        "No pude detectar esa ubicacion.\n\n"
+        "Prueba una de estas formas para continuar:\n"
+        "- Envia un PIN de Telegram\n"
+        "- Pega un link de Google Maps\n"
+        "- Escribe coordenadas (ej: 4.81,-75.69)\n"
+        "- Escribe una direccion con ciudad"
+    )
+
+
+def _registration_no_more_text():
+    return (
+        "No encontre mas opciones para esa ubicacion.\n\n"
+        "Prueba una de estas formas para continuar:\n"
+        "- Envia un PIN de Telegram\n"
+        "- Pega un link de Google Maps\n"
+        "- Escribe coordenadas (ej: 4.81,-75.69)\n"
+        "- Escribe una direccion con ciudad"
+    )
+
+
+def _emit_registration_geo_confirmation(update, context, geo, texto, cb_si, cb_no, log_tag):
+    logger.info(
+        "[%s] status=pending source=%s lat=%s lng=%s",
+        log_tag,
+        geo.get("method"),
+        geo.get("lat"),
+        geo.get("lng"),
+    )
+    _mostrar_confirmacion_geocode(
+        update.message,
+        context,
+        geo,
+        texto,
+        cb_si,
+        cb_no,
+        header_text="Confirma este punto exacto antes de continuar con tu registro.",
+        question_text="Es esta la ubicacion correcta?",
+    )
+
+
+def _log_registration_location_saved(log_tag, source, lat, lng):
+    logger.info("[%s] status=saved source=%s lat=%s lng=%s", log_tag, source, lat, lng)
+
+
 # ----- REGISTRO DE ALIADO (flujo unificado) -----
 
 def soy_aliado(update, context):
@@ -256,23 +302,30 @@ def ally_ubicacion_handler(update, context):
     if coords:
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
+        _log_registration_location_saved(
+            "ally_registration_location",
+            "text_coords_or_link",
+            coords[0],
+            coords[1],
+        )
         update.message.reply_text("Ubicacion guardada.")
         return show_ally_team_selection(update, context, from_callback=False)
 
     # Geocoding: intentar como direccion escrita
     geo = resolve_location(texto)
     if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
-        _mostrar_confirmacion_geocode(
-            update.message, context,
-            geo, texto,
-            "ally_geo_si", "ally_geo_no",
+        _emit_registration_geo_confirmation(
+            update,
+            context,
+            geo,
+            texto,
+            "ally_geo_si",
+            "ally_geo_no",
+            "ally_registration_location",
         )
         return ALLY_UBICACION
 
-    update.message.reply_text(
-        "No se pudo extraer la ubicacion del texto.\n"
-        "Envia un pin de Telegram o pega un link de Google Maps."
-    )
+    update.message.reply_text(_registration_invalid_location_text())
     return ALLY_UBICACION
 
 
@@ -286,6 +339,12 @@ def ally_ubicacion_location_handler(update, context):
     context.user_data["ally_registration_user_id"] = db_user["id"]
     context.user_data["ally_lat"] = loc.latitude
     context.user_data["ally_lng"] = loc.longitude
+    _log_registration_location_saved(
+        "ally_registration_location",
+        "telegram_pin",
+        loc.latitude,
+        loc.longitude,
+    )
     update.message.reply_text("Ubicacion guardada.")
     return show_ally_team_selection(update, context, from_callback=False)
 
@@ -310,10 +369,25 @@ def ally_geo_ubicacion_callback(update, context):
             return ALLY_UBICACION
         context.user_data["ally_lat"] = lat
         context.user_data["ally_lng"] = lng
+        logger.info(
+            "[ally_registration_location] status=confirmed source=geocode lat=%s lng=%s",
+            lat,
+            lng,
+        )
         query.edit_message_text("Ubicacion confirmada.")
         return show_ally_team_selection(update, context, from_callback=True)
     else:  # ally_geo_no
-        return _geo_siguiente_o_gps(query, context, "ally_geo_si", "ally_geo_no", ALLY_UBICACION)
+        logger.info("[ally_registration_location] status=rejected source=geocode")
+        return _geo_siguiente_o_gps(
+            query,
+            context,
+            "ally_geo_si",
+            "ally_geo_no",
+            ALLY_UBICACION,
+            header_text="Confirma este punto exacto antes de continuar con tu registro.",
+            question_text="Es esta la ubicacion correcta?",
+            no_more_text=_registration_no_more_text(),
+        )
 
 
 def _show_ally_confirm(update, context):
@@ -785,33 +859,39 @@ def courier_residence_address(update, context):
 def courier_residence_location(update, context):
     lat = None
     lng = None
+    source = None
     if update.message.location:
         lat = update.message.location.latitude
         lng = update.message.location.longitude
+        source = "telegram_pin"
     else:
         text = (update.message.text or "").strip()
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+            source = "text_coords_or_link"
         else:
             # Geocoding: intentar como direccion escrita
             geo = resolve_location(text)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
-                _mostrar_confirmacion_geocode(
-                    update.message, context,
-                    geo, text,
-                    "courier_geo_si", "courier_geo_no",
+                _emit_registration_geo_confirmation(
+                    update,
+                    context,
+                    geo,
+                    text,
+                    "courier_geo_si",
+                    "courier_geo_no",
+                    "courier_registration_location",
                 )
                 return COURIER_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
-        update.message.reply_text(
-            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
-        )
+        update.message.reply_text(_registration_invalid_location_text())
         return COURIER_RESIDENCE_LOCATION
 
     context.user_data["residence_lat"] = lat
     context.user_data["residence_lng"] = lng
+    _log_registration_location_saved("courier_registration_location", source, lat, lng)
     return _ask_courier_vehicle_type(update.message, context)
 
 
@@ -830,10 +910,25 @@ def courier_geo_ubicacion_callback(update, context):
             return COURIER_RESIDENCE_LOCATION
         context.user_data["residence_lat"] = lat
         context.user_data["residence_lng"] = lng
+        logger.info(
+            "[courier_registration_location] status=confirmed source=geocode lat=%s lng=%s",
+            lat,
+            lng,
+        )
         query.edit_message_text("Ubicacion confirmada.")
         return _ask_courier_vehicle_type(query.message, context)
     else:  # courier_geo_no
-        return _geo_siguiente_o_gps(query, context, "courier_geo_si", "courier_geo_no", COURIER_RESIDENCE_LOCATION)
+        logger.info("[courier_registration_location] status=rejected source=geocode")
+        return _geo_siguiente_o_gps(
+            query,
+            context,
+            "courier_geo_si",
+            "courier_geo_no",
+            COURIER_RESIDENCE_LOCATION,
+            header_text="Confirma este punto exacto antes de continuar con tu registro.",
+            question_text="Es esta la ubicacion correcta?",
+            no_more_text=_registration_no_more_text(),
+        )
 
 
 def _ask_courier_vehicle_type(message, context):
@@ -1660,35 +1755,41 @@ def admin_residence_address(update, context):
 def admin_residence_location(update, context):
     lat = None
     lng = None
+    source = None
 
     if update.message.location:
         lat = update.message.location.latitude
         lng = update.message.location.longitude
+        source = "telegram_pin"
     else:
         text = (update.message.text or "").strip()
         coords = extract_lat_lng_from_text(text)
         if coords:
             lat, lng = coords
+            source = "text_coords_or_link"
         else:
             # Geocoding: intentar como direccion escrita
             geo = resolve_location(text)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
-                _mostrar_confirmacion_geocode(
-                    update.message, context,
-                    geo, text,
-                    "admin_geo_si", "admin_geo_no",
+                _emit_registration_geo_confirmation(
+                    update,
+                    context,
+                    geo,
+                    text,
+                    "admin_geo_si",
+                    "admin_geo_no",
+                    "admin_registration_location",
                 )
                 return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     if lat is None or lng is None:
         _debug_admin_registration_state(context, "admin_residence_location_missing_coords")
-        update.message.reply_text(
-            "No pude detectar la ubicacion. Envia un pin de Telegram o pega un link de Google Maps."
-        )
+        update.message.reply_text(_registration_invalid_location_text())
         return LOCAL_ADMIN_RESIDENCE_LOCATION
 
     context.user_data["admin_residence_lat"] = lat
     context.user_data["admin_residence_lng"] = lng
+    _log_registration_location_saved("admin_registration_location", source, lat, lng)
     _debug_admin_registration_state(context, "admin_residence_location_saved")
     update.message.reply_text(
         "Ubicacion guardada.\n\n"
@@ -1715,6 +1816,11 @@ def admin_geo_ubicacion_callback(update, context):
             return LOCAL_ADMIN_RESIDENCE_LOCATION
         context.user_data["admin_residence_lat"] = lat
         context.user_data["admin_residence_lng"] = lng
+        logger.info(
+            "[admin_registration_location] status=confirmed source=geocode lat=%s lng=%s",
+            lat,
+            lng,
+        )
         _debug_admin_registration_state(context, "admin_geo_confirm_saved")
         query.edit_message_text(
             "Ubicacion confirmada.\n\n"
@@ -1724,7 +1830,17 @@ def admin_geo_ubicacion_callback(update, context):
         _set_flow_step(context, "admin", LOCAL_ADMIN_CEDULA_FRONT)
         return LOCAL_ADMIN_CEDULA_FRONT
     else:  # admin_geo_no
-        return _geo_siguiente_o_gps(query, context, "admin_geo_si", "admin_geo_no", LOCAL_ADMIN_RESIDENCE_LOCATION)
+        logger.info("[admin_registration_location] status=rejected source=geocode")
+        return _geo_siguiente_o_gps(
+            query,
+            context,
+            "admin_geo_si",
+            "admin_geo_no",
+            LOCAL_ADMIN_RESIDENCE_LOCATION,
+            header_text="Confirma este punto exacto antes de continuar con tu registro.",
+            question_text="Es esta la ubicacion correcta?",
+            no_more_text=_registration_no_more_text(),
+        )
 
 
 def admin_confirm(update, context):
