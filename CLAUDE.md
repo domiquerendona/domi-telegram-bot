@@ -532,11 +532,12 @@ export const serverRoutes: ServerRoute[] = [
 
 **`server.ts` — fragmento clave:**
 ```typescript
-const angularApp = new AngularNodeAppEngine({
-  allowedHosts: ['angular-production-44c8.up.railway.app', 'localhost'],
-});
+const allowedHosts = process.env['ALLOWED_HOSTS']
+  ? process.env['ALLOWED_HOSTS'].split(',')
+  : ['angular-production-44c8.up.railway.app', 'localhost'];
+const angularApp = new AngularNodeAppEngine({ allowedHosts });
 ```
-Sin `allowedHosts`, Angular SSR rechaza cualquier request cuyo `Host` header no sea `localhost`.
+Sin `allowedHosts`, Angular SSR rechaza cualquier request cuyo `Host` header no sea `localhost`. El valor por defecto protege producción; para staging se pasa `ALLOWED_HOSTS` como variable de entorno en Railway.
 
 ### Inicializar/Reiniciar Base de Datos (LOCAL)
 
@@ -662,9 +663,11 @@ node_modules/
 
 **`Frontend/Dockerfile`** — fragmento crítico:
 ```dockerfile
+ARG BACKEND_URL=https://backend-production-dc5f.up.railway.app
+
 COPY . .
-RUN printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.ts \
- && printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.prod.ts
+RUN printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.ts \
+ && printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.prod.ts
 RUN npm run build -- --configuration production
 ```
 Los `printf` sobreescriben los env files **después** de copiar el código fuente y **antes** de compilar. `--configuration production` es obligatorio para que Angular use `environment.prod.ts`.
@@ -675,7 +678,29 @@ Los `printf` sobreescriben los env files **después** de copiar el código fuent
 2. **SIEMPRE** verificar que `.angular/` esté en `.dockerignore` antes de hacer deploy.
 3. Si el build en Railway tarda menos de 20 segundos, es señal de que usó caché stale.
 4. Si `apiBaseUrl` aparece como `localhost:8000` en el navegador (ver DevTools → Network), la causa es alguno de los dos puntos anteriores.
-5. Al cambiar el dominio de producción del backend, actualizar los `printf` en el `Dockerfile`.
+5. Al cambiar el dominio de producción del backend, actualizar el valor por defecto del `ARG BACKEND_URL` en el `Dockerfile`.
+
+#### Entorno de staging del frontend (CONFIGURADO 2026-04-01)
+
+El frontend soporta dos servicios Railway independientes: DEV (staging) y PROD (main). Mismo código, distinta configuración.
+
+| Variable | Servicio PROD | Servicio DEV (staging) |
+|----------|--------------|------------------------|
+| `BACKEND_URL` | No se pasa (usa default del ARG) | URL del backend DEV en Railway |
+| `ALLOWED_HOSTS` | No se pasa (usa default del código) | Dominio Railway asignado al servicio DEV, ej. `angular-staging-xxxx.up.railway.app,localhost` |
+
+**Pasos para crear el servicio de staging en Railway:**
+1. New Service → GitHub Repo → mismo repositorio
+2. Root Directory: `Frontend` / Branch: `staging` / Builder: Dockerfile
+3. Agregar variable `BACKEND_URL` apuntando al backend DEV
+4. Railway asigna un dominio → copiar ese dominio y agregarlo como `ALLOWED_HOSTS`
+5. Redeploy
+
+**Flujo resultante:**
+```
+push a staging  →  Railway redespliega "angular-DEV"   →  apunta al backend DEV
+push a main     →  Railway redespliega "angular-PROD"  →  apunta al backend PROD
+```
 
 ---
 

@@ -5,9 +5,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+ARG BACKEND_URL=https://backend-production-dc5f.up.railway.app
+
 COPY . .
-RUN printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.ts \
- && printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.prod.ts
+RUN printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.ts \
+ && printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.prod.ts
 RUN npm run build -- --configuration production
 
 ENV PORT=3000
