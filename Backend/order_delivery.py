@@ -1098,8 +1098,10 @@ def _route_no_response_job(context):
         logger.warning("Error enviando sugerencia para ruta %s: %s", route_id, e)
 
 
-def _schedule_route_offer_retry_job(context, route_id, delay_seconds=ROUTE_OFFER_RETRY_SECONDS):
+def _schedule_route_offer_retry_job(context, route_id, delay_seconds=None):
     """Programa un reintento del ciclo cuando no hay couriers elegibles para la ruta."""
+    if delay_seconds is None:
+        delay_seconds = ROUTE_OFFER_RETRY_SECONDS
     _cancel_route_offer_retry_job(context, route_id)
     _schedule_persistent_job(
         context,
