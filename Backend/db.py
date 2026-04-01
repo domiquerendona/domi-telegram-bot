@@ -3141,7 +3141,7 @@ def get_all_online_couriers():
         SELECT
             c.id AS courier_id,
             c.full_name,
-            c.telegram_id,
+            u.telegram_id,
             c.phone,
             c.live_lat,
             c.live_lng,
@@ -3153,6 +3153,7 @@ def get_all_online_couriers():
             a.city AS admin_city,
             ac.admin_id
         FROM couriers c
+        JOIN users u ON u.id = c.user_id
         JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
         JOIN admins a ON a.id = ac.admin_id
         WHERE c.live_location_active = 1
