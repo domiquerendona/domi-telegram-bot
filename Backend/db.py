@@ -6294,6 +6294,10 @@ def get_dashboard_stats_data(admin_id=None):
     """
     conn = get_connection()
     cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        mes_actual_filter = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+    else:
+        mes_actual_filter = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
 
     if admin_id is None:
         cur.execute("""
@@ -6349,10 +6353,10 @@ def get_dashboard_stats_data(admin_id=None):
         saldo_row = cur.fetchone()
         saldo_plataforma = _row_value(saldo_row, "balance", 0, 0) if saldo_row else 0
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT COALESCE(SUM(amount), 0) FROM ledger
             WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
-              AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+              AND {mes_actual_filter}
         """)
         ganancias_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
         cur.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')")
@@ -6413,7 +6417,7 @@ def get_dashboard_stats_data(admin_id=None):
         cur.execute(
             f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
             f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}"
-            f" AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')", (admin_id,),
+            f" AND {mes_actual_filter}", (admin_id,),
         )
         ganancias_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
         cur.execute(
