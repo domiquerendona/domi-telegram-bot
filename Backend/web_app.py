@@ -3,9 +3,9 @@ try:
 except ImportError:
     def load_dotenv(*args, **kwargs):
         return False
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from web.api.admin import router as admin_router
 from web.api.auth import router as auth_router
@@ -21,6 +21,21 @@ init_db()
 ensure_web_admin()
 
 app = FastAPI()
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Convierte cualquier excepción no capturada en JSON 500 con CORS headers.
+    Sin esto, los errores llegan al navegador como text/plain sin CORS headers
+    y Angular los ve como status 0 ('Error 0: sin conexión').
+    """
+    import logging
+    logging.getLogger("web_app").error("Unhandled exception: %s", exc, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Error interno del servidor"},
+    )
+
 
 app.include_router(auth_router)
 app.include_router(admin_router)

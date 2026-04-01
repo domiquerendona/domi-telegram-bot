@@ -135,12 +135,23 @@ def _sync_courier_link_status(cur, courier_id: int, status: str, now_sql: str):
 
 
 def _row_value(row, key, index=0, default=None):
-    """Lee un campo por clave (dict/Row) y fallback por índice."""
+    """Lee un campo por clave (dict/Row) y fallback por índice.
+
+    Para filas dict (PostgreSQL RealDictCursor): intenta la clave primero;
+    si no existe, cae al índice posicional. Esto es necesario para queries de
+    agregación como COUNT(*) o COALESCE(SUM(...)) donde PostgreSQL normaliza el
+    nombre de columna a 'count' o 'coalesce' en lugar de preservar el texto literal.
+    """
     if row is None:
         return default
+    if isinstance(row, dict):
+        if key in row:
+            return row[key]
+        try:
+            return list(row.values())[index]
+        except Exception:
+            return default
     try:
-        if isinstance(row, dict):
-            return row.get(key, default)
         return row[key]
     except Exception:
         try:
@@ -3155,7 +3166,7 @@ def get_all_online_couriers():
         SELECT
             c.id AS courier_id,
             c.full_name,
-            c.telegram_id,
+            u.telegram_id,
             c.phone,
             c.live_lat,
             c.live_lng,
@@ -3167,6 +3178,7 @@ def get_all_online_couriers():
             a.city AS admin_city,
             ac.admin_id
         FROM couriers c
+        JOIN users u ON u.id = c.user_id
         JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
         JOIN admins a ON a.id = ac.admin_id
         WHERE c.live_location_active = 1
@@ -3195,7 +3207,7 @@ def get_active_orders_without_courier(limit: int = 20):
             o.pickup_lng,
             o.customer_name,
             o.created_at,
-            al.name AS ally_name
+            COALESCE(al.business_name, 'Admin') AS ally_name
         FROM orders o
         LEFT JOIN allies al ON al.id = o.ally_id
         WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
@@ -7230,11 +7242,20 @@ def get_admin_panel_earnings_data(admin_id=None):
     admin_where = f"AND l.to_id = {P} AND l.to_type = 'ADMIN'" if admin_id is not None else ""
     admin_params = (admin_id,) if admin_id is not None else ()
 
+    if DB_ENGINE == "postgres":
+        hoy_expr   = "created_at::date = CURRENT_DATE"
+        semana_expr = "created_at >= DATE_TRUNC('week', CURRENT_DATE)"
+        mes_expr   = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+    else:
+        hoy_expr   = "date(created_at) = date('now')"
+        semana_expr = "created_at >= date('now', 'weekday 0', '-7 days')"
+        mes_expr   = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+
     cur.execute(f"""
         SELECT
-            SUM(CASE WHEN date(created_at) = date('now') THEN amount ELSE 0 END) AS hoy,
-            SUM(CASE WHEN created_at >= date('now', 'weekday 0', '-7 days') THEN amount ELSE 0 END) AS semana,
-            SUM(CASE WHEN strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now') THEN amount ELSE 0 END) AS mes,
+            SUM(CASE WHEN {hoy_expr} THEN amount ELSE 0 END) AS hoy,
+            SUM(CASE WHEN {semana_expr} THEN amount ELSE 0 END) AS semana,
+            SUM(CASE WHEN {mes_expr} THEN amount ELSE 0 END) AS mes,
             SUM(amount) AS total
         FROM ledger l
         WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') {admin_where}
@@ -7307,6 +7328,12 @@ def get_dashboard_stats_data(admin_id=None):
     """
     conn = get_connection()
     cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        mes_actual_filter = "TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+        hoy_filter = "delivered_at::date = CURRENT_DATE"
+    else:
+        mes_actual_filter = "strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+        hoy_filter = "DATE(delivered_at) = DATE('now')"
 
     if admin_id is None:
         cur.execute("""
@@ -7348,7 +7375,7 @@ def get_dashboard_stats_data(admin_id=None):
 
         cur.execute("SELECT COUNT(*) FROM orders WHERE status IN ('PUBLISHED','ACCEPTED','PICKED_UP')")
         pedidos_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
-        cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND DATE(delivered_at) = DATE('now')")
+        cur.execute(f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND {hoy_filter}")
         pedidos_entregados_hoy = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
         cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED'")
         pedidos_total_entregados = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
@@ -7362,10 +7389,10 @@ def get_dashboard_stats_data(admin_id=None):
         saldo_row = cur.fetchone()
         saldo_plataforma = _row_value(saldo_row, "balance", 0, 0) if saldo_row else 0
 
-        cur.execute("""
+        cur.execute(f"""
             SELECT COALESCE(SUM(amount), 0) FROM ledger
             WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')
-              AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+              AND {mes_actual_filter}
         """)
         ganancias_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
         cur.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE')")
@@ -7407,7 +7434,7 @@ def get_dashboard_stats_data(admin_id=None):
         )
         pedidos_activos = _row_value(cur.fetchone(), "COUNT(*)", 0, 0) or 0
         cur.execute(
-            f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND DATE(delivered_at) = DATE('now')"
+            f"SELECT COUNT(*) FROM orders WHERE status = 'DELIVERED' AND {hoy_filter}"
             f" AND (ally_admin_id_snapshot = {P} OR courier_admin_id_snapshot = {P} OR creator_admin_id = {P})",
             (admin_id, admin_id, admin_id),
         )
@@ -7426,7 +7453,7 @@ def get_dashboard_stats_data(admin_id=None):
         cur.execute(
             f"SELECT COALESCE(SUM(amount), 0) FROM ledger"
             f" WHERE kind IN ('FEE_INCOME', 'PLATFORM_FEE') AND to_type = 'ADMIN' AND to_id = {P}"
-            f" AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')", (admin_id,),
+            f" AND {mes_actual_filter}", (admin_id,),
         )
         ganancias_mes = _row_value(cur.fetchone(), "COALESCE(SUM(amount), 0)", 0, 0) or 0
         cur.execute(

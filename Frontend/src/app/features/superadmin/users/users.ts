@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface UserRow {
   id: number;
@@ -138,7 +139,7 @@ export class UsersComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<UserRow[]>('http://localhost:8000/admin/users').subscribe({
+    this.http.get<UserRow[]>(`${environment.apiBaseUrl}/admin/users`).subscribe({
       next: (d) => { this.users.set(d); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });

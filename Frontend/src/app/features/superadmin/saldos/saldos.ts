@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface BalanceRow {
   id: number;
@@ -185,7 +186,7 @@ export class SaldosComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<SaldosData>('http://localhost:8000/admin/saldos').subscribe({
+    this.http.get<SaldosData>(`${environment.apiBaseUrl}/admin/saldos`).subscribe({
       next: (d) => { this.data.set(d); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });

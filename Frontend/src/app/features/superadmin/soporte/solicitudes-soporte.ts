@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, signal } from '@angular/core';
 import { NgFor, NgIf } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
+import { environment } from '../../../../environments/environment';
 
 interface SupportRequest {
   id: number;
@@ -188,7 +189,7 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    this.http.get<SupportRequest[]>('http://localhost:8000/admin/support-requests').subscribe({
+    this.http.get<SupportRequest[]>(`${environment.apiBaseUrl}/admin/support-requests`).subscribe({
       next: (data) => { this.solicitudes.set(data); this.cargando.set(false); },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });
@@ -203,7 +204,7 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
     if (!confirm(`¿${labels[action]} para el pedido #${s.order_id}?`)) return;
 
     this.resolviendoId.set(s.id);
-    this.http.post(`http://localhost:8000/admin/support-requests/${s.id}/resolve`, { action }).subscribe({
+    this.http.post(`${environment.apiBaseUrl}/admin/support-requests/${s.id}/resolve`, { action }).subscribe({
       next: () => { this.resolviendoId.set(null); this.cargar(); },
       error: (e) => {
         this.resolviendoId.set(null);

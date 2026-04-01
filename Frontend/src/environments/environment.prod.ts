@@ -1,4 +1,4 @@
 export const environment = {
   production: true,
-  apiBaseUrl: 'https://domi-api-prod.up.railway.app',
+  apiBaseUrl: 'https://backend-production-dc5f.up.railway.app',
 };

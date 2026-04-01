@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
 
 export interface DashboardStats {
   total_users: number;
@@ -14,7 +15,7 @@ export interface DashboardStats {
 })
 export class DashboardService {
 
-  private apiUrl = 'http://localhost:8000/dashboard/stats';
+  private apiUrl = `${environment.apiBaseUrl}/dashboard/stats`;
 
   constructor(private http: HttpClient) {}
 
