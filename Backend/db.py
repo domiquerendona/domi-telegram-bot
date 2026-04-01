@@ -12336,10 +12336,11 @@ def get_order_excluded_couriers(order_id: int) -> set:
     cur.execute(f"SELECT excluded_courier_ids FROM orders WHERE id = {P}", (order_id,))
     row = cur.fetchone()
     conn.close()
-    if not row or not row[0]:
+    excluded_raw = _row_value(row, "excluded_courier_ids") if row else None
+    if not excluded_raw:
         return set()
     try:
-        return set(json.loads(row[0]))
+        return set(json.loads(excluded_raw))
     except Exception:
         return set()
 
@@ -12374,9 +12375,10 @@ def add_order_excluded_courier(order_id: int, courier_id: int):
             cur.execute("SELECT excluded_courier_ids FROM orders WHERE id = ?", (order_id,))
             row = cur.fetchone()
             excluded = set()
-            if row and row[0]:
+            excluded_raw = _row_value(row, "excluded_courier_ids") if row else None
+            if excluded_raw:
                 try:
-                    excluded = set(json.loads(row[0]))
+                    excluded = set(json.loads(excluded_raw))
                 except Exception:
                     pass
             excluded.add(courier_id)
