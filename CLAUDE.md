@@ -14,7 +14,7 @@ Este archivo describe la estructura del proyecto, flujos de trabajo y convencion
 
 1. **Bot de Telegram** (Backend/): bot conversacional que gestiona pedidos, registros y operaciones de todos los actores del sistema.
 2. **API Web** (Backend/web/): API REST con FastAPI que expone endpoints para el panel administrativo.
-3. **Panel Web** (Frontend/): aplicación Angular 21 con SSR para administradores del panel. Soporta dos roles: `ADMIN_PLATFORM` (acceso total) y `ADMIN_LOCAL` (vistas filtradas por equipo).
+3. **Panel Web** (Frontend/): aplicación Angular 21 con SSR para administradores y repartidores. Soporta tres roles: `ADMIN_PLATFORM` (acceso total), `ADMIN_LOCAL` (vistas filtradas por equipo) y `COURIER` (panel propio de ganancias y perfil).
 
 Los actores principales del sistema son:
 - **Platform Admin**: administrador global de la plataforma (un solo usuario).
@@ -80,7 +80,10 @@ domi-telegram-bot/
 │       │   ├── __init__.py
 │       │   ├── admin.py          # Endpoints: POST /admin/users/{id}/approve, etc.
 │       │   ├── dashboard.py      # Endpoints del dashboard
-│       │   └── users.py          # Endpoints de usuarios
+│       │   ├── users.py          # Endpoints de usuarios
+│       │   ├── form.py           # Endpoints públicos del formulario de pedido del aliado
+│       │   ├── courier.py        # Endpoints panel repartidor: GET /courier/dashboard|earnings|profile
+│       │   └── profile.py        # Endpoint genérico: GET /profile (todos los roles)
 │       ├── auth/
 │       │   ├── __init__.py
 │       │   ├── dependencies.py   # get_current_user (dependencia FastAPI)
@@ -116,13 +119,19 @@ domi-telegram-bot/
 │           │   ├── interceptors/ # auth.interceptor.ts
 │           │   └── services/     # api.ts (servicio HTTP)
 │           ├── features/
-│           │   └── superadmin/
-│           │       ├── dashboard/
-│           │       ├── settings/
-│           │       └── users/
+│           │   ├── superadmin/
+│           │   │   ├── dashboard/
+│           │   │   ├── settings/
+│           │   │   └── users/
+│           │   ├── courier/
+│           │   │   ├── dashboard/    # CourierDashboardComponent — KPIs del repartidor
+│           │   │   └── ganancias/    # CourierGananciasComponent — entregas filtradas por periodo
+│           │   └── shared/
+│           │       └── perfil/       # PerfilComponent — perfil compartido todos los roles
 │           └── layout/
-│               ├── components/   # header/, sidebar/
-│               └── superadmin-layout/
+│               ├── components/         # header/, sidebar/
+│               ├── superadmin-layout/
+│               └── courier-layout/     # Layout con sidebar verde para repartidores
 │
 ├── docs/
 │   ├── HITOS.md                  # Documento histórico de hitos
@@ -299,7 +308,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
 | `profile_change_requests` | Solicitudes de cambio de perfil |
-| `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
+| `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`\|`COURIER`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM y COURIER), `courier_id` (FK → couriers.id, solo para rol COURIER), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
 | `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
 | `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
 | `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. |
@@ -781,6 +790,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 |-----|-------------|--------|
 | Admin Plataforma | `ADMIN_PLATFORM` | Datos globales + gestión de usuarios del panel |
 | Admin Local | `ADMIN_LOCAL` | Datos filtrados por su equipo (admin_id) |
+| Repartidor | `COURIER` | Solo su propio dashboard, ganancias y perfil (`/courier/*`) |
 
 **Flujo de autenticación:**
 1. `POST /auth/login` verifica bcrypt → retorna `{ token, username, role }`
@@ -788,6 +798,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 3. `AuthService` (Angular) lee `admin_role` y mantiene permisos en signals
 4. `RoleGuard` (`role.guard.ts`) protege rutas por permiso (ej. `manage_settings`)
 5. `AuthGuard` verifica presencia del token; si no existe, llama `authService.clear()` y redirige a login
+6. Post-login: `authService.homeRoute()` redirige a `/courier` para COURIER, `/superadmin` para el resto
 
 **Seeding del admin inicial:**
 - `ensure_web_admin()` en `db.py` crea el usuario `ADMIN_PLATFORM` al arrancar la app si no existe.
@@ -804,34 +815,56 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `POST /admin/web-users` — crea nuevo usuario (username, password, role, admin_id opcional)
 - `PATCH /admin/web-users/{id}/status` — activa (`APPROVED`) o inactiva (`INACTIVE`) un usuario
 
-**Funciones nuevas en `db.py` (re-exportadas en `services.py`):**
-- `create_web_user(username, password_hash, role, admin_id)` → int
-- `get_web_user_by_username(username)` → row
-- `get_web_user_by_id(user_id)` → row
+**Funciones en `db.py` relacionadas con el panel web:**
+- `create_web_user(username, password_hash, role, admin_id, courier_id=None)` → int
+- `get_web_user_by_username(username)` → row (incluye `courier_id`)
+- `get_web_user_by_id(user_id)` → row (incluye `courier_id`)
 - `list_web_users()` → list[row]
 - `update_web_user_status(user_id, status)`
 - `update_web_user_password(user_id, password_hash)`
 - `ensure_web_admin()` — seed idempotente desde env vars
+- `get_courier_web_dashboard(courier_id)` → dict con `entregas_hoy`, `entregas_mes`, `tarifa_mes`, `saldo`, `total_entregas`
+- `get_courier_web_earnings(courier_id, start_s, end_s)` → list con pedidos DELIVERED del repartidor en el rango de fechas
+- `get_courier_web_profile(courier_id)` → dict con `full_name`, `phone`, `city`, `status`, `vehicle_type`
 
 **Frontend Angular:**
-- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `clear()`
+- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
-- Sidebar: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`
+- Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
+- Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar verde con Dashboard, Mis ganancias, Mi perfil
+- `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`
+- `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`
+- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`
+- Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`
+- Ruta perfil admin: `/superadmin/perfil`
 
 **Permisos por rol (frontend y backend son espejo):**
 
-| Permiso | ADMIN_PLATFORM | ADMIN_LOCAL |
-|---------|:-:|:-:|
-| `view_dashboard` | ✓ | ✓ |
-| `view_users` | ✓ | ✓ |
-| `approve_user` | ✓ | ✓ |
-| `reject_user` | ✓ | — |
-| `deactivate_user` | ✓ | ✓ |
-| `reactivate_user` | ✓ | ✓ |
-| `view_couriers_map` | ✓ | ✓ |
-| `view_unassigned_orders` | ✓ | ✓ |
-| `manage_settings` | ✓ | — |
+| Permiso | ADMIN_PLATFORM | ADMIN_LOCAL | COURIER |
+|---------|:-:|:-:|:-:|
+| `view_dashboard` | ✓ | ✓ | ✓ |
+| `view_users` | ✓ | ✓ | — |
+| `approve_user` | ✓ | ✓ | — |
+| `reject_user` | ✓ | — | — |
+| `deactivate_user` | ✓ | ✓ | — |
+| `reactivate_user` | ✓ | ✓ | — |
+| `view_couriers_map` | ✓ | ✓ | — |
+| `view_unassigned_orders` | ✓ | ✓ | — |
+| `manage_settings` | ✓ | — | — |
+| `view_own_earnings` | — | — | ✓ |
+| `view_own_profile` | ✓ | ✓ | ✓ |
+
+**Endpoints del panel repartidor (IMPLEMENTADO 2026-04-01):**
+- `GET /courier/dashboard` — KPIs: entregas hoy/mes, tarifa mes, saldo, total histórico. Requiere rol `COURIER` + `courier_id` vinculado.
+- `GET /courier/earnings?period=hoy|semana|mes` — lista de pedidos DELIVERED con tarifa, incentivo, aliado y ciudad destino.
+- `GET /courier/profile` — nombre, teléfono, ciudad, vehículo, estado del repartidor.
+- `GET /profile` — perfil genérico para todos los roles (admin o courier), retorna `{ username, role, detail }`.
+
+**Cómo crear un usuario COURIER en el panel:**
+1. Admin Plataforma → `POST /admin/web-users` con `role: "COURIER"` y `courier_id: <id del courier en BD>`.
+2. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
+3. Solo ve sus propios datos; no puede acceder a `/superadmin`.
 
 ---
 
