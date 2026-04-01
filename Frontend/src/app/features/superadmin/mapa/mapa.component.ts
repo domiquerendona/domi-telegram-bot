@@ -152,7 +152,8 @@ export class MapaComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private async initMapa(): Promise<void> {
-    const L = await import('leaflet');
+    const leafletModule = await import('leaflet');
+    const L = (leafletModule as any).default ?? leafletModule;
 
     // Fix default icon paths broken by webpack
     const iconDefault = L.icon({
@@ -213,7 +214,8 @@ export class MapaComponent implements OnInit, AfterViewInit, OnDestroy {
   private async actualizarMarcadores(): Promise<void> {
     if (!this.map || !this.isBrowser) return;
 
-    const L = await import('leaflet');
+    const leafletModule = await import('leaflet');
+    const L = (leafletModule as any).default ?? leafletModule;
 
     // Limpiar marcadores previos
     this.courierMarkers.forEach(m => m.remove());
