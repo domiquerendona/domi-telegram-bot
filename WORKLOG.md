@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| (ninguna) | — | — | — |
+| claude | 2026-04-01 | Backend/db.py, Backend/web/api/profile.py, Backend/web/users/repository.py, Frontend/src/app/features/shared/perfil/perfil.ts | Panel web: 7 mejoras al perfil (iniciales avatar, editar datos, cambiar contraseña, miembro desde, estado animado, actividad reciente) + fix team_code admin | COMPLETADO |
 
 ---
 

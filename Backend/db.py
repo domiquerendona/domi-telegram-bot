@@ -4882,7 +4882,7 @@ def get_web_user_by_username(username: str):
     cur = conn.cursor()
     try:
         cur.execute(
-            f"SELECT id, username, password_hash, role, status, admin_id, courier_id FROM web_users WHERE username = {P}",
+            f"SELECT id, username, password_hash, role, status, admin_id, courier_id, created_at FROM web_users WHERE username = {P}",
             (username,),
         )
         return cur.fetchone()
@@ -4896,7 +4896,7 @@ def get_web_user_by_id(user_id: int):
     cur = conn.cursor()
     try:
         cur.execute(
-            f"SELECT id, username, password_hash, role, status, admin_id, courier_id FROM web_users WHERE id = {P}",
+            f"SELECT id, username, password_hash, role, status, admin_id, courier_id, created_at FROM web_users WHERE id = {P}",
             (user_id,),
         )
         return cur.fetchone()
@@ -5071,6 +5071,115 @@ def update_web_user_password(user_id: int, password_hash: str):
             (password_hash, user_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def update_admin_name_phone(admin_id: int, full_name: str, phone: str):
+    """Actualiza nombre y teléfono del admin en la tabla admins."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE admins SET full_name = {P}, phone = {P} WHERE id = {P}",
+            (full_name, phone, admin_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_courier_name_phone(courier_id: int, full_name: str, phone: str):
+    """Actualiza nombre y teléfono del courier en la tabla couriers."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE couriers SET full_name = {P}, phone = {P} WHERE id = {P}",
+            (full_name, phone, courier_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_admin_recent_activity(admin_id) -> list:
+    """Últimos 5 miembros aprobados/inactivados en el equipo del admin (actividad reciente)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if admin_id:
+            cur.execute(
+                f"""SELECT 'courier' as tipo, c.full_name, ac.status, ac.updated_at
+                    FROM admin_couriers ac JOIN couriers c ON ac.courier_id = c.id
+                    WHERE ac.admin_id = {P} AND ac.updated_at IS NOT NULL
+                    UNION ALL
+                    SELECT 'ally' as tipo, a.name as full_name, aa.status, aa.updated_at
+                    FROM admin_allies aa JOIN allies a ON aa.ally_id = a.id
+                    WHERE aa.admin_id = {P} AND aa.updated_at IS NOT NULL
+                    ORDER BY updated_at DESC LIMIT 5""",
+                (admin_id, admin_id)
+            )
+        else:
+            cur.execute(
+                f"""SELECT 'courier' as tipo, c.full_name, ac.status, ac.updated_at
+                    FROM admin_couriers ac JOIN couriers c ON ac.courier_id = c.id
+                    WHERE ac.updated_at IS NOT NULL
+                    UNION ALL
+                    SELECT 'ally' as tipo, a.name as full_name, aa.status, aa.updated_at
+                    FROM admin_allies aa JOIN allies a ON aa.ally_id = a.id
+                    WHERE aa.updated_at IS NOT NULL
+                    ORDER BY updated_at DESC LIMIT 5"""
+            )
+        rows = cur.fetchall()
+        result = []
+        for row in rows:
+            if isinstance(row, dict):
+                result.append({"tipo": row["tipo"], "full_name": row["full_name"],
+                                "status": row["status"], "updated_at": str(row["updated_at"] or "")})
+            else:
+                result.append({"tipo": row[0], "full_name": row[1],
+                                "status": row[2], "updated_at": str(row[3] or "")})
+        return result
+    finally:
+        conn.close()
+
+
+def get_courier_recent_activity(courier_id: int) -> list:
+    """Últimas 5 entregas completadas del repartidor."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""SELECT o.id, o.total_fee, o.incentivo, o.updated_at, a.name as ally_name, o.dropoff_city
+                FROM orders o
+                LEFT JOIN allies a ON o.ally_id = a.id
+                WHERE o.courier_id = {P} AND o.status = 'DELIVERED'
+                ORDER BY o.updated_at DESC LIMIT 5""",
+            (courier_id,)
+        )
+        rows = cur.fetchall()
+        result = []
+        for row in rows:
+            if isinstance(row, dict):
+                result.append({
+                    "order_id": row["id"],
+                    "total_fee": row["total_fee"] or 0,
+                    "incentivo": row["incentivo"] or 0,
+                    "delivered_at": str(row["updated_at"] or ""),
+                    "ally_name": row["ally_name"] or "Pedido especial",
+                    "dropoff_city": row["dropoff_city"] or "",
+                })
+            else:
+                result.append({
+                    "order_id": row[0],
+                    "total_fee": row[1] or 0,
+                    "incentivo": row[2] or 0,
+                    "delivered_at": str(row[3] or ""),
+                    "ally_name": row[5] or "Pedido especial",
+                    "dropoff_city": row[6] or "",
+                })
+        return result
     finally:
         conn.close()
 
