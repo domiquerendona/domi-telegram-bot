@@ -7481,6 +7481,28 @@ def _schedule_support_follow_up_jobs(context, support_id):
     )
 
 
+def _handle_duplicate_support_request(query, context, support_id, support_type, admin_id, target_label):
+    _schedule_support_follow_up_jobs(context, support_id)
+    notified = _dispatch_support_request_notification(context, support_id, admin_id)
+    _log_support_request_event(
+        "duplicate_retry",
+        support_id=support_id,
+        support_type=support_type,
+        admin_id=admin_id,
+        notified=int(bool(notified)),
+    )
+    if notified:
+        query.edit_message_text(
+            "Ya existia una solicitud de ayuda para {}.\n"
+            "Reenviamos la alerta a tu administrador y respondera pronto.".format(target_label)
+        )
+        return
+    query.edit_message_text(
+        "La solicitud para {} ya estaba registrada.\n"
+        "{}".format(target_label, SUPPORT_NOTIFICATION_RETRY_MSG)
+    )
+
+
 def _dispatch_support_request_notification(context, support_id, admin_id, extra_lines=None):
     support = get_support_request_full(support_id)
     if not support or support["status"] != "PENDING":
@@ -7649,9 +7671,13 @@ def _handle_pin_issue_report(update, context, order_id):
             admin_id=admin_id,
             order_id=order_id,
         )
-        query.edit_message_text(
-            "Ya enviaste una solicitud de ayuda para este pedido.\n"
-            "Tu administrador fue notificado y respondera pronto."
+        _handle_duplicate_support_request(
+            query,
+            context,
+            support_id,
+            SUPPORT_TYPE_DELIVERY_PIN,
+            admin_id,
+            "este pedido",
         )
         return
 
@@ -7997,9 +8023,13 @@ def _handle_route_pin_issue(update, context, route_id, seq):
             route_id=route_id,
             route_seq=seq,
         )
-        query.edit_message_text(
-            "Ya enviaste una solicitud de ayuda para esta parada.\n"
-            "Tu administrador fue notificado y respondera pronto."
+        _handle_duplicate_support_request(
+            query,
+            context,
+            support_id,
+            SUPPORT_TYPE_ROUTE_STOP_PIN,
+            admin_id,
+            "esta parada",
         )
         return
 
@@ -8334,9 +8364,13 @@ def _handle_order_pickup_pinissue(update, context, order_id):
             admin_id=admin_id,
             order_id=order_id,
         )
-        query.edit_message_text(
-            "Ya enviaste una solicitud de ayuda para este pedido.\n"
-            "Tu administrador fue notificado y respondera pronto."
+        _handle_duplicate_support_request(
+            query,
+            context,
+            support_id,
+            SUPPORT_TYPE_PICKUP_PIN,
+            admin_id,
+            "este pedido",
         )
         return
 
@@ -8540,9 +8574,13 @@ def _handle_route_pickup_pinissue(update, context, route_id):
             route_id=route_id,
             route_seq=0,
         )
-        query.edit_message_text(
-            "Ya enviaste una solicitud de ayuda para esta ruta.\n"
-            "Tu administrador fue notificado y respondera pronto."
+        _handle_duplicate_support_request(
+            query,
+            context,
+            support_id,
+            SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+            admin_id,
+            "esta ruta",
         )
         return
 

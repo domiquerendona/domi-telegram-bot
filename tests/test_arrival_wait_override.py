@@ -378,6 +378,70 @@ class SupportRequestAdminRoutingTests(unittest.TestCase):
             update.callback_query.edit_message_text.call_args.args[0],
         )
 
+    @patch("order_delivery._dispatch_support_request_notification", return_value=True)
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(701, False))
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_order_by_id")
+    def test_order_pickup_pin_issue_duplicate_retries_notification(
+        self,
+        mock_get_order_by_id,
+        mock_get_courier_by_telegram_id,
+        _mock_create_or_get_pending_support_request,
+        mock_schedule_support_follow_up_jobs,
+        mock_dispatch_support_request_notification,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 55,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 13,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        update = self._update()
+        context = self._context()
+
+        order_delivery._handle_order_pickup_pinissue(update, context, 55)
+
+        mock_schedule_support_follow_up_jobs.assert_called_once_with(context, 701)
+        mock_dispatch_support_request_notification.assert_called_once_with(context, 701, 13)
+        self.assertIn(
+            "Reenviamos la alerta a tu administrador",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
+    @patch("order_delivery._dispatch_support_request_notification", return_value=False)
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(701, False))
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_order_by_id")
+    def test_order_pickup_pin_issue_duplicate_reports_retry_when_redispatch_fails(
+        self,
+        mock_get_order_by_id,
+        mock_get_courier_by_telegram_id,
+        _mock_create_or_get_pending_support_request,
+        mock_schedule_support_follow_up_jobs,
+        mock_dispatch_support_request_notification,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 55,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 13,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        update = self._update()
+        context = self._context()
+
+        order_delivery._handle_order_pickup_pinissue(update, context, 55)
+
+        mock_schedule_support_follow_up_jobs.assert_called_once_with(context, 701)
+        mock_dispatch_support_request_notification.assert_called_once_with(context, 701, 13)
+        self.assertIn(
+            "La solicitud para este pedido ya estaba registrada",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
     @patch("order_delivery.get_approved_admin_id_for_courier", return_value=99)
     def test_resolve_support_admin_id_falls_back_to_current_admin_when_no_snapshot(
         self,
