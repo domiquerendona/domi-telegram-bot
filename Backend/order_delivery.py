@@ -7402,14 +7402,14 @@ def _build_support_distance_time_lines(courier_lat, courier_lng, target_lat, tar
 
 
 def _build_order_support_owner_line(order):
-    ally_id = _row_value(order, "ally_id", 0, 0)
+    ally_id = _row_value(order, "ally_id", 0)
     if ally_id:
         ally = get_ally_by_id(int(ally_id))
         if ally:
             return "Aliado responsable: {}".format(
                 _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
             )
-    creator_admin_id = _row_value(order, "creator_admin_id", 0, 0)
+    creator_admin_id = _row_value(order, "creator_admin_id", 0)
     if creator_admin_id:
         admin = get_admin_by_id(int(creator_admin_id))
         if admin:
@@ -7418,7 +7418,7 @@ def _build_order_support_owner_line(order):
 
 
 def _build_route_support_owner_line(route):
-    ally_id = _row_value(route, "ally_id", 0, 0)
+    ally_id = _row_value(route, "ally_id", 0)
     if not ally_id:
         return ""
     ally = get_ally_by_id(int(ally_id))
@@ -7600,7 +7600,7 @@ def _support_request_escalation_job(context):
         admin_id=_row_value(support, "admin_id"),
     )
     opened_for = _support_elapsed_label(_row_value(support, "created_at"))
-    assigned_admin_id = _row_value(support, "admin_id", 0, 0)
+    assigned_admin_id = _row_value(support, "admin_id", 0)
     assigned_admin = get_admin_by_id(int(assigned_admin_id)) if assigned_admin_id else None
     assigned_name = _row_value(assigned_admin, "full_name") if assigned_admin else "N/D"
 
@@ -7613,7 +7613,7 @@ def _support_request_escalation_job(context):
     platform_admin = get_platform_admin()
     if not platform_admin:
         return
-    platform_admin_id = _row_value(platform_admin, "id", 0, 0)
+    platform_admin_id = _row_value(platform_admin, "id", 0)
     if not platform_admin_id or int(platform_admin_id) == int(assigned_admin_id or 0):
         return
 
@@ -8427,7 +8427,7 @@ def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id,
             "",
             "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
-            "Punto de recogida: {}".format(order["pickup_address"] or "N/D"),
+            "Punto de recogida: {}".format(_get_pickup_address(order) or "N/D"),
         ]
         owner_line = _build_order_support_owner_line(order)
         if owner_line:

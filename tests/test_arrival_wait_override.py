@@ -378,6 +378,50 @@ class SupportRequestAdminRoutingTests(unittest.TestCase):
             update.callback_query.edit_message_text.call_args.args[0],
         )
 
+    @patch("order_delivery._get_pickup_address", return_value="Bodega Central")
+    @patch("order_delivery._get_pickup_coords", return_value=(4.81, -75.69))
+    @patch("order_delivery.get_user_by_id")
+    @patch("order_delivery.get_admin_by_id")
+    def test_notify_admin_pickup_pinissue_uses_pickup_helper_when_order_has_no_pickup_address(
+        self,
+        mock_get_admin_by_id,
+        mock_get_user_by_id,
+        _mock_get_pickup_coords,
+        mock_get_pickup_address,
+    ):
+        mock_get_admin_by_id.return_value = {"user_id": 101}
+
+        def _user_side_effect(user_id):
+            if user_id == 101:
+                return {"telegram_id": 9001}
+            return None
+
+        mock_get_user_by_id.side_effect = _user_side_effect
+        context = self._context()
+        order = {
+            "id": 55,
+            "accepted_at": "2026-04-01 10:00:00",
+            "ally_id": None,
+            "creator_admin_id": None,
+        }
+        courier = {
+            "user_id": 202,
+            "full_name": "Courier Uno",
+            "phone": "3110000001",
+            "live_lat": 4.80,
+            "live_lng": -75.68,
+        }
+
+        notified = order_delivery._notify_admin_pickup_pinissue(context, order, courier, 13, 701)
+
+        self.assertTrue(notified)
+        mock_get_pickup_address.assert_called_once_with(order)
+        context.bot.send_message.assert_called_once()
+        self.assertIn(
+            "Punto de recogida: Bodega Central",
+            context.bot.send_message.call_args.kwargs["text"],
+        )
+
     @patch("order_delivery._dispatch_support_request_notification", return_value=True)
     @patch("order_delivery._schedule_support_follow_up_jobs")
     @patch("order_delivery.create_or_get_pending_support_request", return_value=(701, False))
