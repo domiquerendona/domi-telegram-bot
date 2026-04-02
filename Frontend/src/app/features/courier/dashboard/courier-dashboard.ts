@@ -1,6 +1,5 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { NgIf } from '@angular/common';
 import { environment } from '../../../../environments/environment';
 
 interface CourierDashboard {
@@ -14,94 +13,100 @@ interface CourierDashboard {
 @Component({
   selector: 'app-courier-dashboard',
   standalone: true,
-  imports: [NgIf],
+  imports: [],
   template: `
   <div class="page">
-    <h2 class="title">Dashboard</h2>
-
-    <div *ngIf="cargando()" class="loading">Cargando...</div>
-    <div *ngIf="error()" class="error">{{ error() }}</div>
-
-    <div *ngIf="data()" class="cards">
-      <div class="card green">
-        <span class="material-symbols-outlined">today</span>
-        <div class="info">
-          <span class="value">{{ data()!.entregas_hoy }}</span>
-          <span class="label">Entregas hoy</span>
-        </div>
-      </div>
-
-      <div class="card blue">
-        <span class="material-symbols-outlined">calendar_month</span>
-        <div class="info">
-          <span class="value">{{ data()!.entregas_mes }}</span>
-          <span class="label">Entregas este mes</span>
-        </div>
-      </div>
-
-      <div class="card purple">
-        <span class="material-symbols-outlined">trending_up</span>
-        <div class="info">
-          <span class="value">{{ formatCop(data()!.tarifa_mes) }}</span>
-          <span class="label">Ganancias este mes</span>
-        </div>
-      </div>
-
-      <div class="card orange">
-        <span class="material-symbols-outlined">account_balance_wallet</span>
-        <div class="info">
-          <span class="value">{{ formatCop(data()!.saldo) }}</span>
-          <span class="label">Saldo disponible</span>
-        </div>
-      </div>
-
-      <div class="card gray">
-        <span class="material-symbols-outlined">local_shipping</span>
-        <div class="info">
-          <span class="value">{{ data()!.total_entregas }}</span>
-          <span class="label">Total entregas históricas</span>
-        </div>
-      </div>
+    <div class="page-header">
+      <h1>Dashboard</h1>
+      <button class="btn-refresh" (click)="cargar()">↻ Actualizar</button>
     </div>
+
+    @if (cargando()) { <div class="loading">Cargando...</div> }
+    @if (error()) { <div class="error-msg">{{ error() }}</div> }
+
+    @if (!cargando() && !error() && data()) {
+
+      <div class="section-label">Entregas</div>
+      <div class="cards">
+        <div class="card indigo">
+          <span class="material-symbols-outlined">today</span>
+          <div>
+            <div class="card-label">Entregas hoy</div>
+            <div class="card-value">{{ data()!.entregas_hoy }}</div>
+          </div>
+        </div>
+        <div class="card blue">
+          <span class="material-symbols-outlined">calendar_month</span>
+          <div>
+            <div class="card-label">Entregas este mes</div>
+            <div class="card-value">{{ data()!.entregas_mes }}</div>
+          </div>
+        </div>
+        <div class="card teal">
+          <span class="material-symbols-outlined">local_shipping</span>
+          <div>
+            <div class="card-label">Total histórico</div>
+            <div class="card-value">{{ data()!.total_entregas }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-label">Finanzas</div>
+      <div class="cards">
+        <div class="card purple">
+          <span class="material-symbols-outlined">trending_up</span>
+          <div>
+            <div class="card-label">Ganancias este mes</div>
+            <div class="card-value">{{ fmt(data()!.tarifa_mes) }}</div>
+          </div>
+        </div>
+        <div class="card dark">
+          <span class="material-symbols-outlined">account_balance_wallet</span>
+          <div>
+            <div class="card-label">Saldo disponible</div>
+            <div class="card-value">{{ fmt(data()!.saldo) }}</div>
+          </div>
+        </div>
+      </div>
+
+    }
   </div>
   `,
   styles: [`
-  .page { max-width: 900px; }
-  .title { font-size: 22px; font-weight: 700; color: #1f2937; margin-bottom: 24px; }
-  .loading { color: #6b7280; }
-  .error { color: #dc2626; background: #fef2f2; padding: 12px; border-radius: 8px; }
+    .page { padding: 24px; }
+    .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
+    h1 { font-size: 24px; font-weight: 700; margin: 0; color: #111827; }
+    .btn-refresh { padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; }
+    .btn-refresh:hover { border-color: #4338ca; color: #4338ca; }
 
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 20px;
-  }
+    .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #9ca3af; margin-bottom: 12px; margin-top: 8px; }
 
-  .card {
-    background: white;
-    border-radius: 14px;
-    padding: 24px 20px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-  }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
 
-  .card span.material-symbols-outlined {
-    font-size: 36px;
-    border-radius: 10px;
-    padding: 10px;
-  }
+    .card {
+      border-radius: 14px;
+      padding: 20px 22px;
+      color: white;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
+    .card .material-symbols-outlined { font-size: 36px; opacity: 0.85; margin-top: 2px; flex-shrink: 0; }
+    .card-label { font-size: 12px; font-weight: 500; opacity: 0.85; margin-bottom: 4px; }
+    .card-value { font-size: 30px; font-weight: 800; line-height: 1; }
 
-  .card.green  span.material-symbols-outlined { color: #059669; background: #d1fae5; }
-  .card.blue   span.material-symbols-outlined { color: #2563eb; background: #dbeafe; }
-  .card.purple span.material-symbols-outlined { color: #7c3aed; background: #ede9fe; }
-  .card.orange span.material-symbols-outlined { color: #d97706; background: #fef3c7; }
-  .card.gray   span.material-symbols-outlined { color: #4b5563; background: #f3f4f6; }
+    .indigo  { background: linear-gradient(135deg, #4338ca, #6366f1); }
+    .blue    { background: linear-gradient(135deg, #1d4ed8, #3b82f6); }
+    .teal    { background: linear-gradient(135deg, #0d9488, #14b8a6); }
+    .purple  { background: linear-gradient(135deg, #7c3aed, #8b5cf6); }
+    .dark    { background: linear-gradient(135deg, #1e293b, #334155); }
 
-  .info { display: flex; flex-direction: column; }
-  .value { font-size: 24px; font-weight: 800; color: #111827; }
-  .label { font-size: 13px; color: #6b7280; margin-top: 2px; }
+    .loading { color: #6b7280; padding: 20px; }
+    .error-msg { color: #ef4444; padding: 20px; }
+
+    @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
   `]
 })
 export class CourierDashboardComponent implements OnInit {
@@ -111,7 +116,11 @@ export class CourierDashboardComponent implements OnInit {
 
   constructor(private http: HttpClient) {}
 
-  ngOnInit() {
+  ngOnInit() { this.cargar(); }
+
+  cargar() {
+    this.cargando.set(true);
+    this.error.set('');
     const token = localStorage.getItem('admin_token');
     this.http.get<CourierDashboard>(`${environment.apiBaseUrl}/courier/dashboard`, {
       headers: { Authorization: `Bearer ${token}` }
@@ -121,7 +130,7 @@ export class CourierDashboardComponent implements OnInit {
     });
   }
 
-  formatCop(v: number): string {
+  fmt(v: number): string {
     return '$' + v.toLocaleString('es-CO');
   }
 }

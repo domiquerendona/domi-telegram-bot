@@ -90,6 +90,12 @@ export const routes: Routes = [
       { path: '', component: CourierDashboardComponent, data: { title: 'Dashboard' } },
       { path: 'ganancias', component: CourierGananciasComponent, data: { title: 'Mis Ganancias' } },
       { path: 'perfil', component: PerfilComponent, data: { title: 'Mi Perfil' } },
+      { path: 'terminos', component: TerminosComponent, data: { title: 'Términos y Condiciones' } },
+      { path: 'datos-personales', component: TratamientoDatosComponent, data: { title: 'Tratamiento de Datos Personales' } },
+      { path: 'politica-uso', component: PoliticaUsoComponent, data: { title: 'Política de Uso' } },
+      { path: 'centro-ayuda', component: CentroAyudaComponent, data: { title: 'Centro de Ayuda' } },
+      { path: 'contacto', component: ContactoComponent, data: { title: 'Contacto' } },
+      { path: 'preguntas-frecuentes', component: PreguntasFrecuentesComponent, data: { title: 'Preguntas Frecuentes' } },
     ]
   },
 ];

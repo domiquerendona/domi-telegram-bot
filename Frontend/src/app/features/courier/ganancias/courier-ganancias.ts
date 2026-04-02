@@ -1,6 +1,5 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { NgIf, NgFor } from '@angular/common';
 import { environment } from '../../../../environments/environment';
 
 interface OrderEarning {
@@ -24,155 +23,184 @@ interface EarningsResponse {
 @Component({
   selector: 'app-courier-ganancias',
   standalone: true,
-  imports: [NgIf, NgFor],
+  imports: [],
   template: `
   <div class="page">
-    <h2 class="title">Mis Ganancias</h2>
+    <div class="page-header">
+      <h1>Mis Ganancias</h1>
+    </div>
 
     <div class="period-tabs">
-      <button
-        *ngFor="let p of periods"
-        [class.active]="period() === p.value"
-        (click)="loadPeriod(p.value)">
-        {{ p.label }}
-      </button>
+      @for (p of periods; track p.value) {
+        <button [class.active]="period() === p.value" (click)="loadPeriod(p.value)">
+          {{ p.label }}
+        </button>
+      }
     </div>
 
-    <div *ngIf="cargando()" class="loading">Cargando...</div>
-    <div *ngIf="error()" class="error">{{ error() }}</div>
+    @if (cargando()) { <div class="loading">Cargando...</div> }
+    @if (error()) { <div class="error-msg">{{ error() }}</div> }
 
-    <div *ngIf="data()">
+    @if (data()) {
       <div class="summary-cards">
-        <div class="scard">
-          <span class="slabel">Entregas</span>
-          <span class="svalue">{{ data()!.count }}</span>
+        <div class="scard indigo">
+          <span class="material-symbols-outlined">package_2</span>
+          <div>
+            <div class="slabel">Entregas</div>
+            <div class="svalue">{{ data()!.count }}</div>
+          </div>
         </div>
-        <div class="scard">
-          <span class="slabel">Tarifa total</span>
-          <span class="svalue">{{ formatCop(data()!.total_tarifa) }}</span>
+        <div class="scard blue">
+          <span class="material-symbols-outlined">payments</span>
+          <div>
+            <div class="slabel">Tarifa total</div>
+            <div class="svalue">{{ fmt(data()!.total_tarifa) }}</div>
+          </div>
         </div>
-        <div class="scard">
-          <span class="slabel">Incentivos</span>
-          <span class="svalue">{{ formatCop(data()!.total_incentivo) }}</span>
+        <div class="scard teal">
+          <span class="material-symbols-outlined">star</span>
+          <div>
+            <div class="slabel">Incentivos</div>
+            <div class="svalue">{{ fmt(data()!.total_incentivo) }}</div>
+          </div>
         </div>
-        <div class="scard highlight">
-          <span class="slabel">Total ganado</span>
-          <span class="svalue">{{ formatCop(data()!.total) }}</span>
+        <div class="scard purple">
+          <span class="material-symbols-outlined">trending_up</span>
+          <div>
+            <div class="slabel">Total ganado</div>
+            <div class="svalue">{{ fmt(data()!.total) }}</div>
+          </div>
         </div>
       </div>
 
-      <div *ngIf="data()!.orders.length === 0" class="empty">
-        No hay entregas en este periodo.
-      </div>
+      @if (data()!.orders.length === 0) {
+        <div class="empty">No hay entregas en este periodo.</div>
+      }
 
-      <table *ngIf="data()!.orders.length > 0">
-        <thead>
-          <tr>
-            <th>Fecha</th>
-            <th>Aliado</th>
-            <th>Ciudad entrega</th>
-            <th>Tarifa</th>
-            <th>Incentivo</th>
-            <th>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr *ngFor="let o of data()!.orders">
-            <td>{{ formatDate(o.delivered_at) }}</td>
-            <td>{{ o.ally_name }}</td>
-            <td>{{ o.dropoff_city }}</td>
-            <td>{{ formatCop(o.total_fee) }}</td>
-            <td>{{ formatCop(o.incentivo) }}</td>
-            <td class="total-col">{{ formatCop(o.total_fee + o.incentivo) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+      @if (data()!.orders.length > 0) {
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Aliado</th>
+                <th>Ciudad entrega</th>
+                <th>Tarifa</th>
+                <th>Incentivo</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (o of data()!.orders; track o.order_id) {
+                <tr>
+                  <td>{{ formatDate(o.delivered_at) }}</td>
+                  <td>{{ o.ally_name }}</td>
+                  <td>{{ o.dropoff_city }}</td>
+                  <td>{{ fmt(o.total_fee) }}</td>
+                  <td>{{ fmt(o.incentivo) }}</td>
+                  <td class="total-col">{{ fmt(o.total_fee + o.incentivo) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    }
   </div>
   `,
   styles: [`
-  .page { max-width: 960px; }
-  .title { font-size: 22px; font-weight: 700; color: #1f2937; margin-bottom: 20px; }
-  .loading { color: #6b7280; }
-  .error { color: #dc2626; background: #fef2f2; padding: 12px; border-radius: 8px; }
-  .empty { color: #6b7280; padding: 20px 0; }
+    .page { padding: 24px; }
+    .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+    h1 { font-size: 24px; font-weight: 700; margin: 0; color: #111827; }
 
-  .period-tabs {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 24px;
-  }
+    .period-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
 
-  .period-tabs button {
-    padding: 8px 20px;
-    border: 1.5px solid #d1d5db;
-    border-radius: 20px;
-    background: white;
-    color: #374151;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
+    .period-tabs button {
+      padding: 8px 20px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 20px;
+      background: white;
+      color: #374151;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
 
-  .period-tabs button.active {
-    background: #059669;
-    border-color: #059669;
-    color: white;
-  }
+    .period-tabs button:hover { border-color: #4338ca; color: #4338ca; }
 
-  .summary-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
-  }
+    .period-tabs button.active {
+      background: #4338ca;
+      border-color: #4338ca;
+      color: white;
+    }
 
-  .scard {
-    background: white;
-    border-radius: 12px;
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-  }
+    .summary-cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
 
-  .scard.highlight { border: 2px solid #059669; }
+    .scard {
+      border-radius: 14px;
+      padding: 20px 22px;
+      color: white;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
 
-  .slabel { font-size: 12px; color: #6b7280; }
-  .svalue { font-size: 20px; font-weight: 700; color: #111827; }
+    .scard .material-symbols-outlined { font-size: 32px; opacity: 0.85; flex-shrink: 0; margin-top: 2px; }
+    .slabel { font-size: 12px; font-weight: 500; opacity: 0.85; margin-bottom: 4px; }
+    .svalue { font-size: 24px; font-weight: 800; line-height: 1; }
 
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    background: white;
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-  }
+    .indigo  { background: linear-gradient(135deg, #4338ca, #6366f1); }
+    .blue    { background: linear-gradient(135deg, #1d4ed8, #3b82f6); }
+    .teal    { background: linear-gradient(135deg, #0d9488, #14b8a6); }
+    .purple  { background: linear-gradient(135deg, #7c3aed, #8b5cf6); }
 
-  th {
-    text-align: left;
-    padding: 12px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #6b7280;
-    text-transform: uppercase;
-    background: #f9fafb;
-    border-bottom: 1px solid #e5e7eb;
-  }
+    .loading { color: #6b7280; padding: 20px; }
+    .error-msg { color: #ef4444; padding: 20px; }
+    .empty { color: #6b7280; padding: 20px 0; }
 
-  td {
-    padding: 12px 16px;
-    font-size: 14px;
-    color: #374151;
-    border-bottom: 1px solid #f3f4f6;
-  }
+    .table-wrapper {
+      background: white;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
 
-  tr:last-child td { border-bottom: none; }
+    table { width: 100%; border-collapse: collapse; }
 
-  .total-col { font-weight: 700; color: #059669; }
+    th {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+    }
+
+    td {
+      padding: 12px 16px;
+      font-size: 14px;
+      color: #374151;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    .total-col { font-weight: 700; color: #4338ca; }
+
+    @media (max-width: 900px) { .summary-cards { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .summary-cards { grid-template-columns: 1fr; } }
   `]
 })
 export class CourierGananciasComponent implements OnInit {
@@ -204,7 +232,7 @@ export class CourierGananciasComponent implements OnInit {
     });
   }
 
-  formatCop(v: number): string {
+  fmt(v: number): string {
     return '$' + v.toLocaleString('es-CO');
   }
 

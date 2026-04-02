@@ -4964,13 +4964,13 @@ def get_courier_web_earnings(courier_id: int, start_s: str, end_s: str) -> list:
     cur = conn.cursor()
     try:
         cur.execute(
-            f"""SELECT o.id, o.total_fee, o.incentivo, o.created_at, o.status,
-                       a.name as ally_name, o.dropoff_city
+            f"""SELECT o.id, o.total_fee, o.additional_incentive, o.delivered_at,
+                       a.business_name as ally_name, o.customer_city
                 FROM orders o
                 LEFT JOIN allies a ON o.ally_id = a.id
                 WHERE o.courier_id = {P} AND o.status = 'DELIVERED'
-                AND o.created_at >= {P} AND o.created_at <= {P}
-                ORDER BY o.created_at DESC""",
+                AND o.delivered_at >= {P} AND o.delivered_at <= {P}
+                ORDER BY o.delivered_at DESC""",
             (courier_id, start_s, end_s)
         )
         rows = cur.fetchall()
@@ -4980,10 +4980,10 @@ def get_courier_web_earnings(courier_id: int, start_s: str, end_s: str) -> list:
                 result.append({
                     "order_id": row["id"],
                     "total_fee": row["total_fee"] or 0,
-                    "incentivo": row["incentivo"] or 0,
-                    "delivered_at": str(row["created_at"]),
+                    "incentivo": row["additional_incentive"] or 0,
+                    "delivered_at": str(row["delivered_at"]),
                     "ally_name": row["ally_name"] or "Pedido especial",
-                    "dropoff_city": row["dropoff_city"] or "",
+                    "dropoff_city": row["customer_city"] or "",
                 })
             else:
                 result.append({
@@ -4991,8 +4991,8 @@ def get_courier_web_earnings(courier_id: int, start_s: str, end_s: str) -> list:
                     "total_fee": row[1] or 0,
                     "incentivo": row[2] or 0,
                     "delivered_at": str(row[3]),
-                    "ally_name": row[5] or "Pedido especial",
-                    "dropoff_city": row[6] or "",
+                    "ally_name": row[4] or "Pedido especial",
+                    "dropoff_city": row[5] or "",
                 })
         return result
     finally:
@@ -5114,7 +5114,7 @@ def get_admin_recent_activity(admin_id) -> list:
                     FROM admin_couriers ac JOIN couriers c ON ac.courier_id = c.id
                     WHERE ac.admin_id = {P} AND ac.updated_at IS NOT NULL
                     UNION ALL
-                    SELECT 'ally' as tipo, a.name as full_name, aa.status, aa.updated_at
+                    SELECT 'ally' as tipo, a.business_name as full_name, aa.status, aa.updated_at
                     FROM admin_allies aa JOIN allies a ON aa.ally_id = a.id
                     WHERE aa.admin_id = {P} AND aa.updated_at IS NOT NULL
                     ORDER BY updated_at DESC LIMIT 5""",
@@ -5126,7 +5126,7 @@ def get_admin_recent_activity(admin_id) -> list:
                     FROM admin_couriers ac JOIN couriers c ON ac.courier_id = c.id
                     WHERE ac.updated_at IS NOT NULL
                     UNION ALL
-                    SELECT 'ally' as tipo, a.name as full_name, aa.status, aa.updated_at
+                    SELECT 'ally' as tipo, a.business_name as full_name, aa.status, aa.updated_at
                     FROM admin_allies aa JOIN allies a ON aa.ally_id = a.id
                     WHERE aa.updated_at IS NOT NULL
                     ORDER BY updated_at DESC LIMIT 5"""
@@ -7539,7 +7539,7 @@ def get_admin_panel_users_data(admin_id=None):
             JOIN allies al ON al.id = aa.ally_id
             JOIN users u ON u.id = al.user_id
             WHERE aa.admin_id = {P} AND (al.is_deleted IS NULL OR al.is_deleted = 0)
-            ORDER BY id DESC
+            ORDER BY 1 DESC
         """, (admin_id, admin_id))
         telegram_users = cur.fetchall()
         all_couriers = []

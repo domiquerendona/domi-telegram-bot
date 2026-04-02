@@ -1,19 +1,23 @@
-import { Component, signal } from '@angular/core';
-import { RouterOutlet, RouterLink, RouterLinkActive, Router } from '@angular/router';
-import { NgIf } from '@angular/common';
+import { Component, signal, inject } from '@angular/core';
+import { RouterOutlet, RouterLink, RouterLinkActive, Router, ActivatedRoute, NavigationEnd } from '@angular/router';
 import { AuthService } from '../../core/services/auth.service';
+import { FooterComponent } from '../components/footer/footer';
+import { filter, map } from 'rxjs/operators';
 
 @Component({
   selector: 'app-courier-layout',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, NgIf],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, FooterComponent],
   template: `
   <div class="app">
 
+    <!-- ===== SIDEBAR ===== -->
     <aside class="sidebar" [class.collapsed]="collapsed()">
       <div>
         <div class="header">
-          <span class="logo" *ngIf="!collapsed()">Mi Panel</span>
+          @if (!collapsed()) {
+            <span class="logo">Mi Panel</span>
+          }
           <button class="toggle-btn" (click)="toggle()">
             <span class="material-icons">{{ collapsed() ? 'menu' : 'close' }}</span>
           </button>
@@ -22,15 +26,15 @@ import { AuthService } from '../../core/services/auth.service';
         <nav class="menu">
           <a routerLink="/courier" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">
             <span class="material-symbols-outlined">dashboard</span>
-            <span *ngIf="!collapsed()">Dashboard</span>
+            @if (!collapsed()) { <span>Dashboard</span> }
           </a>
           <a routerLink="/courier/ganancias" routerLinkActive="active">
             <span class="material-symbols-outlined">trending_up</span>
-            <span *ngIf="!collapsed()">Mis ganancias</span>
+            @if (!collapsed()) { <span>Mis ganancias</span> }
           </a>
           <a routerLink="/courier/perfil" routerLinkActive="active">
             <span class="material-symbols-outlined">person</span>
-            <span *ngIf="!collapsed()">Mi perfil</span>
+            @if (!collapsed()) { <span>Mi perfil</span> }
           </a>
         </nav>
       </div>
@@ -38,43 +42,70 @@ import { AuthService } from '../../core/services/auth.service';
       <div class="logout">
         <a (click)="logout()" style="cursor:pointer">
           <span class="material-icons">logout</span>
-          <span *ngIf="!collapsed()">Cerrar sesión</span>
+          @if (!collapsed()) { <span>Cerrar sesión</span> }
         </a>
       </div>
     </aside>
 
+    <!-- ===== CONTENIDO ===== -->
     <div class="content-wrapper">
+
       <header class="topbar">
-        <span class="username">
-          <span class="material-symbols-outlined">delivery_dining</span>
-          Repartidor
-        </span>
+        <div class="left">
+          <h2 class="title">{{ pageTitle }}</h2>
+        </div>
+
+        <div class="center">
+          <div class="search-box">
+            <span class="material-icons search-icon">search</span>
+            <input type="text" placeholder="Buscar entregas, pedidos..." />
+            <span class="shortcut">⌘ K</span>
+          </div>
+        </div>
+
+        <div class="right">
+          <div class="admin-info">
+            <span class="admin-title">{{ authService.username() }}</span>
+            <span class="admin-role">Repartidor</span>
+          </div>
+          <div class="avatar">{{ initials() }}</div>
+          <span class="material-icons dropdown">expand_more</span>
+        </div>
       </header>
+
       <div class="content-container">
         <router-outlet></router-outlet>
       </div>
-    </div>
 
+      <app-footer base="/courier"></app-footer>
+
+    </div>
   </div>
   `,
   styles: [`
   .app {
     display: flex;
     flex-direction: row;
-    min-height: 100vh;
     background: #eef1f6;
+    min-height: 100vh;
   }
 
+  /* ===== SIDEBAR — mismas medidas y colores que el admin ===== */
   .sidebar {
-    width: 220px;
-    background: #059669;
+    width: 260px;
+    height: 100%;
+    background: #4338ca;
     color: white;
     padding: 20px;
     display: flex;
+    font-size: 16px;
     flex-direction: column;
     justify-content: space-between;
     transition: all 0.25s cubic-bezier(.4,0,.2,1);
     flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    min-height: 100vh;
   }
 
   .sidebar.collapsed {
@@ -89,10 +120,7 @@ import { AuthService } from '../../core/services/auth.service';
     margin-bottom: 40px;
   }
 
-  .logo {
-    font-size: 20px;
-    font-weight: 900;
-  }
+  .logo { font-size: 25px; font-weight: 900; }
 
   .toggle-btn {
     background: transparent;
@@ -106,11 +134,7 @@ import { AuthService } from '../../core/services/auth.service';
     justify-content: center;
   }
 
-  .menu {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
+  .menu { display: flex; flex-direction: column; gap: 8px; }
 
   a {
     display: flex;
@@ -119,13 +143,13 @@ import { AuthService } from '../../core/services/auth.service';
     padding: 12px 14px;
     border-radius: 8px;
     text-decoration: none;
-    color: #d1fae5;
+    color: #e2e8f0f0;
     font-weight: 500;
     transition: all 0.2s ease;
   }
 
-  a:hover { background: rgba(255,255,255,0.15); color: white; }
-  a.active { background: rgba(0,0,0,0.2); color: white; }
+  a:hover { background: rgba(255,255,255,0.12); color: white; }
+  a.active { background: rgba(0,0,0,0.20); color: white; }
 
   .logout {
     border-top: 1px solid rgba(255,255,255,0.2);
@@ -133,50 +157,123 @@ import { AuthService } from '../../core/services/auth.service';
   }
 
   .sidebar.collapsed .menu a,
-  .sidebar.collapsed .logout a {
-    justify-content: center;
-    padding: 12px 0;
-  }
-
+  .sidebar.collapsed .logout a { justify-content: center; padding: 12px 0; }
   .sidebar.collapsed .header { justify-content: center; }
 
+  /* ===== CONTENIDO ===== */
   .content-wrapper {
     flex: 1;
     display: flex;
     flex-direction: column;
+    min-height: 100vh;
   }
 
+  /* ===== HEADER — idéntico al admin ===== */
   .topbar {
+    height: 80px;
     background: white;
-    padding: 14px 24px;
     display: flex;
     align-items: center;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    justify-content: space-between;
+    padding: 0 30px;
+    border-bottom: 1px solid #e5e7eb;
   }
 
-  .username {
+  .title { font-size: 22px; font-weight: 600; color: #111827; }
+
+  .center { flex: 1; display: flex; justify-content: center; }
+
+  .search-box {
+    width: 500px;
+    background: #f3f4f6;
+    border-radius: 12px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-weight: 600;
-    color: #374151;
+    padding: 8px 15px;
+    gap: 10px;
+    transition: all 0.2s ease;
   }
+
+  .search-box:focus-within { background: #e5e7eb; }
+
+  .search-box input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    outline: none;
+    font-size: 14px;
+  }
+
+  .search-icon { font-size: 20px; color: #6b7280; }
+
+  .shortcut {
+    font-size: 12px;
+    background: white;
+    padding: 4px 8px;
+    border-radius: 6px;
+    color: #6b7280;
+    border: 1px solid #e5e7eb;
+  }
+
+  .right { display: flex; align-items: center; gap: 15px; }
+
+  .admin-info { display: flex; flex-direction: column; align-items: flex-end; }
+  .admin-title { font-size: 14px; font-weight: 600; color: #111827; }
+  .admin-role  { font-size: 12px; color: #6b7280; }
+
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #5b21b6, #4338ca);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  .dropdown { color: #6b7280; cursor: pointer; }
 
   .content-container {
-    padding: 30px;
+    background: #f6f7fb;
     flex: 1;
+    padding: 30px;
   }
+
+  @media (max-width: 1024px) { .search-box { width: 300px; } }
+  @media (max-width: 768px)  { .center { display: none; } }
   `]
 })
 export class CourierLayoutComponent {
-  collapsed = signal(false);
+  collapsed  = signal(false);
+  pageTitle  = '';
 
-  constructor(private router: Router, public authService: AuthService) {}
+  router     = inject(Router);
+  route      = inject(ActivatedRoute);
+  public authService = inject(AuthService);
+
+  constructor() {
+    this.router.events.pipe(
+      filter(e => e instanceof NavigationEnd),
+      map(() => {
+        let r = this.route.firstChild;
+        while (r?.firstChild) r = r.firstChild;
+        return r?.snapshot.data['title'] ?? 'Dashboard';
+      })
+    ).subscribe(t => this.pageTitle = t);
+  }
 
   toggle() { this.collapsed.update(v => !v); }
 
   logout() {
     this.authService.clear();
     this.router.navigate(['/login']);
+  }
+
+  initials(): string {
+    const u = this.authService.username() ?? '';
+    return u.slice(0, 2).toUpperCase();
   }
 }

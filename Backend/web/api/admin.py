@@ -92,7 +92,7 @@ def list_admins(admin=Depends(get_current_user)):
             "barrio": r["barrio"] if hasattr(r, "__getitem__") else r[5],
             "status": r["status"] if hasattr(r, "__getitem__") else r[6],
             "team_name": r["team_name"] if hasattr(r, "__getitem__") else r[8],
-            "document_number": r["document_number"] if hasattr(r, "__getitem__") else r[9],
+            "document_number": r["document_number"] or "" if hasattr(r, "__getitem__") else (r[9] or ""),
             "created_at": str(r["created_at"]) if hasattr(r, "__getitem__") else str(r[7]),
         })
     return result

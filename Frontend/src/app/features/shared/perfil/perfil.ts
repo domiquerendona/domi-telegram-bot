@@ -224,7 +224,7 @@ interface ActivityItem {
   }
   .avatar-admin   { background: linear-gradient(135deg, #7c3aed, #4f46e5); }
   .avatar-local   { background: linear-gradient(135deg, #2563eb, #6366f1); }
-  .avatar-courier { background: linear-gradient(135deg, #059669, #0891b2); }
+  .avatar-courier { background: linear-gradient(135deg, #5b21b6, #4338ca); }
 
   .initials { color: white; font-size: 26px; font-weight: 800; letter-spacing: -1px; }
 

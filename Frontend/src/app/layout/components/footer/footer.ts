@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, Input } from '@angular/core';
 import { RouterModule } from '@angular/router';
 @Component({
   selector: 'app-footer',
@@ -39,18 +39,18 @@ import { RouterModule } from '@angular/router';
     <!-- LEGAL -->
     <div class="footer-col">
       <h4>Legal</h4>
-    <a routerLink="/superadmin/terminos">Términos y Condiciones</a>
-    <a routerLink="/superadmin/datos-personales">Tratamiento de Datos Personales</a>
-     <a routerLink="/superadmin/politica-uso">Política de Uso</a>
-   
+    <a [routerLink]="base + '/terminos'">Términos y Condiciones</a>
+    <a [routerLink]="base + '/datos-personales'">Tratamiento de Datos Personales</a>
+     <a [routerLink]="base + '/politica-uso'">Política de Uso</a>
+
     </div>
 
     <!-- SOPORTE -->
     <div class="footer-col">
       <h4>Soporte</h4>
-      <a routerLink="/superadmin/centro-ayuda">Centro de Ayuda</a>
-      <a routerLink="/superadmin/contacto">Contacto</a>
-      <a routerLink="/superadmin/preguntas-frecuentes">Preguntas Frecuentes</a>
+      <a [routerLink]="base + '/centro-ayuda'">Centro de Ayuda</a>
+      <a [routerLink]="base + '/contacto'">Contacto</a>
+      <a [routerLink]="base + '/preguntas-frecuentes'">Preguntas Frecuentes</a>
     </div>
 
   </div>
@@ -152,4 +152,6 @@ import { RouterModule } from '@angular/router';
 }
 `]
 })
-export class FooterComponent {}
+export class FooterComponent {
+  @Input() base = '/superadmin';
+}

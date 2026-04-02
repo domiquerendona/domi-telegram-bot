@@ -131,7 +131,7 @@ domi-telegram-bot/
 │           └── layout/
 │               ├── components/         # header/, sidebar/
 │               ├── superadmin-layout/
-│               └── courier-layout/     # Layout con sidebar verde para repartidores
+│               └── courier-layout/     # Layout con sidebar morado (#4338ca) para repartidores — mismo diseño que admin
 │
 ├── docs/
 │   ├── HITOS.md                  # Documento histórico de hitos
@@ -839,12 +839,20 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
 - Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
-- Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar verde con Dashboard, Mis ganancias, Mi perfil
-- `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`
-- `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`
-- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`. Incluye: avatar con iniciales, edición inline de nombre/teléfono, cambio de contraseña, campo "Miembro desde", indicador de estado animado, sección de actividad reciente
-- Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`
+- Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar morado `#4338ca` 260px (idéntico al admin), header con barra de búsqueda y avatar, footer con `base="/courier"`. Incluye rutas legales/soporte bajo `/courier/`.
+- `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`. Diseño con tarjetas de gradiente igual al admin (indigo, blue, teal, purple, dark). Control flow `@if`.
+- `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`. Tabs de periodo con paleta morada (`#4338ca`). Tarjetas de resumen con gradiente. Control flow `@if/@for`.
+- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`. Incluye: avatar con iniciales (morado para todos los roles), edición inline de nombre/teléfono, cambio de contraseña, campo "Miembro desde", indicador de estado animado, sección de actividad reciente
+- `FooterComponent` (`layout/components/footer/footer.ts`) — acepta `@Input() base = '/superadmin'`. Usar `base="/courier"` en el courier layout para que los links apunten al prefijo correcto.
+- Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`, `/courier/terminos`, `/courier/datos-personales`, `/courier/politica-uso`, `/courier/centro-ayuda`, `/courier/contacto`, `/courier/preguntas-frecuentes`
 - Ruta perfil admin: `/superadmin/perfil`
+
+**Bugs corregidos en `db.py` (2026-04-01):**
+- `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
+- `get_admin_recent_activity`: `a.name` → `a.business_name` (tabla `allies`)
+- `get_admin_panel_users_data`: `ORDER BY id DESC` → `ORDER BY 1 DESC` en UNION ALL (compatibilidad SQLite)
+- `web/schemas/user.py`: `document_number: str` → `document_number: str = ""` (nullable en BD)
+- `web/api/admin.py`: mapping `document_number` con `or ""`
 
 **Permisos por rol (frontend y backend son espejo):**
 

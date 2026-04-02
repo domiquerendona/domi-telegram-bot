@@ -67,6 +67,13 @@ export class AuthService {
     return this._permissions().includes(permission);
   }
 
+  username(): string {
+    if (isPlatformBrowser(this.platformId)) {
+      return localStorage.getItem('admin_username') ?? '';
+    }
+    return '';
+  }
+
   isPlatformAdmin(): boolean {
     return this._role() === 'ADMIN_PLATFORM';
   }
