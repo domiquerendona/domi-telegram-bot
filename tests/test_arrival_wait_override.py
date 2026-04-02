@@ -193,5 +193,201 @@ class ArrivalWaitOverrideTests(unittest.TestCase):
         self.assertTrue(any("Pedido #501" in text and "Espera manual: activa" in text for text in sent_texts))
 
 
+class SupportRequestAdminRoutingTests(unittest.TestCase):
+    def _update(self, telegram_id=7001):
+        query = MagicMock()
+        return SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=telegram_id),
+        )
+
+    def _context(self):
+        return SimpleNamespace(bot=MagicMock(), job_queue=MagicMock(), bot_data={})
+
+    @patch("order_delivery._notify_admin_pin_issue")
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(501, True))
+    @patch("order_delivery._is_courier_gps_active", return_value=True)
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_order_by_id")
+    @patch("order_delivery.get_approved_admin_id_for_courier")
+    def test_order_delivery_pin_issue_uses_order_snapshot_admin(
+        self,
+        mock_get_approved_admin_id_for_courier,
+        mock_get_order_by_id,
+        mock_get_courier_by_telegram_id,
+        _mock_is_courier_gps_active,
+        mock_create_or_get_pending_support_request,
+        _mock_schedule_support_follow_up_jobs,
+        mock_notify_admin_pin_issue,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 91,
+            "status": "PICKED_UP",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 11,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        mock_notify_admin_pin_issue.return_value = True
+
+        order_delivery._handle_pin_issue_report(self._update(), self._context(), 91)
+
+        mock_create_or_get_pending_support_request.assert_called_once_with(
+            courier_id=44,
+            admin_id=11,
+            order_id=91,
+            support_type=order_delivery.SUPPORT_TYPE_DELIVERY_PIN,
+        )
+        mock_get_approved_admin_id_for_courier.assert_not_called()
+
+    @patch("order_delivery._notify_admin_route_pin_issue")
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(601, True))
+    @patch("order_delivery.get_route_destinations")
+    @patch("order_delivery._is_courier_gps_active", return_value=True)
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_route_by_id")
+    @patch("order_delivery.get_approved_admin_id_for_courier")
+    def test_route_stop_pin_issue_uses_route_snapshot_admin(
+        self,
+        mock_get_approved_admin_id_for_courier,
+        mock_get_route_by_id,
+        mock_get_courier_by_telegram_id,
+        _mock_is_courier_gps_active,
+        mock_get_route_destinations,
+        mock_create_or_get_pending_support_request,
+        _mock_schedule_support_follow_up_jobs,
+        mock_notify_admin_route_pin_issue,
+    ):
+        mock_get_route_by_id.return_value = {
+            "id": 73,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 12,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        mock_get_route_destinations.return_value = [{"sequence": 2}]
+        mock_notify_admin_route_pin_issue.return_value = True
+
+        order_delivery._handle_route_pin_issue(self._update(), self._context(), 73, 2)
+
+        mock_create_or_get_pending_support_request.assert_called_once_with(
+            courier_id=44,
+            admin_id=12,
+            route_id=73,
+            route_seq=2,
+            support_type=order_delivery.SUPPORT_TYPE_ROUTE_STOP_PIN,
+        )
+        mock_get_approved_admin_id_for_courier.assert_not_called()
+
+    @patch("order_delivery._notify_admin_pickup_pinissue")
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(701, True))
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_order_by_id")
+    @patch("order_delivery.get_approved_admin_id_for_courier")
+    def test_order_pickup_pin_issue_uses_order_snapshot_admin(
+        self,
+        mock_get_approved_admin_id_for_courier,
+        mock_get_order_by_id,
+        mock_get_courier_by_telegram_id,
+        mock_create_or_get_pending_support_request,
+        _mock_schedule_support_follow_up_jobs,
+        mock_notify_admin_pickup_pinissue,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 55,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 13,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        mock_notify_admin_pickup_pinissue.return_value = True
+
+        order_delivery._handle_order_pickup_pinissue(self._update(), self._context(), 55)
+
+        mock_create_or_get_pending_support_request.assert_called_once_with(
+            courier_id=44,
+            admin_id=13,
+            order_id=55,
+            support_type=order_delivery.SUPPORT_TYPE_PICKUP_PIN,
+        )
+        mock_get_approved_admin_id_for_courier.assert_not_called()
+
+    @patch("order_delivery._notify_admin_route_pickup_pinissue")
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(801, True))
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_route_by_id")
+    @patch("order_delivery.get_approved_admin_id_for_courier")
+    def test_route_pickup_pin_issue_uses_route_snapshot_admin(
+        self,
+        mock_get_approved_admin_id_for_courier,
+        mock_get_route_by_id,
+        mock_get_courier_by_telegram_id,
+        mock_create_or_get_pending_support_request,
+        _mock_schedule_support_follow_up_jobs,
+        mock_notify_admin_route_pickup_pinissue,
+    ):
+        mock_get_route_by_id.return_value = {
+            "id": 66,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 14,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        mock_notify_admin_route_pickup_pinissue.return_value = True
+
+        order_delivery._handle_route_pickup_pinissue(self._update(), self._context(), 66)
+
+        mock_create_or_get_pending_support_request.assert_called_once_with(
+            courier_id=44,
+            admin_id=14,
+            route_id=66,
+            route_seq=0,
+            support_type=order_delivery.SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+        )
+        mock_get_approved_admin_id_for_courier.assert_not_called()
+
+    @patch("order_delivery._notify_admin_pickup_pinissue", return_value=False)
+    @patch("order_delivery._schedule_support_follow_up_jobs")
+    @patch("order_delivery.create_or_get_pending_support_request", return_value=(701, True))
+    @patch("order_delivery.get_courier_by_telegram_id")
+    @patch("order_delivery.get_order_by_id")
+    def test_order_pickup_pin_issue_reports_retry_when_notification_fails(
+        self,
+        mock_get_order_by_id,
+        mock_get_courier_by_telegram_id,
+        _mock_create_or_get_pending_support_request,
+        _mock_schedule_support_follow_up_jobs,
+        _mock_notify_admin_pickup_pinissue,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 55,
+            "status": "ACCEPTED",
+            "courier_id": 44,
+            "courier_admin_id_snapshot": 13,
+        }
+        mock_get_courier_by_telegram_id.return_value = {"id": 44}
+        update = self._update()
+
+        order_delivery._handle_order_pickup_pinissue(update, self._context(), 55)
+
+        self.assertIn(
+            "La solicitud quedo registrada",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
+    @patch("order_delivery.get_approved_admin_id_for_courier", return_value=99)
+    def test_resolve_support_admin_id_falls_back_to_current_admin_when_no_snapshot(
+        self,
+        mock_get_approved_admin_id_for_courier,
+    ):
+        admin_id = order_delivery._resolve_support_admin_id(44, None)
+
+        self.assertEqual(99, admin_id)
+        mock_get_approved_admin_id_for_courier.assert_called_once_with(44)
+
+
 if __name__ == "__main__":
     unittest.main()

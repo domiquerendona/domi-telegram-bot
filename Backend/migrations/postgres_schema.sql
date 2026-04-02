@@ -887,6 +887,7 @@ CREATE TABLE IF NOT EXISTS order_support_requests (
     route_seq INTEGER,
     courier_id BIGINT NOT NULL,
     admin_id BIGINT NOT NULL,
+    support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN',
     status TEXT NOT NULL DEFAULT 'PENDING',
     resolution TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -895,6 +896,7 @@ CREATE TABLE IF NOT EXISTS order_support_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status);
+CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status ON order_support_requests(admin_id, status);
 
 -- Scheduled jobs (persistencia de timers del bot ante reinicios)
 CREATE TABLE IF NOT EXISTS scheduled_jobs (

@@ -1413,6 +1413,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
@@ -1466,6 +1467,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],

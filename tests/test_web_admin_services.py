@@ -193,6 +193,51 @@ class WebAdminServicesTests(unittest.TestCase):
         # PLATFORM_FEE ($100 x 2 fees) va a la sociedad, no al platform_admin
         self.assertEqual(200, db.get_admin_balance(self.sociedad_id))
 
+    def test_create_or_get_pending_support_request_is_idempotent_for_same_scope(self):
+        order_id = self._create_order(status="ACCEPTED")
+
+        first_id, first_created = db.create_or_get_pending_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.local_admin_id,
+            order_id=order_id,
+            support_type=db.SUPPORT_TYPE_PICKUP_PIN,
+        )
+        second_id, second_created = db.create_or_get_pending_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.local_admin_id,
+            order_id=order_id,
+            support_type=db.SUPPORT_TYPE_PICKUP_PIN,
+        )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first_id, second_id)
+
+    def test_list_pending_support_requests_filters_by_admin_and_preserves_support_type(self):
+        order_local = self._create_order(status="ACCEPTED")
+        order_platform = self._create_order(status="PICKED_UP")
+
+        local_support_id = db.create_order_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.local_admin_id,
+            order_id=order_local,
+            support_type=db.SUPPORT_TYPE_PICKUP_PIN,
+        )
+        db.create_order_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.platform_admin_id,
+            order_id=order_platform,
+            support_type=db.SUPPORT_TYPE_DELIVERY_PIN,
+        )
+
+        local_rows = db.list_pending_support_requests(admin_id=self.local_admin_id, limit=10, offset=0)
+        self.assertEqual(1, len(local_rows))
+        self.assertEqual(local_support_id, local_rows[0]["id"])
+        self.assertEqual(db.SUPPORT_TYPE_PICKUP_PIN, local_rows[0]["support_type"])
+
+        support_full = db.get_support_request_full(local_support_id)
+        self.assertEqual(db.SUPPORT_TYPE_PICKUP_PIN, support_full["support_type"])
+
 
 if __name__ == "__main__":
     unittest.main()

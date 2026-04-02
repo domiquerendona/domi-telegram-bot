@@ -24,7 +24,7 @@ Decision operativa:
 |---|---|---|---|---|---|
 | `acust_` | `acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_{id}|restaurar_{id}|dirs|editar|dir_ver_{id}|...)` | `Backend/main.py` | `admin_clientes_*` | No documentado | Documentar tal como esta |
 | `adirs_` | `adirs_(nueva|volver_menu|cerrar|ver_{id}|archivar_{id}|editar_{id})` | `Backend/main.py` | `admin_dirs_*` | No documentado | Documentar tal como esta |
-| `admin_` | `admin_*`, `admin_pinissue_*`, `admin_ruta_pinissue_*` | `Backend/main.py`, `Backend/order_delivery.py`, `Backend/profile_changes.py` | `admin_menu_callback`, `order_courier_callback`, `handle_route_callback` | Documentado, pero muy amplio | Mantener tal como esta |
+| `admin_` | `admin_*`, `admin_pinissue_*`, `admin_ruta_pinissue_*`, `admin_support_(open|list_{offset}|view_{support_id}_{offset})` | `Backend/main.py`, `Backend/order_delivery.py`, `Backend/profile_changes.py`, `Backend/handlers/admin_panel.py` | `admin_menu_callback`, `order_courier_callback`, `handle_route_callback` | Documentado, pero muy amplio | Mantener tal como esta |
 | `admpedidos_` | `admpedidos_(list|detail|cancel|cancel_confirm|cancel_abort|stats|statsdetail)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `admin_orders_callback` | Documentado | Mantener tal como esta |
 | `agenda_` | `agenda_(pickups|clientes|cerrar|volver|pickup_...)` | `Backend/main.py` | `agenda_menu_callback`, `agenda_pickups_*` | Documentado | Mantener tal como esta |
 | `ally_` | `ally_(approve|reject)_{id}`, `ally_block_(block|unblock)_{id}` | `Backend/main.py` | `ally_approval_callback`, `ally_block_callback` | Documentado | Mantener tal como esta |

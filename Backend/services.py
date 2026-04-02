@@ -39,6 +39,10 @@ from db import (
     get_connection,
     P,
     DB_ENGINE,
+    SUPPORT_TYPE_DELIVERY_PIN,
+    SUPPORT_TYPE_ROUTE_STOP_PIN,
+    SUPPORT_TYPE_PICKUP_PIN,
+    SUPPORT_TYPE_ROUTE_PICKUP_PIN,
     get_order_status_by_id,
     get_order_penalty_config,
     cancel_order,
@@ -273,10 +277,12 @@ from db import (
     # Re-exports offer queue
     clear_offer_queue,
     # Re-exports order_support_requests
+    create_or_get_pending_support_request,
     create_order_support_request,
     get_pending_support_request,
     resolve_support_request,
     cancel_route_stop,
+    list_pending_support_requests,
     get_all_pending_support_requests,
     get_support_request_full,
     get_all_orders,

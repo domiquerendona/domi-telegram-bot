@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import os
+from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -27,6 +28,7 @@ from services import (
     get_active_orders_without_courier,
     get_admin_balance,
     get_admin_by_id,
+    get_admin_by_telegram_id,
     get_admin_by_user_id,
     get_admin_link_for_ally,
     get_admin_reference_validator_permission,
@@ -67,8 +69,14 @@ from services import (
     get_user_by_telegram_id,
     get_user_db_id_from_update,
     list_ally_links_by_admin,
+    list_pending_support_requests,
     list_approved_admin_teams,
     list_courier_links_by_admin,
+    get_support_request_full,
+    SUPPORT_TYPE_DELIVERY_PIN,
+    SUPPORT_TYPE_ROUTE_STOP_PIN,
+    SUPPORT_TYPE_PICKUP_PIN,
+    SUPPORT_TYPE_ROUTE_PICKUP_PIN,
     platform_clear_admin_registration_reset,
     platform_clear_ally_registration_reset,
     platform_clear_courier_registration_reset,
@@ -91,6 +99,239 @@ from handlers.config import tarifas_start
 from handlers.registration import _create_or_reset_courier_from_context
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+SUPPORT_PAGE_SIZE = 6
+
+
+def _support_type_label(support_type: str) -> str:
+    labels = {
+        SUPPORT_TYPE_DELIVERY_PIN: "Entrega pedido",
+        SUPPORT_TYPE_PICKUP_PIN: "Pickup pedido",
+        SUPPORT_TYPE_ROUTE_STOP_PIN: "Parada ruta",
+        SUPPORT_TYPE_ROUTE_PICKUP_PIN: "Pickup ruta",
+    }
+    return labels.get(support_type, support_type or "Soporte")
+
+
+def _support_created_label(created_at) -> str:
+    if not created_at:
+        return "-"
+    if hasattr(created_at, "timetuple"):
+        dt = created_at
+    else:
+        dt = None
+        raw = str(created_at).strip()
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ):
+            try:
+                dt = datetime.strptime(raw[:len(fmt)], fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return raw
+
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds = max(0, int((now_dt - dt).total_seconds()))
+    if seconds < 60:
+        age = "menos de 1 min"
+    elif seconds < 3600:
+        age = "{} min".format(seconds // 60)
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        age = "{}h {} min".format(hours, minutes) if minutes else "{}h".format(hours)
+    return "{} ({})".format(dt.strftime("%Y-%m-%d %H:%M"), age)
+
+
+def _support_owner_line(req) -> str:
+    ally_id = _row_value(req, "order_ally_id", 0, 0) or _row_value(req, "route_ally_id", 0, 0)
+    if ally_id:
+        ally = get_ally_by_id(int(ally_id))
+        if ally:
+            return "Aliado responsable: {}".format(
+                _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
+            )
+    creator_admin_id = _row_value(req, "order_creator_admin_id", 0, 0)
+    if creator_admin_id:
+        admin = get_admin_by_id(int(creator_admin_id))
+        if admin:
+            return "Admin creador: {}".format(_row_value(admin, "full_name") or "N/D")
+    return ""
+
+
+def _support_target_lines(req):
+    support_type = _row_value(req, "support_type")
+    lines = []
+    if support_type == SUPPORT_TYPE_DELIVERY_PIN:
+        lines.append("Direccion de entrega: {}".format(_row_value(req, "delivery_address") or "N/D"))
+        target_lat = _row_value(req, "dropoff_lat")
+        target_lng = _row_value(req, "dropoff_lng")
+    elif support_type == SUPPORT_TYPE_PICKUP_PIN:
+        lines.append("Punto de recogida: {}".format(_row_value(req, "order_pickup_address") or "N/D"))
+        target_lat = _row_value(req, "order_pickup_lat")
+        target_lng = _row_value(req, "order_pickup_lng")
+    elif support_type == SUPPORT_TYPE_ROUTE_STOP_PIN:
+        lines.append(
+            "Parada {}: {}".format(
+                _row_value(req, "route_seq") or "-",
+                _row_value(req, "route_customer_address") or "N/D",
+            )
+        )
+        lines.append("Cliente: {}".format(_row_value(req, "route_customer_name") or "N/D"))
+        target_lat = _row_value(req, "route_dropoff_lat")
+        target_lng = _row_value(req, "route_dropoff_lng")
+    else:
+        lines.append("Punto de recogida: {}".format(_row_value(req, "route_pickup_address") or "N/D"))
+        target_lat = _row_value(req, "route_pickup_lat")
+        target_lng = _row_value(req, "route_pickup_lng")
+
+    courier_lat = _row_value(req, "courier_lat")
+    courier_lng = _row_value(req, "courier_lng")
+    if target_lat is not None and target_lng is not None:
+        lines.append("Pin objetivo: https://maps.google.com/?q={},{}".format(target_lat, target_lng))
+    if courier_lat is not None and courier_lng is not None:
+        lines.append("Courier en vivo: https://maps.google.com/?q={},{}".format(courier_lat, courier_lng))
+    return lines
+
+
+def _support_summary_label(req) -> str:
+    support_type = _support_type_label(_row_value(req, "support_type"))
+    courier_name = (_row_value(req, "courier_name") or "Repartidor").strip()
+    if _row_value(req, "order_id", 0, 0):
+        order_id = int(_row_value(req, "order_id", 0, 0))
+        return "{} | Pedido #{} | {}".format(support_type, order_id, courier_name)
+    route_id = int(_row_value(req, "route_id", 0, 0) or 0)
+    seq = _row_value(req, "route_seq", 0, 0)
+    if seq:
+        return "{} | Ruta #{} parada {} | {}".format(support_type, route_id, seq, courier_name)
+    return "{} | Ruta #{} | {}".format(support_type, route_id, courier_name)
+
+
+def _support_action_rows(req):
+    support_id = int(_row_value(req, "id", 0, 0) or 0)
+    order_id = int(_row_value(req, "order_id", 0, 0) or 0)
+    route_id = int(_row_value(req, "route_id", 0, 0) or 0)
+    route_seq = int(_row_value(req, "route_seq", 0, 0) or 0)
+    support_type = _row_value(req, "support_type")
+
+    if support_type == SUPPORT_TYPE_DELIVERY_PIN:
+        return [
+            [InlineKeyboardButton("Finalizar servicio", callback_data="admin_pinissue_fin_{}".format(order_id))],
+            [InlineKeyboardButton("Cancelar falla repartidor", callback_data="admin_pinissue_cancel_courier_{}".format(order_id))],
+            [InlineKeyboardButton("Cancelar falla aliado", callback_data="admin_pinissue_cancel_ally_{}".format(order_id))],
+        ]
+    if support_type == SUPPORT_TYPE_PICKUP_PIN:
+        return [
+            [InlineKeyboardButton("Confirmar llegada", callback_data="admin_pickup_confirm_{}_{}".format(order_id, support_id))],
+            [InlineKeyboardButton("Liberar pedido", callback_data="admin_pickup_release_{}_{}".format(order_id, support_id))],
+        ]
+    if support_type == SUPPORT_TYPE_ROUTE_STOP_PIN:
+        suffix = "{}_{}".format(route_id, route_seq)
+        return [
+            [InlineKeyboardButton("Finalizar parada", callback_data="admin_ruta_pinissue_fin_{}".format(suffix))],
+            [InlineKeyboardButton("Cancelar falla repartidor", callback_data="admin_ruta_pinissue_cancel_courier_{}".format(suffix))],
+            [InlineKeyboardButton("Cancelar falla aliado", callback_data="admin_ruta_pinissue_cancel_ally_{}".format(suffix))],
+        ]
+    return [
+        [InlineKeyboardButton("Confirmar llegada", callback_data="admin_ruta_pickup_confirm_{}_{}".format(route_id, support_id))],
+        [InlineKeyboardButton("Liberar ruta", callback_data="admin_ruta_pickup_release_{}_{}".format(route_id, support_id))],
+    ]
+
+
+def _get_support_inbox_actor(telegram_id: int):
+    admin = get_admin_by_telegram_id(telegram_id)
+    is_platform = user_has_platform_admin(telegram_id)
+    if not admin and not is_platform:
+        return None, False
+    return admin, is_platform
+
+
+def _render_support_requests_list(query, offset: int = 0, edit: bool = False):
+    admin, is_platform = _get_support_inbox_actor(query.from_user.id)
+    if not admin and not is_platform:
+        query.answer("No tienes permisos para ver esta bandeja.", show_alert=True)
+        return
+
+    admin_filter = None if is_platform else admin["id"]
+    rows = list_pending_support_requests(admin_id=admin_filter, limit=SUPPORT_PAGE_SIZE + 1, offset=offset)
+    has_next = len(rows) > SUPPORT_PAGE_SIZE
+    rows = rows[:SUPPORT_PAGE_SIZE]
+
+    scope_text = "todas las solicitudes" if is_platform else "las solicitudes de tu equipo"
+    text = "Bandeja de soportes pendientes.\nRevisa {}.".format(scope_text)
+    keyboard = []
+    if rows:
+        for req in rows:
+            keyboard.append([
+                InlineKeyboardButton(
+                    _support_summary_label(req),
+                    callback_data="admin_support_view_{}_{}".format(req["id"], offset),
+                )
+            ])
+    else:
+        text = "No hay soportes pendientes en este momento."
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("Anterior", callback_data="admin_support_list_{}".format(max(0, offset - SUPPORT_PAGE_SIZE))))
+    if has_next:
+        nav.append(InlineKeyboardButton("Siguiente", callback_data="admin_support_list_{}".format(offset + SUPPORT_PAGE_SIZE)))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton("Actualizar", callback_data="admin_support_list_{}".format(offset))])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    if edit:
+        query.edit_message_text(text, reply_markup=markup)
+    else:
+        query.message.reply_text(text, reply_markup=markup)
+
+
+def _render_support_request_detail(query, support_id: int, offset: int):
+    admin, is_platform = _get_support_inbox_actor(query.from_user.id)
+    if not admin and not is_platform:
+        query.answer("No tienes permisos para ver esta solicitud.", show_alert=True)
+        return
+
+    req = get_support_request_full(support_id)
+    if not req or _row_value(req, "status") != "PENDING":
+        query.edit_message_text(
+            "Esta solicitud ya no esta pendiente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a la bandeja", callback_data="admin_support_list_{}".format(offset))]
+            ]),
+        )
+        return
+
+    if not is_platform and admin["id"] != req["admin_id"]:
+        query.edit_message_text("No tienes permiso para revisar esta solicitud.")
+        return
+
+    can_resolve = is_platform or (admin and admin["id"] == req["admin_id"])
+    assigned_admin = _row_value(req, "admin_name") or "N/D"
+    lines = [
+        "{}".format(_support_type_label(_row_value(req, "support_type"))),
+        "Solicitud #{}".format(_row_value(req, "id") or "-"),
+        "Asignada a: {}".format(assigned_admin),
+        "Creada: {}".format(_support_created_label(_row_value(req, "created_at"))),
+        "",
+        "Repartidor: {}".format(_row_value(req, "courier_name") or "N/D"),
+        "Telefono: {}".format(_row_value(req, "courier_phone") or "N/D"),
+    ]
+    owner_line = _support_owner_line(req)
+    if owner_line:
+        lines.append(owner_line)
+    lines.extend(_support_target_lines(req))
+
+    keyboard = []
+    if can_resolve:
+        keyboard.extend(_support_action_rows(req))
+    keyboard.append([InlineKeyboardButton("Volver a la bandeja", callback_data="admin_support_list_{}".format(offset))])
+    query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 def _registration_reset_status_label(reset_state):
@@ -653,6 +894,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+        [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
@@ -681,6 +923,36 @@ def admin_menu_callback(update, context):
             query.answer("Error de formato.", show_alert=True)
             return
         return admin_orders_panel(update, context, admin_id, is_platform=False)
+
+    if data == "admin_support_open":
+        query.answer()
+        _render_support_requests_list(query, offset=0, edit=False)
+        return
+
+    if data.startswith("admin_support_list_"):
+        query.answer()
+        try:
+            offset = int(data.replace("admin_support_list_", ""))
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        _render_support_requests_list(query, offset=max(0, offset), edit=True)
+        return
+
+    if data.startswith("admin_support_view_"):
+        query.answer()
+        parts = data.replace("admin_support_view_", "").split("_")
+        if len(parts) != 2:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        try:
+            support_id = int(parts[0])
+            offset = int(parts[1])
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        _render_support_request_detail(query, support_id, max(0, offset))
+        return
 
     # Gestión de usuarios (solo Admin Plataforma)
     if data == "admin_gestion_usuarios":

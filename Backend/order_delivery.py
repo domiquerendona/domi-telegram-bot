@@ -71,6 +71,10 @@ from db import (
     add_courier_rating,
     _coerce_datetime,
     _row_value,
+    SUPPORT_TYPE_DELIVERY_PIN,
+    SUPPORT_TYPE_ROUTE_STOP_PIN,
+    SUPPORT_TYPE_PICKUP_PIN,
+    SUPPORT_TYPE_ROUTE_PICKUP_PIN,
     block_courier_for_ally,
     deactivate_courier,
     set_courier_arrived,
@@ -83,8 +87,9 @@ from db import (
     get_courier_delivery_time_stats,
     get_approved_admin_id_for_courier,
     get_admin_by_telegram_id,
-    create_order_support_request,
+    create_or_get_pending_support_request,
     get_pending_support_request,
+    get_support_request_full,
     resolve_support_request,
     cancel_route_stop,
     upsert_scheduled_job,
@@ -98,7 +103,7 @@ from db import (
     resolve_pending_fee_collection,
     get_pending_fee_collection,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -225,11 +230,17 @@ DELIVERY_ADMIN_ALERT_SECONDS = 60 * 60  # 60 min en PICKED_UP → alertar al adm
 DELIVERY_RADIUS_KM = 0.15              # 150 metros para validar entrega GPS
 PICKUP_AUTOCONFIRM_SECONDS = 120        # 2 min → auto-confirmar llegada al pickup si aliado no responde
 WAITING_OVERRIDE_REMINDER_SECONDS = 10 * 60
+SUPPORT_REQUEST_REMINDER_SECONDS = 3 * 60
+SUPPORT_REQUEST_ESCALATION_SECONDS = 6 * 60
 
 WAITING_OVERRIDE_NOTE = (
     "La liberacion automatica por demora quedo anulada porque decidiste esperar mas."
 )
 WAITING_OVERRIDE_REVERT_LABEL = "Buscar otro repartidor"
+SUPPORT_NOTIFICATION_RETRY_MSG = (
+    "La solicitud quedo registrada, pero no pude confirmar el aviso inmediato a tu administrador.\n"
+    "La reintentaremos automaticamente y tambien quedara visible en su bandeja de pendientes."
+)
 
 GPS_INACTIVE_MSG = (
     "Tu ubicacion GPS no esta activa.\n\n"
@@ -7344,6 +7355,261 @@ def _handle_delivered_confirm(update, context, order_id):
 # Flujo pin mal ubicado — pedido
 # ---------------------------------------------------------------------------
 
+def _resolve_support_admin_id(courier_id, admin_id_snapshot=None):
+    """Resuelve el admin responsable del servicio para solicitudes de ayuda."""
+    try:
+        snapshot_admin_id = int(admin_id_snapshot or 0)
+    except (TypeError, ValueError):
+        snapshot_admin_id = 0
+    if snapshot_admin_id > 0:
+        return snapshot_admin_id
+    return get_approved_admin_id_for_courier(courier_id)
+
+
+def _support_elapsed_label(dt_value):
+    dt = _coerce_datetime(dt_value)
+    if not dt:
+        return ""
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds = max(0, int((now_dt - dt).total_seconds()))
+    if seconds < 60:
+        return "menos de 1 min"
+    if seconds < 3600:
+        return "{} min".format(seconds // 60)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    if minutes:
+        return "{}h {} min".format(hours, minutes)
+    return "{}h".format(hours)
+
+
+def _build_support_distance_time_lines(courier_lat, courier_lng, target_lat, target_lng,
+                                       stage_started_at, stage_label):
+    lines = []
+    if None not in (courier_lat, courier_lng, target_lat, target_lng):
+        try:
+            dist_km = haversine_km(
+                float(courier_lat), float(courier_lng),
+                float(target_lat), float(target_lng),
+            )
+            lines.append("Distancia actual courier -> pin: {:.0f} m".format(dist_km * 1000))
+        except Exception:
+            pass
+    elapsed = _support_elapsed_label(stage_started_at)
+    if elapsed:
+        lines.append("{}: {}".format(stage_label, elapsed))
+    return lines
+
+
+def _build_order_support_owner_line(order):
+    ally_id = _row_value(order, "ally_id", 0, 0)
+    if ally_id:
+        ally = get_ally_by_id(int(ally_id))
+        if ally:
+            return "Aliado responsable: {}".format(
+                _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
+            )
+    creator_admin_id = _row_value(order, "creator_admin_id", 0, 0)
+    if creator_admin_id:
+        admin = get_admin_by_id(int(creator_admin_id))
+        if admin:
+            return "Admin creador: {}".format(_row_value(admin, "full_name") or "N/D")
+    return ""
+
+
+def _build_route_support_owner_line(route):
+    ally_id = _row_value(route, "ally_id", 0, 0)
+    if not ally_id:
+        return ""
+    ally = get_ally_by_id(int(ally_id))
+    if not ally:
+        return ""
+    return "Aliado responsable: {}".format(
+        _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
+    )
+
+
+def _admin_can_resolve_support_request(admin, telegram_id, support_admin_id):
+    if not admin:
+        return False
+    if admin["id"] == support_admin_id:
+        return True
+    return es_admin_plataforma(telegram_id)
+
+
+def _cancel_support_follow_up_jobs(context, support_id):
+    for name in [
+        "support_reminder_{}".format(support_id),
+        "support_escalation_{}".format(support_id),
+    ]:
+        _cancel_persistent_job(context, name)
+
+
+def _log_support_request_event(event, **data):
+    parts = []
+    for key, value in data.items():
+        if value is None:
+            continue
+        parts.append("{}={}".format(key, value))
+    if parts:
+        logger.info("support_request_%s %s", event, " ".join(parts))
+    else:
+        logger.info("support_request_%s", event)
+
+
+def _schedule_support_follow_up_jobs(context, support_id):
+    _cancel_support_follow_up_jobs(context, support_id)
+    _schedule_persistent_job(
+        context,
+        _support_request_reminder_job,
+        SUPPORT_REQUEST_REMINDER_SECONDS,
+        "support_reminder_{}".format(support_id),
+        {"support_id": support_id},
+    )
+    _schedule_persistent_job(
+        context,
+        _support_request_escalation_job,
+        SUPPORT_REQUEST_ESCALATION_SECONDS,
+        "support_escalation_{}".format(support_id),
+        {"support_id": support_id},
+    )
+    _log_support_request_event(
+        "jobs_scheduled",
+        support_id=support_id,
+        reminder_seconds=SUPPORT_REQUEST_REMINDER_SECONDS,
+        escalation_seconds=SUPPORT_REQUEST_ESCALATION_SECONDS,
+    )
+
+
+def _dispatch_support_request_notification(context, support_id, admin_id, extra_lines=None):
+    support = get_support_request_full(support_id)
+    if not support or support["status"] != "PENDING":
+        return False
+
+    courier = get_courier_by_id(support["courier_id"])
+    if not courier:
+        return False
+
+    support_type = _row_value(support, "support_type") or SUPPORT_TYPE_DELIVERY_PIN
+    notified = False
+    if support_type == SUPPORT_TYPE_DELIVERY_PIN:
+        order = get_order_by_id(support["order_id"])
+        if not order:
+            return False
+        notified = _notify_admin_pin_issue(
+            context, order, courier, admin_id, support_id, extra_lines=extra_lines
+        )
+    elif support_type == SUPPORT_TYPE_PICKUP_PIN:
+        order = get_order_by_id(support["order_id"])
+        if not order:
+            return False
+        notified = _notify_admin_pickup_pinissue(
+            context, order, courier, admin_id, support_id, extra_lines=extra_lines
+        )
+    elif support_type == SUPPORT_TYPE_ROUTE_PICKUP_PIN:
+        route = get_route_by_id(support["route_id"])
+        if not route:
+            return False
+        notified = _notify_admin_route_pickup_pinissue(
+            context, route, courier, admin_id, support_id, extra_lines=extra_lines
+        )
+    elif support_type == SUPPORT_TYPE_ROUTE_STOP_PIN:
+        route = get_route_by_id(support["route_id"])
+        if not route:
+            return False
+        stops = get_route_destinations(support["route_id"])
+        stop = next((row for row in stops if row["sequence"] == support["route_seq"]), None)
+        if not stop:
+            return False
+        notified = _notify_admin_route_pin_issue(
+            context, route, stop, courier, admin_id, support_id, extra_lines=extra_lines
+        )
+    else:
+        return False
+
+    _log_support_request_event(
+        "dispatch",
+        support_id=support_id,
+        support_type=support_type,
+        admin_id=admin_id,
+        notified=int(bool(notified)),
+    )
+    return notified
+
+
+def _support_request_reminder_job(context):
+    """Reintenta la notificacion al admin si la solicitud sigue pendiente."""
+    mark_job_executed(context.job.name)
+    support_id = (context.job.context or {}).get("support_id")
+    if not support_id:
+        return
+    support = get_support_request_full(support_id)
+    if not support or support["status"] != "PENDING":
+        return
+
+    _log_support_request_event(
+        "reminder",
+        support_id=support_id,
+        support_type=_row_value(support, "support_type"),
+        admin_id=_row_value(support, "admin_id"),
+    )
+    opened_for = _support_elapsed_label(_row_value(support, "created_at"))
+    extra_lines = ["Recordatorio automatico: la solicitud sigue pendiente."]
+    if opened_for:
+        extra_lines.append("Abierta hace: {}.".format(opened_for))
+    extra_lines.append("Puedes resolverla desde esta alerta o desde tu bandeja de pendientes.")
+    _dispatch_support_request_notification(context, support_id, support["admin_id"], extra_lines=extra_lines)
+
+
+def _support_request_escalation_job(context):
+    """Escala la solicitud pendiente a plataforma si no hubo respuesta del admin asignado."""
+    mark_job_executed(context.job.name)
+    support_id = (context.job.context or {}).get("support_id")
+    if not support_id:
+        return
+    support = get_support_request_full(support_id)
+    if not support or support["status"] != "PENDING":
+        return
+
+    _log_support_request_event(
+        "escalation",
+        support_id=support_id,
+        support_type=_row_value(support, "support_type"),
+        admin_id=_row_value(support, "admin_id"),
+    )
+    opened_for = _support_elapsed_label(_row_value(support, "created_at"))
+    assigned_admin_id = _row_value(support, "admin_id", 0, 0)
+    assigned_admin = get_admin_by_id(int(assigned_admin_id)) if assigned_admin_id else None
+    assigned_name = _row_value(assigned_admin, "full_name") if assigned_admin else "N/D"
+
+    admin_lines = ["Escalamiento automatico: la solicitud sigue sin resolverse."]
+    if opened_for:
+        admin_lines.append("Abierta hace: {}.".format(opened_for))
+    admin_lines.append("La alerta tambien fue reenviada a plataforma.")
+    _dispatch_support_request_notification(context, support_id, support["admin_id"], extra_lines=admin_lines)
+
+    platform_admin = get_platform_admin()
+    if not platform_admin:
+        return
+    platform_admin_id = _row_value(platform_admin, "id", 0, 0)
+    if not platform_admin_id or int(platform_admin_id) == int(assigned_admin_id or 0):
+        return
+
+    platform_lines = [
+        "Escalamiento automatico de soporte pendiente.",
+        "Admin asignado: {}.".format(assigned_name or "N/D"),
+    ]
+    if opened_for:
+        platform_lines.append("Abierta hace: {}.".format(opened_for))
+    platform_lines.append("Puedes intervenir desde esta alerta o revisarla en /admin.")
+    _dispatch_support_request_notification(
+        context,
+        support_id,
+        int(platform_admin_id),
+        extra_lines=platform_lines,
+    )
+
+
 def _handle_pin_issue_report(update, context, order_id):
     """Courier reporta que el pin de entrega esta mal. Notifica al admin del equipo."""
     query = update.callback_query
@@ -7361,41 +7627,65 @@ def _handle_pin_issue_report(update, context, order_id):
         query.edit_message_text(GPS_INACTIVE_MSG)
         return
 
-    # Evitar duplicados: si ya hay una solicitud pendiente, no crear otra
-    existing = get_pending_support_request(order_id=order_id)
-    if existing:
+    admin_id = _resolve_support_admin_id(
+        courier["id"],
+        _row_value(order, "courier_admin_id_snapshot"),
+    )
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id, created = create_or_get_pending_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        order_id=order_id,
+        support_type=SUPPORT_TYPE_DELIVERY_PIN,
+    )
+    if not created:
+        _log_support_request_event(
+            "duplicate",
+            support_id=support_id,
+            support_type=SUPPORT_TYPE_DELIVERY_PIN,
+            admin_id=admin_id,
+            order_id=order_id,
+        )
         query.edit_message_text(
             "Ya enviaste una solicitud de ayuda para este pedido.\n"
             "Tu administrador fue notificado y respondera pronto."
         )
         return
 
-    admin_id = get_approved_admin_id_for_courier(courier["id"])
-    if not admin_id:
-        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
-        return
-
-    support_id = create_order_support_request(
-        courier_id=courier["id"],
+    _log_support_request_event(
+        "created",
+        support_id=support_id,
+        support_type=SUPPORT_TYPE_DELIVERY_PIN,
         admin_id=admin_id,
         order_id=order_id,
+        courier_id=courier["id"],
     )
+    _schedule_support_follow_up_jobs(context, support_id)
+    notified = _notify_admin_pin_issue(context, order, courier, admin_id, support_id)
+    if notified:
+        query.edit_message_text(
+            "Solicitud enviada. Tu administrador fue notificado y podra ayudarte a finalizar el servicio.\n"
+            "Permanece en el lugar hasta recibir respuesta."
+        )
+        return
     query.edit_message_text(
-        "Solicitud enviada. Tu administrador fue notificado y podra ayudarte a finalizar el servicio.\n"
-        "Permanece en el lugar hasta recibir respuesta."
+        "Solicitud enviada.\n"
+        "{}".format(SUPPORT_NOTIFICATION_RETRY_MSG)
     )
-    _notify_admin_pin_issue(context, order, courier, admin_id, support_id)
 
 
-def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
+def _notify_admin_pin_issue(context, order, courier, admin_id, support_id, extra_lines=None):
     """Envia al admin del equipo la alerta de pin mal ubicado con opciones de accion."""
     try:
         admin = get_admin_by_id(admin_id)
         if not admin:
-            return
+            return False
         admin_user = get_user_by_id(admin["user_id"])
         if not admin_user or not admin_user["telegram_id"]:
-            return
+            return False
 
         courier_lat = _row_value(courier, "live_lat")
         courier_lng = _row_value(courier, "live_lng")
@@ -7423,10 +7713,26 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
             "Direccion de entrega guardada: {}".format(order["customer_address"] or "N/D"),
             "Cliente: {}".format(order["customer_name"] or "N/D"),
         ]
+        owner_line = _build_order_support_owner_line(order)
+        if owner_line:
+            lines.append(owner_line)
+        lines.extend(
+            _build_support_distance_time_lines(
+                courier_lat,
+                courier_lng,
+                dropoff_lat,
+                dropoff_lng,
+                _row_value(order, "pickup_confirmed_at"),
+                "Tiempo desde recogida",
+            )
+        )
         if maps_delivery:
             lines.append("Pin de entrega: {}".format(maps_delivery))
         if maps_courier:
             lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+        if extra_lines:
+            lines.append("")
+            lines.extend(extra_lines)
 
         keyboard = [
             [InlineKeyboardButton(
@@ -7453,8 +7759,10 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id):
             text="\n".join(lines),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return True
     except Exception as e:
         logger.warning("No se pudo notificar pin issue al admin (pedido %s): %s", order["id"], e)
+        return False
 
 
 def _handle_admin_pinissue_action(update, context, order_id, action):
@@ -7475,11 +7783,12 @@ def _handle_admin_pinissue_action(update, context, order_id, action):
 
     telegram_id = update.effective_user.id
     admin = get_admin_by_telegram_id(telegram_id)
-    if not admin or admin["id"] != support["admin_id"]:
+    if not _admin_can_resolve_support_request(admin, telegram_id, support["admin_id"]):
         query.edit_message_text("No tienes permiso para resolver esta solicitud.")
         return
 
     if action == "fin":
+        _cancel_support_follow_up_jobs(context, support["id"])
         resolve_support_request(support["id"], "DELIVERED", admin["id"])
         _cancel_delivery_reminder_jobs(context, order_id)
         _do_deliver_order(context, order, support["courier_id"])
@@ -7490,6 +7799,7 @@ def _handle_admin_pinissue_action(update, context, order_id, action):
         _notify_courier_support_resolved(context, support["courier_id"], order_id, "fin")
 
     elif action == "cancel_courier":
+        _cancel_support_follow_up_jobs(context, support["id"])
         resolve_support_request(support["id"], "CANCELLED_COURIER", admin["id"])
         _cancel_delivery_reminder_jobs(context, order_id)
         cancel_order(order_id, "ADMIN")
@@ -7510,6 +7820,7 @@ def _handle_admin_pinissue_action(update, context, order_id, action):
         _notify_courier_support_resolved(context, support["courier_id"], order_id, "cancel_courier")
 
     elif action == "cancel_ally":
+        _cancel_support_follow_up_jobs(context, support["id"])
         resolve_support_request(support["id"], "CANCELLED_ALLY", admin["id"])
         _cancel_delivery_reminder_jobs(context, order_id)
         cancel_order(order_id, "ADMIN")
@@ -7656,15 +7967,10 @@ def _handle_route_pin_issue(update, context, route_id, seq):
         query.edit_message_text(GPS_INACTIVE_MSG)
         return
 
-    existing = get_pending_support_request(route_id=route_id, route_seq=seq)
-    if existing:
-        query.edit_message_text(
-            "Ya enviaste una solicitud de ayuda para esta parada.\n"
-            "Tu administrador fue notificado y respondera pronto."
-        )
-        return
-
-    admin_id = get_approved_admin_id_for_courier(courier["id"])
+    admin_id = _resolve_support_admin_id(
+        courier["id"],
+        _row_value(route, "courier_admin_id_snapshot"),
+    )
     if not admin_id:
         query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
         return
@@ -7675,29 +7981,61 @@ def _handle_route_pin_issue(update, context, route_id, seq):
         query.edit_message_text("Parada no encontrada.")
         return
 
-    support_id = create_order_support_request(
+    support_id, created = create_or_get_pending_support_request(
         courier_id=courier["id"],
         admin_id=admin_id,
         route_id=route_id,
         route_seq=seq,
+        support_type=SUPPORT_TYPE_ROUTE_STOP_PIN,
     )
+    if not created:
+        _log_support_request_event(
+            "duplicate",
+            support_id=support_id,
+            support_type=SUPPORT_TYPE_ROUTE_STOP_PIN,
+            admin_id=admin_id,
+            route_id=route_id,
+            route_seq=seq,
+        )
+        query.edit_message_text(
+            "Ya enviaste una solicitud de ayuda para esta parada.\n"
+            "Tu administrador fue notificado y respondera pronto."
+        )
+        return
+
+    _log_support_request_event(
+        "created",
+        support_id=support_id,
+        support_type=SUPPORT_TYPE_ROUTE_STOP_PIN,
+        admin_id=admin_id,
+        route_id=route_id,
+        route_seq=seq,
+        courier_id=courier["id"],
+    )
+    _schedule_support_follow_up_jobs(context, support_id)
+    notified = _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id)
+    if notified:
+        query.edit_message_text(
+            "Solicitud enviada. Tu administrador fue notificado.\n"
+            "Permanece en el lugar hasta recibir respuesta. "
+            "Despues continuaras con las demas paradas."
+        )
+        return
     query.edit_message_text(
-        "Solicitud enviada. Tu administrador fue notificado.\n"
-        "Permanece en el lugar hasta recibir respuesta. "
-        "Despues continuaras con las demas paradas."
+        "Solicitud enviada.\n"
+        "{}".format(SUPPORT_NOTIFICATION_RETRY_MSG)
     )
-    _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id)
 
 
-def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id):
+def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, support_id, extra_lines=None):
     """Envia al admin del equipo la alerta de pin mal ubicado en parada de ruta."""
     try:
         admin = get_admin_by_id(admin_id)
         if not admin:
-            return
+            return False
         admin_user = get_user_by_id(admin["user_id"])
         if not admin_user or not admin_user["telegram_id"]:
-            return
+            return False
 
         courier_lat = _row_value(courier, "live_lat")
         courier_lng = _row_value(courier, "live_lng")
@@ -7725,10 +8063,26 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
             "Cliente: {}".format(stop["customer_name"] or "N/D"),
             "Direccion guardada: {}".format(stop["customer_address"] or "N/D"),
         ]
+        owner_line = _build_route_support_owner_line(route)
+        if owner_line:
+            lines.append(owner_line)
+        lines.extend(
+            _build_support_distance_time_lines(
+                courier_lat,
+                courier_lng,
+                stop_lat,
+                stop_lng,
+                _row_value(route, "accepted_at"),
+                "Tiempo desde aceptar la ruta",
+            )
+        )
         if maps_stop:
             lines.append("Pin de entrega: {}".format(maps_stop))
         if maps_courier:
             lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+        if extra_lines:
+            lines.append("")
+            lines.extend(extra_lines)
 
         route_seq_str = "{}_{}".format(route["id"], seq)
         keyboard = [
@@ -7756,8 +8110,10 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
             text="\n".join(lines),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return True
     except Exception as e:
         logger.warning("No se pudo notificar pin issue de ruta al admin: %s", e)
+        return False
 
 
 def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
@@ -7775,13 +8131,14 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
 
     telegram_id = update.effective_user.id
     admin = get_admin_by_telegram_id(telegram_id)
-    if not admin or admin["id"] != support["admin_id"]:
+    if not _admin_can_resolve_support_request(admin, telegram_id, support["admin_id"]):
         query.edit_message_text("No tienes permiso para resolver esta solicitud.")
         return
 
     courier_id = support["courier_id"]
 
     if action == "fin":
+        _cancel_support_follow_up_jobs(context, support["id"])
         resolve_support_request(support["id"], "DELIVERED", admin["id"])
         deliver_route_stop(route_id, seq)
         query.edit_message_text("Parada {} de la ruta #{} finalizada.".format(seq, route_id))
@@ -7789,6 +8146,7 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
 
     elif action in ("cancel_courier", "cancel_ally"):
         resolution = "CANCELLED_COURIER" if action == "cancel_courier" else "CANCELLED_ALLY"
+        _cancel_support_follow_up_jobs(context, support["id"])
         resolve_support_request(support["id"], resolution, admin["id"])
         cancel_route_stop(route_id, seq, resolution)
 
@@ -7954,40 +8312,65 @@ def _handle_order_pickup_pinissue(update, context, order_id):
         query.edit_message_text("No tienes permiso para esta accion.")
         return
 
-    existing = get_pending_support_request(order_id=order_id)
-    if existing:
+    admin_id = _resolve_support_admin_id(
+        courier["id"],
+        _row_value(order, "courier_admin_id_snapshot"),
+    )
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id, created = create_or_get_pending_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        order_id=order_id,
+        support_type=SUPPORT_TYPE_PICKUP_PIN,
+    )
+    if not created:
+        _log_support_request_event(
+            "duplicate",
+            support_id=support_id,
+            support_type=SUPPORT_TYPE_PICKUP_PIN,
+            admin_id=admin_id,
+            order_id=order_id,
+        )
         query.edit_message_text(
             "Ya enviaste una solicitud de ayuda para este pedido.\n"
             "Tu administrador fue notificado y respondera pronto."
         )
         return
 
-    admin_id = get_approved_admin_id_for_courier(courier["id"])
-    if not admin_id:
-        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
-        return
-
-    support_id = create_order_support_request(
-        courier_id=courier["id"],
+    _log_support_request_event(
+        "created",
+        support_id=support_id,
+        support_type=SUPPORT_TYPE_PICKUP_PIN,
         admin_id=admin_id,
         order_id=order_id,
+        courier_id=courier["id"],
     )
+    _schedule_support_follow_up_jobs(context, support_id)
+    notified = _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
+    if notified:
+        query.edit_message_text(
+            "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar el pedido.\n"
+            "Permanece en el lugar hasta recibir respuesta."
+        )
+        return
     query.edit_message_text(
-        "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar el pedido.\n"
-        "Permanece en el lugar hasta recibir respuesta."
+        "Solicitud enviada.\n"
+        "{}".format(SUPPORT_NOTIFICATION_RETRY_MSG)
     )
-    _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
 
 
-def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id):
+def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id, extra_lines=None):
     """Envia al admin la alerta de pin de recogida mal ubicado con opciones de accion."""
     try:
         admin = get_admin_by_id(admin_id)
         if not admin:
-            return
+            return False
         admin_user = get_user_by_id(admin["user_id"])
         if not admin_user or not admin_user["telegram_id"]:
-            return
+            return False
 
         pickup_lat, pickup_lng = _get_pickup_coords(order)
         courier_lat = _row_value(courier, "live_lat")
@@ -8012,10 +8395,26 @@ def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Punto de recogida: {}".format(order["pickup_address"] or "N/D"),
         ]
+        owner_line = _build_order_support_owner_line(order)
+        if owner_line:
+            lines.append(owner_line)
+        lines.extend(
+            _build_support_distance_time_lines(
+                courier_lat,
+                courier_lng,
+                pickup_lat,
+                pickup_lng,
+                _row_value(order, "accepted_at"),
+                "Tiempo desde aceptacion",
+            )
+        )
         if maps_pickup:
             lines.append("Pin de recogida: {}".format(maps_pickup))
         if maps_courier:
             lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+        if extra_lines:
+            lines.append("")
+            lines.extend(extra_lines)
 
         keyboard = [
             [InlineKeyboardButton(
@@ -8035,8 +8434,10 @@ def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id)
             text="\n".join(lines),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return True
     except Exception as e:
         logger.warning("No se pudo notificar pickup pin issue al admin (pedido %s): %s", order["id"], e)
+        return False
 
 
 def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, action):
@@ -8053,11 +8454,12 @@ def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, 
         return
 
     admin = get_admin_by_telegram_id(update.effective_user.id)
-    if not admin or admin["id"] != support["admin_id"]:
+    if not _admin_can_resolve_support_request(admin, update.effective_user.id, support["admin_id"]):
         query.edit_message_text("No tienes permiso para resolver esta solicitud.")
         return
 
     resolution = "CONFIRMED_ARRIVAL" if action == "confirm" else "RELEASED"
+    _cancel_support_follow_up_jobs(context, support["id"])
     ok = resolve_support_request(support["id"], resolution, admin["id"])
     if not ok:
         query.edit_message_text("Esta solicitud ya fue resuelta.")
@@ -8114,42 +8516,68 @@ def _handle_route_pickup_pinissue(update, context, route_id):
         query.edit_message_text("No tienes permiso para esta accion.")
         return
 
-    # route_seq=0 representa el pickup (secuencias de paradas empiezan en 1)
-    existing = get_pending_support_request(route_id=route_id, route_seq=0)
-    if existing:
+    admin_id = _resolve_support_admin_id(
+        courier["id"],
+        _row_value(route, "courier_admin_id_snapshot"),
+    )
+    if not admin_id:
+        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
+        return
+
+    support_id, created = create_or_get_pending_support_request(
+        courier_id=courier["id"],
+        admin_id=admin_id,
+        route_id=route_id,
+        route_seq=0,
+        support_type=SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+    )
+    if not created:
+        _log_support_request_event(
+            "duplicate",
+            support_id=support_id,
+            support_type=SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+            admin_id=admin_id,
+            route_id=route_id,
+            route_seq=0,
+        )
         query.edit_message_text(
             "Ya enviaste una solicitud de ayuda para esta ruta.\n"
             "Tu administrador fue notificado y respondera pronto."
         )
         return
 
-    admin_id = get_approved_admin_id_for_courier(courier["id"])
-    if not admin_id:
-        query.edit_message_text("No se encontro un administrador asignado para tu equipo.")
-        return
-
-    support_id = create_order_support_request(
-        courier_id=courier["id"],
+    _log_support_request_event(
+        "created",
+        support_id=support_id,
+        support_type=SUPPORT_TYPE_ROUTE_PICKUP_PIN,
         admin_id=admin_id,
         route_id=route_id,
         route_seq=0,
+        courier_id=courier["id"],
     )
+    _schedule_support_follow_up_jobs(context, support_id)
+    notified = _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id)
+    if notified:
+        query.edit_message_text(
+            "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar la ruta.\n"
+            "Permanece en el lugar hasta recibir respuesta."
+        )
+        return
     query.edit_message_text(
-        "Solicitud enviada. Tu administrador fue notificado y podra confirmar tu llegada o liberar la ruta.\n"
-        "Permanece en el lugar hasta recibir respuesta."
+        "Solicitud enviada.\n"
+        "{}".format(SUPPORT_NOTIFICATION_RETRY_MSG)
     )
-    _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id)
 
 
-def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id):
+def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, support_id, extra_lines=None):
     """Envia al admin la alerta de pin de recogida de ruta mal ubicado con opciones de accion."""
     try:
         admin = get_admin_by_id(admin_id)
         if not admin:
-            return
+            return False
         admin_user = get_user_by_id(admin["user_id"])
         if not admin_user or not admin_user["telegram_id"]:
-            return
+            return False
 
         pickup_lat = route["pickup_lat"]
         pickup_lng = route["pickup_lng"]
@@ -8175,10 +8603,26 @@ def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, suppo
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Punto de recogida: {}".format(route["pickup_address"] or "N/D"),
         ]
+        owner_line = _build_route_support_owner_line(route)
+        if owner_line:
+            lines.append(owner_line)
+        lines.extend(
+            _build_support_distance_time_lines(
+                courier_lat,
+                courier_lng,
+                pickup_lat,
+                pickup_lng,
+                _row_value(route, "accepted_at"),
+                "Tiempo desde aceptar la ruta",
+            )
+        )
         if maps_pickup:
             lines.append("Pin de recogida: {}".format(maps_pickup))
         if maps_courier:
             lines.append("Ubicacion actual del repartidor: {}".format(maps_courier))
+        if extra_lines:
+            lines.append("")
+            lines.extend(extra_lines)
 
         keyboard = [
             [InlineKeyboardButton(
@@ -8198,8 +8642,10 @@ def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, suppo
             text="\n".join(lines),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
+        return True
     except Exception as e:
         logger.warning("No se pudo notificar pickup pin issue al admin (ruta %s): %s", route["id"], e)
+        return False
 
 
 def _handle_admin_route_pickup_pinissue_action(update, context, route_id, support_id, action):
@@ -8216,11 +8662,12 @@ def _handle_admin_route_pickup_pinissue_action(update, context, route_id, suppor
         return
 
     admin = get_admin_by_telegram_id(update.effective_user.id)
-    if not admin or admin["id"] != support["admin_id"]:
+    if not _admin_can_resolve_support_request(admin, update.effective_user.id, support["admin_id"]):
         query.edit_message_text("No tienes permiso para resolver esta solicitud.")
         return
 
     resolution = "CONFIRMED_ARRIVAL" if action == "confirm" else "RELEASED"
+    _cancel_support_follow_up_jobs(context, support["id"])
     ok = resolve_support_request(support["id"], resolution, admin["id"])
     if not ok:
         query.edit_message_text("Esta solicitud ya fue resuelta.")
@@ -8271,6 +8718,8 @@ JOB_REGISTRY = {
     "_arrival_wait_override_reminder_job": _arrival_wait_override_reminder_job,
     "_delivery_reminder_job": _delivery_reminder_job,
     "_delivery_admin_alert_job": _delivery_admin_alert_job,
+    "_support_request_reminder_job": _support_request_reminder_job,
+    "_support_request_escalation_job": _support_request_escalation_job,
     "_route_no_response_job": _route_no_response_job,
     "_route_offer_retry_job": _route_offer_retry_job,
     "_route_arrival_inactivity_job": _route_arrival_inactivity_job,

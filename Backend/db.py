@@ -28,6 +28,11 @@ P = "%s" if DB_ENGINE == "postgres" else "?"
 # IntegrityError compatible multi-motor
 _IntegrityError = psycopg2.IntegrityError if DB_ENGINE == "postgres" else sqlite3.IntegrityError
 
+SUPPORT_TYPE_DELIVERY_PIN = "DELIVERY_PIN"
+SUPPORT_TYPE_ROUTE_STOP_PIN = "ROUTE_STOP_PIN"
+SUPPORT_TYPE_PICKUP_PIN = "PICKUP_PIN"
+SUPPORT_TYPE_ROUTE_PICKUP_PIN = "ROUTE_PICKUP_PIN"
+
 # ----------------- Normalización -----------------
 
 def normalize_phone(phone: str) -> str:
@@ -1324,6 +1329,7 @@ def init_db():
             route_seq INTEGER,
             courier_id INTEGER NOT NULL,
             admin_id INTEGER NOT NULL,
+            support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN',
             status TEXT NOT NULL DEFAULT 'PENDING',
             resolution TEXT,
             created_at TEXT DEFAULT (datetime('now')),
@@ -1333,6 +1339,11 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status ON order_support_requests(admin_id, status)")
+    cur.execute("PRAGMA table_info(order_support_requests)")
+    support_cols = [col[1] for col in cur.fetchall()]
+    if 'support_type' not in support_cols:
+        cur.execute("ALTER TABLE order_support_requests ADD COLUMN support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN'")
 
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
@@ -2207,6 +2218,11 @@ def _init_db_postgres():
     _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
+    _pg_add_col("order_support_requests", "support_type", "TEXT NOT NULL DEFAULT 'DELIVERY_PIN'")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status "
+        "ON order_support_requests(admin_id, status)"
+    )
 
     # routes: additional_incentive para incentivos agregados por el aliado
     _pg_add_col("routes", "additional_incentive", "INTEGER DEFAULT 0")
@@ -3317,7 +3333,7 @@ def get_active_orders_without_courier(limit: int = 20):
         SELECT
             o.id,
             o.status,
-            o.pickup_address,
+            aloc.address AS pickup_address,
             o.pickup_lat,
             o.pickup_lng,
             o.customer_name,
@@ -3325,6 +3341,7 @@ def get_active_orders_without_courier(limit: int = 20):
             COALESCE(al.business_name, 'Admin') AS ally_name
         FROM orders o
         LEFT JOIN allies al ON al.id = o.ally_id
+        LEFT JOIN ally_locations aloc ON aloc.id = o.pickup_location_id
         WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
           AND (o.courier_id IS NULL OR o.courier_id = 0)
           AND o.pickup_lat IS NOT NULL
@@ -12265,44 +12282,101 @@ def reset_route_offer_queue(route_id):
 # order_support_requests — solicitudes de ayuda por pin mal ubicado
 # ---------------------------------------------------------------------------
 
-def create_order_support_request(courier_id: int, admin_id: int,
-                                  order_id: int = None, route_id: int = None,
-                                  route_seq: int = None) -> int:
-    """Crea una solicitud de ayuda. Retorna el id generado."""
+def _get_pending_support_request_in_tx(cur, order_id: int = None, route_id: int = None,
+                                       route_seq: int = None, support_type: str = None):
+    where = ["status = 'PENDING'"]
+    params = []
+    if order_id is not None:
+        where.append(f"order_id = {P}")
+        params.append(order_id)
+    else:
+        where.append(f"route_id = {P}")
+        where.append(f"route_seq = {P}")
+        params.extend([route_id, route_seq])
+    if support_type:
+        where.append(f"support_type = {P}")
+        params.append(support_type)
+    cur.execute(
+        "SELECT * FROM order_support_requests WHERE " + " AND ".join(where) + " LIMIT 1",
+        tuple(params),
+    )
+    return cur.fetchone()
+
+
+def create_or_get_pending_support_request(courier_id: int, admin_id: int,
+                                          order_id: int = None, route_id: int = None,
+                                          route_seq: int = None,
+                                          support_type: str = SUPPORT_TYPE_DELIVERY_PIN):
+    """
+    Crea una solicitud PENDING si no existe otra para el mismo scope.
+    Retorna (support_id, created_new).
+    """
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
-    support_id = _insert_returning_id(
-        cur,
-        f"""
-        INSERT INTO order_support_requests
-            (order_id, route_id, route_seq, courier_id, admin_id, status, created_at)
-        VALUES ({P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
-        """,
-        (order_id, route_id, route_seq, courier_id, admin_id),
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+            cur.execute("LOCK TABLE order_support_requests IN SHARE ROW EXCLUSIVE MODE")
+
+        existing = _get_pending_support_request_in_tx(
+            cur,
+            order_id=order_id,
+            route_id=route_id,
+            route_seq=route_seq,
+        )
+        if existing:
+            conn.commit()
+            return int(_row_value(existing, "id", 0)), False
+
+        support_id = _insert_returning_id(
+            cur,
+            f"""
+            INSERT INTO order_support_requests
+                (order_id, route_id, route_seq, courier_id, admin_id, support_type, status, created_at)
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
+            """,
+            (order_id, route_id, route_seq, courier_id, admin_id, support_type),
+        )
+        conn.commit()
+        return support_id, True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def create_order_support_request(courier_id: int, admin_id: int,
+                                  order_id: int = None, route_id: int = None,
+                                  route_seq: int = None,
+                                  support_type: str = SUPPORT_TYPE_DELIVERY_PIN) -> int:
+    """Compatibilidad: crea o reutiliza una solicitud PENDING y retorna su id."""
+    support_id, _created = create_or_get_pending_support_request(
+        courier_id=courier_id,
+        admin_id=admin_id,
+        order_id=order_id,
+        route_id=route_id,
+        route_seq=route_seq,
+        support_type=support_type,
     )
-    conn.commit()
-    conn.close()
     return support_id
 
 
 def get_pending_support_request(order_id: int = None, route_id: int = None,
-                                 route_seq: int = None):
+                                 route_seq: int = None, support_type: str = None):
     """Retorna la solicitud PENDING para un pedido o parada de ruta."""
     conn = get_connection()
     cur = conn.cursor()
-    if order_id is not None:
-        cur.execute(
-            f"SELECT * FROM order_support_requests WHERE order_id = {P} AND status = 'PENDING' LIMIT 1",
-            (order_id,)
-        )
-    else:
-        cur.execute(
-            f"""SELECT * FROM order_support_requests
-                WHERE route_id = {P} AND route_seq = {P} AND status = 'PENDING' LIMIT 1""",
-            (route_id, route_seq)
-        )
-    row = cur.fetchone()
+    row = _get_pending_support_request_in_tx(
+        cur,
+        order_id=order_id,
+        route_id=route_id,
+        route_seq=route_seq,
+        support_type=support_type,
+    )
     conn.close()
     return dict(row) if row else None
 
@@ -12343,48 +12417,11 @@ def cancel_route_stop(route_id: int, seq: int, resolution: str):
     conn.close()
 
 
-def get_all_pending_support_requests():
-    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
+def _support_request_base_select():
+    return """
         SELECT
             sr.id, sr.order_id, sr.route_id, sr.route_seq,
-            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
-            sr.created_at, sr.resolved_at,
-            c.full_name  AS courier_name,
-            c.phone      AS courier_phone,
-            u.telegram_id AS courier_telegram_id,
-            c.live_lat   AS courier_lat,
-            c.live_lng   AS courier_lng,
-            o.customer_address AS delivery_address,
-            o.customer_name    AS customer_name,
-            o.customer_phone   AS customer_phone,
-            o.status           AS order_status,
-            o.dropoff_lat,
-            o.dropoff_lng,
-            a.full_name  AS admin_name
-        FROM order_support_requests sr
-        LEFT JOIN couriers c ON c.id = sr.courier_id
-        LEFT JOIN users u ON u.id = c.user_id
-        LEFT JOIN orders o ON o.id = sr.order_id
-        LEFT JOIN admins a ON a.id = sr.admin_id
-        WHERE sr.status = 'PENDING'
-        ORDER BY sr.created_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_support_request_full(support_id: int):
-    """Retorna una solicitud con todos sus datos JOIN para panel web."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT
-            sr.id, sr.order_id, sr.route_id, sr.route_seq,
-            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.courier_id, sr.admin_id, sr.support_type, sr.status, sr.resolution,
             sr.created_at, sr.resolved_at, sr.resolved_by,
             c.full_name  AS courier_name,
             c.phone      AS courier_phone,
@@ -12397,14 +12434,63 @@ def get_support_request_full(support_id: int):
             o.status           AS order_status,
             o.dropoff_lat,
             o.dropoff_lng,
-            a.full_name  AS admin_name
+            aloc.address       AS order_pickup_address,
+            o.pickup_lat       AS order_pickup_lat,
+            o.pickup_lng       AS order_pickup_lng,
+            o.ally_id          AS order_ally_id,
+            o.creator_admin_id AS order_creator_admin_id,
+            r.status           AS route_status,
+            r.pickup_address   AS route_pickup_address,
+            r.pickup_lat       AS route_pickup_lat,
+            r.pickup_lng       AS route_pickup_lng,
+            r.ally_id          AS route_ally_id,
+            rd.customer_name   AS route_customer_name,
+            rd.customer_phone  AS route_customer_phone,
+            rd.customer_address AS route_customer_address,
+            rd.dropoff_lat     AS route_dropoff_lat,
+            rd.dropoff_lng     AS route_dropoff_lng,
+            a.full_name        AS admin_name,
+            a.team_name        AS admin_team_name
         FROM order_support_requests sr
         LEFT JOIN couriers c ON c.id = sr.courier_id
         LEFT JOIN users u ON u.id = c.user_id
         LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN ally_locations aloc ON aloc.id = o.pickup_location_id
+        LEFT JOIN routes r ON r.id = sr.route_id
+        LEFT JOIN route_destinations rd ON rd.route_id = sr.route_id AND rd.sequence = sr.route_seq
         LEFT JOIN admins a ON a.id = sr.admin_id
-        WHERE sr.id = {P}
-    """, (support_id,))
+    """
+
+
+def list_pending_support_requests(admin_id: int = None, limit: int = 20, offset: int = 0):
+    """Lista solicitudes PENDING con soporte para filtro por admin y paginacion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    where = ["sr.status = 'PENDING'"]
+    params = []
+    if admin_id is not None:
+        where.append(f"sr.admin_id = {P}")
+        params.append(admin_id)
+    query = _support_request_base_select() + " WHERE " + " AND ".join(where) + " ORDER BY sr.created_at DESC"
+    if limit is not None:
+        query += f" LIMIT {P} OFFSET {P}"
+        params.extend([limit, offset])
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_pending_support_requests():
+    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
+    return list_pending_support_requests(admin_id=None, limit=None, offset=0)
+
+
+def get_support_request_full(support_id: int):
+    """Retorna una solicitud con todos sus datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_support_request_base_select() + f" WHERE sr.id = {P}", (support_id,))
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
