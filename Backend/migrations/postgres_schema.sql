@@ -237,6 +237,38 @@ CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
 -- C) TABLAS DE CONFIGURACIÓN
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    role_scope TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    uses_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role
+    ON admin_invite_tokens(admin_id, role_scope, is_active);
+
+CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+    id BIGSERIAL PRIMARY KEY,
+    invite_token_id BIGINT NOT NULL,
+    admin_id BIGINT NOT NULL,
+    role_scope TEXT NOT NULL,
+    telegram_id BIGINT,
+    user_id BIGINT,
+    target_role_id BIGINT,
+    outcome TEXT NOT NULL,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token
+    ON admin_invite_token_uses(invite_token_id);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin
+    ON admin_invite_token_uses(admin_id, created_at);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT,

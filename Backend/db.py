@@ -5,6 +5,9 @@ import json
 import time
 import logging
 import uuid
+import base64
+import hashlib
+import hmac
 from typing import Tuple
 from datetime import datetime, timedelta, timezone
 
@@ -600,6 +603,42 @@ def init_db():
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role ON registration_reset_audit(role_type, role_id)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            role_scope TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            uses_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TEXT,
+            expires_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role ON admin_invite_tokens(admin_id, role_scope, is_active)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invite_token_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            role_scope TEXT NOT NULL,
+            telegram_id INTEGER,
+            user_id INTEGER,
+            target_role_id INTEGER,
+            outcome TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (invite_token_id) REFERENCES admin_invite_tokens(id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token ON admin_invite_token_uses(invite_token_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin ON admin_invite_token_uses(admin_id, created_at)")
 
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
@@ -2032,6 +2071,48 @@ def _init_db_postgres():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
         ON registration_reset_audit(role_type, role_id)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            admin_id BIGINT NOT NULL,
+            role_scope TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            uses_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TIMESTAMP,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role
+        ON admin_invite_tokens(admin_id, role_scope, is_active)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+            id BIGSERIAL PRIMARY KEY,
+            invite_token_id BIGINT NOT NULL,
+            admin_id BIGINT NOT NULL,
+            role_scope TEXT NOT NULL,
+            telegram_id BIGINT,
+            user_id BIGINT,
+            target_role_id BIGINT,
+            outcome TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token
+        ON admin_invite_token_uses(invite_token_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin
+        ON admin_invite_token_uses(admin_id, created_at)
     """)
 
     cur.execute("""
@@ -12349,6 +12430,295 @@ def get_or_create_ally_public_token(ally_id: int) -> str:
     conn.commit()
     conn.close()
     return token
+
+
+_ADMIN_INVITE_ROLE_SCOPES = {"ALLY", "COURIER"}
+_ADMIN_INVITE_TOKEN_VERSION = "a1"
+_ADMIN_INVITE_SIGNATURE_BYTES = 12
+_BASE36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def _normalize_admin_invite_role_scope(role_scope: str) -> str:
+    role = (role_scope or "").strip().upper()
+    if role not in _ADMIN_INVITE_ROLE_SCOPES:
+        raise ValueError("role_scope invalido.")
+    return role
+
+
+def _hash_admin_invite_token(raw_token: str) -> str:
+    token = (raw_token or "").strip()
+    if not token:
+        raise ValueError("Token de invitacion vacio.")
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _get_admin_invite_secret() -> str:
+    secret = (os.getenv("ADMIN_INVITE_SECRET") or os.getenv("BOT_TOKEN") or "local-admin-invite-secret").strip()
+    return secret or "local-admin-invite-secret"
+
+
+def _base36_encode(value: int) -> str:
+    number = int(value)
+    if number < 0:
+        raise ValueError("Solo se permiten enteros positivos para base36.")
+    if number == 0:
+        return "0"
+    digits = []
+    while number:
+        number, remainder = divmod(number, 36)
+        digits.append(_BASE36_ALPHABET[remainder])
+    return "".join(reversed(digits))
+
+
+def _base36_decode(raw: str) -> int:
+    text = (raw or "").strip().lower()
+    if not text:
+        raise ValueError("Valor base36 vacio.")
+    value = 0
+    for char in text:
+        idx = _BASE36_ALPHABET.find(char)
+        if idx < 0:
+            raise ValueError("Valor base36 invalido.")
+        value = (value * 36) + idx
+    return value
+
+
+def _admin_invite_storage_timestamp(value=None) -> str:
+    dt = _coerce_datetime(value).replace(microsecond=0)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _admin_invite_exp_ts(expires_at) -> int:
+    return int(_coerce_datetime(expires_at).replace(microsecond=0).timestamp())
+
+
+def _admin_invite_signature(invite_id: int, admin_id: int, role_scope: str, exp_ts: int) -> str:
+    payload = (
+        f"{_ADMIN_INVITE_TOKEN_VERSION}:{int(invite_id)}:{int(admin_id)}:"
+        f"{_normalize_admin_invite_role_scope(role_scope)}:{int(exp_ts)}"
+    )
+    digest = hmac.new(
+        _get_admin_invite_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()[:_ADMIN_INVITE_SIGNATURE_BYTES]
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def build_admin_invite_token(invite_row) -> str:
+    if not invite_row:
+        raise ValueError("Fila de invitacion requerida.")
+    expires_at = _row_value(invite_row, "expires_at", 5)
+    if expires_at is None:
+        raise ValueError("La invitacion no tiene expiracion configurada.")
+    invite_id = int(_row_value(invite_row, "id", 0))
+    admin_id = int(_row_value(invite_row, "admin_id", 1))
+    role_scope = _normalize_admin_invite_role_scope(_row_value(invite_row, "role_scope", 2))
+    exp_ts = _admin_invite_exp_ts(expires_at)
+    signature = _admin_invite_signature(invite_id, admin_id, role_scope, exp_ts)
+    return (
+        f"{_ADMIN_INVITE_TOKEN_VERSION}."
+        f"{_base36_encode(invite_id)}."
+        f"{_base36_encode(exp_ts)}."
+        f"{signature}"
+    )
+
+
+def _parse_admin_invite_token(raw_token: str):
+    token = (raw_token or "").strip()
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 4 or parts[0] != _ADMIN_INVITE_TOKEN_VERSION:
+        return None
+    try:
+        invite_id = _base36_decode(parts[1])
+        exp_ts = _base36_decode(parts[2])
+    except ValueError:
+        return None
+    signature = parts[3].strip()
+    if not signature:
+        return None
+    return invite_id, exp_ts, signature
+
+
+def get_active_admin_invite_token(admin_id: int, role_scope: str):
+    role = _normalize_admin_invite_role_scope(role_scope)
+    conn = get_connection()
+    cur = conn.cursor()
+    now_cmp = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        SELECT id, admin_id, role_scope, uses_count, last_used_at, expires_at, created_at, updated_at
+        FROM admin_invite_tokens
+        WHERE admin_id = {P}
+          AND role_scope = {P}
+          AND is_active = 1
+          AND (expires_at IS NULL OR expires_at > {now_cmp})
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (admin_id, role),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def rotate_admin_invite_token(admin_id: int, role_scope: str, expires_at=None) -> str:
+    role = _normalize_admin_invite_role_scope(role_scope)
+    expires_at_value = _admin_invite_storage_timestamp(
+        expires_at or (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=7))
+    )
+    placeholder_hash = f"pending_{uuid.uuid4().hex}"
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        cur.execute(
+            f"UPDATE admin_invite_tokens SET is_active = 0, updated_at = {now_sql} "
+            f"WHERE admin_id = {P} AND role_scope = {P} AND is_active = 1",
+            (admin_id, role),
+        )
+        invite_id = _insert_returning_id(
+            cur,
+            f"""
+            INSERT INTO admin_invite_tokens
+                (admin_id, role_scope, token_hash, is_active, uses_count, last_used_at, expires_at, created_at, updated_at)
+            VALUES ({P}, {P}, {P}, 1, 0, NULL, {P}, {now_sql}, {now_sql})
+            """,
+            (admin_id, role, placeholder_hash, expires_at_value),
+        )
+        cur.execute(
+            f"""
+            SELECT id, admin_id, role_scope, uses_count, last_used_at, expires_at, created_at, updated_at
+            FROM admin_invite_tokens
+            WHERE id = {P}
+            LIMIT 1
+            """,
+            (invite_id,),
+        )
+        invite_row = cur.fetchone()
+        raw_token = build_admin_invite_token(invite_row)
+        token_hash = _hash_admin_invite_token(raw_token)
+        cur.execute(
+            f"UPDATE admin_invite_tokens SET token_hash = {P}, updated_at = {now_sql} WHERE id = {P}",
+            (token_hash, invite_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return raw_token
+
+
+def resolve_admin_invite_token(raw_token: str):
+    token = (raw_token or "").strip()
+    parsed = _parse_admin_invite_token(token)
+    if not parsed:
+        return None
+    invite_id, exp_ts, _ = parsed
+    conn = get_connection()
+    cur = conn.cursor()
+    now_cmp = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        SELECT
+            t.id,
+            t.admin_id,
+            t.role_scope,
+            t.uses_count,
+            t.last_used_at,
+            t.expires_at,
+            t.token_hash,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            a.status AS admin_status,
+            u.telegram_id AS admin_telegram_id
+        FROM admin_invite_tokens t
+        JOIN admins a ON a.id = t.admin_id
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE t.id = {P}
+          AND t.is_active = 1
+          AND a.is_deleted = 0
+          AND a.status = 'APPROVED'
+          AND (t.expires_at IS NULL OR t.expires_at > {now_cmp})
+        LIMIT 1
+        """,
+        (invite_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    row_exp_ts = _admin_invite_exp_ts(_row_value(row, "expires_at", 5))
+    if row_exp_ts != exp_ts:
+        return None
+    expected_token = build_admin_invite_token(row)
+    if not hmac.compare_digest(expected_token, token):
+        return None
+    stored_hash = (_row_value(row, "token_hash", 6) or "").strip()
+    if stored_hash and not hmac.compare_digest(stored_hash, _hash_admin_invite_token(token)):
+        return None
+    return row
+
+
+def record_admin_invite_token_use(
+    raw_token: str,
+    telegram_id: int = None,
+    user_id: int = None,
+    outcome: str = "",
+    target_role_id: int = None,
+    note: str = None,
+    increment_counter: bool = False,
+) -> bool:
+    invite_row = resolve_admin_invite_token(raw_token)
+    if not invite_row:
+        return False
+    invite_id = _row_value(invite_row, "id", 0)
+    admin_id = _row_value(invite_row, "admin_id", 1)
+    role_scope = _row_value(invite_row, "role_scope", 2)
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        cur.execute(
+            f"""
+            INSERT INTO admin_invite_token_uses
+                (invite_token_id, admin_id, role_scope, telegram_id, user_id, target_role_id, outcome, note, created_at)
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {now_sql})
+            """,
+            (
+                invite_id,
+                admin_id,
+                role_scope,
+                telegram_id,
+                user_id,
+                target_role_id,
+                (outcome or "").strip() or "UNKNOWN",
+                (note or "").strip() or None,
+            ),
+        )
+        if increment_counter:
+            cur.execute(
+                f"""
+                UPDATE admin_invite_tokens
+                SET uses_count = COALESCE(uses_count, 0) + 1,
+                    last_used_at = {now_sql},
+                    updated_at = {now_sql}
+                WHERE id = {P}
+                """,
+                (invite_id,),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return True
 
 
 def get_ally_by_public_token(token: str):

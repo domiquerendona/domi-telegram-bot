@@ -60,7 +60,7 @@ domi-telegram-bot/
 │   │   ├── quotation.py          # cotizar_conv (flujo de cotización de envío)
 │   │   ├── location_agenda.py    # admin_dirs_conv, ally_locs_conv (gestión de ubicaciones)
 │   │   ├── customer_agenda.py    # clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
-│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers
+│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers, preseleccion por invitacion admin
 │   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, cmd_saldo, admin_local_callback, ally_approval_callback
 │   │   ├── order.py              # nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv (~99 funciones)
 │   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
@@ -299,6 +299,8 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
+| `admin_invite_tokens` | Tokens robustos de invitación por admin y rol (`ALLY` / `COURIER`). Guarda hash, expiración, estado activo y contador de conversiones (`PENDING` creado). El token compartible es firmado y se reconstruye desde la fila activa; no se persiste en texto plano. |
+| `admin_invite_token_uses` | Auditoría de eventos de invitación (apertura del `/start`, preselección del equipo y creación del `PENDING`), con admin, rol, usuario y resultado. |
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
 | `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0`, `parking_status TEXT DEFAULT 'NOT_ASKED'`, `parking_reviewed_by INTEGER`, `parking_reviewed_at TEXT`. |
@@ -311,7 +313,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`\|`COURIER`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM y COURIER), `courier_id` (FK → couriers.id, solo para rol COURIER), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
 | `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
 | `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
-| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. |
+| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. (**Columna nueva**) `custom_pricing_json TEXT DEFAULT NULL` — Tarifas personalizadas por el admin para este aliado; si es NULL usa las globales de plataforma. |
 | `scheduled_jobs` | Persistencia de timers del bot para recuperación tras reinicios. Campos: `job_name` (TEXT PRIMARY KEY), `callback_name` (TEXT — nombre de la función en `JOB_REGISTRY` de `order_delivery.py`), `fire_at` (TIMESTAMP — momento programado de disparo), `job_data` (TEXT JSON — contexto serializado del job), `status` (TEXT: `PENDING`\|`EXECUTED`\|`CANCELLED`), `created_at`, `updated_at`. Funciones en `db.py`: `schedule_job`, `cancel_scheduled_job`, `mark_job_executed`, `get_pending_scheduled_jobs` (re-exportadas en `services.py`). |
 
 ---
@@ -2549,4 +2551,3 @@ Función que reemplaza el antiguo `_get_route_total_duration` (eliminado 2026-03
 Requiere la columna `routes.courier_arrived_at` (agregada 2026-03-29).
 
 *Última actualización: 2026-03-29*
-

@@ -23,6 +23,9 @@ from telegram.ext import (
 )
 
 from services import (
+    ADMIN_INVITE_START_PREFIX,
+    ADMIN_INVITE_USER_DATA_KEY,
+    audit_admin_invite_event,
     register_platform_income,
     build_order_pricing_breakdown,
     admin_puede_operar,
@@ -53,6 +56,8 @@ from services import (
     _get_missing_role_commands,
     get_user_by_id,
     resolve_admin_telegram_id,
+    get_admin_registration_invites,
+    resolve_admin_invite_from_start_arg,
     get_available_admin_teams,
     # Alertas de oferta
     get_offer_alerts_config,
@@ -529,9 +534,17 @@ FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
+def _build_bot_deep_link(context, payload: str) -> str:
+    username = (os.getenv("BOT_USERNAME", "") or "").strip().lstrip("@")
+    if not username:
+        username = (getattr(context.bot, "username", "") or "").strip().lstrip("@")
+    return "https://t.me/{}?start={}".format(username, payload) if username and payload else ""
+
+
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
     user_tg = update.effective_user
+    start_arg = (context.args[0] if getattr(context, "args", None) else "").strip()
 
     # Crear/asegurar user en users y tomar users.id (interno)
     user_row = ensure_user(user_tg.id, user_tg.username)
@@ -548,6 +561,37 @@ def start(update, context):
     except Exception as e:
         logger.exception("Error en get_admin_by_user_id en /start")
         admin_local = None
+
+    invite_info = resolve_admin_invite_from_start_arg(start_arg) if start_arg else None
+    invite_warning = ""
+    if start_arg.startswith(ADMIN_INVITE_START_PREFIX):
+        if invite_info:
+            context.user_data[ADMIN_INVITE_USER_DATA_KEY] = invite_info["token"]
+            audit_admin_invite_event(
+                invite_info["token"],
+                telegram_id=user_tg.id,
+                user_id=user_db_id,
+                outcome="START_OPENED",
+                note="Deep link de invitacion abierto en /start.",
+            )
+            logger.info(
+                "[admin_invite_start] telegram_id=%s admin_id=%s role_scope=%s team_code=%s",
+                user_tg.id,
+                invite_info["admin_id"],
+                invite_info["role_scope"],
+                invite_info["team_code"],
+            )
+        else:
+            context.user_data.pop(ADMIN_INVITE_USER_DATA_KEY, None)
+            logger.info(
+                "[admin_invite_start_invalid] telegram_id=%s start_arg=%s",
+                user_tg.id,
+                start_arg,
+            )
+            invite_warning = (
+                "Invitacion detectada:\n"
+                "- Ese enlace ya no esta disponible. Pide al administrador un enlace nuevo.\n\n"
+            )
 
     es_admin_plataforma_flag = es_admin_plataforma(user_tg.id)
 
@@ -622,6 +666,26 @@ def start(update, context):
         estado_text = "\n".join(estado_lineas)
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
+    invite_text = invite_warning
+    if invite_info:
+        team_label = "{} ({})".format(invite_info["team_name"], invite_info["team_code"])
+        role_label = "aliado" if invite_info["role_scope"] == "ALLY" else "repartidor"
+        if invite_info["role_scope"] == "ALLY":
+            if ally and ally["status"] in ("PENDING", "APPROVED"):
+                invite_action = "- Ya tienes un perfil de aliado existente. El enlace no cambia tu equipo automaticamente."
+            else:
+                invite_action = "- Usa /soy_aliado para continuar tu registro directo con ese equipo."
+        else:
+            if courier and courier["status"] in ("PENDING", "APPROVED"):
+                invite_action = "- Ya tienes un perfil de repartidor existente. El enlace no cambia tu equipo automaticamente."
+            else:
+                invite_action = "- Usa /soy_repartidor para continuar tu registro directo con ese equipo."
+        invite_text = (
+            "Invitacion detectada:\n"
+            f"- Equipo: {team_label}\n"
+            f"- Registro directo para: {role_label}\n"
+            f"{invite_action}\n\n"
+        )
 
     # Construir menú agrupado por rol
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
@@ -668,6 +732,8 @@ def start(update, context):
         comandos.append("• /tarifas  - Configurar tarifas")
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
+        comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
+        comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
     elif admin_local:
         admin_status = admin_local["status"]
         if admin_status == "INACTIVE" and "/soy_admin" in missing_cmds:
@@ -677,6 +743,8 @@ def start(update, context):
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
+            comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
+            comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
     else:
         if "/soy_admin" in missing_cmds:
             comandos.append("• /soy_admin  - Registrarte como administrador")
@@ -690,6 +758,7 @@ def start(update, context):
         f"{estado_text}\n\n"
         "Siguiente paso recomendado:\n"
         f"{siguientes_text}\n\n"
+        f"{invite_text}"
         "Menú por secciones:\n"
         + "\n".join(comandos)
         + "\n"
@@ -1324,7 +1393,9 @@ def mi_admin(update, context):
         f"Estado: {status}\n"
         f"Equipo: {team_name}\n"
         f"Código de equipo: {team_code}\n"
-        "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
+        "Usa /ver_enlaces_admin para ver tus enlaces directos de registro.\n"
+        "Usa /regenerar_enlaces_admin para invalidar los actuales y crear otros.\n"
+        "Tu código de equipo sigue disponible como respaldo.\n\n"
     )
 
     # Administrador de Plataforma: siempre operativo
@@ -1406,6 +1477,65 @@ def mi_admin(update, context):
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+def _send_admin_registration_links(update, context, regenerate: bool = False, alias_used: bool = False):
+    result = get_admin_registration_invites(update.effective_user.id, regenerate=regenerate)
+    if not result.get("ok"):
+        update.message.reply_text(result.get("message") or "No se pudieron generar tus enlaces.")
+        return
+
+    ally_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['ally_token']}")
+    courier_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['courier_token']}")
+
+    if not ally_url or not courier_url:
+        update.message.reply_text(
+            "No pude construir la URL pública del bot en este momento.\n"
+            "Intenta de nuevo más tarde."
+        )
+        return
+
+    mode = result.get("mode")
+    if regenerate:
+        intro = (
+            "Regeneré nuevos enlaces directos de registro.\n"
+            "Los enlaces anteriores quedaron invalidados.\n\n"
+        )
+    elif mode == "created":
+        intro = "Creé nuevos enlaces directos de registro porque no había enlaces activos.\n\n"
+    else:
+        intro = "Estos son tus enlaces directos de registro activos.\n\n"
+
+    alias_note = ""
+    if alias_used and not regenerate:
+        alias_note = (
+            "Este comando ahora muestra tus enlaces activos.\n"
+            "Si quieres invalidarlos y crear otros, usa /regenerar_enlaces_admin.\n\n"
+        )
+
+    update.message.reply_text(
+        intro
+        + alias_note
+        + f"Equipo: {result['team_name']} ({result['team_code']})\n\n"
+        + f"Enlace para aliados (vence: {result['ally_expires_text']}):\n"
+        + f"{ally_url}\n\n"
+        + f"Enlace para repartidores (vence: {result['courier_expires_text']}):\n"
+        + f"{courier_url}\n\n"
+        + f"Vigencia configurada: {result['hours_valid']} horas.\n"
+        + "Comparte cada enlace según el rol correspondiente."
+    )
+
+
+def ver_enlaces_admin(update, context):
+    _send_admin_registration_links(update, context, regenerate=False)
+
+
+def regenerar_enlaces_admin(update, context):
+    _send_admin_registration_links(update, context, regenerate=True)
+
+
+def generar_enlaces_admin(update, context):
+    _send_admin_registration_links(update, context, regenerate=False, alias_used=True)
 
 
 def mi_perfil(update, context):
@@ -2338,6 +2468,9 @@ def main():
     dp.add_handler(CommandHandler("referencias", cmd_referencias))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
+    dp.add_handler(CommandHandler("ver_enlaces_admin", ver_enlaces_admin))
+    dp.add_handler(CommandHandler("regenerar_enlaces_admin", regenerar_enlaces_admin))
+    dp.add_handler(CommandHandler("generar_enlaces_admin", generar_enlaces_admin))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
 
     # Sistema de recargas

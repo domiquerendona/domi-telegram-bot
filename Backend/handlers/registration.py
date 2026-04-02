@@ -45,6 +45,9 @@ from handlers.common import (
     volver_paso_anterior,
 )
 from services import (
+    ADMIN_INVITE_USER_DATA_KEY,
+    audit_admin_invite_event,
+    audit_admin_invite_submission,
     can_admin_reregister_via_platform_reset,
     can_ally_reregister_via_platform_reset,
     can_courier_reregister_via_platform_reset,
@@ -73,6 +76,7 @@ from services import (
     reset_admin_registration_in_place_service,
     reset_ally_registration_in_place_service,
     reset_courier_registration_in_place_service,
+    resolve_admin_invite_from_token,
     resolve_location,
     update_ally_location,
     update_ally_location_coords,
@@ -129,11 +133,40 @@ def _log_registration_location_saved(log_tag, source, lat, lng):
     logger.info("[%s] status=saved source=%s lat=%s lng=%s", log_tag, source, lat, lng)
 
 
+def _preserve_invite_token(context):
+    invite_token = (context.user_data.get(ADMIN_INVITE_USER_DATA_KEY) or "").strip()
+    context.user_data.clear()
+    if invite_token:
+        context.user_data[ADMIN_INVITE_USER_DATA_KEY] = invite_token
+
+
+def _clear_invite_token(context):
+    context.user_data.pop(ADMIN_INVITE_USER_DATA_KEY, None)
+
+
+def _resolve_registration_invite(context, expected_role: str):
+    raw_token = (context.user_data.get(ADMIN_INVITE_USER_DATA_KEY) or "").strip()
+    if not raw_token:
+        return None
+    invite = resolve_admin_invite_from_token(raw_token, expected_role=expected_role)
+    if not invite:
+        _clear_invite_token(context)
+        return None
+    return invite
+
+
+def _apply_invite_team_selection(context, prefix: str, invite: dict):
+    context.user_data[f"{prefix}_selected_admin_id"] = invite["admin_id"]
+    context.user_data[f"{prefix}_selected_admin_telegram_id"] = invite["admin_telegram_id"]
+    context.user_data[f"{prefix}_selected_team_name"] = invite["team_name"]
+    context.user_data[f"{prefix}_selected_team_code"] = invite["team_code"]
+
+
 # ----- REGISTRO DE ALIADO (flujo unificado) -----
 
 def soy_aliado(update, context):
     user_db_id = get_user_db_id_from_update(update)
-    context.user_data.clear()
+    _preserve_invite_token(context)
 
     # Validación anti-duplicados
     existing = get_ally_by_user_id(user_db_id)
@@ -523,6 +556,7 @@ def ally_confirm(update, context):
     selected_admin_id = context.user_data.get("ally_selected_admin_id")
     selected_team_name = context.user_data.get("ally_selected_team_name")
     selected_team_code = context.user_data.get("ally_selected_team_code")
+    invite_token = (context.user_data.get(ADMIN_INVITE_USER_DATA_KEY) or "").strip()
 
     if not user_db_id or not selected_team_name:
         update.message.reply_text(
@@ -543,10 +577,32 @@ def ally_confirm(update, context):
         _set_flow_step(context, "ally", ALLY_UBICACION)
         return ALLY_UBICACION
 
+    if invite_token:
+        invite = _resolve_registration_invite(context, "ALLY")
+        if not invite:
+            update.message.reply_text(
+                "La invitacion ya no esta disponible.\n\n"
+                "Usa /soy_aliado para iniciar de nuevo y elegir equipo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        _apply_invite_team_selection(context, "ally", invite)
+        selected_admin_id = invite["admin_id"]
+        selected_team_name = invite["team_name"]
+        selected_team_code = invite["team_code"]
+
     try:
         ally_data = _create_or_reset_ally_from_context(context, user_db_id)
         ally_id = ally_data["ally_id"]
         upsert_admin_ally_link(selected_admin_id, ally_id, status="PENDING")
+        audit_admin_invite_submission(
+            context.user_data.get(ADMIN_INVITE_USER_DATA_KEY),
+            telegram_id=update.effective_user.id,
+            user_id=user_db_id,
+            outcome="ALLY_PENDING_CREATED",
+            target_role_id=ally_id,
+            note="Registro de aliado creado desde invitacion.",
+        )
     except Exception as e:
         logger.error("ally_confirm: no se pudo crear el registro: %s", e)
         update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
@@ -636,6 +692,28 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
         context.user_data.clear()
         return ConversationHandler.END
 
+    invite = _resolve_registration_invite(context, "ALLY")
+    if invite:
+        _apply_invite_team_selection(context, "ally", invite)
+        audit_admin_invite_event(
+            context.user_data.get(ADMIN_INVITE_USER_DATA_KEY),
+            telegram_id=getattr(getattr(update_or_query, "effective_user", None), "id", None),
+            user_id=context.user_data.get("ally_registration_user_id"),
+            outcome="ALLY_PREFILLED",
+            note="Invitacion valido la preseleccion de equipo en registro aliado.",
+        )
+        logger.info(
+            "[ally_admin_invite] preselected_admin_id=%s team_code=%s",
+            invite["admin_id"],
+            invite["team_code"],
+        )
+        if message:
+            message.reply_text(
+                "Equipo seleccionado por invitacion:\n"
+                f"{invite['team_name']} ({invite['team_code']})"
+            )
+        return _show_ally_confirm(update_or_query, context)
+
     teams = get_available_admin_teams()
     keyboard = []
 
@@ -722,7 +800,7 @@ def ally_team_callback(update, context):
 
 def soy_repartidor(update, context):
     user_db_id = get_user_db_id_from_update(update)
-    context.user_data.clear()
+    _preserve_invite_token(context)
 
     existing = get_courier_by_user_id(user_db_id)
     if existing:
@@ -1259,6 +1337,7 @@ def courier_confirm(update, context):
     selected_admin_id = context.user_data.get("courier_selected_admin_id")
     selected_team_name = context.user_data.get("courier_selected_team_name")
     selected_team_code = context.user_data.get("courier_selected_team_code")
+    invite_token = (context.user_data.get(ADMIN_INVITE_USER_DATA_KEY) or "").strip()
 
     if not user_db_id or not selected_team_name:
         update.message.reply_text(
@@ -1268,10 +1347,32 @@ def courier_confirm(update, context):
         context.user_data.clear()
         return ConversationHandler.END
 
+    if invite_token:
+        invite = _resolve_registration_invite(context, "COURIER")
+        if not invite:
+            update.message.reply_text(
+                "La invitacion ya no esta disponible.\n\n"
+                "Usa /soy_repartidor para iniciar de nuevo y elegir equipo."
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        _apply_invite_team_selection(context, "courier", invite)
+        selected_admin_id = invite["admin_id"]
+        selected_team_name = invite["team_name"]
+        selected_team_code = invite["team_code"]
+
     try:
         courier_data = _create_or_reset_courier_from_context(context, user_db_id)
         courier_id = courier_data["courier_id"]
         create_admin_courier_link(selected_admin_id, courier_id)
+        audit_admin_invite_submission(
+            context.user_data.get(ADMIN_INVITE_USER_DATA_KEY),
+            telegram_id=update.effective_user.id,
+            user_id=user_db_id,
+            outcome="COURIER_PENDING_CREATED",
+            target_role_id=courier_id,
+            note="Registro de repartidor creado desde invitacion.",
+        )
     except Exception as e:
         logger.error("courier_confirm: no se pudo crear el registro: %s", e)
         update.message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
@@ -1366,6 +1467,27 @@ def show_courier_team_selection(update, context):
         update.message.reply_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_repartidor de nuevo.")
         context.user_data.clear()
         return ConversationHandler.END
+
+    invite = _resolve_registration_invite(context, "COURIER")
+    if invite:
+        _apply_invite_team_selection(context, "courier", invite)
+        audit_admin_invite_event(
+            context.user_data.get(ADMIN_INVITE_USER_DATA_KEY),
+            telegram_id=getattr(getattr(update, "effective_user", None), "id", None),
+            user_id=context.user_data.get("courier_registration_user_id"),
+            outcome="COURIER_PREFILLED",
+            note="Invitacion valido la preseleccion de equipo en registro repartidor.",
+        )
+        logger.info(
+            "[courier_admin_invite] preselected_admin_id=%s team_code=%s",
+            invite["admin_id"],
+            invite["team_code"],
+        )
+        update.message.reply_text(
+            "Equipo seleccionado por invitacion:\n"
+            f"{invite['team_name']} ({invite['team_code']})"
+        )
+        return _show_courier_confirm(update, context)
 
     teams = get_available_admin_teams()
     keyboard = []

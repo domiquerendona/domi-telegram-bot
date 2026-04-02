@@ -126,6 +126,7 @@ Prefijos establecidos:
 - Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
 - Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id
 - Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
+- Flujo invitaciones admin: admin_invite_token (token temporal resuelto desde `/start` para preseleccionar admin en registro nuevo de aliado o repartidor)
 
 Reglas:
 - PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.

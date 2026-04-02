@@ -2,7 +2,9 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
 import logging
+import os
 import unicodedata
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 from db import (
@@ -59,6 +61,11 @@ from db import (
     mark_profile_change_request_rejected,
     apply_profile_change_request_data,
     sync_all_courier_link_statuses,
+    build_admin_invite_token,
+    get_active_admin_invite_token,
+    rotate_admin_invite_token,
+    resolve_admin_invite_token,
+    record_admin_invite_token_use,
     # Re-exports para que main.py no acceda a db directamente
     ensure_user,
     get_user_by_id,
@@ -3356,6 +3363,181 @@ def parse_team_selection_callback(data: str, domain: str):
     if raw.startswith(legacy_prefix):
         return raw.split(legacy_prefix, 1)[1].strip()
     return None
+
+
+ADMIN_INVITE_START_PREFIX = "inv_"
+ADMIN_INVITE_USER_DATA_KEY = "admin_invite_token"
+
+
+def _get_admin_invite_token_hours() -> int:
+    raw_value = (os.getenv("ADMIN_INVITE_TOKEN_HOURS", "168") or "168").strip()
+    try:
+        hours = int(raw_value)
+    except ValueError:
+        hours = 168
+    return max(1, hours)
+
+
+ADMIN_INVITE_TOKEN_HOURS = _get_admin_invite_token_hours()
+
+
+def _normalize_admin_invite_role_scope(role_scope: str) -> str:
+    role = (role_scope or "").strip().upper()
+    if role not in ("ALLY", "COURIER"):
+        raise ValueError("role_scope invalido.")
+    return role
+
+
+def _format_admin_invite_expires_at(expires_at) -> str:
+    if not expires_at:
+        return "Sin vencimiento"
+    dt_value = str(expires_at).replace("T", " ").replace("Z", "")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(dt_value.split("+")[0], fmt)
+            return parsed.strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            continue
+    return dt_value
+
+
+def _admin_invite_expiration_dt():
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=ADMIN_INVITE_TOKEN_HOURS)
+
+
+def _resolve_or_create_admin_invite(admin_id: int, role_scope: str, regenerate: bool = False) -> Dict[str, Any]:
+    role = _normalize_admin_invite_role_scope(role_scope)
+    created = False
+    invite_row = None if regenerate else get_active_admin_invite_token(admin_id, role)
+    raw_token = ""
+
+    if invite_row:
+        raw_token = build_admin_invite_token(invite_row)
+    else:
+        raw_token = rotate_admin_invite_token(admin_id, role, expires_at=_admin_invite_expiration_dt())
+        created = True
+
+    invite = resolve_admin_invite_from_token(raw_token, expected_role=role)
+    if not invite:
+        raise ValueError(f"No se pudo resolver invitacion admin para {role}.")
+    invite["created"] = created
+    return invite
+
+
+def resolve_admin_invite_from_token(raw_token: str, expected_role: str = None) -> Optional[Dict[str, Any]]:
+    token = (raw_token or "").strip()
+    if not token:
+        return None
+    invite = resolve_admin_invite_token(token)
+    if not invite:
+        return None
+    role_scope = _normalize_admin_invite_role_scope(invite["role_scope"])
+    if expected_role and role_scope != _normalize_admin_invite_role_scope(expected_role):
+        return None
+    return {
+        "token": token,
+        "invite_id": invite["id"],
+        "admin_id": invite["admin_id"],
+        "role_scope": role_scope,
+        "team_name": invite["team_name"],
+        "team_code": invite["team_code"],
+        "admin_telegram_id": invite["admin_telegram_id"],
+        "uses_count": invite["uses_count"] or 0,
+        "expires_at": invite["expires_at"],
+        "expires_at_text": _format_admin_invite_expires_at(invite["expires_at"]),
+    }
+
+
+def resolve_admin_invite_from_start_arg(start_arg: str, expected_role: str = None) -> Optional[Dict[str, Any]]:
+    raw = (start_arg or "").strip()
+    if not raw.startswith(ADMIN_INVITE_START_PREFIX):
+        return None
+    token = raw[len(ADMIN_INVITE_START_PREFIX):].strip()
+    if not token:
+        return None
+    return resolve_admin_invite_from_token(token, expected_role=expected_role)
+
+
+def get_admin_registration_invites(actor_telegram_id: int, regenerate: bool = False) -> Dict[str, Any]:
+    admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not admin:
+        return {"ok": False, "message": "No tienes perfil de administrador."}
+
+    admin_id = admin["id"]
+    admin_status = (admin["status"] or "").upper()
+    team_name = admin["team_name"] or admin["full_name"] or "Admin"
+    team_code = admin["team_code"] or "-"
+
+    if admin_status != "APPROVED":
+        return {
+            "ok": False,
+            "message": "Tus enlaces estaran disponibles cuando tu admin este APPROVED.",
+        }
+
+    ally_invite = _resolve_or_create_admin_invite(admin_id, "ALLY", regenerate=regenerate)
+    courier_invite = _resolve_or_create_admin_invite(admin_id, "COURIER", regenerate=regenerate)
+    created_any = ally_invite["created"] or courier_invite["created"]
+    return {
+        "ok": True,
+        "admin_id": admin_id,
+        "team_name": team_name,
+        "team_code": team_code,
+        "mode": "regenerated" if regenerate else ("created" if created_any else "existing"),
+        "hours_valid": ADMIN_INVITE_TOKEN_HOURS,
+        "ally_token": ally_invite["token"],
+        "ally_expires_at": ally_invite["expires_at"],
+        "ally_expires_text": ally_invite["expires_at_text"],
+        "courier_token": courier_invite["token"],
+        "courier_expires_at": courier_invite["expires_at"],
+        "courier_expires_text": courier_invite["expires_at_text"],
+    }
+
+def audit_admin_invite_event(
+    raw_token: str,
+    telegram_id: int,
+    user_id: int,
+    outcome: str,
+    target_role_id: int = None,
+    note: str = None,
+    increment_counter: bool = False,
+) -> bool:
+    token = (raw_token or "").strip()
+    if not token:
+        return False
+    try:
+        return bool(
+            record_admin_invite_token_use(
+                token,
+                telegram_id=telegram_id,
+                user_id=user_id,
+                outcome=outcome,
+                target_role_id=target_role_id,
+                note=note,
+                increment_counter=increment_counter,
+            )
+        )
+    except Exception:
+        logger.exception("No se pudo auditar uso de invitacion admin. outcome=%s", outcome)
+        return False
+
+
+def audit_admin_invite_submission(
+    raw_token: str,
+    telegram_id: int,
+    user_id: int,
+    outcome: str,
+    target_role_id: int = None,
+    note: str = None,
+) -> bool:
+    return audit_admin_invite_event(
+        raw_token,
+        telegram_id=telegram_id,
+        user_id=user_id,
+        outcome=outcome,
+        target_role_id=target_role_id,
+        note=note,
+        increment_counter=True,
+    )
 
 
 def apply_profile_change_request_update(request_row) -> None:
