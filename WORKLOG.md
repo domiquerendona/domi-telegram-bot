@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| claude | 2026-04-01 | Backend/db.py, Backend/web/api/profile.py, Backend/web/users/repository.py, Frontend/src/app/features/shared/perfil/perfil.ts | Panel web: 7 mejoras al perfil (iniciales avatar, editar datos, cambiar contraseña, miembro desde, estado animado, actividad reciente) + fix team_code admin | COMPLETADO |
+| (ninguna) | — | — | — |
 
 ---
 
@@ -18,6 +18,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-04-01 | claude | Backend/db.py, Backend/web/api/profile.py, Backend/web/users/repository.py, Frontend/src/app/features/shared/perfil/perfil.ts | Panel web: 7 mejoras al perfil + fix editar datos (team_code, updated_at) | COMPLETADO |
 | 2026-03-29 | gemini | Backend/handlers/order.py, CLAUDE.md, WORKLOG.md | fix: Agregar notificación al aliado/admin al añadir incentivo a un pedido/ruta ya publicado | COMPLETADO |
 | 2026-03-29 | claude | Backend/order_delivery.py, Backend/handlers/customer_agenda.py, Backend/handlers/order.py, Backend/handlers/route.py, Backend/db.py, Backend/services.py, Backend/handlers/admin_panel.py, CLAUDE.md | Parking feature: mejoras UX finales (tag [P] en teclados, indicador agenda, desglose en entrega) + fixes panel (Cerrar, show_all, orden urgencia, excluir NOT_ASKED, Platform Admin toggle) | COMPLETADO |
 | 2026-03-24 | claude | Backend/db.py | fix: Mis ganancias — _get_courier_earnings_between ahora consulta orders y routes directamente; rutas y pedidos resueltos via admin ya aparecen en el historial del courier | COMPLETADO |
