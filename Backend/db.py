@@ -4534,11 +4534,17 @@ def get_active_order_for_courier(courier_id: int):
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT *
-        FROM orders
-        WHERE courier_id = {P}
-          AND status IN ('ACCEPTED', 'PICKED_UP')
-        ORDER BY accepted_at DESC
+        SELECT
+            o.*,
+            COALESCE(aloc.address, adloc.address) AS pickup_address
+        FROM orders o
+        LEFT JOIN ally_locations aloc
+            ON aloc.id = o.pickup_location_id AND o.ally_id IS NOT NULL
+        LEFT JOIN admin_locations adloc
+            ON adloc.id = o.pickup_location_id AND o.creator_admin_id IS NOT NULL
+        WHERE o.courier_id = {P}
+          AND o.status IN ('ACCEPTED', 'PICKED_UP')
+        ORDER BY o.accepted_at DESC
         LIMIT 1;
         """,
         (courier_id,),
@@ -12326,6 +12332,7 @@ def create_or_get_pending_support_request(courier_id: int, admin_id: int,
             order_id=order_id,
             route_id=route_id,
             route_seq=route_seq,
+            support_type=support_type,
         )
         if existing:
             conn.commit()

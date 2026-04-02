@@ -39,6 +39,7 @@ from db import (
     get_connection,
     P,
     DB_ENGINE,
+    _row_value,
     SUPPORT_TYPE_DELIVERY_PIN,
     SUPPORT_TYPE_ROUTE_STOP_PIN,
     SUPPORT_TYPE_PICKUP_PIN,
@@ -343,6 +344,17 @@ import urllib.request
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
+
+
+def get_courier_active_order_stage_line(order) -> str:
+    """Resume la etapa operativa del pedido activo del courier para la UI."""
+    if not order:
+        return ""
+    if _row_value(order, "status") != "ACCEPTED":
+        return ""
+    if _row_value(order, "courier_arrived_at"):
+        return "Etapa: Llegada al pickup ya marcada. Esperando confirmacion para continuar."
+    return "Etapa: Debes marcar tu llegada al punto de recogida."
 
 
 def compute_ally_subsidy(delivery_subsidy: int, min_purchase_for_subsidy, purchase_amount) -> int:

@@ -305,7 +305,7 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
 | `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0`, `parking_status TEXT DEFAULT 'NOT_ASKED'`, `parking_reviewed_by INTEGER`, `parking_reviewed_at TEXT`. |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
-| `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
+| `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `support_type` (`PICKUP_PIN`, `DELIVERY_PIN`, `ROUTE_PICKUP_PIN`, `ROUTE_STOP_PIN`), `status` (PENDING/RESOLVED), `resolution` (CONFIRMED_ARRIVAL/RELEASED/DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. El tipo de soporte distingue explícitamente ayuda para pickup vs ayuda para entrega. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
@@ -359,7 +359,7 @@ Separador operativo actual: guion bajo (`_`).
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤150m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_pickup_pinissue_{id}` (courier reporta pin de **recogida** mal ubicado — disponible cuando courier está lejos del pickup ≥150m), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤150m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤150m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado para pedir ayuda al admin en el cierre de la entrega), `order_pickup_pinissue_{id}` (courier reporta pin de **recogida** mal ubicado para pedir ayuda al admin al marcar su llegada al pickup), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤150m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
 | `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos (entrega). Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
 | `admin_pickup_` | Panel de soporte de pin mal ubicado — pedidos (recogida). Incluye: `admin_pickup_confirm_{order_id}_{support_id}` (admin confirma llegada del courier), `admin_pickup_release_{order_id}_{support_id}` (admin libera el pedido para re-oferta) |
 | `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas (entrega). Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
@@ -393,10 +393,12 @@ En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en cur
 - Muestra el pedido activo (`orders.status` en `ACCEPTED`/`PICKED_UP`) y/o la ruta activa (`routes.status` en `ACCEPTED`).
 - Botones:
   - Si `orders.status == ACCEPTED`:
-    - "Solicitar confirmacion de recogida" → `order_pickup_{id}`.
+    - "Confirmar llegada al pickup" → `order_pickup_{id}`.
+    - Si el repartidor ya está en tienda pero el pin de recogida está mal, usa `order_pickup_pinissue_{id}`. Este soporte solo sirve para marcar la llegada al pickup o liberar el pedido; no corresponde a finalizar la entrega.
     - "Liberar pedido" → `order_release_{id}` → requiere motivo y confirmación (`order_release_reason_{id}_{reason}` → `order_release_confirm_{id}_{reason}`).
   - Si `orders.status == PICKED_UP`:
     - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
+    - Si el repartidor ya entregó pero el pin del cliente está mal, usa `order_pinissue_{id}`. Este soporte sí corresponde al cierre de la entrega y el admin puede finalizar el servicio o cancelar con atribución de falla.
   - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
   - "Liberar ruta" → `ruta_liberar_{route_id}` → requiere motivo y confirmación (`ruta_liberar_motivo_{route_id}_{reason}` → `ruta_liberar_confirmar_{route_id}_{reason}`).
 - Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
@@ -1957,11 +1959,42 @@ _is_courier_gps_active(courier) → bool
 
 ## Flujo de Soporte por Pin Mal Ubicado (IMPLEMENTADO 2026-03-12)
 
-### Flujo completo — Pedido normal
+### Regla clave
+
+Hay dos solicitudes de ayuda distintas para pedidos:
+
+- `order_pickup_pinissue_{id}`: el courier todavia esta en `ACCEPTED` y necesita que el admin le marque la llegada al punto de recogida para seguir el flujo normal. Este caso NO debe finalizar el servicio.
+- `order_pinissue_{id}`: el courier ya esta en `PICKED_UP` y necesita ayuda para cerrar la entrega porque el pin del cliente esta mal ubicado. Este caso SI corresponde al cierre de entrega.
+
+La idempotencia de `order_support_requests` se evalua por scope + `support_type`, para que pickup y entrega no se mezclen aunque pertenezcan al mismo pedido.
+
+### Caso 1 â€” Ayuda para marcar llegada al pickup (pedido en `ACCEPTED`)
+
+```
+Courier reporta "Estoy aqui pero el pin de recogida esta mal" (order_pickup_pinissue_{id})
+  â†’ Crea order_support_requests con `support_type=PICKUP_PIN` (idempotente por tipo)
+  â†’ Notifica al admin del equipo en Telegram:
+      - Datos del pedido y del punto de recogida
+      - Link Google Maps al pin de recogida guardado
+      - Link Google Maps a ubicaciÃ³n actual del courier
+      - Botones: Confirmar llegada / Liberar pedido
+  â†’ Courier: esta ayuda solo sirve para marcar la llegada al pickup y seguir el flujo normal
+
+Admin toca Confirmar llegada:
+  â†’ resolve_support_request(CONFIRMED_ARRIVAL)
+  â†’ set_courier_arrived(order_id)
+  â†’ Se notifica al aliado para confirmar la llegada o auto-confirmar en T+2
+
+Admin toca Liberar pedido:
+  â†’ resolve_support_request(RELEASED)
+  â†’ El pedido se libera para re-oferta
+```
+
+### Caso 2 — Ayuda para finalizar entrega (pedido en `PICKED_UP`)
 
 ```
 Courier reporta "Estoy aquí pero el pin está mal" (order_pinissue_{id})
-  → Crea order_support_requests (idempotente: no crea duplicados)
+  → Crea order_support_requests con `support_type=DELIVERY_PIN` (idempotente por tipo)
   → Notifica al admin del equipo en Telegram:
       - Datos del pedido y cliente
       - Link Google Maps al pin de entrega guardado (dropoff_lat/lng)

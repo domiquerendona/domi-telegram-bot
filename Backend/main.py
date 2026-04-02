@@ -172,6 +172,7 @@ from services import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_active_order_stage_line,
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_pending_route_stops,
@@ -1115,6 +1116,7 @@ def courier_pedidos_en_curso(update, context):
             _row_value(active_order, "status", "-"),
         )
         order_status = _row_value(active_order, "status")
+        order_stage_line = get_courier_active_order_stage_line(active_order)
         pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
         customer_city = _row_value(active_order, "customer_city") or ""
         customer_barrio = _row_value(active_order, "customer_barrio") or ""
@@ -1131,9 +1133,11 @@ def courier_pedidos_en_curso(update, context):
 
         kb = []
         if order_status == "ACCEPTED":
+            if order_stage_line:
+                msg += "\n{}".format(order_stage_line)
             kb.append([
                 InlineKeyboardButton(
-                    "Confirmar llegada",
+                    "Confirmar llegada al pickup",
                     callback_data="order_pickup_{}".format(order_id),
                 ),
             ])

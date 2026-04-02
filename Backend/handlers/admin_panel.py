@@ -148,14 +148,14 @@ def _support_created_label(created_at) -> str:
 
 
 def _support_owner_line(req) -> str:
-    ally_id = _row_value(req, "order_ally_id", 0, 0) or _row_value(req, "route_ally_id", 0, 0)
+    ally_id = _row_value(req, "order_ally_id", 0) or _row_value(req, "route_ally_id", 0)
     if ally_id:
         ally = get_ally_by_id(int(ally_id))
         if ally:
             return "Aliado responsable: {}".format(
                 _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
             )
-    creator_admin_id = _row_value(req, "order_creator_admin_id", 0, 0)
+    creator_admin_id = _row_value(req, "order_creator_admin_id", 0)
     if creator_admin_id:
         admin = get_admin_by_id(int(creator_admin_id))
         if admin:
@@ -201,21 +201,21 @@ def _support_target_lines(req):
 def _support_summary_label(req) -> str:
     support_type = _support_type_label(_row_value(req, "support_type"))
     courier_name = (_row_value(req, "courier_name") or "Repartidor").strip()
-    if _row_value(req, "order_id", 0, 0):
-        order_id = int(_row_value(req, "order_id", 0, 0))
+    if _row_value(req, "order_id", 0):
+        order_id = int(_row_value(req, "order_id", 0))
         return "{} | Pedido #{} | {}".format(support_type, order_id, courier_name)
-    route_id = int(_row_value(req, "route_id", 0, 0) or 0)
-    seq = _row_value(req, "route_seq", 0, 0)
+    route_id = int(_row_value(req, "route_id", 0) or 0)
+    seq = _row_value(req, "route_seq", 0)
     if seq:
         return "{} | Ruta #{} parada {} | {}".format(support_type, route_id, seq, courier_name)
     return "{} | Ruta #{} | {}".format(support_type, route_id, courier_name)
 
 
 def _support_action_rows(req):
-    support_id = int(_row_value(req, "id", 0, 0) or 0)
-    order_id = int(_row_value(req, "order_id", 0, 0) or 0)
-    route_id = int(_row_value(req, "route_id", 0, 0) or 0)
-    route_seq = int(_row_value(req, "route_seq", 0, 0) or 0)
+    support_id = int(_row_value(req, "id", 0) or 0)
+    order_id = int(_row_value(req, "order_id", 0) or 0)
+    route_id = int(_row_value(req, "route_id", 0) or 0)
+    route_seq = int(_row_value(req, "route_seq", 0) or 0)
     support_type = _row_value(req, "support_type")
 
     if support_type == SUPPORT_TYPE_DELIVERY_PIN:

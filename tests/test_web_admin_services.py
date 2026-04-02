@@ -213,6 +213,26 @@ class WebAdminServicesTests(unittest.TestCase):
         self.assertFalse(second_created)
         self.assertEqual(first_id, second_id)
 
+    def test_create_or_get_pending_support_request_distinguishes_support_type(self):
+        order_id = self._create_order(status="ACCEPTED")
+
+        pickup_id, pickup_created = db.create_or_get_pending_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.local_admin_id,
+            order_id=order_id,
+            support_type=db.SUPPORT_TYPE_PICKUP_PIN,
+        )
+        delivery_id, delivery_created = db.create_or_get_pending_support_request(
+            courier_id=self.courier_id,
+            admin_id=self.local_admin_id,
+            order_id=order_id,
+            support_type=db.SUPPORT_TYPE_DELIVERY_PIN,
+        )
+
+        self.assertTrue(pickup_created)
+        self.assertTrue(delivery_created)
+        self.assertNotEqual(pickup_id, delivery_id)
+
     def test_list_pending_support_requests_filters_by_admin_and_preserves_support_type(self):
         order_local = self._create_order(status="ACCEPTED")
         order_platform = self._create_order(status="PICKED_UP")

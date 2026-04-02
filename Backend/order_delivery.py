@@ -7732,8 +7732,9 @@ def _notify_admin_pin_issue(context, order, courier, admin_id, support_id, extra
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
-            "Uno de tus repartidores necesita tu ayuda - Pedido #{}".format(order["id"]),
+            "AYUDA - Finalizar entrega - Pedido #{}".format(order["id"]),
             "",
+            "Situacion: el repartidor necesita ayuda para cerrar una entrega ya realizada o completar la entrega cuando el pin de destino esta mal ubicado.",
             "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Direccion de entrega guardada: {}".format(order["customer_address"] or "N/D"),
@@ -7802,7 +7803,7 @@ def _handle_admin_pinissue_action(update, context, order_id, action):
         query.edit_message_text("Este pedido ya fue resuelto o no esta en estado de entrega.")
         return
 
-    support = get_pending_support_request(order_id=order_id)
+    support = get_pending_support_request(order_id=order_id, support_type=SUPPORT_TYPE_DELIVERY_PIN)
     if not support:
         query.edit_message_text("No hay solicitud de ayuda pendiente para este pedido.")
         return
@@ -8086,8 +8087,9 @@ def _notify_admin_route_pin_issue(context, route, stop, courier, admin_id, suppo
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
-            "Uno de tus repartidores necesita tu ayuda - Ruta #{} Parada {}".format(route["id"], seq),
+            "AYUDA - Finalizar parada de entrega - Ruta #{} Parada {}".format(route["id"], seq),
             "",
+            "Situacion: el repartidor necesita ayuda para cerrar una parada de entrega cuando el pin del destino esta mal ubicado.",
             "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Cliente: {}".format(stop["customer_name"] or "N/D"),
@@ -8154,7 +8156,11 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
         query.edit_message_text("Esta ruta ya no esta en curso.")
         return
 
-    support = get_pending_support_request(route_id=route_id, route_seq=seq)
+    support = get_pending_support_request(
+        route_id=route_id,
+        route_seq=seq,
+        support_type=SUPPORT_TYPE_ROUTE_STOP_PIN,
+    )
     if not support:
         query.edit_message_text("No hay solicitud de ayuda pendiente para esta parada.")
         return
@@ -8423,8 +8429,9 @@ def _notify_admin_pickup_pinissue(context, order, courier, admin_id, support_id,
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
-            "AYUDA - Pin de recogida - Pedido #{}".format(order["id"]),
+            "AYUDA - Marcar llegada al punto de recogida - Pedido #{}".format(order["id"]),
             "",
+            "Situacion: el repartidor necesita marcar su llegada en el pickup para continuar el flujo normal del pedido. No debes finalizar el servicio en esta etapa.",
             "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Punto de recogida: {}".format(_get_pickup_address(order) or "N/D"),
@@ -8482,7 +8489,7 @@ def _handle_admin_pickup_pinissue_action(update, context, order_id, support_id, 
         query.edit_message_text("Este pedido ya no esta activo.")
         return
 
-    support = get_pending_support_request(order_id=order_id)
+    support = get_pending_support_request(order_id=order_id, support_type=SUPPORT_TYPE_PICKUP_PIN)
     if not support or support["id"] != support_id:
         query.edit_message_text("Esta solicitud ya fue resuelta.")
         return
@@ -8635,8 +8642,9 @@ def _notify_admin_route_pickup_pinissue(context, route, courier, admin_id, suppo
             courier_tg = "tg://user?id={}".format(courier_user["telegram_id"])
 
         lines = [
-            "AYUDA - Pin de recogida - Ruta #{}".format(route["id"]),
+            "AYUDA - Marcar llegada al punto de recogida - Ruta #{}".format(route["id"]),
             "",
+            "Situacion: el repartidor necesita marcar su llegada al pickup de la ruta para continuar el flujo normal. No debes finalizar ninguna parada en esta etapa.",
             "Repartidor: {}".format(_row_value(courier, "full_name") or "N/D"),
             "Telefono: {}".format(_row_value(courier, "phone") or "N/D"),
             "Punto de recogida: {}".format(route["pickup_address"] or "N/D"),
@@ -8694,7 +8702,11 @@ def _handle_admin_route_pickup_pinissue_action(update, context, route_id, suppor
         query.edit_message_text("Esta ruta ya no esta activa.")
         return
 
-    support = get_pending_support_request(route_id=route_id, route_seq=0)
+    support = get_pending_support_request(
+        route_id=route_id,
+        route_seq=0,
+        support_type=SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+    )
     if not support or support["id"] != support_id:
         query.edit_message_text("Esta solicitud ya fue resuelta.")
         return

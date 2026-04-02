@@ -378,6 +378,104 @@ class SupportRequestAdminRoutingTests(unittest.TestCase):
             update.callback_query.edit_message_text.call_args.args[0],
         )
 
+    @patch("order_delivery.get_pending_support_request", return_value=None)
+    @patch("order_delivery.get_order_by_id")
+    def test_admin_pickup_pinissue_action_filters_pending_support_by_pickup_type(
+        self,
+        mock_get_order_by_id,
+        mock_get_pending_support_request,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 55,
+            "status": "ACCEPTED",
+        }
+        update = self._update()
+
+        order_delivery._handle_admin_pickup_pinissue_action(update, self._context(), 55, 701, "confirm")
+
+        mock_get_pending_support_request.assert_called_once_with(
+            order_id=55,
+            support_type=order_delivery.SUPPORT_TYPE_PICKUP_PIN,
+        )
+        self.assertIn(
+            "Esta solicitud ya fue resuelta",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
+    @patch("order_delivery.get_pending_support_request", return_value=None)
+    @patch("order_delivery.get_order_by_id")
+    def test_admin_delivery_pinissue_action_filters_pending_support_by_delivery_type(
+        self,
+        mock_get_order_by_id,
+        mock_get_pending_support_request,
+    ):
+        mock_get_order_by_id.return_value = {
+            "id": 91,
+            "status": "PICKED_UP",
+        }
+        update = self._update()
+
+        order_delivery._handle_admin_pinissue_action(update, self._context(), 91, "fin")
+
+        mock_get_pending_support_request.assert_called_once_with(
+            order_id=91,
+            support_type=order_delivery.SUPPORT_TYPE_DELIVERY_PIN,
+        )
+        self.assertIn(
+            "No hay solicitud de ayuda pendiente",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
+    @patch("order_delivery.get_pending_support_request", return_value=None)
+    @patch("order_delivery.get_route_by_id")
+    def test_admin_route_pickup_pinissue_action_filters_pending_support_by_route_pickup_type(
+        self,
+        mock_get_route_by_id,
+        mock_get_pending_support_request,
+    ):
+        mock_get_route_by_id.return_value = {
+            "id": 66,
+            "status": "ACCEPTED",
+        }
+        update = self._update()
+
+        order_delivery._handle_admin_route_pickup_pinissue_action(update, self._context(), 66, 801, "confirm")
+
+        mock_get_pending_support_request.assert_called_once_with(
+            route_id=66,
+            route_seq=0,
+            support_type=order_delivery.SUPPORT_TYPE_ROUTE_PICKUP_PIN,
+        )
+        self.assertIn(
+            "Esta solicitud ya fue resuelta",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
+    @patch("order_delivery.get_pending_support_request", return_value=None)
+    @patch("order_delivery.get_route_by_id")
+    def test_admin_route_delivery_pinissue_action_filters_pending_support_by_route_stop_type(
+        self,
+        mock_get_route_by_id,
+        mock_get_pending_support_request,
+    ):
+        mock_get_route_by_id.return_value = {
+            "id": 73,
+            "status": "ACCEPTED",
+        }
+        update = self._update()
+
+        order_delivery._handle_admin_route_pinissue_action(update, self._context(), 73, 2, "fin")
+
+        mock_get_pending_support_request.assert_called_once_with(
+            route_id=73,
+            route_seq=2,
+            support_type=order_delivery.SUPPORT_TYPE_ROUTE_STOP_PIN,
+        )
+        self.assertIn(
+            "No hay solicitud de ayuda pendiente",
+            update.callback_query.edit_message_text.call_args.args[0],
+        )
+
     @patch("order_delivery._get_pickup_address", return_value="Bodega Central")
     @patch("order_delivery._get_pickup_coords", return_value=(4.81, -75.69))
     @patch("order_delivery.get_user_by_id")
