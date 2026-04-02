@@ -817,8 +817,8 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 
 **Funciones en `db.py` relacionadas con el panel web:**
 - `create_web_user(username, password_hash, role, admin_id, courier_id=None)` → int
-- `get_web_user_by_username(username)` → row (incluye `courier_id`)
-- `get_web_user_by_id(user_id)` → row (incluye `courier_id`)
+- `get_web_user_by_username(username)` → row (incluye `courier_id`, `created_at`)
+- `get_web_user_by_id(user_id)` → row (incluye `courier_id`, `created_at`)
 - `list_web_users()` → list[row]
 - `update_web_user_status(user_id, status)`
 - `update_web_user_password(user_id, password_hash)`
@@ -826,6 +826,13 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `get_courier_web_dashboard(courier_id)` → dict con `entregas_hoy`, `entregas_mes`, `tarifa_mes`, `saldo`, `total_entregas`
 - `get_courier_web_earnings(courier_id, start_s, end_s)` → list con pedidos DELIVERED del repartidor en el rango de fechas
 - `get_courier_web_profile(courier_id)` → dict con `full_name`, `phone`, `city`, `status`, `vehicle_type`
+- `update_admin_name_phone(admin_id, full_name, phone)` — actualiza nombre y teléfono en tabla `admins` (sin `updated_at` — esa columna no existe en admins)
+- `update_courier_name_phone(courier_id, full_name, phone)` — actualiza nombre y teléfono en tabla `couriers` (sin `updated_at` — esa columna no existe en couriers)
+- `get_admin_recent_activity(admin_id)` → list — últimos 5 cambios de estado en `admin_couriers`/`admin_allies` del equipo. `admin_id=None` = todos (Platform Admin)
+- `get_courier_recent_activity(courier_id)` → list — últimas 5 entregas DELIVERED del repartidor
+
+**`WebUser` dataclass (`web/users/repository.py`):**
+- Campo `created_at: Optional[str]` — fecha de creación del usuario del panel (mapeado desde índice 7 en row SQLite)
 
 **Frontend Angular:**
 - `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
@@ -835,7 +842,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar verde con Dashboard, Mis ganancias, Mi perfil
 - `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`
 - `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`
-- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`
+- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`. Incluye: avatar con iniciales, edición inline de nombre/teléfono, cambio de contraseña, campo "Miembro desde", indicador de estado animado, sección de actividad reciente
 - Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`
 - Ruta perfil admin: `/superadmin/perfil`
 
@@ -859,12 +866,20 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `GET /courier/dashboard` — KPIs: entregas hoy/mes, tarifa mes, saldo, total histórico. Requiere rol `COURIER` + `courier_id` vinculado.
 - `GET /courier/earnings?period=hoy|semana|mes` — lista de pedidos DELIVERED con tarifa, incentivo, aliado y ciudad destino.
 - `GET /courier/profile` — nombre, teléfono, ciudad, vehículo, estado del repartidor.
-- `GET /profile` — perfil genérico para todos los roles (admin o courier), retorna `{ username, role, detail }`.
+
+**Endpoints de perfil (`web/api/profile.py`) — todos los roles (IMPLEMENTADO 2026-04-01):**
+- `GET /profile` — perfil del usuario autenticado. Retorna `{ username, role, created_at, detail }`. Para `ADMIN_PLATFORM` consulta `admins WHERE team_code = 'PLATFORM'`; para `ADMIN_LOCAL` consulta `admins WHERE id = admin_id`; para `COURIER` llama `get_courier_web_profile`.
+- `PATCH /profile/password` — cambia contraseña del usuario autenticado. Body: `{ current_password, new_password }`. Verifica bcrypt antes de actualizar.
+- `PATCH /profile/detail` — actualiza nombre y teléfono. Body: `{ full_name, phone }`. Escribe en `admins` o `couriers` según el rol. Para `ADMIN_PLATFORM` sin `admin_id` vinculado: busca el admin con `team_code = 'PLATFORM'` automáticamente.
+- `GET /profile/activity` — actividad reciente. Para admin: últimos 5 cambios en su equipo (`get_admin_recent_activity`). Para courier: últimas 5 entregas (`get_courier_recent_activity`).
+
+**Nota técnica importante — tablas `admins` y `couriers`:** estas tablas **no tienen columna `updated_at`**. Cualquier UPDATE sobre ellas debe omitir ese campo. Solo las tablas de vínculo (`admin_couriers`, `admin_allies`) tienen `updated_at`.
 
 **Cómo crear un usuario COURIER en el panel:**
-1. Admin Plataforma → `POST /admin/web-users` con `role: "COURIER"` y `courier_id: <id del courier en BD>`.
-2. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
-3. Solo ve sus propios datos; no puede acceder a `/superadmin`.
+1. Admin Plataforma → panel Administradores → formulario "Nuevo usuario" → rol "Repartidor" → seleccionar repartidor aprobado del dropdown.
+2. Equivalente API: `POST /admin/web-users` con `role: "COURIER"` y `courier_id: <id del courier en BD>`.
+3. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
+4. Solo ve sus propios datos; no puede acceder a `/superadmin`.
 
 ---
 
