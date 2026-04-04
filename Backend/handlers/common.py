@@ -680,7 +680,7 @@ def build_offer_demand_badge_text(preview: dict) -> str:
     reason = (preview.get("reason") or "").strip()
 
     lines = [
-        "Semaforo de demanda: {}".format(signal_label),
+        "Semaforo de demanda actual: {}".format(signal_label),
         "Repartidores elegibles cerca ahora: {}".format(eligible_count),
     ]
     if nearest_km is not None:
@@ -689,11 +689,11 @@ def build_offer_demand_badge_text(preview: dict) -> str:
         lines.append(reason)
 
     if suggested_incentive <= 0:
-        lines.append("Incentivo sugerido ahora: no obligatorio.")
+        lines.append("Incentivo sugerido ahora: opcional.")
     else:
-        lines.append("Incentivo sugerido por demanda: {}".format(_fmt_pesos(suggested_incentive)))
+        lines.append("Sugerencia opcional para acelerar: {}".format(_fmt_pesos(suggested_incentive)))
         if extra_suggested > 0:
-            lines.append("Recomendacion ahora: agrega al menos {} mas.".format(_fmt_pesos(extra_suggested)))
+            lines.append("Si quieres moverlo mas rapido, agrega al menos {} mas.".format(_fmt_pesos(extra_suggested)))
         elif current_incentive > 0:
             lines.append("Tu incentivo actual ya cubre esta sugerencia.")
 

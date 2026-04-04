@@ -1327,6 +1327,20 @@ Motor usado:
 - filtra tambien couriers sin saldo operativo para fee
 - si el admin limita visibilidad con `team_only`, la recomendacion usa solo su equipo
 
+Modo red pequena vigente:
+
+- umbrales suavizados para no abrumar al aliado mientras la red sigue creciendo
+- `0` elegibles -> `ALTA` con sugerencia base moderada
+- `1-2` elegibles -> `MEDIA` con sugerencia suave
+- `3+` elegibles -> `BAJA` y el incentivo queda como opcional
+- este bloque no bloquea publicacion, no cambia matching y no aplica cobros automaticos; solo orienta antes de confirmar
+
+Recordatorio de escalado futuro:
+
+- recalibrar este semaforo cuando la operacion tenga volumen sostenido y una red claramente mayor de aliados/repartidores activos
+- en esa etapa retomar: umbrales mas exigentes, incentivo sugerido con un toque y estado del mercado en vivo post-publicacion
+- referencia tecnica actual: bloque de umbrales en `build_offer_demand_preview(...)` de `Backend/services.py`
+
 ### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
 
 **Ciclo de pedido**

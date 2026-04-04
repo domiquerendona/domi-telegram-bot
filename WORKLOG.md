@@ -18,6 +18,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-04-04 | codex | Backend/services.py, Backend/handlers/common.py, CLAUDE.md, WORKLOG.md | Ajuste del semaforo de demanda a modo red pequena para no abrumar al aliado + recordatorio de recalibrar cuando crezca la red | COMPLETADO |
 | 2026-04-04 | codex | WORKLOG.md, Backend/main.py, tests/test_callback_routing.py, CLAUDE.md, Frontend/Dockerfile, Frontend/src/server.ts, Frontend/src/environments/environment.ts | Fix routing de cancelaciones/callbacks criticos + test de guardia + integracion segura de luisa-web en staging/main/luisa-web | COMPLETADO |
 | 2026-04-01 | claude | Backend/db.py, Backend/web/api/profile.py, Backend/web/users/repository.py, Frontend/src/app/features/shared/perfil/perfil.ts | Panel web: 7 mejoras al perfil + fix editar datos (team_code, updated_at) | COMPLETADO |
 | 2026-04-01 | codex | Backend/db.py, Backend/services.py, Backend/main.py, Backend/handlers/registration.py, Backend/migrations/postgres_schema.sql, tests/test_admin_invite_services.py, AGENTS.md, CLAUDE.md, WORKLOG.md | feat: invitaciones robustas de admin para registro directo (tokens firmados, expiración, ver/regenerar enlaces, auditoría y pruebas) | COMPLETADO |

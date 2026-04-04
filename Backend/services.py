@@ -1442,37 +1442,36 @@ def build_offer_demand_preview(
                     float(clng),
                 )
 
+        # Modo red pequena (2026-04-04): con una red aun chica, el semaforo se
+        # mantiene deliberadamente suave para orientar sin alarmar al aliado.
+        # Recordatorio: recalibrar estos umbrales cuando la operacion crezca y
+        # el mercado tenga volumen sostenido de pedidos/couriers.
         suggested = 0
         if eligible_count == 0:
             signal_code = "HIGH"
             signal_label = "ALTA"
-            reason = "Ahora mismo no hay repartidores elegibles dentro del radio operativo."
-            suggested = 3000
-        elif eligible_count <= 2:
-            signal_code = "HIGH"
-            signal_label = "ALTA"
-            reason = "Hay muy pocos repartidores elegibles cerca del pickup."
+            reason = "Ahora mismo no vemos repartidores elegibles dentro del radio operativo."
             suggested = 2000
-        elif eligible_count <= 4:
+        elif eligible_count <= 2:
             signal_code = "MEDIUM"
             signal_label = "MEDIA"
-            reason = "Hay una oferta moderada de repartidores cerca del pickup."
-            suggested = 1500
+            reason = "Hay pocos repartidores elegibles cerca del pickup, pero el pedido igual puede salir."
+            suggested = 1000
         else:
             signal_code = "LOW"
             signal_label = "BAJA"
-            reason = "Hay buena disponibilidad de repartidores para este pickup."
+            reason = "Hay una disponibilidad razonable de repartidores para este pickup."
 
         distance_km = float(distance_km or 0)
         if distance_km >= 10:
-            suggested = max(suggested, 2000)
+            suggested = max(suggested, 1500)
             reason += " La distancia del servicio es larga."
         elif distance_km >= 5:
-            suggested = max(suggested, 1500)
-            reason += " La distancia del servicio es media-larga."
+            suggested = max(suggested, 1000)
+            reason += " La distancia del servicio es media."
 
         if requires_cash and int(cash_required_amount or 0) > 0:
-            suggested = max(suggested, 2000 if eligible_count <= 4 else 1500)
+            suggested = max(suggested, 1500 if eligible_count <= 2 else 1000)
             reason += " La base requerida reduce el grupo elegible."
 
         if team_only and admin_id:
