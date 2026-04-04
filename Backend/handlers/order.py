@@ -36,7 +36,7 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
     _handle_text_field_input, _geo_siguiente_o_gps, _mostrar_confirmacion_geocode,
     cancel_conversacion, cancel_por_texto, ensure_terms,
-    show_main_menu, show_flow_menu, _fmt_pesos,
+    show_main_menu, show_flow_menu, _fmt_pesos, build_offer_demand_badge_text,
 )
 from order_delivery import publish_order_to_couriers, repost_order_to_couriers, repost_route_to_couriers, publish_route_to_couriers
 from services import (
@@ -75,7 +75,7 @@ from services import (
     get_ally_parking_fee_enabled,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
-    get_fee_config,
+    get_fee_config, build_offer_demand_preview,
     save_order_template, list_order_templates, get_order_template_by_id,
     increment_order_template_usage, delete_order_template,
     get_admin_balance,
@@ -2316,9 +2316,18 @@ def _construir_resumen_ruta_desde_pedido(context):
         text += "\n{}".format(mensaje_ahorro)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        distance_km=total_km,
+        ally_id=context.user_data.get("ally_id"),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        text += "\n\n{}".format(demand_block)
     text += (
-        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
     )
     return text
@@ -2413,9 +2422,21 @@ def construir_resumen_pedido(context):
         resumen += "Subsidio domicilio: -" + _fmt_pesos(subsidio_efectivo_cache) + "\n"
         resumen += "Domicilio al cliente: " + _fmt_pesos(customer_delivery_fee_cache) + "\n"
 
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=context.user_data.get("pickup_lat"),
+        pickup_lng=context.user_data.get("pickup_lng"),
+        distance_km=distancia,
+        ally_id=ally_id_ctx,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        resumen += "\n" + demand_block + "\n"
+
     resumen += (
-        "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Deseas agregar un incentivo antes de confirmar? (Tambien puedes hacerlo despues de publicar)\n\n"
         "Confirmas este pedido?"
     )
@@ -3082,6 +3103,16 @@ def _admin_ped_preview_text(ctx):
     except Exception:
         pass
 
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=ctx.get("admin_ped_pickup_lat"),
+        pickup_lng=ctx.get("admin_ped_pickup_lng"),
+        distance_km=distancia_km,
+        admin_id=ctx.get("admin_ped_admin_id"),
+        team_only=bool(team_only),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+
     text = (
         "Resumen del pedido especial:\n\n"
         "Recogida: {}\n"
@@ -3096,6 +3127,7 @@ def _admin_ped_preview_text(ctx):
         "Visibilidad: {}\n"
         "Instrucciones: {}\n\n"
         "Total oferta al courier: ${:,}"
+        "{}"
         "{}"
     ).format(
         ctx.get("admin_ped_pickup_addr", ""),
@@ -3112,6 +3144,7 @@ def _admin_ped_preview_text(ctx):
         visibilidad_label,
         instruc,
         total,
+        "\n\n{}".format(demand_block) if demand_block else "",
         saldo_bajo_warning,
     )
     keyboard = [

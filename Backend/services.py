@@ -30,6 +30,7 @@ from db import (
     get_platform_sociedad_id,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
     get_approved_admin_id_for_courier,
+    get_eligible_couriers_for_order,
     upsert_reference_alias_candidate,
     list_reference_alias_candidates,
     get_reference_alias_candidate_by_id,
@@ -1363,6 +1364,148 @@ def build_order_pricing_breakdown(
         "distance_km": float(distance_km or 0),
         "config": config,
     }
+
+
+def build_offer_demand_preview(
+    pickup_lat: float,
+    pickup_lng: float,
+    distance_km: float,
+    ally_id: int = None,
+    admin_id: int = None,
+    team_only: bool = False,
+    requires_cash: bool = False,
+    cash_required_amount: int = 0,
+    current_incentive: int = 0,
+) -> dict:
+    """
+    Estima la salud del mercado antes de publicar un servicio y sugiere incentivo.
+
+    La recomendacion se basa en la cantidad real de couriers elegibles para el
+    pickup actual, respetando radio, base requerida y filtro team_only cuando
+    aplica.
+    """
+    preview = {
+        "signal_code": "UNAVAILABLE",
+        "signal_label": "NO DISPONIBLE",
+        "eligible_count": 0,
+        "nearest_km": None,
+        "suggested_incentive": 0,
+        "extra_incentive_suggested": 0,
+        "current_incentive": max(0, int(current_incentive or 0)),
+        "reason": "No pudimos estimar la demanda sin coordenadas validas de recogida.",
+    }
+
+    if not has_valid_coords(pickup_lat, pickup_lng):
+        return preview
+
+    try:
+        eligible = get_eligible_couriers_for_order(
+            ally_id=ally_id,
+            requires_cash=requires_cash,
+            cash_required_amount=int(cash_required_amount or 0),
+            pickup_lat=float(pickup_lat),
+            pickup_lng=float(pickup_lng),
+            order_distance_km=float(distance_km or 0),
+        )
+
+        if team_only and admin_id:
+            eligible = [
+                c for c in eligible
+                if get_approved_admin_id_for_courier(int(c["courier_id"])) == int(admin_id)
+            ]
+
+        relanzables = []
+        for courier in eligible:
+            courier_id = int(courier["courier_id"])
+            courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+            if courier_admin_id is None:
+                continue
+            fee_ok, _ = check_service_fee_available(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+            )
+            if fee_ok:
+                relanzables.append(courier)
+
+        eligible_count = len(relanzables)
+        nearest_km = None
+        if relanzables:
+            first = relanzables[0]
+            clat = first.get("live_lat") or first.get("residence_lat")
+            clng = first.get("live_lng") or first.get("residence_lng")
+            if clat is not None and clng is not None:
+                nearest_km = haversine_km(
+                    float(pickup_lat),
+                    float(pickup_lng),
+                    float(clat),
+                    float(clng),
+                )
+
+        suggested = 0
+        if eligible_count == 0:
+            signal_code = "HIGH"
+            signal_label = "ALTA"
+            reason = "Ahora mismo no hay repartidores elegibles dentro del radio operativo."
+            suggested = 3000
+        elif eligible_count <= 2:
+            signal_code = "HIGH"
+            signal_label = "ALTA"
+            reason = "Hay muy pocos repartidores elegibles cerca del pickup."
+            suggested = 2000
+        elif eligible_count <= 4:
+            signal_code = "MEDIUM"
+            signal_label = "MEDIA"
+            reason = "Hay una oferta moderada de repartidores cerca del pickup."
+            suggested = 1500
+        else:
+            signal_code = "LOW"
+            signal_label = "BAJA"
+            reason = "Hay buena disponibilidad de repartidores para este pickup."
+
+        distance_km = float(distance_km or 0)
+        if distance_km >= 10:
+            suggested = max(suggested, 2000)
+            reason += " La distancia del servicio es larga."
+        elif distance_km >= 5:
+            suggested = max(suggested, 1500)
+            reason += " La distancia del servicio es media-larga."
+
+        if requires_cash and int(cash_required_amount or 0) > 0:
+            suggested = max(suggested, 2000 if eligible_count <= 4 else 1500)
+            reason += " La base requerida reduce el grupo elegible."
+
+        if team_only and admin_id:
+            reason += " La visibilidad limitada a tu equipo reduce el mercado disponible."
+
+        current_incentive = max(0, int(current_incentive or 0))
+        preview.update(
+            {
+                "signal_code": signal_code,
+                "signal_label": signal_label,
+                "eligible_count": eligible_count,
+                "nearest_km": nearest_km,
+                "suggested_incentive": suggested,
+                "extra_incentive_suggested": max(0, suggested - current_incentive),
+                "current_incentive": current_incentive,
+                "reason": reason.strip(),
+            }
+        )
+        logger.info(
+            "offer_demand_preview signal=%s eligible=%s suggested=%s ally_id=%s admin_id=%s team_only=%s distance_km=%.1f requires_cash=%s",
+            preview["signal_label"],
+            eligible_count,
+            suggested,
+            ally_id,
+            admin_id,
+            int(bool(team_only)),
+            distance_km,
+            int(bool(requires_cash)),
+        )
+    except Exception as e:
+        logger.warning("build_offer_demand_preview: %s", e)
+
+    return preview
 
 
 def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict = None) -> dict:

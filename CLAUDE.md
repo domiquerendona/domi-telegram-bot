@@ -1306,6 +1306,27 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 - DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
 - `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
 
+### Semaforo de demanda pre-confirmacion (IMPLEMENTADO 2026-04-04)
+
+Antes de confirmar un servicio, el preview ahora muestra un bloque de semaforo de demanda con:
+
+- nivel `BAJA` / `MEDIA` / `ALTA`
+- cantidad de repartidores elegibles cerca del pickup en ese momento
+- incentivo sugerido segun escasez, distancia, base requerida y visibilidad del mercado
+
+Aplica de forma uniforme a:
+
+- pedido del aliado (`construir_resumen_pedido`)
+- ruta del aliado (`_ruta_mostrar_confirmacion` y ruta derivada desde pedido)
+- pedido especial del admin (`_admin_ped_preview_text`)
+
+Motor usado:
+
+- `build_offer_demand_preview(...)` en `Backend/services.py`
+- consulta `get_eligible_couriers_for_order(...)`
+- filtra tambien couriers sin saldo operativo para fee
+- si el admin limita visibilidad con `team_only`, la recomendacion usa solo su equipo
+
 ### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
 
 **Ciclo de pedido**

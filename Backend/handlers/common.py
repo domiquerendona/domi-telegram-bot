@@ -666,6 +666,40 @@ def _fmt_pesos(amount: int) -> str:
     return f"${amount:,}".replace(",", ".")
 
 
+def build_offer_demand_badge_text(preview: dict) -> str:
+    """Renderiza un bloque compacto de semaforo de demanda para previews."""
+    if not preview:
+        return ""
+
+    signal_label = preview.get("signal_label") or "NO DISPONIBLE"
+    eligible_count = int(preview.get("eligible_count") or 0)
+    nearest_km = preview.get("nearest_km")
+    suggested_incentive = int(preview.get("suggested_incentive") or 0)
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    current_incentive = int(preview.get("current_incentive") or 0)
+    reason = (preview.get("reason") or "").strip()
+
+    lines = [
+        "Semaforo de demanda: {}".format(signal_label),
+        "Repartidores elegibles cerca ahora: {}".format(eligible_count),
+    ]
+    if nearest_km is not None:
+        lines[-1] += " (mas cercano ~{:.1f} km)".format(float(nearest_km))
+    if reason:
+        lines.append(reason)
+
+    if suggested_incentive <= 0:
+        lines.append("Incentivo sugerido ahora: no obligatorio.")
+    else:
+        lines.append("Incentivo sugerido por demanda: {}".format(_fmt_pesos(suggested_incentive)))
+        if extra_suggested > 0:
+            lines.append("Recomendacion ahora: agrega al menos {} mas.".format(_fmt_pesos(extra_suggested)))
+        elif current_incentive > 0:
+            lines.append("Tu incentivo actual ya cubre esta sugerencia.")
+
+    return "\n".join(lines)
+
+
 # ---------- TÉRMINOS Y CONDICIONES ----------
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:

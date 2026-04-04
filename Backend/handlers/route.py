@@ -42,6 +42,7 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _OPTIONS_HINT,
     _fmt_pesos,
+    build_offer_demand_badge_text,
     _geo_siguiente_o_gps,
     _handle_text_field_input,
     _mostrar_confirmacion_geocode,
@@ -83,6 +84,7 @@ from services import (
     set_address_parking_status,
     PARKING_FEE_AMOUNT,
     get_ally_parking_fee_enabled,
+    build_offer_demand_preview,
 )
 from order_delivery import publish_route_to_couriers
 
@@ -351,9 +353,18 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        distance_km=total_km,
+        ally_id=context.user_data.get("ruta_ally_id"),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        text += "\n\n{}".format(demand_block)
     text += (
-        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
     )
     keyboard = _ruta_incentivo_keyboard() + [
