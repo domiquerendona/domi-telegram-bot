@@ -82,6 +82,28 @@ from services import (
 )
 
 
+PEDIDO_BASE_PRESET_AMOUNTS = (20000, 50000, 100000, 200000)
+PEDIDO_BASE_CALLBACK_PATTERN = (
+    r"^pedido_base_(" + "|".join(str(amount) for amount in PEDIDO_BASE_PRESET_AMOUNTS) + r"|otro)$"
+)
+
+
+def _pedido_base_keyboard():
+    """Construye el teclado de montos fijos para base requerida."""
+    keyboard = []
+    current_row = []
+    for amount in PEDIDO_BASE_PRESET_AMOUNTS:
+        current_row.append(
+            InlineKeyboardButton(_fmt_pesos(amount), callback_data=f"pedido_base_{amount}")
+        )
+        if len(current_row) == 2:
+            keyboard.append(current_row)
+            current_row = []
+    if current_row:
+        keyboard.append(current_row)
+    keyboard.append([InlineKeyboardButton("Otro valor", callback_data="pedido_base_otro")])
+    return InlineKeyboardMarkup(keyboard)
+
 
 def nuevo_pedido_desde_cotizador(update, context):
     """Entry point de nuevo_pedido_conv cuando el aliado confirma pedido desde el cotizador."""
@@ -818,19 +840,7 @@ def pedido_requiere_base_callback(update, context):
 
     elif data == "pedido_base_si":
         context.user_data["requires_cash"] = True
-        # Mostrar opciones de monto
-        keyboard = [
-            [
-                InlineKeyboardButton("$5.000", callback_data="pedido_base_5000"),
-                InlineKeyboardButton("$10.000", callback_data="pedido_base_10000"),
-            ],
-            [
-                InlineKeyboardButton("$20.000", callback_data="pedido_base_20000"),
-                InlineKeyboardButton("$50.000", callback_data="pedido_base_50000"),
-            ],
-            [InlineKeyboardButton("Otro valor", callback_data="pedido_base_otro")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = _pedido_base_keyboard()
         query.edit_message_text(
             "VALOR DE BASE\n\n"
             "Cuanto debe adelantar el repartidor?",
@@ -847,22 +857,21 @@ def pedido_valor_base_callback(update, context):
     query.answer()
     data = query.data
 
-    valores_map = {
-        "pedido_base_5000": 5000,
-        "pedido_base_10000": 10000,
-        "pedido_base_20000": 20000,
-        "pedido_base_50000": 50000,
-    }
-
-    if data in valores_map:
-        context.user_data["cash_required_amount"] = valores_map[data]
-        return calcular_cotizacion_y_confirmar(query, context, edit=True)
-
-    elif data == "pedido_base_otro":
+    if data == "pedido_base_otro":
         query.edit_message_text(
             "Escribe el valor de la base (solo numeros):"
         )
         return PEDIDO_VALOR_BASE
+
+    if data.startswith("pedido_base_"):
+        raw_amount = data[len("pedido_base_"):]
+        try:
+            amount = int(raw_amount)
+        except ValueError:
+            return PEDIDO_VALOR_BASE
+        if amount in PEDIDO_BASE_PRESET_AMOUNTS:
+            context.user_data["cash_required_amount"] = amount
+            return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
     return PEDIDO_VALOR_BASE
 
@@ -5654,7 +5663,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$")
         ],
         PEDIDO_VALOR_BASE: [
-            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=PEDIDO_BASE_CALLBACK_PATTERN),
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto)
         ],

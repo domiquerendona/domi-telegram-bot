@@ -2,10 +2,12 @@ import ast
 import re
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = REPO_ROOT / "Backend" / "main.py"
+ORDER_HANDLER_PATH = REPO_ROOT / "Backend" / "handlers" / "order.py"
 
 
 class _MainPatternVisitor(ast.NodeVisitor):
@@ -71,6 +73,72 @@ def _load_callback_patterns():
     return visitor.patterns
 
 
+class _InlineKeyboardButton:
+    def __init__(self, text, callback_data=None):
+        self.text = text
+        self.callback_data = callback_data
+
+
+class _InlineKeyboardMarkup:
+    def __init__(self, keyboard):
+        self.inline_keyboard = keyboard
+
+
+class _DummyQuery:
+    def __init__(self, data):
+        self.data = data
+        self.answer_calls = 0
+        self.edit_calls = []
+
+    def answer(self):
+        self.answer_calls += 1
+
+    def edit_message_text(self, text, reply_markup=None):
+        self.edit_calls.append({"text": text, "reply_markup": reply_markup})
+
+
+def _extract_order_base_namespace():
+    tree = ast.parse(ORDER_HANDLER_PATH.read_text(encoding="utf-8"))
+    target_assignments = {"PEDIDO_BASE_PRESET_AMOUNTS", "PEDIDO_BASE_CALLBACK_PATTERN"}
+    target_functions = {"_pedido_base_keyboard", "pedido_valor_base_callback"}
+    selected_nodes = []
+    found_assignments = set()
+    found_functions = set()
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            target_names = {
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            }
+            matches = target_names & target_assignments
+            if matches:
+                selected_nodes.append(node)
+                found_assignments.update(matches)
+        elif isinstance(node, ast.FunctionDef) and node.name in target_functions:
+            selected_nodes.append(node)
+            found_functions.add(node.name)
+
+    missing = (target_assignments - found_assignments) | (target_functions - found_functions)
+    if missing:
+        raise AssertionError(
+            "No se pudieron extraer nodos esperados de order.py: {}".format(sorted(missing))
+        )
+
+    namespace = {
+        "InlineKeyboardButton": _InlineKeyboardButton,
+        "InlineKeyboardMarkup": _InlineKeyboardMarkup,
+        "_fmt_pesos": lambda amount: f"${int(amount):,}".replace(",", "."),
+        "PEDIDO_VALOR_BASE": 970,
+    }
+    compiled = compile(
+        ast.Module(body=selected_nodes, type_ignores=[]),
+        filename=str(ORDER_HANDLER_PATH),
+        mode="exec",
+    )
+    exec(compiled, namespace)
+    return namespace
+
+
 class CallbackRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -121,6 +189,92 @@ class CallbackRoutingTests(unittest.TestCase):
                 "admpedidos_cancel_abort_24_7",
             ],
         )
+
+
+class PedidoBaseFlowTests(unittest.TestCase):
+    def _load_namespace(self):
+        return _extract_order_base_namespace()
+
+    def test_pedido_base_keyboard_shows_expected_buttons(self):
+        namespace = self._load_namespace()
+
+        markup = namespace["_pedido_base_keyboard"]()
+        buttons = [
+            [(button.text, button.callback_data) for button in row]
+            for row in markup.inline_keyboard
+        ]
+
+        self.assertEqual(
+            [
+                [("$20.000", "pedido_base_20000"), ("$50.000", "pedido_base_50000")],
+                [("$100.000", "pedido_base_100000"), ("$200.000", "pedido_base_200000")],
+                [("Otro valor", "pedido_base_otro")],
+            ],
+            buttons,
+        )
+
+    def test_pedido_base_callback_pattern_matches_current_supported_values(self):
+        namespace = self._load_namespace()
+        pattern = re.compile(namespace["PEDIDO_BASE_CALLBACK_PATTERN"])
+
+        for allowed in [
+            "pedido_base_20000",
+            "pedido_base_50000",
+            "pedido_base_100000",
+            "pedido_base_200000",
+            "pedido_base_otro",
+        ]:
+            self.assertIsNotNone(pattern.match(allowed), allowed)
+
+        for rejected in [
+            "pedido_base_5000",
+            "pedido_base_10000",
+            "pedido_base_30000",
+            "pedido_base_otra",
+        ]:
+            self.assertIsNone(pattern.match(rejected), rejected)
+
+    def test_pedido_valor_base_callback_saves_supported_preset_amount(self):
+        namespace = self._load_namespace()
+        calls = []
+
+        def _fake_calcular(query, context, edit=False):
+            calls.append((query, context, edit))
+            return "cotizacion_ok"
+
+        namespace["calcular_cotizacion_y_confirmar"] = _fake_calcular
+        query = _DummyQuery("pedido_base_100000")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(user_data={})
+
+        result = namespace["pedido_valor_base_callback"](update, context)
+
+        self.assertEqual(1, query.answer_calls)
+        self.assertEqual(100000, context.user_data["cash_required_amount"])
+        self.assertEqual("cotizacion_ok", result)
+        self.assertEqual([(query, context, True)], calls)
+        self.assertEqual([], query.edit_calls)
+
+    def test_pedido_valor_base_callback_otro_requests_manual_amount(self):
+        namespace = self._load_namespace()
+        calc_calls = []
+        namespace["calcular_cotizacion_y_confirmar"] = lambda *args, **kwargs: calc_calls.append(
+            (args, kwargs)
+        )
+        query = _DummyQuery("pedido_base_otro")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(user_data={})
+
+        result = namespace["pedido_valor_base_callback"](update, context)
+
+        self.assertEqual(1, query.answer_calls)
+        self.assertEqual(namespace["PEDIDO_VALOR_BASE"], result)
+        self.assertEqual([], calc_calls)
+        self.assertEqual(
+            [{"text": "Escribe el valor de la base (solo numeros):", "reply_markup": None}],
+            query.edit_calls,
+        )
+        self.assertEqual({}, context.user_data)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ Decision operativa:
 | `offer_` | `offer_inc_{order_id}x{monto}`, `offer_inc_otro_{order_id}` | `Backend/main.py`, `Backend/order_delivery.py` | `offer_suggest_inc_*` | No documentado | Documentar tal como esta |
 | `order_` | `order_(accept|reject|busy|pickup|delivered|release|cancel|cancel_confirm|cancel_abort|find_another|find_another_confirm|find_another_abort|wait_courier|call_courier|confirm_pickup|pinissue|pickupconfirm_...)_...` | `Backend/main.py`, `Backend/order_delivery.py` | `order_courier_callback` | Documentado | Mantener tal como esta |
 | `pagos_` | `pagos_(agregar|gestionar|cerrar|volver|ver_{id}|toggle_{id}_{flag}|delete_{id})` | `Backend/main.py` | `pagos_callback` | Documentado | Mantener tal como esta |
-| `pedido_` | `pedido_(cliente_*|sel_*|instr_*|tipo_*|base_*|retry_quote|inc_*|confirmar|cancelar|guardar_...)` | `Backend/main.py`, `Backend/order_delivery.py` | flujo de pedido y edicion de incentivo | Documentado | Mantener tal como esta |
+| `pedido_` | `pedido_(cliente_*|sel_*|instr_*|tipo_*|base_(si|no|20000|50000|100000|200000|otro)|retry_quote|inc_*|confirmar|cancelar|guardar_...)` | `Backend/main.py`, `Backend/order_delivery.py` | flujo de pedido y edicion de incentivo | Documentado | Mantener tal como esta |
 | `perfil_` | `perfil_change_*` | `Backend/main.py`, `Backend/profile_changes.py` | `perfil_change_*` | Documentado | Mantener tal como esta |
 | `pickup_` | `pickup_(select_*|list_*|geo_*|guardar_*)` | `Backend/main.py` | `pedido_pickup_*` | Documentado | Mantener tal como esta |
 | `plat_` | `plat_rec_(menu|pending|history|alerts|notify_{id})` | `Backend/main.py` | `plat_recargas_callback` | No documentado | Documentar tal como esta |

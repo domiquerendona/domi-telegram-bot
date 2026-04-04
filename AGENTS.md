@@ -143,6 +143,7 @@ Formato estándar actual: `{dominio}_{accion}` o `{dominio}_{accion}_{id}`
 También se aceptan formatos compuestos cuando el flujo lo requiere, por ejemplo:
 - `pedido_inc_{order_id}x{monto}`
 - `ruta_entregar_{route_id}_{seq}`
+- `pedido_base_{monto}` para montos fijos de base requerida (`20000`, `50000`, `100000`, `200000`)
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local
