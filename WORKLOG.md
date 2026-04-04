@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| (ninguna) | — | — | — |
+| codex | 2026-04-04 09:55 | WORKLOG.md, Backend/main.py, tests/test_callback_routing.py | Fix routing de cancelaciones/callbacks criticos + integracion segura de luisa-web hacia staging/main |
 
 ---
 
