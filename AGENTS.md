@@ -459,6 +459,8 @@ Esto incluye:
 
 Reglas:
 - La cancelación automática por falta de respuesta SIEMPRE se considera sin culpa de los actores.
+- Pedido y ruta NO se cancelan en la primera expiración del mercado; deben agotar las repeticiones configuradas del ciclo antes de la cancelación final.
+- Configuración vigente: 3 repeticiones automáticas del ciclo de mercado antes de cancelar definitivamente, respetando el timer propio de cada flujo.
 - El mensaje al creador del servicio DEBE dejar explícito que no se aplicó ningún cargo.
 - PROHIBIDO reutilizar motores de cancelación con penalidad para expiraciones automáticas de mercado.
 
@@ -1736,6 +1738,7 @@ Los tres flujos que siempre viajan juntos:
 **Aplica especialmente a:**
 - Radios GPS (ARRIVAL_RADIUS_KM, DELIVERY_RADIUS_KM)
 - Timers de tracking (T+5, T+15, T+20, auto-confirm T+2)
+- Ciclos de oferta/expiración de mercado y su número de repeticiones antes de cancelar
 - Botones de ayuda al admin (pin de recogida mal ubicado, pin de entrega mal ubicado)
 - Flujo de confirmación de llegada al pickup
 - Mensajes de estado al courier y al aliado

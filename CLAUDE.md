@@ -216,7 +216,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
-  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad.
+  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad y ahora agota 3 reintentos automáticos antes de cancelar. Los defaults del ciclo de mercado son configurables por `settings` (`market_retry_limit`, `order_market_cycle_seconds`, `route_market_cycle_seconds`) y el contador de reintentos se reconstruye al recuperar ofertas activas tras reinicio.
 - **`profile_changes.py`**: flujo de solicitudes de cambio de perfil de usuarios.
 
 ### Regla Anti-Importación Circular
@@ -1158,6 +1158,8 @@ Ruta ofertada → courier acepta
     → Al confirmar aliado: revela primera parada
 ```
 
+La oferta de rutas usa por defecto `route_market_cycle_seconds = 420` (7 min por ciclo) y el mismo contador de 3 reintentos automáticos antes de la cancelación final sin cargo. En cada reintento el creador recibe un mensaje corto confirmando que la búsqueda automática sigue activa.
+
 ### Pantalla de reordenamiento de paradas (nueva — 2026-03-24)
 
 Al aceptar una ruta, el courier ve la lista de paradas en el orden sugerido y puede reorganizarlas:
@@ -1310,12 +1312,20 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 
 0 min → pedido publicado  
 5 min → sugerencia de incentivo adicional  
-10 min → expiración automática  
+10 min → reintento automático del mercado (1/3)
+20 min → reintento automático del mercado (2/3)
+30 min → reintento automático del mercado (3/3)
+40 min → cancelación automática sin costo si nadie acepta
+
+Defaults configurables desde `settings`:
+- `market_retry_limit` → cantidad de reintentos automáticos antes de cancelar (default `3`)
+- `order_market_cycle_seconds` → duración de cada ciclo de mercado del pedido (default `600`)
+- `route_market_cycle_seconds` → duración de cada ciclo de mercado de la ruta (default `420`)
 
 **Cancelación del aliado**
 
 Cancelación manual (en cualquier momento) → sin costo
-Expiración automática (nadie tomó el servicio en 10 min) → sin costo
+Cancelación automática final (nadie tomó el servicio tras 3 reintentos del mercado) → sin costo
 Pedidos creados por administrador (ally_id = None) → sin costo
 **El fee $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
 

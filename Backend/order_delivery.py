@@ -216,7 +216,9 @@ def _get_route_durations(route, delivered_now=False):
 
 OFFER_TIMEOUT_SECONDS = 30
 OFFER_RETRY_SECONDS = 30
-MAX_CYCLE_SECONDS = 600  # 10 minutos
+MAX_CYCLE_SECONDS = 600  # Default: 10 minutos por ciclo de pedido
+MARKET_RETRY_LIMIT = 3   # Default: reintentos del mercado antes de cancelar
+DEFAULT_ROUTE_MAX_CYCLE_SECONDS = 420
 
 ARRIVAL_INACTIVITY_SECONDS = 5 * 60    # 5 min: Rappi-style
 ARRIVAL_WARN_SECONDS = 15 * 60         # 15 min: advertir al aliado
@@ -438,6 +440,11 @@ def _cancel_order_expire_job(context, order_id):
     _cancel_persistent_job(context, "order_expire_{}".format(order_id))
 
 
+def _cancel_route_expire_job(context, route_id):
+    """Cancela el job de expiracion automatica del mercado para una ruta."""
+    _cancel_persistent_job(context, "route_expire_{}".format(route_id))
+
+
 def _courier_is_within_pickup_radius(order, courier):
     """Retorna True si el courier esta dentro del radio valido para confirmar llegada."""
     pickup_lat, pickup_lng = _get_pickup_coords(order)
@@ -519,6 +526,167 @@ def _to_naive_utc(dt):
     return dt
 
 
+def _coerce_market_retry_count(value):
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _get_int_setting(key, default, minimum=0):
+    try:
+        raw = get_setting(key, str(default))
+    except Exception:
+        raw = str(default)
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = int(default)
+    return max(minimum, value)
+
+
+def _get_market_retry_limit():
+    return _get_int_setting("market_retry_limit", MARKET_RETRY_LIMIT, minimum=1)
+
+
+def _get_order_market_cycle_seconds():
+    return _get_int_setting("order_market_cycle_seconds", MAX_CYCLE_SECONDS, minimum=60)
+
+
+def _get_route_market_cycle_seconds():
+    return _get_int_setting("route_market_cycle_seconds", DEFAULT_ROUTE_MAX_CYCLE_SECONDS, minimum=60)
+
+
+def _build_market_job_data(id_key, entity_id, market_retry_count=0, extra=None):
+    data = {
+        id_key: entity_id,
+        "market_retry_count": _coerce_market_retry_count(market_retry_count),
+    }
+    if extra:
+        data.update(extra)
+    return data
+
+
+def _format_cycle_window_text(cycle_seconds):
+    if cycle_seconds % 60 == 0:
+        minutes = max(1, cycle_seconds // 60)
+        return "{} minuto{}".format(minutes, "" if minutes == 1 else "s")
+    return "{} segundos".format(max(1, int(cycle_seconds)))
+
+
+def _get_order_creator_chat_id(order):
+    try:
+        creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+        if creator_admin_id:
+            admin = get_admin_by_id(int(creator_admin_id))
+            if admin:
+                user = get_user_by_id(admin["user_id"])
+                telegram_id = _row_value(user, "telegram_id") if user else None
+                if telegram_id:
+                    return int(telegram_id)
+        ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
+        if ally_id:
+            ally = get_ally_by_id(int(ally_id))
+            if ally:
+                user = get_user_by_id(ally["user_id"])
+                telegram_id = _row_value(user, "telegram_id") if user else None
+                if telegram_id:
+                    return int(telegram_id)
+    except Exception as e:
+        logger.warning("Error obteniendo creador del pedido %s: %s", _row_value(order, "id"), e)
+    return None
+
+
+def _get_route_creator_chat_id(route):
+    try:
+        ally_id = route.get("ally_id") if hasattr(route, "get") else route["ally_id"]
+        if ally_id:
+            ally = get_ally_by_id(int(ally_id))
+            if ally:
+                user = get_user_by_id(ally["user_id"])
+                telegram_id = _row_value(user, "telegram_id") if user else None
+                if telegram_id:
+                    return int(telegram_id)
+    except Exception as e:
+        logger.warning("Error obteniendo creador de la ruta %s: %s", _row_value(route, "id"), e)
+    return None
+
+
+def _notify_order_market_retry(context, order, retry_count, retry_limit):
+    creator_chat_id = _get_order_creator_chat_id(order)
+    if not creator_chat_id:
+        return
+    cycle_text = _format_cycle_window_text(_get_order_market_cycle_seconds())
+    try:
+        context.bot.send_message(
+            chat_id=creator_chat_id,
+            text=(
+                "Seguimos buscando repartidor para el pedido #{}.\n"
+                "Se reinicio automaticamente la oferta porque nadie acepto en {}.\n"
+                "Reintento {}/{} del mercado en curso.\n"
+                "Aun no se aplica ningun cargo."
+            ).format(_row_value(order, "id"), cycle_text, retry_count, retry_limit),
+        )
+    except Exception as e:
+        logger.warning("No se pudo notificar reintento de mercado del pedido %s: %s", _row_value(order, "id"), e)
+
+
+def _notify_route_market_retry(context, route, retry_count, retry_limit):
+    creator_chat_id = _get_route_creator_chat_id(route)
+    if not creator_chat_id:
+        return
+    cycle_text = _format_cycle_window_text(_get_route_market_cycle_seconds())
+    try:
+        context.bot.send_message(
+            chat_id=creator_chat_id,
+            text=(
+                "Seguimos buscando repartidor para la ruta #{}.\n"
+                "Se reinicio automaticamente la oferta porque nadie acepto en {}.\n"
+                "Reintento {}/{} del mercado en curso.\n"
+                "Aun no se aplica ningun cargo."
+            ).format(_row_value(route, "id"), cycle_text, retry_count, retry_limit),
+        )
+    except Exception as e:
+        logger.warning("No se pudo notificar reintento de mercado de la ruta %s: %s", _row_value(route, "id"), e)
+
+
+def _get_pending_market_retry_counts():
+    counts = {"orders": {}, "routes": {}}
+    try:
+        pending_jobs = get_pending_scheduled_jobs()
+    except Exception as e:
+        logger.warning("No se pudieron recuperar reintentos pendientes del mercado: %s", e)
+        return counts
+
+    for row in pending_jobs:
+        job_name = row.get("job_name") or ""
+        job_data_raw = row.get("job_data") or "{}"
+        try:
+            job_data = json.loads(job_data_raw)
+        except Exception:
+            job_data = {}
+        market_retry_count = _coerce_market_retry_count(job_data.get("market_retry_count"))
+        if market_retry_count <= 0:
+            continue
+
+        if job_name.startswith("order_expire_"):
+            order_id = job_data.get("order_id")
+            if order_id:
+                counts["orders"][int(order_id)] = max(
+                    counts["orders"].get(int(order_id), 0),
+                    market_retry_count,
+                )
+        elif job_name.startswith("route_expire_"):
+            route_id = job_data.get("route_id")
+            if route_id:
+                counts["routes"][int(route_id)] = max(
+                    counts["routes"].get(int(route_id), 0),
+                    market_retry_count,
+                )
+
+    return counts
+
+
 def _build_cycle_info_for_expire(order):
     ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
     creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
@@ -533,10 +701,10 @@ def _build_cycle_info_for_expire(order):
         except Exception:
             admin_id = None
 
-    return {"ally_id": ally_id, "admin_id": admin_id}
+    return {"ally_id": ally_id, "admin_id": admin_id, "market_retry_count": 0}
 
 
-def _schedule_order_expire_job(context, order_id, reset_window=False):
+def _schedule_order_expire_job(context, order_id, reset_window=False, market_retry_count=0):
     """
     Programa la expiracion automatica del mercado para el pedido.
     En re-ofertas tras liberar un courier asignado se puede reiniciar la ventana.
@@ -547,15 +715,22 @@ def _schedule_order_expire_job(context, order_id, reset_window=False):
     if not order or order["status"] != "PUBLISHED":
         return
 
+    market_retry_count = _coerce_market_retry_count(market_retry_count)
+    job_data = _build_market_job_data("order_id", order_id, market_retry_count)
+    cycle_seconds = _get_order_market_cycle_seconds()
+    retry_limit = _get_market_retry_limit()
+
     if reset_window:
         logger.info(
-            "order_expire_reset_after_reoffer order_id=%s window=%ss",
+            "order_expire_reset_after_reoffer order_id=%s window=%ss retry=%s/%s",
             order_id,
-            MAX_CYCLE_SECONDS,
+            cycle_seconds,
+            market_retry_count,
+            retry_limit,
         )
         _schedule_persistent_job(
-            context, _order_expire_job, MAX_CYCLE_SECONDS,
-            "order_expire_{}".format(order_id), {"order_id": order_id},
+            context, _order_expire_job, cycle_seconds,
+            "order_expire_{}".format(order_id), job_data,
         )
         return
 
@@ -568,15 +743,19 @@ def _schedule_order_expire_job(context, order_id, reset_window=False):
         except Exception:
             elapsed = 0
 
-    remaining = MAX_CYCLE_SECONDS - elapsed
+    remaining = cycle_seconds - elapsed
     if remaining <= 0:
         cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id) or _build_cycle_info_for_expire(order)
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            market_retry_count,
+        )
         _expire_order(order_id, cycle_info, context)
         return
 
     _schedule_persistent_job(
         context, _order_expire_job, remaining,
-        "order_expire_{}".format(order_id), {"order_id": order_id},
+        "order_expire_{}".format(order_id), job_data,
     )
 
 
@@ -592,11 +771,16 @@ def _order_expire_job(context):
     if not order or order["status"] != "PUBLISHED":
         return
 
+    job_retry_count = _coerce_market_retry_count(data.get("market_retry_count"))
     cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id) or _build_cycle_info_for_expire(order)
+    cycle_info["market_retry_count"] = max(
+        _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        job_retry_count,
+    )
     _expire_order(order_id, cycle_info, context)
 
 
-def _schedule_offer_retry_job(context, order_id, delay_seconds=OFFER_RETRY_SECONDS):
+def _schedule_offer_retry_job(context, order_id, delay_seconds=OFFER_RETRY_SECONDS, market_retry_count=0):
     """Programa un reintento del ciclo cuando no hay couriers elegibles en este momento."""
     _cancel_offer_retry_job(context, order_id)
     _schedule_persistent_job(
@@ -604,7 +788,7 @@ def _schedule_offer_retry_job(context, order_id, delay_seconds=OFFER_RETRY_SECON
         _offer_retry_job,
         delay_seconds,
         "offer_retry_{}".format(order_id),
-        {"order_id": order_id},
+        _build_market_job_data("order_id", order_id, market_retry_count),
     )
 
 
@@ -619,6 +803,13 @@ def _offer_retry_job(context):
     order = get_order_by_id(order_id)
     if not order or order["status"] != "PUBLISHED":
         return
+
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
+    if cycle_info is not None:
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            _coerce_market_retry_count(data.get("market_retry_count")),
+        )
 
     if get_current_offer_for_order(order_id):
         return
@@ -638,7 +829,11 @@ def _activate_order_offer_dispatch(order_id, context, cycle_info, courier_ids):
             order_id,
             OFFER_RETRY_SECONDS,
         )
-        _schedule_offer_retry_job(context, order_id)
+        _schedule_offer_retry_job(
+            context,
+            order_id,
+            market_retry_count=_coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        )
 
     set_order_status(order_id, "PUBLISHED", "published_at")
     context.bot_data.setdefault("offer_cycles", {})[order_id] = cycle_info
@@ -660,26 +855,7 @@ def _offer_no_response_job(context):
     if not order or order["status"] != "PUBLISHED":
         return
 
-    # Obtener telegram_id del creador (aliado o admin)
-    creator_chat_id = None
-    try:
-        creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
-        if creator_admin_id:
-            admin = get_admin_by_id(int(creator_admin_id))
-            if admin:
-                user = get_user_by_id(admin["user_id"])
-                if user:
-                    creator_chat_id = int(user["telegram_id"])
-        elif order["ally_id"]:
-            ally = get_ally_by_id(int(order["ally_id"]))
-            if ally:
-                user = get_user_by_id(ally["user_id"])
-                if user:
-                    creator_chat_id = int(user["telegram_id"])
-    except Exception as e:
-        logger.warning("Error obteniendo creador para pedido %s: %s", order_id, e)
-        return
-
+    creator_chat_id = _get_order_creator_chat_id(order)
     if not creator_chat_id:
         return
 
@@ -1162,19 +1338,7 @@ def _route_no_response_job(context):
     if not route or route["status"] != "PUBLISHED":
         return
 
-    creator_chat_id = None
-    try:
-        ally_id = route["ally_id"]
-        if ally_id:
-            ally = get_ally_by_id(int(ally_id))
-            if ally:
-                user = get_user_by_id(ally["user_id"])
-                if user:
-                    creator_chat_id = int(user["telegram_id"])
-    except Exception as e:
-        logger.warning("Error obteniendo creador para ruta %s: %s", route_id, e)
-        return
-
+    creator_chat_id = _get_route_creator_chat_id(route)
     if not creator_chat_id:
         return
 
@@ -1211,7 +1375,7 @@ def _route_no_response_job(context):
         logger.warning("Error enviando sugerencia para ruta %s: %s", route_id, e)
 
 
-def _schedule_route_offer_retry_job(context, route_id, delay_seconds=None):
+def _schedule_route_offer_retry_job(context, route_id, delay_seconds=None, market_retry_count=0):
     """Programa un reintento del ciclo cuando no hay couriers elegibles para la ruta."""
     if delay_seconds is None:
         delay_seconds = ROUTE_OFFER_RETRY_SECONDS
@@ -1221,7 +1385,7 @@ def _schedule_route_offer_retry_job(context, route_id, delay_seconds=None):
         _route_offer_retry_job,
         delay_seconds,
         "route_offer_retry_{}".format(route_id),
-        {"route_id": route_id},
+        _build_market_job_data("route_id", route_id, market_retry_count),
     )
 
 
@@ -1237,10 +1401,84 @@ def _route_offer_retry_job(context):
     if not route or route["status"] != "PUBLISHED":
         return
 
+    cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id)
+    if cycle_info is not None:
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            _coerce_market_retry_count(data.get("market_retry_count")),
+        )
+
     if get_current_route_offer(route_id):
         return
 
     _send_next_route_offer(route_id, context)
+
+
+def _schedule_route_expire_job(context, route_id, market_retry_count=0):
+    """Programa la expiracion automatica del mercado para la ruta."""
+    _cancel_route_expire_job(context, route_id)
+
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    market_retry_count = _coerce_market_retry_count(market_retry_count)
+    cycle_seconds = _get_route_market_cycle_seconds()
+    job_data = _build_market_job_data("route_id", route_id, market_retry_count)
+
+    published_at = _to_naive_utc(_parse_dt(_row_value(route, "published_at") or _row_value(route, "created_at")))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    elapsed = 0
+    if published_at:
+        try:
+            elapsed = int(max(0, (now - published_at).total_seconds()))
+        except Exception:
+            elapsed = 0
+
+    remaining = cycle_seconds - elapsed
+    if remaining <= 0:
+        cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id) or _build_recovered_route_cycle_info(
+            route,
+            market_retry_count=market_retry_count,
+        )
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            market_retry_count,
+        )
+        _expire_route(route_id, cycle_info, context)
+        return
+
+    _schedule_persistent_job(
+        context,
+        _route_expire_job,
+        remaining,
+        "route_expire_{}".format(route_id),
+        job_data,
+    )
+
+
+def _route_expire_job(context):
+    """Job del deadline del mercado para una ruta publicada."""
+    mark_job_executed(context.job.name)
+    data = context.job.context or {}
+    route_id = data.get("route_id")
+    if not route_id:
+        return
+
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    job_retry_count = _coerce_market_retry_count(data.get("market_retry_count"))
+    cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id) or _build_recovered_route_cycle_info(
+        route,
+        market_retry_count=job_retry_count,
+    )
+    cycle_info["market_retry_count"] = max(
+        _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        job_retry_count,
+    )
+    _expire_route(route_id, cycle_info, context)
 
 
 def _get_route_candidate_courier_ids(route_id, ally_id, admin_id, excluded_courier_ids=None):
@@ -1309,7 +1547,11 @@ def _activate_route_offer_dispatch(route_id, context, cycle_info, courier_ids):
             route_id,
             ROUTE_OFFER_RETRY_SECONDS,
         )
-        _schedule_route_offer_retry_job(context, route_id)
+        _schedule_route_offer_retry_job(
+            context,
+            route_id,
+            market_retry_count=_coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        )
 
     update_route_status(route_id, "PUBLISHED", "published_at")
     context.bot_data.setdefault("route_offer_cycles", {})[route_id] = cycle_info
@@ -1330,6 +1572,7 @@ def repost_route_to_couriers(route_id, context, excluded_courier_ids=None):
     excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
     delete_route_offer_queue(route_id)
     _cancel_route_offer_retry_job(context, route_id)
+    _cancel_route_expire_job(context, route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
 
     ally_id = route["ally_id"]
@@ -1372,6 +1615,7 @@ def _handle_repost_ally_route(update, context, route_id):
     # Cancelar job de sugerencia y limpiar cola existente
     _cancel_route_no_response_job(context, route_id)
     _cancel_route_offer_retry_job(context, route_id)
+    _cancel_route_expire_job(context, route_id)
     delete_route_offer_queue(route_id)
     context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
     context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
@@ -1457,6 +1701,8 @@ def publish_order_to_couriers(
     dropoff_barrio=None,
     skip_fee_check=False,
     reset_expire_window=False,
+    market_retry_count=0,
+    schedule_no_response=True,
 ):
     """
     Inicia el ciclo secuencial de ofertas para un pedido.
@@ -1603,6 +1849,7 @@ def publish_order_to_couriers(
         "started_at": __import__("time").time(),
         "admin_id": admin_id,
         "ally_id": ally_id,
+        "market_retry_count": _coerce_market_retry_count(market_retry_count),
         "pickup_lat": p_lat,
         "pickup_lng": p_lng,
         "pickup_city": pickup_city,
@@ -1630,13 +1877,20 @@ def publish_order_to_couriers(
 
     # Programar sugerencia de incentivo si nadie acepta en T+5
     _cancel_no_response_job(context, order_id)
-    _schedule_persistent_job(
-        context, _offer_no_response_job, OFFER_NO_RESPONSE_SECONDS,
-        "offer_no_response_{}".format(order_id), {"order_id": order_id},
-    )
+    if schedule_no_response:
+        _schedule_persistent_job(
+            context, _offer_no_response_job, OFFER_NO_RESPONSE_SECONDS,
+            "offer_no_response_{}".format(order_id),
+            _build_market_job_data("order_id", order_id, market_retry_count),
+        )
 
     # Programar expiracion automatica del mercado.
-    _schedule_order_expire_job(context, order_id, reset_window=reset_expire_window)
+    _schedule_order_expire_job(
+        context,
+        order_id,
+        reset_window=reset_expire_window,
+        market_retry_count=market_retry_count,
+    )
 
     return len(courier_ids)
 
@@ -1706,7 +1960,12 @@ def _send_next_offer(order_id, context):
     context.job_queue.run_once(
         _offer_timeout_job,
         OFFER_TIMEOUT_SECONDS,
-        context={"order_id": order_id, "queue_id": next_offer["queue_id"]},
+        context=_build_market_job_data(
+            "order_id",
+            order_id,
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            extra={"queue_id": next_offer["queue_id"]},
+        ),
         name="offer_timeout_{}_{}".format(order_id, next_offer["queue_id"]),
     )
 
@@ -1725,6 +1984,13 @@ def _offer_timeout_job(context):
     current = get_current_offer_for_order(order_id)
     if not current or current["queue_id"] != queue_id:
         return
+
+    cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id)
+    if cycle_info is not None:
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            _coerce_market_retry_count(job_data.get("market_retry_count")),
+        )
 
     _cancel_offer_jobs(context, order_id, queue_id)
     mark_offer_response(queue_id, "EXPIRED")
@@ -1759,13 +2025,14 @@ def _try_restart_cycle(order_id, context):
 
     import time
     elapsed = time.time() - cycle_info["started_at"]
+    cycle_seconds = _get_order_market_cycle_seconds()
 
-    if elapsed >= MAX_CYCLE_SECONDS:
+    if elapsed >= cycle_seconds:
         logger.info(
             "_try_restart_cycle: pedido %s elapsed=%.0fs supera max=%ss; se expirara",
             order_id,
             elapsed,
-            MAX_CYCLE_SECONDS,
+            cycle_seconds,
         )
         _expire_order(order_id, cycle_info, context)
         return
@@ -1829,7 +2096,11 @@ def _try_restart_cycle(order_id, context):
             order_id,
             OFFER_RETRY_SECONDS,
         )
-        _schedule_offer_retry_job(context, order_id)
+        _schedule_offer_retry_job(
+            context,
+            order_id,
+            market_retry_count=_coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        )
         return
 
     delete_offer_queue(order_id)
@@ -1838,11 +2109,51 @@ def _try_restart_cycle(order_id, context):
 
 
 def _expire_order(order_id, cycle_info, context):
-    """Nadie acepto en 10 minutos. Cancela el pedido sin cobrar al aliado."""
+    """Reintenta el mercado y solo cancela al agotar los ciclos configurados."""
     order = get_order_by_id(order_id)
     if not order or order["status"] != "PUBLISHED":
         return
-    logger.info("_expire_order: pedido %s en PUBLISHED sera cancelado sin cargo", order_id)
+
+    retry_limit = _get_market_retry_limit()
+    market_retry_count = _coerce_market_retry_count(cycle_info.get("market_retry_count"))
+    if market_retry_count < retry_limit:
+        next_retry_count = market_retry_count + 1
+        logger.info(
+            "_expire_order: pedido %s agotó ciclo sin aceptacion; reintento de mercado %s/%s",
+            order_id,
+            next_retry_count,
+            retry_limit,
+        )
+
+        _cancel_no_response_job(context, order_id)
+        _cancel_order_expire_job(context, order_id)
+        _cancel_offer_retry_job(context, order_id)
+        current = get_current_offer_for_order(order_id)
+        if current:
+            _cancel_offer_jobs(context, order_id, current["queue_id"])
+        delete_offer_queue(order_id)
+        context.bot_data.get("offer_cycles", {}).pop(order_id, None)
+        context.bot_data.get("offer_messages", {}).pop(order_id, None)
+
+        _notify_order_market_retry(context, order, next_retry_count, retry_limit)
+        creator_admin_id = _row_value(order, "creator_admin_id")
+        publish_order_to_couriers(
+            order_id=order_id,
+            ally_id=_row_value(order, "ally_id"),
+            context=context,
+            admin_id_override=int(creator_admin_id) if creator_admin_id else None,
+            skip_fee_check=True,
+            reset_expire_window=True,
+            market_retry_count=next_retry_count,
+            schedule_no_response=False,
+        )
+        return
+
+    logger.info(
+        "_expire_order: pedido %s en PUBLISHED sera cancelado sin cargo tras %s reintentos de mercado",
+        order_id,
+        retry_limit,
+    )
 
     _cancel_no_response_job(context, order_id)
     _cancel_order_expire_job(context, order_id)
@@ -1870,9 +2181,9 @@ def _expire_order(order_id, cycle_info, context):
                     context.bot.send_message(
                         chat_id=ally_user["telegram_id"],
                         text=(
-                            "El pedido #{} no fue tomado por ningun repartidor y fue cancelado automaticamente.\n"
+                            "El pedido #{} no fue tomado por ningun repartidor despues de {} reintentos del mercado y fue cancelado automaticamente.\n"
                             "No se aplico ningun cargo."
-                        ).format(order_id),
+                        ).format(order_id, retry_limit),
                     )
         except Exception as e:
             logger.warning("No se pudo notificar expiracion al aliado: %s", e)
@@ -1888,9 +2199,9 @@ def _expire_order(order_id, cycle_info, context):
                         context.bot.send_message(
                             chat_id=user["telegram_id"],
                             text=(
-                                "El pedido expiró sin repartidor asignado.\n"
+                                "El pedido expiró sin repartidor asignado despues de {} reintentos del mercado.\n"
                                 "No se aplicó ningún cargo."
-                            ),
+                            ).format(retry_limit),
                         )
         except Exception as e:
             logger.warning("No se pudo notificar expiración al admin creador: %s", e)
@@ -4184,6 +4495,8 @@ def _handle_cancel_ally_route(update, context, route_id, confirm=False):
 
     _cancel_route_arrival_jobs(context, route_id)
     _cancel_route_no_response_job(context, route_id)
+    _cancel_route_offer_retry_job(context, route_id)
+    _cancel_route_expire_job(context, route_id)
     if current:
         _cancel_route_offer_jobs(context, route_id, current["queue_id"])
         mark_route_offer_response(current["queue_id"], "CANCELLED")
@@ -5353,7 +5666,7 @@ def _notify_admin_order_released(context, order, courier, reason_label, arrived_
 
 ROUTE_OFFER_TIMEOUT_SECONDS = 30
 ROUTE_OFFER_RETRY_SECONDS = 30
-ROUTE_MAX_CYCLE_SECONDS = 420  # 7 minutos
+ROUTE_MAX_CYCLE_SECONDS = DEFAULT_ROUTE_MAX_CYCLE_SECONDS  # Default: 7 minutos por ciclo de ruta
 
 
 def _route_offer_reply_markup(route_id):
@@ -5447,6 +5760,13 @@ def _route_offer_timeout_job(context):
     if not current or current["queue_id"] != queue_id:
         return
 
+    cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id)
+    if cycle_info is not None:
+        cycle_info["market_retry_count"] = max(
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            _coerce_market_retry_count(job_data.get("market_retry_count")),
+        )
+
     _cancel_route_offer_jobs(context, route_id, queue_id)
     mark_route_offer_response(queue_id, "EXPIRED")
 
@@ -5477,14 +5797,15 @@ def _try_restart_route_cycle(route_id, context):
 
     import time
     elapsed = time.time() - cycle_info["started_at"]
+    cycle_seconds = _get_route_market_cycle_seconds()
     logger.info("_try_restart_route_cycle: ruta %s elapsed=%.0fs", route_id, elapsed)
 
-    if elapsed >= ROUTE_MAX_CYCLE_SECONDS:
+    if elapsed >= cycle_seconds:
         logger.info(
             "_try_restart_route_cycle: ruta %s elapsed=%.0fs supera max=%ss; se expirara",
             route_id,
             elapsed,
-            ROUTE_MAX_CYCLE_SECONDS,
+            cycle_seconds,
         )
         _expire_route(route_id, cycle_info, context)
         return
@@ -5518,7 +5839,11 @@ def _try_restart_route_cycle(route_id, context):
             route_id,
             ROUTE_OFFER_RETRY_SECONDS,
         )
-        _schedule_route_offer_retry_job(context, route_id)
+        _schedule_route_offer_retry_job(
+            context,
+            route_id,
+            market_retry_count=_coerce_market_retry_count(cycle_info.get("market_retry_count")),
+        )
         return
 
     delete_route_offer_queue(route_id)
@@ -5528,10 +5853,51 @@ def _try_restart_route_cycle(route_id, context):
 
 
 def _expire_route(route_id, cycle_info, context):
-    """Nadie acepto la ruta en 7 minutos. Cancela la ruta."""
-    logger.info("_expire_route: ruta %s en PUBLISHED sera cancelada sin cargo", route_id)
+    """Reintenta el mercado de la ruta y solo cancela al agotar los ciclos configurados."""
+    route = get_route_by_id(route_id)
+    if not route or route["status"] != "PUBLISHED":
+        return
+
+    retry_limit = _get_market_retry_limit()
+    market_retry_count = _coerce_market_retry_count(cycle_info.get("market_retry_count"))
+    if market_retry_count < retry_limit:
+        next_retry_count = market_retry_count + 1
+        logger.info(
+            "_expire_route: ruta %s agotó ciclo sin aceptacion; reintento de mercado %s/%s",
+            route_id,
+            next_retry_count,
+            retry_limit,
+        )
+        _cancel_route_no_response_job(context, route_id)
+        _cancel_route_offer_retry_job(context, route_id)
+        _cancel_route_expire_job(context, route_id)
+        current = get_current_route_offer(route_id)
+        if current:
+            _cancel_route_offer_jobs(context, route_id, current["queue_id"])
+        delete_route_offer_queue(route_id)
+        context.bot_data.get("route_offer_cycles", {}).pop(route_id, None)
+        context.bot_data.get("route_offer_messages", {}).pop(route_id, None)
+
+        _notify_route_market_retry(context, route, next_retry_count, retry_limit)
+        admin_id_override = _row_value(route, "ally_admin_id_snapshot")
+        publish_route_to_couriers(
+            route_id=route_id,
+            ally_id=_row_value(route, "ally_id"),
+            context=context,
+            admin_id_override=int(admin_id_override) if admin_id_override else None,
+            market_retry_count=next_retry_count,
+            schedule_no_response=False,
+        )
+        return
+
+    logger.info(
+        "_expire_route: ruta %s en PUBLISHED sera cancelada sin cargo tras %s reintentos de mercado",
+        route_id,
+        retry_limit,
+    )
     _cancel_route_no_response_job(context, route_id)
     _cancel_route_offer_retry_job(context, route_id)
+    _cancel_route_expire_job(context, route_id)
     cancel_route(route_id, "SYSTEM")
     delete_route_offer_queue(route_id)
 
@@ -5548,9 +5914,9 @@ def _expire_route(route_id, cycle_info, context):
                     chat_id=ally_user["telegram_id"],
                     text=(
                         "Tu ruta #{} fue cancelada porque ningun repartidor "
-                        "la acepto en 7 minutos.\n"
+                        "la acepto despues de {} reintentos del mercado.\n"
                         "No se aplico ningun cargo."
-                    ).format(route_id),
+                    ).format(route_id, retry_limit),
                 )
     except Exception as e:
         logger.warning("No se pudo notificar expiracion de ruta al aliado: %s", e)
@@ -5561,6 +5927,8 @@ def _send_next_route_offer(route_id, context):
     route = get_route_by_id(route_id)
     if not route or route["status"] != "PUBLISHED":
         return
+
+    cycle_info = context.bot_data.get("route_offer_cycles", {}).get(route_id, {}) or {}
 
     next_offer = get_next_pending_route_offer(route_id)
     if not next_offer:
@@ -5594,12 +5962,25 @@ def _send_next_route_offer(route_id, context):
     context.job_queue.run_once(
         _route_offer_timeout_job,
         ROUTE_OFFER_TIMEOUT_SECONDS,
-        context={"route_id": route_id, "queue_id": next_offer["queue_id"]},
+        context=_build_market_job_data(
+            "route_id",
+            route_id,
+            _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+            extra={"queue_id": next_offer["queue_id"]},
+        ),
         name="route_offer_timeout_{}_{}".format(route_id, next_offer["queue_id"]),
     )
 
 
-def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None, excluded_courier_ids=None):
+def publish_route_to_couriers(
+    route_id,
+    ally_id,
+    context,
+    admin_id_override=None,
+    excluded_courier_ids=None,
+    market_retry_count=0,
+    schedule_no_response=True,
+):
     """Publica una ruta a la cola de couriers. Retorna cantidad de couriers en cola."""
     if admin_id_override:
         admin_id = admin_id_override
@@ -5670,6 +6051,7 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
         "admin_id": admin_id,
         "ally_id": ally_id,
         "excluded_couriers": excluded_courier_ids,
+        "market_retry_count": _coerce_market_retry_count(market_retry_count),
     }
 
     if not courier_ids:
@@ -5684,10 +6066,14 @@ def publish_route_to_couriers(route_id, ally_id, context, admin_id_override=None
 
     # Programar sugerencia de incentivo T+5 si nadie acepta la ruta
     _cancel_route_no_response_job(context, route_id)
-    _schedule_persistent_job(
-        context, _route_no_response_job, OFFER_NO_RESPONSE_SECONDS,
-        "route_no_response_{}".format(route_id), {"route_id": route_id},
-    )
+    if schedule_no_response:
+        _schedule_persistent_job(
+            context, _route_no_response_job, OFFER_NO_RESPONSE_SECONDS,
+            "route_no_response_{}".format(route_id),
+            _build_market_job_data("route_id", route_id, market_retry_count),
+        )
+
+    _schedule_route_expire_job(context, route_id, market_retry_count=market_retry_count)
 
     return len(courier_ids)
 
@@ -5802,6 +6188,7 @@ def _handle_route_accept(update, context, route_id):
 
     _cancel_route_offer_jobs(context, route_id, current["queue_id"])
     _cancel_route_no_response_job(context, route_id)
+    _cancel_route_expire_job(context, route_id)
     mark_route_offer_response(current["queue_id"], "ACCEPTED")
     assign_route_to_courier(route_id, courier_id, courier_admin_id_snapshot)
 
@@ -8772,6 +9159,7 @@ JOB_REGISTRY = {
     "_support_request_escalation_job": _support_request_escalation_job,
     "_route_no_response_job": _route_no_response_job,
     "_route_offer_retry_job": _route_offer_retry_job,
+    "_route_expire_job": _route_expire_job,
     "_route_arrival_inactivity_job": _route_arrival_inactivity_job,
     "_route_arrival_warn_job": _route_arrival_warn_job,
     "_route_arrival_deadline_job": _route_arrival_deadline_job,
@@ -8860,7 +9248,7 @@ def _remaining_timeout_seconds(offered_at_raw, timeout_seconds):
     return max(0, timeout_seconds - elapsed)
 
 
-def _build_recovered_order_cycle_info(order):
+def _build_recovered_order_cycle_info(order, market_retry_count=0):
     cycle_info = _build_cycle_info_for_expire(order)
     cycle_info.update(
         {
@@ -8875,12 +9263,13 @@ def _build_recovered_order_cycle_info(order):
             "cash_amount": int(_row_value(order, "cash_required_amount", 0) or 0),
             "excluded_couriers": get_order_excluded_couriers(_row_value(order, "id")),
             "order_distance_km": _row_value(order, "distance_km"),
+            "market_retry_count": _coerce_market_retry_count(market_retry_count),
         }
     )
     return cycle_info
 
 
-def _build_recovered_route_cycle_info(route):
+def _build_recovered_route_cycle_info(route, market_retry_count=0):
     ally_id = _row_value(route, "ally_id")
     admin_id = _row_value(route, "ally_admin_id_snapshot")
     if admin_id is None and ally_id is not None:
@@ -8895,6 +9284,7 @@ def _build_recovered_route_cycle_info(route):
         "admin_id": admin_id,
         "ally_id": ally_id,
         "excluded_couriers": set(),
+        "market_retry_count": _coerce_market_retry_count(market_retry_count),
     }
 
 
@@ -8902,6 +9292,7 @@ def recover_active_offer_dispatches(updater):
     """Rehidrata ofertas activas tras reinicio para que pedidos y rutas no queden huerfanos."""
     from types import SimpleNamespace
 
+    retry_counts = _get_pending_market_retry_counts()
     runtime = SimpleNamespace(
         bot=updater.bot,
         job_queue=updater.job_queue,
@@ -8915,9 +9306,21 @@ def recover_active_offer_dispatches(updater):
             continue
 
         order_id = int(_row_value(order, "id"))
-        runtime.bot_data.setdefault("offer_cycles", {}).setdefault(
-            order_id, _build_recovered_order_cycle_info(order)
+        order_cycles = runtime.bot_data.setdefault("offer_cycles", {})
+        recovered_cycle = _build_recovered_order_cycle_info(
+            order,
+            market_retry_count=retry_counts["orders"].get(order_id, 0),
         )
+        existing_cycle = order_cycles.get(order_id)
+        if existing_cycle:
+            existing_cycle["market_retry_count"] = max(
+                _coerce_market_retry_count(existing_cycle.get("market_retry_count")),
+                _coerce_market_retry_count(recovered_cycle.get("market_retry_count")),
+            )
+            cycle_info = existing_cycle
+        else:
+            order_cycles[order_id] = recovered_cycle
+            cycle_info = recovered_cycle
 
         current = get_current_offer_for_order(order_id)
         if current:
@@ -8927,7 +9330,12 @@ def recover_active_offer_dispatches(updater):
             runtime.job_queue.run_once(
                 _offer_timeout_job,
                 when=_remaining_timeout_seconds(current.get("offered_at"), OFFER_TIMEOUT_SECONDS),
-                context={"order_id": order_id, "queue_id": current["queue_id"]},
+                context=_build_market_job_data(
+                    "order_id",
+                    order_id,
+                    _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+                    extra={"queue_id": current["queue_id"]},
+                ),
                 name=job_name,
             )
             rescheduled_order_timeouts += 1
@@ -8940,9 +9348,21 @@ def recover_active_offer_dispatches(updater):
     rescheduled_route_timeouts = 0
     for route in get_routes_by_status("PUBLISHED", limit=500):
         route_id = int(_row_value(route, "id"))
-        runtime.bot_data.setdefault("route_offer_cycles", {}).setdefault(
-            route_id, _build_recovered_route_cycle_info(route)
+        route_cycles = runtime.bot_data.setdefault("route_offer_cycles", {})
+        recovered_cycle = _build_recovered_route_cycle_info(
+            route,
+            market_retry_count=retry_counts["routes"].get(route_id, 0),
         )
+        existing_cycle = route_cycles.get(route_id)
+        if existing_cycle:
+            existing_cycle["market_retry_count"] = max(
+                _coerce_market_retry_count(existing_cycle.get("market_retry_count")),
+                _coerce_market_retry_count(recovered_cycle.get("market_retry_count")),
+            )
+            cycle_info = existing_cycle
+        else:
+            route_cycles[route_id] = recovered_cycle
+            cycle_info = recovered_cycle
 
         current = get_current_route_offer(route_id)
         if current:
@@ -8952,7 +9372,12 @@ def recover_active_offer_dispatches(updater):
             runtime.job_queue.run_once(
                 _route_offer_timeout_job,
                 when=_remaining_timeout_seconds(current.get("offered_at"), ROUTE_OFFER_TIMEOUT_SECONDS),
-                context={"route_id": route_id, "queue_id": current["queue_id"]},
+                context=_build_market_job_data(
+                    "route_id",
+                    route_id,
+                    _coerce_market_retry_count(cycle_info.get("market_retry_count")),
+                    extra={"queue_id": current["queue_id"]},
+                ),
                 name=job_name,
             )
             rescheduled_route_timeouts += 1
@@ -8962,9 +9387,11 @@ def recover_active_offer_dispatches(updater):
         recovered_routes += 1
 
     logger.info(
-        "recover_active_offer_dispatches: pedidos_reactivados=%s, timeouts_pedidos=%s, rutas_reactivadas=%s, timeouts_rutas=%s",
+        "recover_active_offer_dispatches: pedidos_reactivados=%s, timeouts_pedidos=%s, rutas_reactivadas=%s, timeouts_rutas=%s, retries_pedidos=%s, retries_rutas=%s",
         recovered_orders,
         rescheduled_order_timeouts,
         recovered_routes,
         rescheduled_route_timeouts,
+        len(retry_counts["orders"]),
+        len(retry_counts["routes"]),
     )

@@ -104,7 +104,294 @@ class ArrivalWaitOverrideTests(unittest.TestCase):
         self.assertIs(args[1], order_delivery._order_expire_job)
         self.assertEqual(order_delivery.MAX_CYCLE_SECONDS, args[2])
         self.assertEqual("order_expire_99", args[3])
-        self.assertEqual({"order_id": 99}, args[4])
+        self.assertEqual({"order_id": 99, "market_retry_count": 0}, args[4])
+
+    @patch("order_delivery._cancel_offer_jobs")
+    @patch("order_delivery.cancel_order")
+    @patch("order_delivery.publish_order_to_couriers")
+    @patch("order_delivery._notify_order_market_retry")
+    @patch("order_delivery.delete_offer_queue")
+    @patch("order_delivery.get_current_offer_for_order")
+    @patch("order_delivery._cancel_offer_retry_job")
+    @patch("order_delivery._cancel_order_expire_job")
+    @patch("order_delivery._cancel_no_response_job")
+    @patch("order_delivery.get_order_by_id")
+    def test_expire_order_reintenta_mercado_antes_de_cancelar(
+        self,
+        mock_get_order_by_id,
+        _mock_cancel_no_response_job,
+        _mock_cancel_order_expire_job,
+        _mock_cancel_offer_retry_job,
+        mock_get_current_offer,
+        _mock_delete_offer_queue,
+        mock_notify_order_market_retry,
+        mock_publish_order_to_couriers,
+        mock_cancel_order,
+        _mock_cancel_offer_jobs,
+    ):
+        mock_get_order_by_id.return_value = {
+            "status": "PUBLISHED",
+            "ally_id": 12,
+            "creator_admin_id": None,
+        }
+        mock_get_current_offer.return_value = None
+        context = self._context()
+        context.bot_data = {"offer_cycles": {99: {}}, "offer_messages": {99: {}}}
+
+        order_delivery._expire_order(
+            99,
+            {"ally_id": 12, "admin_id": 7, "market_retry_count": 0},
+            context,
+        )
+
+        mock_cancel_order.assert_not_called()
+        mock_publish_order_to_couriers.assert_called_once_with(
+            order_id=99,
+            ally_id=12,
+            context=context,
+            admin_id_override=None,
+            skip_fee_check=True,
+            reset_expire_window=True,
+            market_retry_count=1,
+            schedule_no_response=False,
+        )
+        mock_notify_order_market_retry.assert_called_once_with(context, mock_get_order_by_id.return_value, 1, 3)
+
+    @patch("order_delivery.get_user_by_id")
+    @patch("order_delivery.get_ally_by_id")
+    @patch("order_delivery.publish_order_to_couriers")
+    @patch("order_delivery._cancel_offer_jobs")
+    @patch("order_delivery.cancel_order")
+    @patch("order_delivery.delete_offer_queue")
+    @patch("order_delivery.get_current_offer_for_order")
+    @patch("order_delivery._cancel_offer_retry_job")
+    @patch("order_delivery._cancel_order_expire_job")
+    @patch("order_delivery._cancel_no_response_job")
+    @patch("order_delivery.get_order_by_id")
+    def test_expire_order_cancela_al_agotar_reintentos(
+        self,
+        mock_get_order_by_id,
+        _mock_cancel_no_response_job,
+        _mock_cancel_order_expire_job,
+        _mock_cancel_offer_retry_job,
+        mock_get_current_offer,
+        _mock_delete_offer_queue,
+        mock_cancel_order,
+        _mock_cancel_offer_jobs,
+        mock_publish_order_to_couriers,
+        mock_get_ally_by_id,
+        mock_get_user_by_id,
+    ):
+        mock_get_order_by_id.return_value = {
+            "status": "PUBLISHED",
+            "ally_id": 12,
+            "creator_admin_id": None,
+        }
+        mock_get_current_offer.return_value = None
+        mock_get_ally_by_id.return_value = {"user_id": 44}
+        mock_get_user_by_id.return_value = {"telegram_id": 555}
+        context = self._context()
+
+        order_delivery._expire_order(
+            99,
+            {
+                "ally_id": 12,
+                "admin_id": 7,
+                "market_retry_count": order_delivery.MARKET_RETRY_LIMIT,
+            },
+            context,
+        )
+
+        mock_publish_order_to_couriers.assert_not_called()
+        mock_cancel_order.assert_called_once_with(99, "SYSTEM")
+        context.bot.send_message.assert_called_once()
+        self.assertIn(
+            "despues de 3 reintentos del mercado",
+            context.bot.send_message.call_args.kwargs["text"],
+        )
+
+    @patch("order_delivery._cancel_route_offer_jobs")
+    @patch("order_delivery.cancel_route")
+    @patch("order_delivery.publish_route_to_couriers")
+    @patch("order_delivery._notify_route_market_retry")
+    @patch("order_delivery.delete_route_offer_queue")
+    @patch("order_delivery.get_current_route_offer")
+    @patch("order_delivery._cancel_route_expire_job")
+    @patch("order_delivery._cancel_route_offer_retry_job")
+    @patch("order_delivery._cancel_route_no_response_job")
+    @patch("order_delivery.get_route_by_id")
+    def test_expire_route_reintenta_mercado_antes_de_cancelar(
+        self,
+        mock_get_route_by_id,
+        _mock_cancel_route_no_response_job,
+        _mock_cancel_route_offer_retry_job,
+        _mock_cancel_route_expire_job,
+        mock_get_current_route_offer,
+        _mock_delete_route_offer_queue,
+        mock_notify_route_market_retry,
+        mock_publish_route_to_couriers,
+        mock_cancel_route,
+        _mock_cancel_route_offer_jobs,
+    ):
+        mock_get_route_by_id.return_value = {
+            "status": "PUBLISHED",
+            "ally_id": 21,
+            "ally_admin_id_snapshot": 8,
+        }
+        mock_get_current_route_offer.return_value = None
+        context = self._context()
+        context.bot_data = {"route_offer_cycles": {77: {}}, "route_offer_messages": {77: {}}}
+
+        order_delivery._expire_route(
+            77,
+            {"ally_id": 21, "admin_id": 8, "market_retry_count": 0},
+            context,
+        )
+
+        mock_cancel_route.assert_not_called()
+        mock_publish_route_to_couriers.assert_called_once_with(
+            route_id=77,
+            ally_id=21,
+            context=context,
+            admin_id_override=8,
+            market_retry_count=1,
+            schedule_no_response=False,
+        )
+        mock_notify_route_market_retry.assert_called_once_with(context, mock_get_route_by_id.return_value, 1, 3)
+
+    @patch("order_delivery._schedule_persistent_job")
+    @patch("order_delivery.get_route_by_id")
+    @patch("order_delivery._cancel_route_expire_job")
+    def test_schedule_route_expire_job_persiste_retry_count(
+        self,
+        _mock_cancel_route_expire_job,
+        mock_get_route_by_id,
+        mock_schedule_persistent_job,
+    ):
+        mock_get_route_by_id.return_value = {"status": "PUBLISHED", "published_at": None}
+        context = self._context()
+
+        order_delivery._schedule_route_expire_job(
+            context,
+            route_id=77,
+            market_retry_count=2,
+        )
+
+        mock_schedule_persistent_job.assert_called_once()
+        args = mock_schedule_persistent_job.call_args[0]
+        self.assertIs(args[0], context)
+        self.assertIs(args[1], order_delivery._route_expire_job)
+        self.assertEqual(order_delivery.ROUTE_MAX_CYCLE_SECONDS, args[2])
+        self.assertEqual("route_expire_77", args[3])
+        self.assertEqual({"route_id": 77, "market_retry_count": 2}, args[4])
+
+    @patch("order_delivery.get_pending_scheduled_jobs")
+    @patch("order_delivery.get_current_route_offer")
+    @patch("order_delivery.get_current_offer_for_order")
+    @patch("order_delivery.get_routes_by_status")
+    @patch("order_delivery.get_all_orders")
+    @patch("order_delivery.get_order_excluded_couriers")
+    def test_recover_active_offer_dispatches_recupera_market_retry_count(
+        self,
+        mock_get_order_excluded_couriers,
+        mock_get_all_orders,
+        mock_get_routes_by_status,
+        mock_get_current_offer_for_order,
+        mock_get_current_route_offer,
+        mock_get_pending_scheduled_jobs,
+    ):
+        mock_get_order_excluded_couriers.return_value = set()
+        mock_get_all_orders.return_value = [
+            {"id": 11, "status": "PUBLISHED", "created_at": "2026-04-04 10:00:00"},
+        ]
+        mock_get_routes_by_status.return_value = [
+            {
+                "id": 22,
+                "status": "PUBLISHED",
+                "published_at": "2026-04-04 10:05:00",
+                "ally_id": 5,
+                "ally_admin_id_snapshot": 8,
+            },
+        ]
+        mock_get_current_offer_for_order.return_value = {"queue_id": 501, "offered_at": "2026-04-04 10:09:00"}
+        mock_get_current_route_offer.return_value = {"queue_id": 601, "offered_at": "2026-04-04 10:09:30"}
+        mock_get_pending_scheduled_jobs.return_value = [
+            {
+                "job_name": "order_expire_11",
+                "job_data": "{\"order_id\": 11, \"market_retry_count\": 2}",
+            },
+            {
+                "job_name": "route_expire_22",
+                "job_data": "{\"route_id\": 22, \"market_retry_count\": 1}",
+            },
+        ]
+
+        updater = SimpleNamespace(
+            bot=MagicMock(),
+            job_queue=MagicMock(),
+            dispatcher=SimpleNamespace(bot_data={}),
+        )
+        updater.job_queue.get_jobs_by_name.return_value = []
+
+        order_delivery.recover_active_offer_dispatches(updater)
+
+        self.assertEqual(2, updater.dispatcher.bot_data["offer_cycles"][11]["market_retry_count"])
+        self.assertEqual(1, updater.dispatcher.bot_data["route_offer_cycles"][22]["market_retry_count"])
+
+        run_once_calls = updater.job_queue.run_once.call_args_list
+        order_call = next(call for call in run_once_calls if call.kwargs["name"] == "offer_timeout_11_501")
+        route_call = next(call for call in run_once_calls if call.kwargs["name"] == "route_offer_timeout_22_601")
+        self.assertEqual(2, order_call.kwargs["context"]["market_retry_count"])
+        self.assertEqual(1, route_call.kwargs["context"]["market_retry_count"])
+
+    @patch("order_delivery.get_user_by_id")
+    @patch("order_delivery.get_ally_by_id")
+    @patch("order_delivery.publish_route_to_couriers")
+    @patch("order_delivery._cancel_route_offer_jobs")
+    @patch("order_delivery.cancel_route")
+    @patch("order_delivery.delete_route_offer_queue")
+    @patch("order_delivery.get_current_route_offer")
+    @patch("order_delivery._cancel_route_expire_job")
+    @patch("order_delivery._cancel_route_offer_retry_job")
+    @patch("order_delivery._cancel_route_no_response_job")
+    @patch("order_delivery.get_route_by_id")
+    def test_expire_route_cancela_al_agotar_reintentos(
+        self,
+        mock_get_route_by_id,
+        _mock_cancel_route_no_response_job,
+        _mock_cancel_route_offer_retry_job,
+        _mock_cancel_route_expire_job,
+        mock_get_current_route_offer,
+        _mock_delete_route_offer_queue,
+        mock_cancel_route,
+        _mock_cancel_route_offer_jobs,
+        mock_publish_route_to_couriers,
+        mock_get_ally_by_id,
+        mock_get_user_by_id,
+    ):
+        mock_get_route_by_id.return_value = {
+            "status": "PUBLISHED",
+            "ally_id": 21,
+            "ally_admin_id_snapshot": 8,
+        }
+        mock_get_current_route_offer.return_value = None
+        mock_get_ally_by_id.return_value = {"user_id": 71}
+        mock_get_user_by_id.return_value = {"telegram_id": 999}
+        context = self._context()
+
+        order_delivery._expire_route(
+            77,
+            {"ally_id": 21, "admin_id": 8, "market_retry_count": order_delivery.MARKET_RETRY_LIMIT},
+            context,
+        )
+
+        mock_publish_route_to_couriers.assert_not_called()
+        mock_cancel_route.assert_called_once_with(77, "SYSTEM")
+        context.bot.send_message.assert_called_once()
+        self.assertIn(
+            "despues de 3 reintentos del mercado",
+            context.bot.send_message.call_args.kwargs["text"],
+        )
 
     @patch("order_delivery.mark_job_executed")
     @patch("order_delivery.get_courier_by_id")
