@@ -86,6 +86,9 @@ PEDIDO_BASE_PRESET_AMOUNTS = (20000, 50000, 100000, 200000)
 PEDIDO_BASE_CALLBACK_PATTERN = (
     r"^pedido_base_(" + "|".join(str(amount) for amount in PEDIDO_BASE_PRESET_AMOUNTS) + r"|otro)$"
 )
+PICKUP_PREVIEW_CONFIRM_CALLBACK = "pickup_preview_confirm"
+PICKUP_PREVIEW_CHANGE_CALLBACK = "pickup_preview_change"
+PICKUP_PREVIEW_CALLBACK_PATTERN = r"^pickup_preview_(confirm|change)$"
 
 
 def _pedido_base_keyboard():
@@ -2075,14 +2078,121 @@ def pedido_pickup_guardar_callback(update, context):
     return continuar_despues_pickup(query, context, edit=False)
 
 
-def continuar_despues_pickup(query, context, edit=True):
-    """Continua el flujo despues de seleccionar el pickup."""
+def _pickup_preview_chat_id(query_or_update):
+    if hasattr(query_or_update, "message") and query_or_update.message:
+        return query_or_update.message.chat_id
+    return getattr(query_or_update, "chat_id", None)
+
+
+def _clear_pickup_preview_location(context, chat_id):
+    message_id = context.user_data.pop("pickup_preview_location_message_id", None)
+    if not message_id or not chat_id:
+        return
+    try:
+        context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+def mostrar_preview_pickup(query_or_update, context, edit=False):
+    """Muestra un preview del pickup seleccionado antes de continuar el flujo."""
+    pickup_label = context.user_data.get("pickup_label") or "Recogida"
+    pickup_address = context.user_data.get("pickup_address") or "No disponible"
+    pickup_city = context.user_data.get("pickup_city", "")
+    pickup_barrio = context.user_data.get("pickup_barrio", "")
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    pickup_area = "{}, {}".format(pickup_barrio, pickup_city).strip(", ") or "No disponible"
+
+    keyboard = []
+    if has_valid_coords(pickup_lat, pickup_lng):
+        gmaps_url = "https://www.google.com/maps?q={},{}".format(pickup_lat, pickup_lng)
+        keyboard.append([InlineKeyboardButton("Abrir en Google Maps", url=gmaps_url)])
+    keyboard.append([InlineKeyboardButton("Confirmar recogida", callback_data=PICKUP_PREVIEW_CONFIRM_CALLBACK)])
+    keyboard.append([InlineKeyboardButton("Cambiar pickup", callback_data=PICKUP_PREVIEW_CHANGE_CALLBACK)])
+
+    text = (
+        "PREVIEW DEL PUNTO DE RECOGIDA\n\n"
+        "Punto: {}\n"
+        "Direccion: {}\n"
+        "Zona: {}\n\n"
+        "Te envio el pin de esta recogida en el siguiente mensaje para que la revises antes de continuar.\n\n"
+        "Confirmas que este es el punto de recogida?"
+    ).format(pickup_label, pickup_address, pickup_area)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+
+    chat_id = _pickup_preview_chat_id(query_or_update)
+    _clear_pickup_preview_location(context, chat_id)
+    if chat_id and has_valid_coords(pickup_lat, pickup_lng):
+        try:
+            msg = context.bot.send_location(
+                chat_id=chat_id,
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+            context.user_data["pickup_preview_location_message_id"] = msg.message_id
+        except Exception:
+            context.user_data.pop("pickup_preview_location_message_id", None)
+
+    logger.info(
+        "pickup_preview_shown ally_id=%s chat_id=%s pickup_label=%s",
+        context.user_data.get("ally_id"),
+        chat_id,
+        pickup_label,
+    )
+    return PEDIDO_PICKUP_SELECTOR
+
+
+def _continuar_flujo_despues_pickup_confirmado(query, context, edit=True):
+    """Continua el flujo una vez el aliado confirma el pickup seleccionado."""
     # Verificar si ya tenemos tipo de servicio
     if not context.user_data.get("service_type"):
         return mostrar_selector_tipo_servicio(query, context, edit=edit)
 
     # Ya tenemos tipo, preguntar por base
     return mostrar_pregunta_base(query, context, edit=edit)
+
+
+def continuar_despues_pickup(query, context, edit=True):
+    """Muestra preview del pickup y espera confirmacion del aliado."""
+    if not context.user_data.get("pickup_address"):
+        return _continuar_flujo_despues_pickup_confirmado(query, context, edit=edit)
+    return mostrar_preview_pickup(query, context, edit=edit)
+
+
+def pedido_pickup_preview_callback(update, context):
+    """Maneja la confirmacion o cambio del pickup previsualizado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    _clear_pickup_preview_location(context, _pickup_preview_chat_id(query))
+
+    if data == PICKUP_PREVIEW_CONFIRM_CALLBACK:
+        logger.info(
+            "pickup_preview_confirmed ally_id=%s chat_id=%s",
+            context.user_data.get("ally_id"),
+            _pickup_preview_chat_id(query),
+        )
+        return _continuar_flujo_despues_pickup_confirmado(query, context, edit=True)
+
+    if data == PICKUP_PREVIEW_CHANGE_CALLBACK:
+        logger.info(
+            "pickup_preview_change_requested ally_id=%s chat_id=%s",
+            context.user_data.get("ally_id"),
+            _pickup_preview_chat_id(query),
+        )
+        return mostrar_selector_pickup(query, context, edit=True)
+
+    query.edit_message_text("Opcion no valida.")
+    return ConversationHandler.END
 
 
 def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None):
@@ -5628,7 +5738,8 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
-            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
+            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_"),
+            CallbackQueryHandler(pedido_pickup_preview_callback, pattern=PICKUP_PREVIEW_CALLBACK_PATTERN),
         ],
         PEDIDO_PICKUP_LISTA: [
             CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_list_")

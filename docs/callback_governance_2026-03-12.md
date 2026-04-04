@@ -46,7 +46,7 @@ Decision operativa:
 | `pagos_` | `pagos_(agregar|gestionar|cerrar|volver|ver_{id}|toggle_{id}_{flag}|delete_{id})` | `Backend/main.py` | `pagos_callback` | Documentado | Mantener tal como esta |
 | `pedido_` | `pedido_(cliente_*|sel_*|instr_*|tipo_*|base_(si|no|20000|50000|100000|200000|otro)|retry_quote|inc_*|confirmar|cancelar|guardar_...)` | `Backend/main.py`, `Backend/order_delivery.py` | flujo de pedido y edicion de incentivo | Documentado | Mantener tal como esta |
 | `perfil_` | `perfil_change_*` | `Backend/main.py`, `Backend/profile_changes.py` | `perfil_change_*` | Documentado | Mantener tal como esta |
-| `pickup_` | `pickup_(select_*|list_*|geo_*|guardar_*)` | `Backend/main.py` | `pedido_pickup_*` | Documentado | Mantener tal como esta |
+| `pickup_` | `pickup_(select_*|list_*|geo_*|guardar_*|preview_(confirm|change))` | `Backend/main.py`, `Backend/handlers/order.py` | `pedido_pickup_*`, `pedido_pickup_preview_callback` | Documentado | Mantener tal como esta |
 | `plat_` | `plat_rec_(menu|pending|history|alerts|notify_{id})` | `Backend/main.py` | `plat_recargas_callback` | No documentado | Documentar tal como esta |
 | `preview_` | `preview_*` | `Backend/main.py` | `preview_callback` | Documentado | Mantener tal como esta |
 | `pricing_` | `pricing_(menu_*|edit_*|volver|exit)` | `Backend/main.py` | `tarifas_edit_callback` | Documentado | Mantener tal como esta |
