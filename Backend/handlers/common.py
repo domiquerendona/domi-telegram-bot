@@ -702,6 +702,28 @@ def build_offer_demand_badge_text(preview: dict) -> str:
 
 # ---------- TÉRMINOS Y CONDICIONES ----------
 
+def build_offer_suggestion_button_row(preview: dict, callback_template: str, allowed_amounts=None):
+    """Construye una fila discreta de sugerencia cuando falta incentivo para la demanda actual."""
+    if not preview or not callback_template:
+        return None
+
+    signal_code = (preview.get("signal_code") or "").strip().upper()
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    if signal_code not in ("MEDIUM", "HIGH") or extra_suggested <= 0:
+        return None
+
+    allowed = set(int(v) for v in (allowed_amounts or []))
+    if allowed and extra_suggested not in allowed:
+        return None
+
+    return [
+        InlineKeyboardButton(
+            "Aplicar sugerencia ({})".format(_fmt_pesos(extra_suggested)),
+            callback_data=callback_template.format(amount=extra_suggested),
+        )
+    ]
+
+
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     logger.debug(
         "[terms][ensure] role=%s telegram_id=%s via_callback=%s",

@@ -135,6 +135,7 @@ domi-telegram-bot/
 │
 ├── docs/
 │   ├── HITOS.md                  # Documento histórico de hitos
+│   ├── roadmap_futuro.md         # Mejoras futuras importantes activables por etapa
 │   ├── reglas_operativas.md      # Matriz de estados y botones UI
 │   ├── testing_strategy.md       # Estrategia de testing vigente
 │   ├── alineacion_codigo_documentacion_2026-03-12.md  # Snapshot histórico de auditoría
@@ -375,7 +376,7 @@ Separador operativo actual: guion bajo (`_`).
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
-| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
 | `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
@@ -1335,11 +1336,31 @@ Modo red pequena vigente:
 - `3+` elegibles -> `BAJA` y el incentivo queda como opcional
 - este bloque no bloquea publicacion, no cambia matching y no aplica cobros automaticos; solo orienta antes de confirmar
 
+Mejora aplicada sobre ese bloque (2026-04-04):
+
+- cuando el semaforo sale en `MEDIA` o `ALTA` y falta incentivo para alcanzar la sugerencia, el preview muestra un boton discreto `Aplicar sugerencia`
+- aplica en pedido del aliado, ruta del aliado y pedido especial del admin
+- se reutilizan callbacks existentes de incentivo; no hay cobro automatico ni publicacion automatica
+
 Recordatorio de escalado futuro:
 
 - recalibrar este semaforo cuando la operacion tenga volumen sostenido y una red claramente mayor de aliados/repartidores activos
 - en esa etapa retomar: umbrales mas exigentes, incentivo sugerido con un toque y estado del mercado en vivo post-publicacion
 - referencia tecnica actual: bloque de umbrales en `build_offer_demand_preview(...)` de `Backend/services.py`
+- roadmap centralizado: `docs/roadmap_futuro.md`
+
+### Estado simple post-publicacion (IMPLEMENTADO 2026-04-04)
+
+Despues de publicar un pedido o ruta, el creador ahora ve un bloque corto con:
+
+- busqueda en curso
+- cantidad ofertada en ese momento o aviso de que aun no hay elegibles
+- ciclo actual del mercado (`1/N`)
+- aclaracion explicita de cancelacion sin cargo si se agotan los ciclos
+
+Motor usado:
+
+- `build_market_launch_status_text(...)` en `Backend/order_delivery.py`
 
 ### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
 
@@ -1509,7 +1530,7 @@ ADMIN_PEDIDO_TARIFA (912): admin_pedido_tarifa_handler → ADMIN_PEDIDO_INSTRUC
 
 ADMIN_PEDIDO_INSTRUC (913):
   admin_pedido_instruc_handler / admin_pedido_sin_instruc_callback → preview
-  admin_pedido_inc_fijo_callback (1500/2000/3000) → actualiza preview
+  admin_pedido_inc_fijo_callback (1000/1500/2000/3000) → actualiza preview
   admin_pedido_inc_otro_callback → ADMIN_PEDIDO_INC_MONTO
   admin_pedido_confirmar_callback → crea pedido → publica → END
 

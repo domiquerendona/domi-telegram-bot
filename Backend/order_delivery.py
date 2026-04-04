@@ -549,6 +549,31 @@ def _get_market_retry_limit():
     return _get_int_setting("market_retry_limit", MARKET_RETRY_LIMIT, minimum=1)
 
 
+def build_market_launch_status_text(published_count, market_retry_count=0):
+    """Texto breve y tranquilizador para el creador justo despues de publicar."""
+    retry_limit = _get_market_retry_limit()
+    cycle_number = min(retry_limit, _coerce_market_retry_count(market_retry_count) + 1)
+
+    lines = []
+    count = int(published_count or 0)
+    if count > 0:
+        lines.append("Estamos buscando repartidor cerca.")
+        lines.append(
+            "Ofertando ahora a {} repartidor{} elegible{}.".format(
+                count,
+                "" if count == 1 else "es",
+                "" if count == 1 else "s",
+            )
+        )
+    else:
+        lines.append("Por ahora no vemos repartidores elegibles.")
+        lines.append("El servicio sigue activo y se ofrecera automaticamente apenas haya uno.")
+
+    lines.append("Ciclo {}/{} del mercado en curso.".format(cycle_number, retry_limit))
+    lines.append("Si este ciclo expira, el sistema lo reintenta solo. Si al final no se logra, se cancela sin cargo.")
+    return "\n".join(lines)
+
+
 def _get_order_market_cycle_seconds():
     return _get_int_setting("order_market_cycle_seconds", MAX_CYCLE_SECONDS, minimum=60)
 
