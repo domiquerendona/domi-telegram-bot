@@ -8149,7 +8149,9 @@ def get_courier_by_id(courier_id: int):
             COALESCE(availability_status, 'INACTIVE') AS availability_status, -- 20
             cedula_front_file_id,  -- 21
             cedula_back_file_id,   -- 22
-            selfie_file_id         -- 23
+            selfie_file_id,        -- 23
+            rejection_reason,      -- 24
+            rejected_at            -- 25
         FROM couriers
         WHERE id = {P}
           AND (is_deleted IS NULL OR is_deleted = 0);

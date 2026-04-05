@@ -2569,6 +2569,15 @@ def admin_config_callback(update, context):
         reset_state = get_courier_reset_state_by_id(courier_id)
         reset_status = _registration_reset_status_label(reset_state)
 
+        rejection_reason = _row_value(courier, "rejection_reason", default=None)
+        rejected_at = _row_value(courier, "rejected_at", default=None)
+        rechazo_lineas = ""
+        if rejection_reason:
+            rechazo_lineas += "\nMotivo de rechazo: {}".format(rejection_reason)
+        if rejected_at:
+            fecha_str = str(rejected_at)[:10] if rejected_at else ""
+            rechazo_lineas += "\nFecha de rechazo: {}".format(fecha_str)
+
         texto = (
             "Detalle del repartidor:\n\n"
             "ID: {id}\n"
@@ -2579,7 +2588,7 @@ def admin_config_callback(update, context):
             "Barrio: {barrio}\n"
             "Placa: {plate}\n"
             "Tipo de moto: {bike_type}\n"
-            "Estado: {status}\n"
+            "Estado: {status}{rechazo_lineas}\n"
             "Reinicio de registro: {reset_status}"
         ).format(
             id=courier["id"],
@@ -2591,6 +2600,7 @@ def admin_config_callback(update, context):
             plate=courier["plate"],
             bike_type=courier["bike_type"],
             status=courier["status"],
+            rechazo_lineas=rechazo_lineas,
             reset_status=reset_status,
         )
 
@@ -2606,6 +2616,8 @@ def admin_config_callback(update, context):
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
         if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
+            _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
+        if status == "REJECTED":
             _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
