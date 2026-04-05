@@ -3115,7 +3115,7 @@ def platform_clear_courier_registration_reset(actor_telegram_id: int, courier_id
 
 def can_admin_reregister_via_platform_reset(admin_id: int) -> bool:
     state = get_admin_reset_state_by_id(admin_id)
-    return bool(state and state["status"] == "INACTIVE" and admin_has_active_registration_reset(admin_id))
+    return bool(state and state["status"] in ("INACTIVE", "REJECTED") and admin_has_active_registration_reset(admin_id))
 
 
 def can_ally_reregister_via_platform_reset(ally_id: int) -> bool:

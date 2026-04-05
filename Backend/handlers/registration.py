@@ -839,18 +839,18 @@ def soy_repartidor(update, context):
             )
             return ConversationHandler.END
 
-        if status == "INACTIVE" and not can_courier_reregister_via_platform_reset(courier_id):
+        if status in ("INACTIVE", "REJECTED") and not can_courier_reregister_via_platform_reset(courier_id):
             update.message.reply_text(
-                "Tu registro de repartidor esta INACTIVE.\n"
-                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                "Tu registro de repartidor esta {}.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.".format(status),
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
-        if status != "INACTIVE":
+        if status not in ("INACTIVE", "REJECTED"):
             update.message.reply_text(
-                f"No puedes iniciar un nuevo registro con estado {status}.\n"
-                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                "No puedes iniciar un nuevo registro con estado {}.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.".format(status),
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
@@ -1744,18 +1744,18 @@ def soy_admin(update, context):
             )
             return ConversationHandler.END
 
-        if status == "INACTIVE" and not can_admin_reregister_via_platform_reset(admin_id):
+        if status in ("INACTIVE", "REJECTED") and not can_admin_reregister_via_platform_reset(admin_id):
             update.message.reply_text(
-                "Tu registro de administrador esta INACTIVE.\n"
-                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                "Tu registro de administrador esta {}.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.".format(status),
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
 
-        if status != "INACTIVE":
+        if status not in ("INACTIVE", "REJECTED"):
             update.message.reply_text(
-                f"No puedes iniciar un nuevo registro con estado {status}.\n"
-                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.",
+                "No puedes iniciar un nuevo registro con estado {}.\n"
+                "Solo el Administrador de Plataforma puede autorizar un reinicio del registro.".format(status),
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
