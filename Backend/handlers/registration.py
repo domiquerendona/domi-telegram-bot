@@ -550,6 +550,7 @@ def ally_confirm(update, context):
     """Confirma datos y guarda el registro del aliado en BD."""
     if update.callback_query:
         update.callback_query.answer()
+        update.callback_query.edit_message_reply_markup(reply_markup=None)
         reply_message = update.callback_query.message
         is_confirmed = True
     else:
@@ -855,7 +856,7 @@ def soy_repartidor(update, context):
             return ConversationHandler.END
 
     update.message.reply_text(
-        "Registro de repartidor (6 pasos + fotos de verificacion)\n\n"
+        "Registro de repartidor (6 datos + vehiculo + fotos de verificacion)\n\n"
         "Paso 1 de 6: Nombre completo\n\n"
         "Escribe tu nombre completo:"
         "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro",
@@ -940,7 +941,7 @@ def courier_barrio(update, context):
         next_state=COURIER_RESIDENCE_LOCATION,
         flow="courier",
         next_prompt=(
-            "Paso 6 de 6: Direccion de residencia\n\n"
+            "Paso 6 de 6 (ultimo dato — luego vehiculo y fotos): Direccion de residencia\n\n"
             "Por seguridad registramos donde vives. "
             "Solo el equipo administrativo tiene acceso a este dato.\n\n"
             "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
@@ -1365,6 +1366,7 @@ def _create_or_reset_courier_from_context(context, user_db_id: int):
 def courier_confirm(update, context):
     if update.callback_query:
         update.callback_query.answer()
+        update.callback_query.edit_message_reply_markup(reply_markup=None)
         reply_message = update.callback_query.message
         is_confirmed = True
     else:
@@ -2022,6 +2024,7 @@ def admin_geo_ubicacion_callback(update, context):
 def admin_confirm(update, context):
     if update.callback_query:
         update.callback_query.answer()
+        update.callback_query.edit_message_reply_markup(reply_markup=None)
         reply_message = update.callback_query.message
         is_confirmed = True
     else:
