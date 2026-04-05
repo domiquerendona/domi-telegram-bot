@@ -286,6 +286,7 @@ ADMIN_PEDIDO_COMISION  = 1011  # Comisión especial que el admin cobra al repart
 ADMIN_PEDIDO_TEMPLATE_NAME = 1012  # Nombre de la plantilla al guardar pedido especial como plantilla
 ADMIN_PEDIDO_USE_TEMPLATE  = 1013  # Seleccionar plantilla para pre-llenar pedido especial
 RECHAZAR_MOTIVO            = 1014  # Capturar motivo de rechazo (rechazar_conv)
+RECHAZAR_CONFIRMAR         = 1015  # Confirmacion antes de pedir motivo (rechazar_conv)
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)

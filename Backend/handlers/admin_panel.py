@@ -104,7 +104,7 @@ from order_delivery import admin_orders_panel
 from profile_changes import admin_change_requests_list
 from handlers.config import tarifas_start
 from handlers.registration import _create_or_reset_courier_from_context
-from handlers.states import RECHAZAR_MOTIVO
+from handlers.states import RECHAZAR_MOTIVO, RECHAZAR_CONFIRMAR
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 SUPPORT_PAGE_SIZE = 6
@@ -1406,8 +1406,8 @@ def admin_menu_callback(update, context):
 
         reset_state = get_admin_reset_state_by_id(adm_id)
         if action == "enable":
-            if admin_obj["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if admin_obj["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
@@ -1420,6 +1420,18 @@ def admin_menu_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_admin_telegram_id(adm_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("admin reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -2930,6 +2942,18 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_ally_approval_notification_chat_id(ally_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("ally reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -3036,8 +3060,8 @@ def admin_config_callback(update, context):
         reset_state = get_courier_reset_state_by_id(courier_id)
 
         if action == "enable":
-            if courier["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if courier["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
@@ -3050,6 +3074,18 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_courier_approval_notification_chat_id(courier_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("courier reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -3265,7 +3301,7 @@ def admin_parking_review_callback(update, context):
 # =============================================================================
 
 def rechazar_inicio(update, context):
-    """Entry point: admin pulsa Rechazar para courier, aliado o admin local."""
+    """Entry point: admin pulsa Rechazar. Muestra confirmacion antes de pedir motivo."""
     query = update.callback_query
     query.answer()
     data = query.data
@@ -3293,11 +3329,31 @@ def rechazar_inicio(update, context):
     context.user_data["rechazar_id"] = role_id
     context.user_data["rechazar_nombre"] = nombre
 
+    kb = [
+        [
+            InlineKeyboardButton("Si, rechazar", callback_data="rechazar_confirmar_si"),
+            InlineKeyboardButton("No, cancelar", callback_data="rechazar_cancelar"),
+        ]
+    ]
+    query.edit_message_text(
+        "Confirmar rechazo\n\n"
+        "Vas a rechazar definitivamente a: {}\n\n"
+        "Esta accion no se puede deshacer desde la UI. Continuar?".format(nombre),
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return RECHAZAR_CONFIRMAR
+
+
+def rechazar_confirmar_si(update, context):
+    """Admin confirma el rechazo: ahora pide el motivo."""
+    query = update.callback_query
+    query.answer()
+    nombre = context.user_data.get("rechazar_nombre", "")
     kb = [[InlineKeyboardButton("Cancelar", callback_data="rechazar_cancelar")]]
     query.edit_message_text(
-        "Vas a rechazar a: {}\n\n"
-        "Escribe el motivo del rechazo (se guardara en BD y se enviara al usuario).\n"
-        "O pulsa Cancelar para volver.".format(nombre),
+        "Escribe el motivo del rechazo para {}.\n"
+        "Se guardara en BD y se enviara al usuario por Telegram.\n\n"
+        "O pulsa Cancelar.".format(nombre),
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return RECHAZAR_MOTIVO
@@ -3337,7 +3393,6 @@ def rechazar_con_motivo(update, context):
         update.message.reply_text("Error al aplicar el rechazo. Revisa los logs.")
         return ConversationHandler.END
 
-    # Notificar al usuario rechazado
     if chat_id:
         try:
             context.bot.send_message(
@@ -3352,14 +3407,14 @@ def rechazar_con_motivo(update, context):
             logger.warning("rechazar_con_motivo: no se pudo notificar al usuario %s: %s", chat_id, e)
 
     update.message.reply_text(
-        "{} rechazado con motivo guardado.\n\n"
+        "{} rechazado. Motivo guardado en BD.\n\n"
         "El usuario fue notificado por Telegram.".format(nombre)
     )
     return ConversationHandler.END
 
 
 def rechazar_cancelar(update, context):
-    """Admin cancela el rechazo."""
+    """Admin cancela el rechazo en cualquier punto del flujo."""
     query = update.callback_query
     query.answer()
     context.user_data.pop("rechazar_role", None)
@@ -3376,6 +3431,10 @@ rechazar_conv = ConversationHandler(
         CallbackQueryHandler(rechazar_inicio, pattern=r"^admin_rechazar_\d+$"),
     ],
     states={
+        RECHAZAR_CONFIRMAR: [
+            CallbackQueryHandler(rechazar_confirmar_si, pattern=r"^rechazar_confirmar_si$"),
+            CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+        ],
         RECHAZAR_MOTIVO: [
             CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
             MessageHandler(Filters.text & ~Filters.command, rechazar_con_motivo),
