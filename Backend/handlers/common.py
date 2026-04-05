@@ -30,7 +30,6 @@ from handlers.states import (
     ALLY_PHONE,
     ALLY_CITY,
     ALLY_BARRIO,
-    ALLY_ADDRESS,
     ALLY_UBICACION,
     ALLY_CONFIRM,
     ALLY_TEAM,
@@ -39,7 +38,6 @@ from handlers.states import (
     COURIER_PHONE,
     COURIER_CITY,
     COURIER_BARRIO,
-    COURIER_RESIDENCE_ADDRESS,
     COURIER_RESIDENCE_LOCATION,
     COURIER_PLATE,
     COURIER_BIKETYPE,
@@ -54,7 +52,6 @@ from handlers.states import (
     LOCAL_ADMIN_PHONE,
     LOCAL_ADMIN_CITY,
     LOCAL_ADMIN_BARRIO,
-    LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
     LOCAL_ADMIN_CEDULA_FRONT,
     LOCAL_ADMIN_CEDULA_BACK,
@@ -175,9 +172,10 @@ def _send_back_prompt(update, flow, state):
             ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
             ALLY_CITY: "Escribe la ciudad del negocio:",
             ALLY_BARRIO: "Escribe el barrio del negocio:",
-            ALLY_ADDRESS: "Escribe la dirección del negocio:",
             ALLY_UBICACION: (
-                "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+                "Ubicacion del negocio\n\n"
+                "Escribe la direccion exacta (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
             ),
             ALLY_CONFIRM: "Escribe SI para confirmar tu registro.",
         },
@@ -187,8 +185,13 @@ def _send_back_prompt(update, flow, state):
             COURIER_PHONE: "Escribe tu número de celular:",
             COURIER_CITY: "Escribe la ciudad donde trabajas:",
             COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
-            COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            COURIER_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            COURIER_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
             COURIER_BIKETYPE: "Escribe el tipo de moto:",
             COURIER_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
@@ -203,8 +206,13 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_PHONE: "Escribe tu número de teléfono:",
             LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
-            LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             LOCAL_ADMIN_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
             LOCAL_ADMIN_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
             LOCAL_ADMIN_SELFIE: "Envía una foto de tu cara (selfie):",

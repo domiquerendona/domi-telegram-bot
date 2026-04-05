@@ -321,6 +321,18 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 
 ## Flujos de Conversación (Bot de Telegram)
 
+### Patron unificado de direccion + GPS en registros (IMPLEMENTADO 2026-04-04)
+
+Los tres flujos de registro (aliado, repartidor, admin local) usan un paso unico para capturar la direccion y sus coordenadas. El paso anterior (barrio) incluye en su `next_prompt` el mensaje completo que explica las opciones:
+
+- **Texto escrito**: se geocodifica con `resolve_location()` → se muestra confirmacion con pin → al confirmar se guarda `formatted_address` (clave `address`/`residence_address`/`admin_residence_address`) y lat/lng.
+- **Link de Google Maps o coordenadas**: se parsean con `extract_lat_lng_from_text()` → se guardan directamente (y el texto como address).
+- **PIN de Telegram**: se guardan lat/lng directamente (address queda vacio).
+
+Claves temporales usadas durante geocoding: `ally_geo_formatted`, `courier_geo_formatted`, `admin_geo_formatted`. Se hacen pop en el callback de confirmacion.
+
+Estados eliminados (ya no existen en los ConversationHandlers): `ALLY_ADDRESS`, `COURIER_RESIDENCE_ADDRESS`, `LOCAL_ADMIN_RESIDENCE_ADDRESS`. Las constantes siguen definidas en `states.py` por compatibilidad de rango pero no se usan.
+
 ### Convenciones de Estado (`context.user_data`)
 
 La convenci??n obligatoria de claves est?? en AGENTS.md.
@@ -328,9 +340,9 @@ Aqu?? se resume el mapa actual de prefijos usados por los flujos:
 
 | Flujo | Prefijos de claves |
 |-------|-------------------|
-| Registro aliado | `ally_phone`, `ally_name`, `ally_owner`, `ally_document`, `city`, `barrio`, `address`, `ally_lat`, `ally_lng` |
-| Registro repartidor | `phone`, `courier_fullname`, `courier_idnumber`, `city`, `barrio`, `residence_address`, `courier_lat`, `courier_lng` |
-| Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng` |
+| Registro aliado | `ally_phone`, `ally_name`, `ally_owner`, `ally_document`, `city`, `barrio`, `address`, `ally_lat`, `ally_lng`, `ally_geo_formatted` (temporal geocoding) |
+| Registro repartidor | `phone`, `courier_fullname`, `courier_idnumber`, `city`, `barrio`, `residence_address`, `courier_lat`, `courier_lng`, `courier_geo_formatted` (temporal geocoding) |
+| Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng`, `admin_geo_formatted` (temporal geocoding) |
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |

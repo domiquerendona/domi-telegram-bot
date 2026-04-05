@@ -117,9 +117,9 @@ Cada flujo de registro usa su propio prefijo en TODAS sus claves de user_data.
 No compartir claves entre flujos distintos aunque el campo sea "el mismo".
 
 Prefijos establecidos:
-- Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
-- Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
-- Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
+- Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng, ally_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en ally_geo_ubicacion_callback)
+- Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng, courier_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en courier_geo_ubicacion_callback)
+- Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
 - Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo

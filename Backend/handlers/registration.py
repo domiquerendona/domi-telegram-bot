@@ -19,14 +19,14 @@ from telegram.ext import (
 
 from handlers.states import (
     ALLY_NAME, ALLY_OWNER, ALLY_DOCUMENT, ALLY_PHONE, ALLY_CITY, ALLY_BARRIO,
-    ALLY_ADDRESS, ALLY_UBICACION, ALLY_CONFIRM, ALLY_TEAM,
+    ALLY_UBICACION, ALLY_CONFIRM, ALLY_TEAM,
     COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE, COURIER_CITY, COURIER_BARRIO,
-    COURIER_RESIDENCE_ADDRESS, COURIER_RESIDENCE_LOCATION, COURIER_VEHICLE_TYPE,
+    COURIER_RESIDENCE_LOCATION, COURIER_VEHICLE_TYPE,
     COURIER_PLATE, COURIER_BIKETYPE, COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK,
     COURIER_SELFIE, COURIER_CONFIRM, COURIER_TEAM,
     LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
     LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
-    LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
+    LOCAL_ADMIN_RESIDENCE_LOCATION,
     LOCAL_ADMIN_CEDULA_FRONT, LOCAL_ADMIN_CEDULA_BACK, LOCAL_ADMIN_SELFIE,
     LOCAL_ADMIN_CONFIRM,
 )
@@ -299,27 +299,14 @@ def ally_barrio(update, context):
         error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
         storage_key="barrio",
         current_state=ALLY_BARRIO,
-        next_state=ALLY_ADDRESS,
+        next_state=ALLY_UBICACION,
         flow="ally",
-        next_prompt="Escribe la dirección del negocio:")
-
-
-def ally_address(update, context):
-    texto = update.message.text.strip()
-    if not texto:
-        update.message.reply_text(
-            "La dirección no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return ALLY_ADDRESS
-
-    context.user_data["address"] = texto
-    update.message.reply_text(
-        "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "ally", ALLY_UBICACION)
-    return ALLY_UBICACION
+        next_prompt=(
+            "Ubicacion del negocio\n\n"
+            "Escribe la direccion exacta (ej: Cra 15 #23-45, Barrio Cuba) "
+            "o envia un pin de Telegram.\n\n"
+            "Esto nos ayuda a conectarte con repartidores cercanos."
+        ))
 
 
 def ally_ubicacion_handler(update, context):
@@ -333,6 +320,7 @@ def ally_ubicacion_handler(update, context):
 
     coords = extract_lat_lng_from_text(texto)
     if coords:
+        context.user_data["address"] = texto
         context.user_data["ally_lat"] = coords[0]
         context.user_data["ally_lng"] = coords[1]
         _log_registration_location_saved(
@@ -347,6 +335,7 @@ def ally_ubicacion_handler(update, context):
     # Geocoding: intentar como direccion escrita
     geo = resolve_location(texto)
     if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+        context.user_data["ally_geo_formatted"] = geo.get("formatted_address", "")
         _emit_registration_geo_confirmation(
             update,
             context,
@@ -400,6 +389,7 @@ def ally_geo_ubicacion_callback(update, context):
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return ALLY_UBICACION
+        context.user_data["address"] = context.user_data.pop("ally_geo_formatted", "")
         context.user_data["ally_lat"] = lat
         context.user_data["ally_lng"] = lng
         logger.info(
@@ -420,6 +410,7 @@ def ally_geo_ubicacion_callback(update, context):
             header_text="Confirma este punto exacto antes de continuar con tu registro.",
             question_text="Es esta la ubicacion correcta?",
             no_more_text=_registration_no_more_text(),
+            formatted_storage_key="ally_geo_formatted",
         )
 
 
@@ -892,7 +883,11 @@ def courier_phone(update, context):
         current_state=COURIER_PHONE,
         next_state=COURIER_CITY,
         flow="courier",
-        next_prompt="Escribe la ciudad donde trabajas:")
+        next_prompt=(
+            "¿En que ciudad trabajas principalmente?\n\n"
+            "Esto nos ayuda a mostrarte pedidos cerca de ti. "
+            "Ej: Pereira, Armenia, Manizales"
+        ))
 
 
 def courier_city(update, context):
@@ -903,7 +898,10 @@ def courier_city(update, context):
         current_state=COURIER_CITY,
         next_state=COURIER_BARRIO,
         flow="courier",
-        next_prompt="Escribe el barrio o sector principal donde trabajas:")
+        next_prompt=(
+            "¿En que barrio o sector prefieres trabajar?\n\n"
+            "Ej: Centro, Barrio Cuba, El Poblado"
+        ))
 
 
 def courier_barrio(update, context):
@@ -912,26 +910,15 @@ def courier_barrio(update, context):
         error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
         storage_key="barrio",
         current_state=COURIER_BARRIO,
-        next_state=COURIER_RESIDENCE_ADDRESS,
+        next_state=COURIER_RESIDENCE_LOCATION,
         flow="courier",
-        next_prompt="Escribe tu dirección de residencia:")
-
-
-def courier_residence_address(update, context):
-    address = update.message.text.strip()
-    if not address:
-        update.message.reply_text(
-            "La dirección no puede estar vacía. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return COURIER_RESIDENCE_ADDRESS
-    context.user_data["residence_address"] = address
-    update.message.reply_text(
-        "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "courier", COURIER_RESIDENCE_LOCATION)
-    return COURIER_RESIDENCE_LOCATION
+        next_prompt=(
+            "Direccion de residencia\n\n"
+            "Por seguridad registramos donde vives. "
+            "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+            "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+            "o envia un pin de Telegram."
+        ))
 
 
 def courier_residence_location(update, context):
@@ -948,10 +935,12 @@ def courier_residence_location(update, context):
         if coords:
             lat, lng = coords
             source = "text_coords_or_link"
+            context.user_data["residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
             geo = resolve_location(text)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                context.user_data["courier_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(
                     update,
                     context,
@@ -986,6 +975,7 @@ def courier_geo_ubicacion_callback(update, context):
         if lat is None or lng is None:
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return COURIER_RESIDENCE_LOCATION
+        context.user_data["residence_address"] = context.user_data.pop("courier_geo_formatted", "")
         context.user_data["residence_lat"] = lat
         context.user_data["residence_lng"] = lng
         logger.info(
@@ -1006,6 +996,7 @@ def courier_geo_ubicacion_callback(update, context):
             header_text="Confirma este punto exacto antes de continuar con tu registro.",
             question_text="Es esta la ubicacion correcta?",
             no_more_text=_registration_no_more_text(),
+            formatted_storage_key="courier_geo_formatted",
         )
 
 
@@ -1579,7 +1570,6 @@ ally_conv = ConversationHandler(
         ALLY_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_phone)],
         ALLY_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_city)],
         ALLY_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_barrio)],
-        ALLY_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_address)],
         ALLY_UBICACION: [
             CallbackQueryHandler(ally_geo_ubicacion_callback, pattern=r"^ally_geo_"),
             MessageHandler(Filters.location, ally_ubicacion_location_handler),
@@ -1615,9 +1605,6 @@ courier_conv = ConversationHandler(
         ],
         COURIER_BARRIO: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_barrio)
-        ],
-        COURIER_RESIDENCE_ADDRESS: [
-            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_residence_address)
         ],
         COURIER_RESIDENCE_LOCATION: [
             CallbackQueryHandler(courier_geo_ubicacion_callback, pattern=r"^courier_geo_"),
@@ -1848,30 +1835,18 @@ def admin_barrio(update, context):
         error_msg="El barrio no puede estar vacío. Escríbelo de nuevo:",
         storage_key="admin_barrio",
         current_state=LOCAL_ADMIN_BARRIO,
-        next_state=LOCAL_ADMIN_RESIDENCE_ADDRESS,
+        next_state=LOCAL_ADMIN_RESIDENCE_LOCATION,
         flow="admin",
-        next_prompt="Escribe tu dirección de residencia (texto exacto). Ej: Calle 10 # 20-30, apto 301")
-    if next_state == LOCAL_ADMIN_RESIDENCE_ADDRESS:
+        next_prompt=(
+            "Direccion de residencia\n\n"
+            "Por seguridad registramos donde vives. "
+            "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+            "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+            "o envia un pin de Telegram."
+        ))
+    if next_state == LOCAL_ADMIN_RESIDENCE_LOCATION:
         _debug_admin_registration_state(context, "admin_barrio_saved")
     return next_state
-
-
-def admin_residence_address(update, context):
-    address = update.message.text.strip()
-    if len(address) < 6:
-        update.message.reply_text(
-            "La dirección debe tener al menos 6 caracteres. Escríbela de nuevo:"
-            "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-        )
-        return LOCAL_ADMIN_RESIDENCE_ADDRESS
-    context.user_data["admin_residence_address"] = address
-    _debug_admin_registration_state(context, "admin_residence_address_saved")
-    update.message.reply_text(
-        "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps."
-        "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
-    )
-    _set_flow_step(context, "admin", LOCAL_ADMIN_RESIDENCE_LOCATION)
-    return LOCAL_ADMIN_RESIDENCE_LOCATION
 
 
 def admin_residence_location(update, context):
@@ -1889,10 +1864,12 @@ def admin_residence_location(update, context):
         if coords:
             lat, lng = coords
             source = "text_coords_or_link"
+            context.user_data["admin_residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
             geo = resolve_location(text)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
+                context.user_data["admin_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(
                     update,
                     context,
@@ -1936,6 +1913,7 @@ def admin_geo_ubicacion_callback(update, context):
             _debug_admin_registration_state(context, "admin_geo_confirm_missing_pending")
             query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
             return LOCAL_ADMIN_RESIDENCE_LOCATION
+        context.user_data["admin_residence_address"] = context.user_data.pop("admin_geo_formatted", "")
         context.user_data["admin_residence_lat"] = lat
         context.user_data["admin_residence_lng"] = lng
         logger.info(
@@ -1962,6 +1940,7 @@ def admin_geo_ubicacion_callback(update, context):
             header_text="Confirma este punto exacto antes de continuar con tu registro.",
             question_text="Es esta la ubicacion correcta?",
             no_more_text=_registration_no_more_text(),
+            formatted_storage_key="admin_geo_formatted",
         )
 
 
@@ -2093,7 +2072,6 @@ admin_conv = ConversationHandler(
         LOCAL_ADMIN_PHONE: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_phone)],
         LOCAL_ADMIN_CITY: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_city)],
         LOCAL_ADMIN_BARRIO: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_barrio)],
-        LOCAL_ADMIN_RESIDENCE_ADDRESS: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_residence_address)],
         LOCAL_ADMIN_RESIDENCE_LOCATION: [
             CallbackQueryHandler(admin_geo_ubicacion_callback, pattern=r"^admin_geo_"),
             MessageHandler(Filters.location, admin_residence_location),
