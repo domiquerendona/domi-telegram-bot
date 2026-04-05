@@ -2556,7 +2556,9 @@ def get_admin_by_id(admin_id: int):
             residence_lng,         -- 13
             cedula_front_file_id,  -- 14
             cedula_back_file_id,   -- 15
-            selfie_file_id         -- 16
+            selfie_file_id,        -- 16
+            rejection_reason,      -- 17
+            rejected_at            -- 18
         FROM admins
         WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC

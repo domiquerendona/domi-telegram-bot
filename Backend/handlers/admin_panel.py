@@ -419,6 +419,14 @@ def _render_platform_ally_detail(query, ally_id: int):
     parking_enabled = get_ally_parking_fee_enabled(ally_id)
     parking_label = "Cobro parqueo dificil: {}".format("ACTIVO" if parking_enabled else "INACTIVO")
 
+    ally_rejection_reason = _row_value(ally, "rejection_reason", default=None)
+    ally_rejected_at = _row_value(ally, "rejected_at", default=None)
+    ally_rechazo_lineas = ""
+    if ally_rejection_reason:
+        ally_rechazo_lineas += "\nMotivo de rechazo: {}".format(ally_rejection_reason)
+    if ally_rejected_at:
+        ally_rechazo_lineas += "\nFecha de rechazo: {}".format(str(ally_rejected_at)[:10])
+
     texto = (
         "Detalle del aliado:\n\n"
         "ID: {id}\n"
@@ -428,7 +436,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         "Dirección: {address}\n"
         "Ciudad: {city}\n"
         "Barrio: {barrio}\n"
-        "Estado: {status}\n"
+        "Estado: {status}{rechazo_lineas}\n"
         "Equipo: {equipo}\n"
         "Reinicio de registro: {reset_status}\n"
         "{subsidio_label}\n"
@@ -444,6 +452,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         city=_row_value(ally, "city", "-"),
         barrio=_row_value(ally, "barrio", "-"),
         status=_row_value(ally, "status", "-"),
+        rechazo_lineas=ally_rechazo_lineas,
         equipo=equipo_label,
         reset_status=reset_status,
         subsidio_label=subsidio_label,
@@ -1111,6 +1120,13 @@ def admin_menu_callback(update, context):
         adm_document = admin_obj["document_number"] or "-"
         adm_team_code = admin_obj["team_code"] or "-"
         adm_status = admin_obj["status"] or "-"
+        adm_rejection_reason = admin_obj.get("rejection_reason")
+        adm_rejected_at = admin_obj.get("rejected_at")
+        adm_rechazo_lineas = ""
+        if adm_rejection_reason:
+            adm_rechazo_lineas += "\nMotivo de rechazo: {}".format(adm_rejection_reason)
+        if adm_rejected_at:
+            adm_rechazo_lineas += "\nFecha de rechazo: {}".format(str(adm_rejected_at)[:10])
 
         # Tipo de admin
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
@@ -1134,30 +1150,40 @@ def admin_menu_callback(update, context):
             maps_line = ""
 
         texto = (
-            "ADMIN ID: {}\n"
-            "Nombre: {}\n"
-            "Equipo: {}\n"
-            "Team code: {}\n"
-            "Ciudad/Barrio: {} / {}\n"
-            "Telefono: {}\n"
-            "Documento: {}\n"
-            "Estado: {}\n"
-            "Tipo: {}\n"
-            "Dirección residencia: {}\n"
-            "Ubicación residencia: {}\n"
-            "{}\n"
-            "\n"
+            "ADMIN ID: {adm_id}\n"
+            "Nombre: {adm_full_name}\n"
+            "Equipo: {adm_team_name}\n"
+            "Team code: {adm_team_code}\n"
+            "Ciudad/Barrio: {adm_city} / {adm_barrio}\n"
+            "Telefono: {adm_phone}\n"
+            "Documento: {adm_document}\n"
+            "Estado: {adm_status}{rechazo_lineas}\n"
+            "Tipo: {tipo_admin}\n"
+            "Dirección residencia: {residence_address}\n"
+            "Ubicación residencia: {residence_location}\n"
+            "{maps_line}\n"
             "CONTADORES:\n"
-            "Mensajeros vinculados: {}\n"
-            "Mensajeros con saldo >= 5000: {}\n"
-            "Reinicio de registro: {}"
+            "Mensajeros vinculados: {num_couriers}\n"
+            "Mensajeros con saldo >= 5000: {num_couriers_balance}\n"
+            "Reinicio de registro: {reset_status}"
         ).format(
-            adm_id, adm_full_name, adm_team_name, adm_team_code,
-            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
-            residence_address or "No registrada",
-            residence_location,
-            maps_line,
-            num_couriers, num_couriers_balance, reset_status
+            adm_id=adm_id,
+            adm_full_name=adm_full_name,
+            adm_team_name=adm_team_name,
+            adm_team_code=adm_team_code,
+            adm_city=adm_city,
+            adm_barrio=adm_barrio,
+            adm_phone=adm_phone,
+            adm_document=adm_document,
+            adm_status=adm_status,
+            rechazo_lineas=adm_rechazo_lineas,
+            tipo_admin=tipo_admin,
+            residence_address=residence_address or "No registrada",
+            residence_location=residence_location,
+            maps_line=maps_line,
+            num_couriers=num_couriers,
+            num_couriers_balance=num_couriers_balance,
+            reset_status=reset_status,
         )
         texto += "\nPermiso validar referencias: {}".format(perm_status)
 
@@ -1183,7 +1209,8 @@ def admin_menu_callback(update, context):
             if adm_status == "INACTIVE":
                 keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
                 _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
-            # REJECTED: sin botones de accion (estado terminal)
+            if adm_status == "REJECTED":
+                _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
