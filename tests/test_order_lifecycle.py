@@ -257,6 +257,45 @@ class OrderStateTransitionsTests(OrderLifecycleBase):
         self.assertIsNotNone(order["delivered_at"])
 
 
+class OrderCancellationGraceWindowTests(OrderLifecycleBase):
+
+    def _set_order_created_at_seconds_ago(self, order_id: int, seconds_ago: int):
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE orders SET created_at = datetime('now', ?) WHERE id = ?",
+            ("-{} seconds".format(int(seconds_ago)), order_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_cancel_order_within_two_minutes_is_free(self):
+        order_id = self._make_order()
+        db.set_order_status(order_id, "PUBLISHED")
+        self._set_order_created_at_seconds_ago(order_id, 90)
+
+        balance_before = db.get_ally_link_balance(self.ally_id, self.local_admin_id)
+        result = db.cancel_order_by_actor(order_id, "ALLY")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("FREE_CANCEL", result["penalty_code"])
+        self.assertEqual(0, result["fee_total"])
+        self.assertEqual(balance_before, db.get_ally_link_balance(self.ally_id, self.local_admin_id))
+
+    def test_cancel_order_after_two_minutes_charges_ally(self):
+        order_id = self._make_order()
+        db.set_order_status(order_id, "PUBLISHED")
+        self._set_order_created_at_seconds_ago(order_id, 121)
+
+        balance_before = db.get_ally_link_balance(self.ally_id, self.local_admin_id)
+        result = db.cancel_order_by_actor(order_id, "ALLY")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("AFTER_GRACE", result["penalty_code"])
+        self.assertEqual(300, result["fee_total"])
+        self.assertEqual(balance_before - 300, db.get_ally_link_balance(self.ally_id, self.local_admin_id))
+
+
 class ApplyServiceFeeTests(OrderLifecycleBase):
     """Prueba apply_service_fee: deduccion de saldo + credito al admin."""
 

@@ -1380,10 +1380,12 @@ Defaults configurables desde `settings`:
 
 **Cancelación del aliado**
 
-Cancelación manual (en cualquier momento) → sin costo
+Cancelación manual dentro de los primeros 2 minutos y sin courier asignado → sin costo
+Cancelación manual después de 2 minutos y antes de asignar courier → cobro de $300
+Cancelación manual con courier ya asignado (`ACCEPTED`) → penalidad de $800 ($600 courier / $200 plataforma)
 Cancelación automática final (nadie tomó el servicio tras 3 reintentos del mercado) → sin costo
-Pedidos creados por administrador (ally_id = None) → sin costo
-**El fee $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
+Pedidos creados por administrador (`ally_id = None`) → misma ventana; el cobro recae sobre el admin creador
+**El fee estándar de servicio $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
 
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 

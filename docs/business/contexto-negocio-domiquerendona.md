@@ -90,10 +90,11 @@ El flujo estándar de un pedido de aliado es el siguiente:
 
 ### Cancelación del aliado
 
-≤60 segundos desde creación → cancelación sin costo  
->60 segundos desde creación → cobro de $300  
+≤2 minutos desde creación y sin repartidor asignado → cancelación sin costo  
+>2 minutos desde creación y sin repartidor asignado → cobro de $300  
+Con repartidor ya asignado (`ACCEPTED`) → cobro de $800 ($600 repartidor / $200 plataforma)  
 Cancelación automática final tras 3 reintentos del mercado → sin costo
-Pedidos creados por administrador (`ally_id = None`) → nunca se cobra comisión  
+Pedidos creados por administrador (`ally_id = None`) → misma ventana; el cobro recae sobre el admin creador  
 
 Todo queda registrado. Ningún pedido se pierde. Ningún repartidor acepta dos veces el mismo pedido. Los datos del cliente están protegidos.
 

@@ -1008,6 +1008,7 @@ def _build_cancel_preview(status, created_at, charge_owner_type, has_courier):
         "platform_share": 0,
         "code": "FREE",
         "grace_seconds_left": cfg["ally_cancel_grace_seconds"],
+        "grace_seconds_total": cfg["ally_cancel_grace_seconds"],
         "charged_owner_type": charge_owner_type or "",
     }
 
@@ -1082,12 +1083,18 @@ def _format_order_cancel_warning(order, actor_label="ally"):
         else:
             owner_line = "Cancelacion gratuita."
         grace_left = preview["grace_seconds_left"]
+        grace_total = max(0, int(preview.get("grace_seconds_total") or 0))
+        grace_window_label = (
+            "{} minutos".format(grace_total // 60)
+            if grace_total >= 60 and grace_total % 60 == 0 else
+            "{} segundos".format(grace_total)
+        )
         return (
             "Vas a cancelar el pedido #{}.\n\n"
             "{}\n"
-            "Aun estas dentro de los primeros 60 segundos.\n"
+            "Aun estas dentro de los primeros {}.\n"
             "Te quedan {} segundos sin cargo."
-        ).format(order_id, owner_line, max(0, grace_left))
+        ).format(order_id, owner_line, grace_window_label, max(0, grace_left))
 
     if is_admin and owner_type == "ADMIN" and preview["courier_compensation"] > 0:
         return (
@@ -1227,12 +1234,18 @@ def _format_route_cancel_warning(route, actor_label="ally"):
     route_id = _row_value(route, "id")
 
     if preview["fee_total"] <= 0:
+        grace_total = max(0, int(preview.get("grace_seconds_total") or 0))
+        grace_window_label = (
+            "{} minutos".format(grace_total // 60)
+            if grace_total >= 60 and grace_total % 60 == 0 else
+            "{} segundos".format(grace_total)
+        )
         return (
             "Vas a cancelar la ruta #{}.\n\n"
             "Cancelacion gratuita.\n"
-            "Aun estas dentro de los primeros 60 segundos.\n"
+            "Aun estas dentro de los primeros {}.\n"
             "Te quedan {} segundos sin cargo."
-        ).format(route_id, max(0, preview["grace_seconds_left"]))
+        ).format(route_id, grace_window_label, max(0, preview["grace_seconds_left"]))
 
     if preview["courier_compensation"] > 0:
         return (
