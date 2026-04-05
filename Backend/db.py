@@ -2520,7 +2520,8 @@ def get_admin_by_user_id(user_id: int):
     cur.execute(f"""
         SELECT
             id, user_id, person_id, full_name, phone, city, barrio,
-            status, created_at, team_name, document_number, team_code
+            status, created_at, team_name, document_number, team_code,
+            rejection_reason, rejected_at
         FROM admins
         WHERE user_id = {P} AND is_deleted = 0
         ORDER BY id DESC

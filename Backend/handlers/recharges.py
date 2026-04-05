@@ -1749,7 +1749,7 @@ def admin_local_callback(update, context):
         )
         return
 
-    if data.startswith("local_courier_reject_"):
+    if data.startswith("local_courier_reject_confirm_"):
         courier_id = int(data.split("_")[-1])
         try:
             update_admin_courier_status(admin_id, courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
@@ -1759,10 +1759,52 @@ def admin_local_callback(update, context):
             return
 
         _resolve_important_alert(context, "team_courier_pending_{}_{}".format(admin_id, courier_id))
+
+        try:
+            courier_tg = get_courier_approval_notification_chat_id(courier_id)
+            if courier_tg:
+                context.bot.send_message(
+                    chat_id=courier_tg,
+                    text=(
+                        "Tu solicitud de ingreso al equipo fue RECHAZADA.\n\n"
+                        "Si crees que es un error, contacta directamente al administrador."
+                    ),
+                )
+        except Exception as _e:
+            logger.warning("local_courier_reject_confirm notify: %s", _e)
+
         query.edit_message_text(
-            "❌ Repartidor rechazado para tu equipo.",
+            "Repartidor rechazado para tu equipo.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+                [InlineKeyboardButton("Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_courier_reject_cancel_"):
+        courier_id = int(data.split("_")[-1])
+        query.edit_message_text(
+            "Rechazo cancelado.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a pendientes", callback_data=f"local_couriers_pending_{admin_id}")]
+            ])
+        )
+        return
+
+    if data.startswith("local_courier_reject_"):
+        courier_id = int(data.split("_")[-1])
+        courier = get_courier_by_id(courier_id)
+        nombre = courier["full_name"] if courier else "ID {}".format(courier_id)
+        query.edit_message_text(
+            "Vas a rechazar a {} de tu equipo.\n\n"
+            "Esta accion rechaza su solicitud de ingreso. "
+            "El repartidor no podra operar en tu equipo.\n\n"
+            "Confirmas el rechazo?".format(nombre),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Si, rechazar", callback_data=f"local_courier_reject_confirm_{courier_id}"),
+                    InlineKeyboardButton("Cancelar", callback_data=f"local_courier_reject_cancel_{courier_id}"),
+                ]
             ])
         )
         return
@@ -2125,7 +2167,7 @@ def admin_local_callback(update, context):
     query.edit_message_text("Opción no reconocida.")
 
 def ally_approval_callback(update, context):
-    """Maneja los botones de aprobar / rechazar aliados (solo Admin Plataforma)."""
+    """Maneja el boton de aprobar aliados (solo Admin Plataforma). Rechazo va por rechazar_conv."""
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
@@ -2135,69 +2177,39 @@ def ally_approval_callback(update, context):
         return
 
     partes = data.split("_")  # ally_approve_3
-    if len(partes) != 3 or partes[0] != "ally":
-        query.answer("Datos de botón no válidos.", show_alert=True)
+    if len(partes) != 3 or partes[0] != "ally" or partes[1] != "approve":
+        query.answer("Datos de boton no validos.", show_alert=True)
         return
 
-    accion = partes[1]
     try:
         ally_id = int(partes[2])
     except ValueError:
-        query.answer("ID de aliado no válido.", show_alert=True)
+        query.answer("ID de aliado no valido.", show_alert=True)
         return
 
-    if accion not in ("approve", "reject"):
-        query.answer("Acción no reconocida.", show_alert=True)
+    result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
+    if not result.get("ok"):
+        query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
         return
 
-    nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
-
-    bonus_granted = False
-    if nuevo_estado == "APPROVED":
-        result = approve_role_registration(update.effective_user.id, "ALLY", ally_id)
-        if not result.get("ok"):
-            query.answer(result.get("message") or "No se pudo aprobar el aliado.", show_alert=True)
-            return
-        bonus_granted = bool(result.get("bonus_granted"))
-    else:
-        try:
-            update_ally_status(ally_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
-        except Exception as e:
-            logger.error("ally_approval_callback: %s", e)
-            query.answer("Error actualizando el aliado. Revisa logs.", show_alert=True)
-            return
     _resolve_important_alert(context, "ally_registration_{}".format(ally_id))
 
-    ally = result.get("profile") if nuevo_estado == "APPROVED" else get_ally_by_id(ally_id)
+    ally = result.get("profile")
     if not ally:
-        query.edit_message_text("No se encontró el aliado después de actualizar.")
+        query.edit_message_text("No se encontro el aliado despues de actualizar.")
         return
 
-    ally_user_id = ally["user_id"]
     business_name = ally["business_name"]
 
-    # Notificar al aliado (si falla, no rompemos el flujo)
     try:
-        u = get_user_by_id(ally_user_id)
-        ally_telegram_id = u["telegram_id"]
-
-        if accion == "approve":
-            msg = _build_role_welcome_message("ALLY", profile=ally, bonus_granted=bonus_granted, reactivated=False)
-        else:
-            msg = (
-                "Tu registro como aliado '{}' ha sido RECHAZADO.\n"
-                "Si crees que es un error, comunícate con el administrador."
-            ).format(business_name)
-        context.bot.send_message(chat_id=ally_telegram_id, text=msg)
+        msg = _build_role_welcome_message("ALLY", profile=ally, bonus_granted=bool(result.get("bonus_granted")), reactivated=False)
+        u = get_user_by_id(ally["user_id"])
+        context.bot.send_message(chat_id=u["telegram_id"], text=msg)
     except Exception as e:
         logger.warning("Error notificando aliado: %s", e)
 
-
     query.answer()
-    if nuevo_estado == "APPROVED":
-        query.edit_message_text("✅ El aliado '{}' ha sido APROBADO.".format(business_name))
-    else:
-        query.edit_message_text("❌ El aliado '{}' ha sido RECHAZADO.".format(business_name))
+    query.edit_message_text("El aliado '{}' ha sido APROBADO.".format(business_name))
 
 
 # ============================================================

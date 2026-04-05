@@ -622,37 +622,77 @@ def start(update, context):
             elif admin_status == "INACTIVE":
                 siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
             elif admin_status == "REJECTED":
-                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+                motivo_adm = admin_local.get("rejection_reason") if isinstance(admin_local, dict) else (admin_local["rejection_reason"] if admin_local["rejection_reason"] else None)
+                if motivo_adm:
+                    siguientes_pasos.append(
+                        "• Tu registro de administrador fue RECHAZADO.\n"
+                        "  Motivo: {}\n"
+                        "  Contacta al Administrador de Plataforma si tienes preguntas.".format(motivo_adm)
+                    )
+                else:
+                    siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
         else:
             # Administrador Local normal: mostrar requisitos
             if admin_status == "PENDING":
-                siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
+                siguientes_pasos.append("• Tu registro de administrador esta pendiente de aprobacion.")
             elif admin_status == "APPROVED":
                 siguientes_pasos.append(
-                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo mínimo, más saldo master suficiente)."
+                    "• Tu administrador fue APROBADO, pero no podras operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo minimo, mas saldo master suficiente)."
                 )
                 siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
             elif admin_status == "INACTIVE":
-                siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
+                siguientes_pasos.append("• Tu cuenta de administrador esta INACTIVA. Contacta al Administrador de Plataforma.")
             elif admin_status == "REJECTED":
-                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+                motivo_adm = admin_local.get("rejection_reason") if isinstance(admin_local, dict) else (admin_local["rejection_reason"] if admin_local["rejection_reason"] else None)
+                if motivo_adm:
+                    siguientes_pasos.append(
+                        "• Tu registro de administrador fue RECHAZADO.\n"
+                        "  Motivo: {}\n"
+                        "  Contacta al Administrador de Plataforma si tienes preguntas.".format(motivo_adm)
+                    )
+                else:
+                    siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
 
     # Aliado
     if ally:
         estado_lineas.append(f"• Aliado: {ally['business_name']} (estado: {ally['status']}).")
         if ally["status"] == "APPROVED":
             siguientes_pasos.append("• Puedes crear pedidos con /nuevo_pedido.")
+        elif ally["status"] == "REJECTED":
+            motivo_ally = ally["rejection_reason"] if ally["rejection_reason"] else None
+            if motivo_ally:
+                siguientes_pasos.append(
+                    "• Tu registro de aliado fue RECHAZADO.\n"
+                    "  Motivo: {}\n"
+                    "  Contacta al administrador si tienes preguntas.".format(motivo_ally)
+                )
+            else:
+                siguientes_pasos.append("• Tu registro de aliado fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        elif ally["status"] == "INACTIVE":
+            siguientes_pasos.append("• Tu negocio esta INACTIVO. Contacta al administrador.")
         else:
-            siguientes_pasos.append("• Tu negocio aún no está aprobado. Cuando esté APPROVED podrás usar /nuevo_pedido.")
+            siguientes_pasos.append("• Tu negocio aun no esta aprobado. Cuando este APPROVED podras usar /nuevo_pedido.")
 
     # Repartidor
     if courier:
-        codigo = courier["code"] if courier["code"] else "sin código"
-        estado_lineas.append(f"• Repartidor código interno: {codigo} (estado: {courier['status']}).")
+        codigo = courier["code"] if courier["code"] else "sin codigo"
+        estado_lineas.append(f"• Repartidor codigo interno: {codigo} (estado: {courier['status']}).")
         if courier["status"] == "APPROVED":
-            siguientes_pasos.append("• Pronto podrás activarte y recibir ofertas (ONLINE) desde tu panel de repartidor.")
+            siguientes_pasos.append("• Pronto podras activarte y recibir ofertas (ONLINE) desde tu panel de repartidor.")
+        elif courier["status"] == "REJECTED":
+            motivo_courier = courier["rejection_reason"] if courier["rejection_reason"] else None
+            if motivo_courier:
+                siguientes_pasos.append(
+                    "• Tu registro de repartidor fue RECHAZADO.\n"
+                    "  Motivo: {}\n"
+                    "  Contacta al administrador si tienes preguntas.".format(motivo_courier)
+                )
+            else:
+                siguientes_pasos.append("• Tu registro de repartidor fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        elif courier["status"] == "INACTIVE":
+            siguientes_pasos.append("• Tu cuenta de repartidor esta INACTIVA. Contacta al administrador.")
         else:
-            siguientes_pasos.append("• Tu registro de repartidor aún está pendiente de aprobación.")
+            siguientes_pasos.append("• Tu registro de repartidor aun esta pendiente de aprobacion.")
 
     # Si no tiene ningún perfil
     if not estado_lineas:
@@ -1809,83 +1849,50 @@ def pendientes_callback(update, context):
 
 
 def courier_approval_callback(update, context):
-    """Aprobación / rechazo global de repartidores (solo Admin Plataforma)."""
+    """Aprobacion global de repartidores (solo Admin Plataforma). Rechazo va por rechazar_conv."""
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     query.answer()
 
-    # En tu main(), este handler ^courier_(approve|reject)_\d+$ está pensado para ADMIN PLATAFORMA.
-    # La aprobación por Admin Local va por admin_local_callback con local_courier_approve/reject/block.
+    # La aprobacion por Admin Local va por admin_local_callback con local_courier_approve.
     if user_id != ADMIN_USER_ID:
         query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
         return
 
     partes = data.split("_")  # courier_approve_3
-    if len(partes) != 3 or partes[0] != "courier":
-        query.answer("Datos de botón no válidos.", show_alert=True)
+    if len(partes) != 3 or partes[0] != "courier" or partes[1] != "approve":
+        query.answer("Datos de boton no validos.", show_alert=True)
         return
 
-    accion = partes[1]
     try:
         courier_id = int(partes[2])
     except ValueError:
-        query.answer("ID de repartidor no válido.", show_alert=True)
+        query.answer("ID de repartidor no valido.", show_alert=True)
         return
 
-    if accion not in ("approve", "reject"):
-        query.answer("Acción no reconocida.", show_alert=True)
+    result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+    if not result.get("ok"):
+        query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
         return
 
-    nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
-
-    # Actualizar estado global del courier
-    bonus_granted = False
-    if nuevo_estado == "APPROVED":
-        result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
-        if not result.get("ok"):
-            query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
-            return
-        bonus_granted = bool(result.get("bonus_granted"))
-    else:
-        try:
-            update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
-        except Exception as e:
-            logger.error("update_courier_status: %s", e)
-            query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
-            return
     _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
 
-    courier = result.get("profile") if nuevo_estado == "APPROVED" else get_courier_by_id(courier_id)
+    courier = result.get("profile")
     if not courier:
-        query.edit_message_text("No se encontró el repartidor después de actualizar.")
+        query.edit_message_text("No se encontro el repartidor despues de actualizar.")
         return
 
-    courier_user_db_id = courier["user_id"]
     full_name = courier["full_name"]
 
-    # Notificar al repartidor si existe get_user_by_id (recomendado).
-    # Si no existe, solo omitimos notificación sin romper.
     try:
-        u = get_user_by_id(courier_user_db_id)
-        courier_telegram_id = u["telegram_id"]
-
-        if accion == "approve":
-            msg = _build_role_welcome_message("COURIER", profile=courier, bonus_granted=bonus_granted, reactivated=False)
-        else:
-            msg = (
-                "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
-                "Si crees que es un error, comunícate con el administrador."
-            ).format(full_name)
-
-        context.bot.send_message(chat_id=courier_telegram_id, text=msg)
+        msg = _build_role_welcome_message("COURIER", profile=courier, bonus_granted=bool(result.get("bonus_granted")), reactivated=False)
+        u = get_user_by_id(courier["user_id"])
+        context.bot.send_message(chat_id=u["telegram_id"], text=msg)
     except Exception as e:
         logger.warning("Error notificando repartidor: %s", e)
 
-    if nuevo_estado == "APPROVED":
-        query.edit_message_text("✅ El repartidor '{}' ha sido APROBADO.".format(full_name))
-    else:
-        query.edit_message_text("❌ El repartidor '{}' ha sido RECHAZADO.".format(full_name))
+    query.edit_message_text("El repartidor '{}' ha sido APROBADO.".format(full_name))
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     logger.debug(
         "[terms][ensure] role=%s telegram_id=%s via_callback=%s",
@@ -2509,12 +2516,11 @@ def main():
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
-    # Aprobación / rechazo Aliados (botones ally_approve_ID / ally_reject_ID o similar)
-    # Ajusta el patrón si tu callback_data exacto difiere
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern=r"^ally_(approve|reject)_\d+$"))
+    # Aprobación Aliados (botones ally_approve_ID); rechazo va por rechazar_conv
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern=r"^ally_approve_\d+$"))
 
-    # Aprobación / rechazo Repartidores (botones courier_approve_ID / courier_reject_ID)
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_(approve|reject)_\d+$"))
+    # Aprobación Repartidores (botones courier_approve_ID); rechazo va por rechazar_conv
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_approve_\d+$"))
 
     # -------------------------
     # Panel admin plataforma (botones admin_*)
@@ -2523,7 +2529,7 @@ def main():
     # 1) Admins pendientes (handlers específicos)
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
-    dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
+    dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_aprobar_\d+$"))  # rechazo va por rechazar_conv
     dp.add_handler(
         CallbackQueryHandler(
             order_courier_callback,
