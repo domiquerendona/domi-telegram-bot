@@ -483,6 +483,7 @@ from handlers.admin_panel import (
     admin_config_callback,
     admin_parking_review,
     admin_parking_review_callback,
+    rechazar_conv,
 )
 from handlers.courier_panel import (
     courier_earnings_start,
@@ -2588,6 +2589,7 @@ def main():
         pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas|noop_\d+)$"
     ))
 
+    dp.add_handler(rechazar_conv)  # debe ir ANTES de admin_menu_callback
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_|ruta_pickup_)"))
 
     # Configuracion de tarifas (botones pricing_*)

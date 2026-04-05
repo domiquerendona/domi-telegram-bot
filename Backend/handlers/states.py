@@ -285,6 +285,7 @@ ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicaci�
 ADMIN_PEDIDO_COMISION  = 1011  # Comisión especial que el admin cobra al repartidor por el servicio
 ADMIN_PEDIDO_TEMPLATE_NAME = 1012  # Nombre de la plantilla al guardar pedido especial como plantilla
 ADMIN_PEDIDO_USE_TEMPLATE  = 1013  # Seleccionar plantilla para pre-llenar pedido especial
+RECHAZAR_MOTIVO            = 1014  # Capturar motivo de rechazo (rechazar_conv)
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)

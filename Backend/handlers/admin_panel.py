@@ -10,6 +10,12 @@ import os
 from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    CallbackQueryHandler,
+    ConversationHandler,
+    Filters,
+    MessageHandler,
+)
 
 from handlers.common import (
     _resolve_important_alert,
@@ -46,6 +52,7 @@ from services import (
     get_all_couriers,
     get_all_local_admins,
     get_all_online_couriers,
+    get_admin_telegram_id,
     get_ally_approval_notification_chat_id,
     get_ally_by_id,
     get_ally_reset_state_by_id,
@@ -97,6 +104,7 @@ from order_delivery import admin_orders_panel
 from profile_changes import admin_change_requests_list
 from handlers.config import tarifas_start
 from handlers.registration import _create_or_reset_courier_from_context
+from handlers.states import RECHAZAR_MOTIVO
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 SUPPORT_PAGE_SIZE = 6
@@ -1198,7 +1206,7 @@ def admin_menu_callback(update, context):
             if adm_status == "PENDING":
                 keyboard.append([
                     InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
-                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_rechazar_{}".format(adm_id)),
                 ])
             if adm_status == "APPROVED":
                 keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
@@ -1357,7 +1365,7 @@ def admin_menu_callback(update, context):
         if adm_status == "PENDING":
             keyboard.append([
                 InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
-                InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="admin_rechazar_{}".format(adm_id)),
             ])
         if adm_status == "APPROVED":
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
@@ -3250,6 +3258,135 @@ def admin_parking_review_callback(update, context):
             logger.warning("admin_parking_review_callback: no se pudo notificar al aliado: %s", _e)
 
         admin_parking_review(update, context, show_all=context.user_data.get("parking_show_all", False))
+
+
+# =============================================================================
+# rechazar_conv — Flujo de rechazo con motivo y notificacion al usuario
+# =============================================================================
+
+def rechazar_inicio(update, context):
+    """Entry point: admin pulsa Rechazar para courier, aliado o admin local."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data.startswith("config_courier_reject_"):
+        role_id = int(data.replace("config_courier_reject_", ""))
+        role = "COURIER"
+        obj = get_courier_by_id(role_id)
+        nombre = obj["full_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("config_ally_reject_"):
+        role_id = int(data.replace("config_ally_reject_", ""))
+        role = "ALLY"
+        obj = get_ally_by_id(role_id)
+        nombre = obj["business_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("admin_rechazar_"):
+        role_id = int(data.replace("admin_rechazar_", ""))
+        role = "ADMIN"
+        obj = get_admin_by_id(role_id)
+        nombre = obj["full_name"] if obj else "ID {}".format(role_id)
+    else:
+        query.edit_message_text("Accion no reconocida.")
+        return ConversationHandler.END
+
+    context.user_data["rechazar_role"] = role
+    context.user_data["rechazar_id"] = role_id
+    context.user_data["rechazar_nombre"] = nombre
+
+    kb = [[InlineKeyboardButton("Cancelar", callback_data="rechazar_cancelar")]]
+    query.edit_message_text(
+        "Vas a rechazar a: {}\n\n"
+        "Escribe el motivo del rechazo (se guardara en BD y se enviara al usuario).\n"
+        "O pulsa Cancelar para volver.".format(nombre),
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return RECHAZAR_MOTIVO
+
+
+def rechazar_con_motivo(update, context):
+    """Recibe el texto del motivo, ejecuta el rechazo y notifica al usuario."""
+    motivo = update.message.text.strip()
+    if not motivo:
+        update.message.reply_text("El motivo no puede estar vacio. Escribe el motivo o pulsa Cancelar.")
+        return RECHAZAR_MOTIVO
+
+    role = context.user_data.pop("rechazar_role", None)
+    role_id = context.user_data.pop("rechazar_id", None)
+    nombre = context.user_data.pop("rechazar_nombre", "")
+    changed_by = "tg:{}".format(update.effective_user.id)
+
+    if not role or not role_id:
+        update.message.reply_text("Error: datos de rechazo perdidos. Inicia el proceso de nuevo.")
+        return ConversationHandler.END
+
+    try:
+        if role == "COURIER":
+            update_courier_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_courier_approval_notification_chat_id(role_id)
+            label = "Repartidor"
+        elif role == "ALLY":
+            update_ally_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_ally_approval_notification_chat_id(role_id)
+            label = "Aliado"
+        else:
+            update_admin_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_admin_telegram_id(role_id)
+            label = "Administrador"
+    except Exception as e:
+        logger.error("rechazar_con_motivo %s %s: %s", role, role_id, e)
+        update.message.reply_text("Error al aplicar el rechazo. Revisa los logs.")
+        return ConversationHandler.END
+
+    # Notificar al usuario rechazado
+    if chat_id:
+        try:
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Tu solicitud de registro como {} fue revisada y no fue aprobada.\n\n"
+                    "Motivo: {}\n\n"
+                    "Si tienes preguntas, contacta directamente al administrador."
+                ).format(label, motivo),
+            )
+        except Exception as e:
+            logger.warning("rechazar_con_motivo: no se pudo notificar al usuario %s: %s", chat_id, e)
+
+    update.message.reply_text(
+        "{} rechazado con motivo guardado.\n\n"
+        "El usuario fue notificado por Telegram.".format(nombre)
+    )
+    return ConversationHandler.END
+
+
+def rechazar_cancelar(update, context):
+    """Admin cancela el rechazo."""
+    query = update.callback_query
+    query.answer()
+    context.user_data.pop("rechazar_role", None)
+    context.user_data.pop("rechazar_id", None)
+    context.user_data.pop("rechazar_nombre", None)
+    query.edit_message_text("Rechazo cancelado. Vuelve al panel para continuar.")
+    return ConversationHandler.END
+
+
+rechazar_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^config_courier_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^config_ally_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^admin_rechazar_\d+$"),
+    ],
+    states={
+        RECHAZAR_MOTIVO: [
+            CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command, rechazar_con_motivo),
+        ],
+    },
+    fallbacks=[
+        CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+    ],
+    name="rechazar_conv",
+    persistent=True,
+)
 
 
 def config_ally_subsidy_start(update, context):

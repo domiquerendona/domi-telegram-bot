@@ -2674,6 +2674,21 @@ def get_ally_telegram_id(ally_id: int):
     return _row_value(row, "telegram_id", 0) if row else None
 
 
+def get_admin_telegram_id(admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM users u
+        JOIN admins a ON a.user_id = u.id
+        WHERE a.id = {P} AND a.is_deleted = 0
+        LIMIT 1
+    """, (admin_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_value(row, "telegram_id", 0) if row else None
+
+
 def ensure_user(telegram_id: int, username: str = None):
     """
     Si el usuario no existe en la tabla users, lo crea.
