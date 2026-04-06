@@ -83,6 +83,10 @@ from handlers.states import (
     DIRECCIONES_PICKUP_NUEVA_CIUDAD,
     DIRECCIONES_PICKUP_NUEVA_DETALLES,
     DIRECCIONES_PICKUP_NUEVA_UBICACION,
+    PLAT_CORR_BUSCAR,
+    PLAT_CORR_SEL_CLIENTE,
+    PLAT_CORR_SEL_DIR,
+    PLAT_CORR_COORDS,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -91,6 +95,7 @@ from handlers.common import (
     _mostrar_confirmacion_geocode,
     cancel_conversacion,
     cancel_por_texto,
+    show_main_menu,
 )
 from services import (
     archive_admin_customer,
@@ -135,6 +140,12 @@ from services import (
     update_ally_customer,
     update_customer_address,
     update_customer_address_coords,
+    get_all_active_allies,
+    get_ally_by_id,
+    delete_geocoding_text_cache,
+    user_has_platform_admin,
+    get_ally_telegram_id_by_ally_id,
+    delete_distance_cache_for_coord,
 )
 
 
@@ -535,9 +546,26 @@ def clientes_nuevo_direccion_label(update, context):
     return CLIENTES_NUEVO_DIRECCION_TEXT
 
 
+def _get_city_hint_for_user(update, context):
+    """Retorna 'barrio, ciudad' del admin/aliado del usuario actual para mejorar geocoding."""
+    try:
+        user_db_id = get_user_db_id_from_update(update)
+        admin = get_admin_by_telegram_id(update.effective_user.id)
+        if admin:
+            parts = [p for p in [admin.get("barrio"), admin.get("city")] if p]
+            return ", ".join(parts) or None
+        ally = get_ally_by_user_id(user_db_id)
+        if ally:
+            parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+            return ", ".join(parts) or None
+    except Exception:
+        pass
+    return None
+
+
 def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_no, estado):
     """Aplica el mismo pipeline de cotizar para resolver una direccion en agenda."""
-    loc = resolve_location(texto)
+    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -1550,7 +1578,7 @@ def admin_clientes_nuevo_dir_label(update, context):
 
 def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
     """Aplica el pipeline de geocoding para resolver una direccion en la agenda del admin."""
-    loc = resolve_location(texto)
+    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -2495,7 +2523,7 @@ def ally_clientes_nuevo_dir_label(update, context):
 
 def _ally_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
     """Aplica el pipeline de geocoding para resolver una direccion en la agenda del aliado."""
-    loc = resolve_location(texto)
+    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -3709,4 +3737,420 @@ ally_clientes_conv = ConversationHandler(
     allow_reentry=True,
     name="ally_clientes_conv",
     persistent=True,
+)
+
+
+# ==============================================================================
+# plat_corregir_addr_conv — Corrección de coordenadas de clientes de aliados
+# Solo para Admin de Plataforma. Entry: callback plat_corr_inicio.
+# Flujo: buscar aliado → seleccionar cliente → seleccionar dirección → corregir coords
+# También limpia geocoding_text_cache para que futuros pedidos recalculen bien.
+# ==============================================================================
+
+def _plat_corr_cleanup(context):
+    for k in ("plat_corr_ally_id", "plat_corr_ally_name",
+              "plat_corr_customer_id", "plat_corr_customer_name",
+              "plat_corr_address_id",
+              "pending_geo_lat", "pending_geo_lng",
+              "pending_geo_text", "pending_geo_seen"):
+        context.user_data.pop(k, None)
+
+
+def _plat_corr_normalizar_text_key(text):
+    """Normaliza texto igual que services.py para buscar en geocoding_text_cache."""
+    import unicodedata
+    text = (text or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return " ".join(text.split())
+
+
+def plat_corr_inicio(update, context):
+    """Entry point: Admin de Plataforma inicia corrección de coords de aliado."""
+    query = update.callback_query
+    query.answer()
+    if not user_has_platform_admin(query.from_user.id):
+        query.answer("Solo el Admin de Plataforma puede usar esta funcion.", show_alert=True)
+        return ConversationHandler.END
+    _plat_corr_cleanup(context)
+    query.edit_message_text(
+        "Corrección de coordenadas de clientes de aliados\n\n"
+        "Escribe el nombre del aliado para buscarlo.\n"
+        "Escribe . (punto) para ver todos los aliados activos.\n\n"
+        "Escribe 'cancelar' para salir."
+    )
+    return PLAT_CORR_BUSCAR
+
+
+def _plat_corr_mostrar_aliados(message, allies):
+    if not allies:
+        text = "No encontre aliados con ese nombre. Intenta con otro termino."
+        keyboard = [[InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")]]
+    else:
+        text = "Selecciona el aliado ({} encontrado{}):".format(
+            len(allies), "s" if len(allies) != 1 else ""
+        )
+        keyboard = []
+        for a in allies[:20]:
+            name = a.get("business_name") or a.get("owner_name") or "Sin nombre"
+            ally_id = a["ally_id"] if "ally_id" in dict(a) else a["id"]
+            keyboard.append([InlineKeyboardButton(name, callback_data="plat_corr_ally_{}".format(ally_id))])
+        keyboard.append([InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")])
+    message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+def plat_corr_buscar_handler(update, context):
+    """Texto: busca aliados por nombre parcial. . = ver todos."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        _plat_corr_cleanup(context)
+        update.message.reply_text("Cancelado.")
+        show_main_menu(update, context)
+        return ConversationHandler.END
+
+    allies = get_all_active_allies()
+    if text != ".":
+        q = text.lower()
+        allies = [
+            a for a in allies
+            if q in (a.get("business_name") or "").lower()
+            or q in (a.get("owner_name") or "").lower()
+        ]
+    _plat_corr_mostrar_aliados(update.message, allies)
+    return PLAT_CORR_BUSCAR
+
+
+def _plat_corr_render_clientes(query, context, ally_id):
+    customers = list_ally_customers(ally_id, limit=20, include_inactive=False)
+    ally_name = context.user_data.get("plat_corr_ally_name", "aliado")
+    if not customers:
+        query.edit_message_text(
+            "El aliado {} no tiene clientes en su agenda.".format(ally_name),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Buscar otro aliado", callback_data="plat_corr_volver_buscar")],
+                [InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")],
+            ])
+        )
+        return PLAT_CORR_SEL_CLIENTE
+
+    keyboard = []
+    for c in customers:
+        name = c.get("name") or "Sin nombre"
+        phone = c.get("phone") or ""
+        label = "{} — {}".format(name, phone) if phone else name
+        keyboard.append([InlineKeyboardButton(label, callback_data="plat_corr_cust_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar otro aliado", callback_data="plat_corr_volver_buscar")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")])
+    query.edit_message_text(
+        "Clientes de {}:\nSelecciona el cliente:".format(ally_name),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PLAT_CORR_SEL_CLIENTE
+
+
+def _plat_corr_render_dirs(query, context, customer_id):
+    addresses = list_customer_addresses(customer_id)
+    customer_name = context.user_data.get("plat_corr_customer_name", "cliente")
+    ally_name = context.user_data.get("plat_corr_ally_name", "aliado")
+
+    if not addresses:
+        query.edit_message_text(
+            "El cliente {} no tiene direcciones guardadas.".format(customer_name),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a clientes", callback_data="plat_corr_volver_clientes")],
+                [InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")],
+            ])
+        )
+        return PLAT_CORR_SEL_DIR
+
+    keyboard = []
+    for addr in addresses:
+        label = addr.get("label") or addr.get("address_text") or "Sin etiqueta"
+        has_coords = addr.get("lat") and addr.get("lng")
+        tag = " [coords OK]" if has_coords else " [sin coords]"
+        keyboard.append([InlineKeyboardButton(
+            "{}{}".format(label, tag),
+            callback_data="plat_corr_addr_{}".format(addr["id"])
+        )])
+    keyboard.append([InlineKeyboardButton("Volver a clientes", callback_data="plat_corr_volver_clientes")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="plat_corr_cancelar")])
+    query.edit_message_text(
+        "Direcciones de {} (aliado: {}):\nSelecciona la direccion a corregir:".format(customer_name, ally_name),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PLAT_CORR_SEL_DIR
+
+
+def _plat_corr_save_and_finish(msg_or_query, context, address_id, customer_id, lat, lng, ally_id=None):
+    """Guarda las coordenadas corregidas y limpia la cache de geocoding y distancias."""
+    # Capturar coords viejas antes de sobrescribir
+    address = get_customer_address_by_id(address_id)
+    old_lat = address.get("lat") if address else None
+    old_lng = address.get("lng") if address else None
+
+    ok = update_customer_address_coords(address_id, customer_id, lat, lng)
+
+    if address:
+        # Limpiar geocoding_text_cache (texto → coords incorrectas)
+        addr_text = address.get("address_text") or ""
+        if addr_text:
+            try:
+                delete_geocoding_text_cache(_plat_corr_normalizar_text_key(addr_text))
+            except Exception:
+                pass
+        # Limpiar distance_cache para las coords viejas erroneas (coord_par → distancia incorrecta)
+        if old_lat and old_lng:
+            try:
+                old_coord_key = "{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5))
+                delete_distance_cache_for_coord(old_coord_key)
+            except Exception:
+                pass
+
+    maps_link = "https://maps.google.com/?q={},{}".format(lat, lng)
+    if ok:
+        result_text = (
+            "Coordenadas actualizadas.\n"
+            "Lat: {:.6f}, Lng: {:.6f}\n"
+            "{}\n\n"
+            "La cache de geocodificacion fue limpiada. "
+            "Los proximos pedidos a esta direccion calcularan la distancia correctamente."
+        ).format(float(lat), float(lng), maps_link)
+    else:
+        result_text = "No se pudo guardar. Verifica que la direccion exista y este activa."
+
+    if hasattr(msg_or_query, "edit_message_text"):
+        msg_or_query.edit_message_text(result_text)
+    else:
+        msg_or_query.reply_text(result_text)
+
+    # Notificar al aliado que sus coordenadas fueron corregidas
+    if ok and ally_id:
+        try:
+            ally_tg_id = get_ally_telegram_id_by_ally_id(ally_id)
+            if ally_tg_id:
+                addr_label = (address.get("label") or address.get("address_text") or "una direccion") if address else "una direccion"
+                context.bot.send_message(
+                    chat_id=ally_tg_id,
+                    text=(
+                        "El administrador de plataforma corrigio las coordenadas de "
+                        "una direccion de entrega de tu agenda.\n\n"
+                        "Direccion: {}\n"
+                        "Nueva ubicacion: {}\n\n"
+                        "Los proximos pedidos a esta direccion usaran las coordenadas correctas."
+                    ).format(addr_label, maps_link)
+                )
+        except Exception:
+            pass
+
+    _plat_corr_cleanup(context)
+
+
+def plat_corr_callback(update, context):
+    """Maneja todos los callbacks inline del flujo plat_corr_."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "plat_corr_cancelar":
+        _plat_corr_cleanup(context)
+        query.edit_message_text("Cancelado.")
+        return ConversationHandler.END
+
+    if data == "plat_corr_volver_buscar":
+        _plat_corr_cleanup(context)
+        query.edit_message_text(
+            "Escribe el nombre del aliado para buscarlo (o . para ver todos):\n\n"
+            "Escribe 'cancelar' para salir."
+        )
+        return PLAT_CORR_BUSCAR
+
+    if data == "plat_corr_volver_clientes":
+        ally_id = context.user_data.get("plat_corr_ally_id")
+        if not ally_id:
+            query.edit_message_text("Error: aliado no encontrado. Vuelve a buscar.")
+            return ConversationHandler.END
+        context.user_data.pop("plat_corr_customer_id", None)
+        context.user_data.pop("plat_corr_customer_name", None)
+        context.user_data.pop("plat_corr_address_id", None)
+        return _plat_corr_render_clientes(query, context, ally_id)
+
+    if data.startswith("plat_corr_ally_"):
+        try:
+            ally_id = int(data.replace("plat_corr_ally_", ""))
+        except ValueError:
+            query.answer("Formato invalido.", show_alert=True)
+            return PLAT_CORR_BUSCAR
+        ally = get_ally_by_id(ally_id)
+        if not ally:
+            query.answer("Aliado no encontrado.", show_alert=True)
+            return PLAT_CORR_BUSCAR
+        context.user_data["plat_corr_ally_id"] = ally_id
+        context.user_data["plat_corr_ally_name"] = (
+            ally.get("business_name") or ally.get("owner_name") or "Aliado"
+        )
+        return _plat_corr_render_clientes(query, context, ally_id)
+
+    if data.startswith("plat_corr_cust_"):
+        try:
+            customer_id = int(data.replace("plat_corr_cust_", ""))
+        except ValueError:
+            query.answer("Formato invalido.", show_alert=True)
+            return PLAT_CORR_SEL_CLIENTE
+        context.user_data["plat_corr_customer_id"] = customer_id
+        customer = get_ally_customer_by_id(customer_id)
+        if customer:
+            context.user_data["plat_corr_customer_name"] = customer.get("name") or "Cliente"
+        return _plat_corr_render_dirs(query, context, customer_id)
+
+    if data.startswith("plat_corr_addr_"):
+        try:
+            address_id = int(data.replace("plat_corr_addr_", ""))
+        except ValueError:
+            query.answer("Formato invalido.", show_alert=True)
+            return PLAT_CORR_SEL_DIR
+        customer_id = context.user_data.get("plat_corr_customer_id")
+        address = get_customer_address_by_id(address_id, customer_id)
+        if not address:
+            query.answer("Direccion no encontrada.", show_alert=True)
+            return PLAT_CORR_SEL_DIR
+        context.user_data["plat_corr_address_id"] = address_id
+
+        lat = address.get("lat")
+        lng = address.get("lng")
+        addr_text = address.get("address_text") or ""
+        label = address.get("label") or addr_text or "Sin etiqueta"
+
+        if lat and lng:
+            coords_actual = "Coords actuales: {:.6f}, {:.6f}\nhttps://maps.google.com/?q={},{}".format(
+                float(lat), float(lng), lat, lng
+            )
+        else:
+            coords_actual = "Esta direccion no tiene coordenadas guardadas aun."
+
+        query.edit_message_text(
+            "Corregir coordenadas\n\n"
+            "Direccion: {}\n"
+            "Texto guardado: {}\n\n"
+            "{}\n\n"
+            "Envia el PIN de Telegram con la ubicacion correcta, "
+            "o pega un link de Google Maps o coordenadas (ej: 4.81,-75.69).\n\n"
+            "Escribe 'cancelar' para salir.".format(label, addr_text, coords_actual)
+        )
+        return PLAT_CORR_COORDS
+
+    if data == "plat_corr_geo_si":
+        lat = context.user_data.pop("pending_geo_lat", None)
+        lng = context.user_data.pop("pending_geo_lng", None)
+        context.user_data.pop("pending_geo_text", None)
+        context.user_data.pop("pending_geo_seen", None)
+        address_id = context.user_data.get("plat_corr_address_id")
+        customer_id = context.user_data.get("plat_corr_customer_id")
+        ally_id = context.user_data.get("plat_corr_ally_id")
+        if lat is not None and lng is not None and address_id:
+            _plat_corr_save_and_finish(query, context, address_id, customer_id, lat, lng, ally_id=ally_id)
+            return ConversationHandler.END
+        query.edit_message_text("Error al obtener coordenadas. Intenta de nuevo.")
+        return PLAT_CORR_COORDS
+
+    if data == "plat_corr_geo_no":
+        return _geo_siguiente_o_gps(
+            query, context,
+            "plat_corr_geo_si", "plat_corr_geo_no",
+            PLAT_CORR_COORDS,
+            header_text="Otra opcion encontrada:",
+        )
+
+    return PLAT_CORR_SEL_DIR
+
+
+def plat_corr_coords_location_handler(update, context):
+    """Recibe PIN de Telegram para corregir coordenadas."""
+    loc = update.message.location
+    address_id = context.user_data.get("plat_corr_address_id")
+    customer_id = context.user_data.get("plat_corr_customer_id")
+    ally_id = context.user_data.get("plat_corr_ally_id")
+    if not address_id:
+        update.message.reply_text("Error: no hay direccion seleccionada.")
+        return PLAT_CORR_COORDS
+    _plat_corr_save_and_finish(update.message, context, address_id, customer_id, loc.latitude, loc.longitude, ally_id=ally_id)
+    return ConversationHandler.END
+
+
+def plat_corr_coords_text_handler(update, context):
+    """Recibe texto (link de Maps, coordenadas o direccion) para geocodificar."""
+    text = update.message.text.strip()
+    if text.lower() == "cancelar":
+        _plat_corr_cleanup(context)
+        update.message.reply_text("Cancelado.")
+        show_main_menu(update, context)
+        return ConversationHandler.END
+
+    # Obtener city_hint del aliado seleccionado para mayor precision de geocoding
+    ally_city_hint = None
+    ally_id = context.user_data.get("plat_corr_ally_id")
+    if ally_id:
+        try:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+                ally_city_hint = ", ".join(parts) or None
+        except Exception:
+            pass
+
+    geo = resolve_location(text, city_hint=ally_city_hint)
+    if geo and geo.get("lat") and geo.get("lng"):
+        _mostrar_confirmacion_geocode(
+            update.message,
+            context,
+            geo,
+            text,
+            "plat_corr_geo_si",
+            "plat_corr_geo_no",
+            header_text="Encontre esta ubicacion. Es la correcta?",
+        )
+        return PLAT_CORR_COORDS
+
+    update.message.reply_text(
+        "No pude interpretar esa entrada.\n\n"
+        "Envia:\n"
+        "- Un PIN de Telegram (ubicacion)\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas exactas: 4.81234, -75.69123\n\n"
+        "Escribe 'cancelar' para salir."
+    )
+    return PLAT_CORR_COORDS
+
+
+plat_corregir_addr_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(plat_corr_inicio, pattern=r"^plat_corr_inicio$")],
+    states={
+        PLAT_CORR_BUSCAR: [
+            CallbackQueryHandler(plat_corr_callback, pattern=r"^plat_corr_"),
+            MessageHandler(
+                Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER,
+                plat_corr_buscar_handler,
+            ),
+        ],
+        PLAT_CORR_SEL_CLIENTE: [
+            CallbackQueryHandler(plat_corr_callback, pattern=r"^plat_corr_"),
+        ],
+        PLAT_CORR_SEL_DIR: [
+            CallbackQueryHandler(plat_corr_callback, pattern=r"^plat_corr_"),
+        ],
+        PLAT_CORR_COORDS: [
+            CallbackQueryHandler(plat_corr_callback, pattern=r"^plat_corr_"),
+            MessageHandler(Filters.location, plat_corr_coords_location_handler),
+            MessageHandler(
+                Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER,
+                plat_corr_coords_text_handler,
+            ),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+    ],
+    name="plat_corregir_addr_conv",
+    persistent=True,
+    allow_reentry=True,
 )

@@ -2467,6 +2467,15 @@ def construir_resumen_pedido(context):
     if demand_block:
         resumen += "\n" + demand_block + "\n"
 
+    # Aviso de precio estimado cuando se uso Haversine (sin red vial real)
+    dist_source = context.user_data.get("distance_source", "")
+    if "haversine" in dist_source:
+        resumen += (
+            "\nAVISO: precio estimado. No se pudo calcular la distancia por carretera "
+            "en este momento. El precio real puede ser mayor si la ruta tiene curvas o desvios. "
+            "Considera agregar un incentivo.\n"
+        )
+
     resumen += (
         "\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Deseas agregar un incentivo antes de confirmar? (Tambien puedes hacerlo despues de publicar)\n\n"

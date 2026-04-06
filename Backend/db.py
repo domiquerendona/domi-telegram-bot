@@ -9941,6 +9941,20 @@ def upsert_distance_cache(origin_key: str, destination_key: str, mode: str, dist
     conn.close()
 
 
+def delete_distance_cache_for_coord(coord_key: str):
+    """Elimina todas las entradas de distancia cacheadas donde el coord_key aparece
+    como origen o destino. Usado cuando se corrigen coordenadas erroneas para que
+    los proximos calculos no devuelvan la distancia incorrecta ya cacheada."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"DELETE FROM map_distance_cache WHERE origin_key = {P} OR destination_key = {P}",
+        (coord_key, coord_key)
+    )
+    conn.commit()
+    conn.close()
+
+
 # ---------- GEOCODING TEXT CACHE ----------
 
 def get_geocoding_text_cache(text_key: str):
@@ -10003,6 +10017,16 @@ def upsert_geocoding_text_cache(text_key: str, lat: float, lng: float,
             source = COALESCE(excluded.source, geocoding_text_cache.source),
             updated_at = {now_sql}
     """, (text_key, lat, lng, formatted_address, place_id, source))
+    conn.commit()
+    conn.close()
+
+
+def delete_geocoding_text_cache(text_key: str):
+    """Elimina una entrada de la cache de geocodificacion por text_key normalizado.
+    Usada para limpiar entradas incorrectas tras corregir coordenadas manualmente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM geocoding_text_cache WHERE text_key = {P}", (text_key,))
     conn.commit()
     conn.close()
 
