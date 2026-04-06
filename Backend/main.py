@@ -344,6 +344,7 @@ from handlers.customer_agenda import (
     admin_clientes_conv,
     ally_clientes_conv,
     agenda_conv,
+    plat_corregir_addr_conv,
 )
 from handlers.recharges import (
     recargar_conv,
@@ -2770,6 +2771,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(ally_bandeja_callback, pattern=r"^alybandeja_"))  # Bandeja solicitudes
     dp.add_handler(CallbackQueryHandler(ally_enlace_refresh_callback, pattern=r"^alyenlace_refresh$"))  # Refrescar Mi enlace
     # Estos tres deben ir ANTES del handler global ^admin_ para que sus entry points no sean interceptados
+    dp.add_handler(plat_corregir_addr_conv)  # Corrección coords aliados, solo Admin Plataforma (entry: plat_corr_inicio)
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)

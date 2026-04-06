@@ -87,6 +87,12 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
+def _reg_city_hint(context, city_key="city", barrio_key="barrio"):
+    """Retorna barrio+ciudad ya capturados en el flujo de registro para mejorar geocoding."""
+    parts = [p for p in [context.user_data.get(barrio_key), context.user_data.get(city_key)] if p]
+    return ", ".join(parts) if parts else None
+
+
 def _registration_invalid_location_text():
     return (
         "No pude detectar esa ubicacion.\n\n"
@@ -353,7 +359,7 @@ def ally_ubicacion_handler(update, context):
         return show_ally_team_selection(update, context, from_callback=False)
 
     # Geocoding: intentar como direccion escrita
-    geo = resolve_location(texto)
+    geo = resolve_location(texto, city_hint=_reg_city_hint(context))
     if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
         context.user_data["ally_geo_formatted"] = geo.get("formatted_address", "")
         _emit_registration_geo_confirmation(
@@ -989,7 +995,7 @@ def courier_residence_location(update, context):
             context.user_data["residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
-            geo = resolve_location(text)
+            geo = resolve_location(text, city_hint=_reg_city_hint(context))
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 context.user_data["courier_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(
@@ -1980,7 +1986,7 @@ def admin_residence_location(update, context):
             context.user_data["admin_residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
-            geo = resolve_location(text)
+            geo = resolve_location(text, city_hint=_reg_city_hint(context, city_key="admin_city", barrio_key="admin_barrio"))
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 context.user_data["admin_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(

@@ -916,6 +916,7 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
+        [InlineKeyboardButton("📌 Corregir coords de aliados", callback_data="plat_corr_inicio")],
     ]
 
     update.message.reply_text(

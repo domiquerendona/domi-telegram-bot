@@ -14,7 +14,8 @@ from db import (
     get_api_usage_today, record_api_usage_event,
     get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
-    get_geocoding_text_cache, upsert_geocoding_text_cache,
+    get_geocoding_text_cache, upsert_geocoding_text_cache, delete_geocoding_text_cache,
+    delete_distance_cache_for_coord,
     set_ally_subscription_price, get_ally_subscription_price,
     create_ally_subscription, get_active_ally_subscription,
     expire_old_ally_subscriptions, get_ally_subscription_info, get_expiring_ally_subscriptions,
@@ -461,7 +462,7 @@ def _text_cache_key(text: str, city_hint: str) -> str:
 
 
 def _normalize_reference_key(value: str) -> str:
-    """Normaliza texto para matching de aliases locales."""
+    """Normaliza texto para matching de aliases locales y cache de geocoding."""
     if not value:
         return ""
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
@@ -469,6 +470,10 @@ def _normalize_reference_key(value: str) -> str:
     normalized = re.sub(r"[^\w\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+# Alias publico — usado por handlers para normalizar texto antes de limpiar geocoding_text_cache
+normalize_text_for_cache = _normalize_reference_key
 
 
 def _parse_local_alias_point(raw_value: Any) -> Optional[Dict[str, Any]]:
@@ -916,13 +921,14 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
 def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> dict:
     """
-    Estrategia en 3 capas para calcular distancia de forma economica:
+    Estrategia en capas para calcular distancia de forma economica:
 
-    Capa 1 - Haversine: calculo local gratuito (distancia * factor urbano).
-    Capa 2 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
-    Capa 3 - Google API: solo si hay cuota disponible (costoso).
+    Capa 1 - Cache (map_distance_cache): solo entradas con provider != 'haversine'.
+    Capa 2 - Google Distance Matrix API: solo si hay cuota disponible (costoso).
+    Capa 2.5 - OSRM (red vial real, gratuito, sin cuota).
+    Capa 3 - Haversine x factor: fallback local. NO se cachea para reintentar OSRM/API luego.
 
-    Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
+    Retorna dict con: distance_km, source ('cache(provider)'|'google'|'osrm'|'haversine'), used_api (bool)
     """
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
@@ -996,6 +1002,7 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
         "quote_source": "coords",
         "distance_source": result["source"],
         "used_api": result["used_api"],
+        "is_estimated": result["source"] == "haversine",
     }
 
 
@@ -2039,12 +2046,16 @@ def _is_allowed_city(formatted_address: str) -> bool:
     return any(city in normalized for city in allowed)
 
 
-def resolve_location(text: str) -> Optional[Dict[str, Any]]:
+def resolve_location(text: str, city_hint: str = None) -> Optional[Dict[str, Any]]:
     """
     Intenta extraer lat/lng de cualquier entrada del usuario:
     1. Coordenadas directas (4.81,-75.69)
     2. Link de Google Maps (corto o largo)
     3. Geocoding con Google API (solo si hay cuota)
+
+    city_hint: contexto geografico opcional (ej: "Barrio El Jardin, Pereira").
+    Cuando se provee, se usa como primer sufijo de busqueda en la API para mayor precision.
+    Si city_hint ya aparece en el texto, se ignora para no duplicar.
 
     Retorna dict {lat, lng, method} o None.
     """
@@ -2109,15 +2120,19 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         quota_ok = False
 
     if quota_ok and not is_url_like:
-        # Cascada de consultas: texto original + sufijo ciudad principal.
-        # Limitado a 2 variantes para economizar cuota (max 4 calls vs 8 anteriores).
-        # Si el texto original ya incluye ciudad, la segunda variante es redundante
-        # pero inofensiva — el break por resultado válido la salta de todas formas.
-        # Para más candidatos el usuario puede usar resolve_location_next().
-        _queries = [
-            text,
-            f"{text}, Pereira, Risaralda, Colombia",
-        ]
+        # Cascada de consultas: texto original + sufijo geografico.
+        # city_hint provee contexto especifico del aliado/admin (barrio, ciudad).
+        # Si city_hint ya aparece en el texto, la variante es redundante pero inofensiva.
+        if city_hint and city_hint.lower() not in text.lower():
+            _queries = [
+                f"{text}, {city_hint}",
+                text,
+            ]
+        else:
+            _queries = [
+                text,
+                f"{text}, Pereira, Risaralda, Colombia",
+            ]
         for _q in _queries:
             geo = google_geocode_forward(_q)
             if geo and geo.get("lat") and geo.get("lng"):
@@ -2198,7 +2213,7 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]:
+def resolve_location_next(text: str, seen_ids: list, city_hint: str = None) -> Optional[Dict[str, Any]]:
     """
     Retorna el siguiente candidato de geocoding distinto a los ya mostrados.
     Carga perezosa: solo se llama cuando el usuario rechaza el candidato anterior.
@@ -2216,10 +2231,10 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
     if not quota_ok:
         return None
 
-    _queries = [
-        text,
-        f"{text}, Pereira, Risaralda, Colombia",
-    ]
+    if city_hint and city_hint.lower() not in text.lower():
+        _queries = [f"{text}, {city_hint}", text]
+    else:
+        _queries = [text, f"{text}, Pereira, Risaralda, Colombia"]
     for _q in _queries:
         geo = google_geocode_forward(_q)
         if geo and geo.get("lat") and geo.get("lng"):

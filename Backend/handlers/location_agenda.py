@@ -51,6 +51,19 @@ from services import (
     update_admin_location,
 )
 
+def _loc_admin_city_hint(update):
+    """Retorna barrio+ciudad del admin para mejorar geocoding de sus ubicaciones."""
+    try:
+        admin = get_admin_by_telegram_id(update.effective_user.id)
+        if admin:
+            parts = [p for p in [admin.get("barrio"), admin.get("city")] if p]
+            if parts:
+                return ", ".join(parts)
+    except Exception:
+        pass
+    return None
+
+
 def _ally_locs_mostrar_lista(query_or_update, ally_id, edit=False, aviso=None):
     """Muestra el panel de ubicaciones del aliado con botones de gestión."""
     locations = get_ally_locations(ally_id)
@@ -491,7 +504,7 @@ def admin_dirs_nueva_text_handler(update, context):
     label = context.user_data.get("adirs_new_label", "")
     editing_id = context.user_data.get("adirs_editing_id")
 
-    loc = resolve_location(address_text)
+    loc = resolve_location(address_text, city_hint=_loc_admin_city_hint(update))
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"

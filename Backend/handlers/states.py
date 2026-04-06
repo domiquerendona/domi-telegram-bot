@@ -402,3 +402,12 @@ RECARGA_DIR_TIPO   = 1016  # Seleccion de tipo (COURIER/ALLY/ADMIN) via callback
 RECARGA_DIR_BUSCAR = 1019  # Texto de busqueda por nombre + seleccion de usuario via callbacks
 RECARGA_DIR_MONTO  = 1017  # Texto con el monto a recargar
 RECARGA_DIR_NOTA   = 1018  # Texto con nota opcional + confirmacion via callbacks
+
+# =========================
+# plat_corregir_addr_conv — Corrección de coordenadas de clientes de aliados (Admin Plataforma)
+# Entry: callback plat_corr_inicio  |  Prefijo callbacks: plat_corr_  |  Prefijo user_data: plat_corr_
+# =========================
+PLAT_CORR_BUSCAR       = 1020  # Admin escribe texto para buscar aliado (o . para todos)
+PLAT_CORR_SEL_CLIENTE  = 1021  # Selecciona cliente del aliado via callbacks
+PLAT_CORR_SEL_DIR      = 1022  # Selecciona direccion del cliente via callbacks
+PLAT_CORR_COORDS       = 1023  # Ingresa nuevas coordenadas (GPS pin, link Maps o texto geocodificable)

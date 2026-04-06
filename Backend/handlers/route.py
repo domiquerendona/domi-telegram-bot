@@ -90,6 +90,16 @@ from services import (
 from order_delivery import publish_route_to_couriers, build_market_launch_status_text
 
 
+def _route_city_hint(context):
+    """Extrae barrio+ciudad del aliado en sesion para mejorar geocoding de rutas."""
+    ally = context.user_data.get("ally")
+    if ally:
+        parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+        if parts:
+            return ", ".join(parts)
+    return None
+
+
 def _ruta_no_more_text(point_label: str):
     return (
         "No encontre mas opciones para {}.\n\n"
@@ -521,8 +531,10 @@ def ruta_pickup_nueva_ubicacion_handler(update, context):
             question_text="Es esta la ubicacion de recogida correcta?",
         )
         return RUTA_PICKUP_NUEVA_UBICACION
-    geo = resolve_location(text)
+    _hint = _route_city_hint(context)
+    geo = resolve_location(text, city_hint=_hint)
     if geo and geo.get("lat") is not None and geo.get("lng") is not None:
+        context.user_data["pending_geo_city_hint"] = _hint
         context.user_data["ruta_pickup_location_id"] = None
         _mostrar_confirmacion_geocode(
             update.message,
@@ -856,8 +868,10 @@ def ruta_parada_ubicacion_handler(update, context):
             question_text="Es esta la ubicacion de entrega correcta?",
         )
         return RUTA_PARADA_UBICACION
-    geo = resolve_location(text)
+    _hint = _route_city_hint(context)
+    geo = resolve_location(text, city_hint=_hint)
     if geo and geo.get("lat") is not None and geo.get("lng") is not None:
+        context.user_data["pending_geo_city_hint"] = _hint
         _mostrar_confirmacion_geocode(
             update.message,
             context,
