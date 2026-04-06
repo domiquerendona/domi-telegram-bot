@@ -60,19 +60,19 @@ COURIER_VEHICLE_TYPE = 114  # Selección de vehículo: Moto o Bicicleta
 FLOW_STATE_ORDER = {
     "ally": [
         ALLY_NAME, ALLY_OWNER, ALLY_DOCUMENT, ALLY_PHONE,
-        ALLY_CITY, ALLY_BARRIO, ALLY_ADDRESS, ALLY_UBICACION, ALLY_CONFIRM,
+        ALLY_CITY, ALLY_BARRIO, ALLY_UBICACION, ALLY_CONFIRM,
     ],
     "courier": [
         COURIER_FULLNAME, COURIER_IDNUMBER, COURIER_PHONE,
-        COURIER_CITY, COURIER_BARRIO, COURIER_RESIDENCE_ADDRESS,
-        COURIER_RESIDENCE_LOCATION, COURIER_VEHICLE_TYPE, COURIER_PLATE, COURIER_BIKETYPE,
+        COURIER_CITY, COURIER_BARRIO, COURIER_RESIDENCE_LOCATION,
+        COURIER_VEHICLE_TYPE, COURIER_PLATE, COURIER_BIKETYPE,
         COURIER_CEDULA_FRONT, COURIER_CEDULA_BACK, COURIER_SELFIE,
         COURIER_CONFIRM,
     ],
     "admin": [
         LOCAL_ADMIN_NAME, LOCAL_ADMIN_DOCUMENT, LOCAL_ADMIN_TEAMNAME,
         LOCAL_ADMIN_PHONE, LOCAL_ADMIN_CITY, LOCAL_ADMIN_BARRIO,
-        LOCAL_ADMIN_RESIDENCE_ADDRESS, LOCAL_ADMIN_RESIDENCE_LOCATION,
+        LOCAL_ADMIN_RESIDENCE_LOCATION,
         LOCAL_ADMIN_CEDULA_FRONT, LOCAL_ADMIN_CEDULA_BACK, LOCAL_ADMIN_SELFIE,
         LOCAL_ADMIN_CONFIRM,
     ],
@@ -86,8 +86,7 @@ FLOW_STATE_KEYS = {
         ALLY_PHONE: ["ally_phone"],
         ALLY_CITY: ["city"],
         ALLY_BARRIO: ["barrio"],
-        ALLY_ADDRESS: ["address"],
-        ALLY_UBICACION: ["ally_lat", "ally_lng"],
+        ALLY_UBICACION: ["address", "ally_lat", "ally_lng"],
         ALLY_CONFIRM: [],
     },
     "courier": {
@@ -96,8 +95,7 @@ FLOW_STATE_KEYS = {
         COURIER_PHONE: ["phone"],
         COURIER_CITY: ["city"],
         COURIER_BARRIO: ["barrio"],
-        COURIER_RESIDENCE_ADDRESS: ["residence_address"],
-        COURIER_RESIDENCE_LOCATION: ["residence_lat", "residence_lng"],
+        COURIER_RESIDENCE_LOCATION: ["residence_address", "residence_lat", "residence_lng"],
         COURIER_VEHICLE_TYPE: ["vehicle_type"],
         COURIER_PLATE: ["plate"],
         COURIER_BIKETYPE: ["bike_type"],
@@ -113,8 +111,7 @@ FLOW_STATE_KEYS = {
         LOCAL_ADMIN_PHONE: ["phone"],
         LOCAL_ADMIN_CITY: ["admin_city"],
         LOCAL_ADMIN_BARRIO: ["admin_barrio"],
-        LOCAL_ADMIN_RESIDENCE_ADDRESS: ["admin_residence_address"],
-        LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_lat", "admin_residence_lng"],
+        LOCAL_ADMIN_RESIDENCE_LOCATION: ["admin_residence_address", "admin_residence_lat", "admin_residence_lng"],
         LOCAL_ADMIN_CEDULA_FRONT: ["admin_cedula_front_file_id"],
         LOCAL_ADMIN_CEDULA_BACK: ["admin_cedula_back_file_id"],
         LOCAL_ADMIN_SELFIE: ["admin_selfie_file_id"],
@@ -288,6 +285,8 @@ ADMIN_PEDIDO_INC_MONTO = 916   # Incentivo adicional (monto libre pre-publicaci�
 ADMIN_PEDIDO_COMISION  = 1011  # Comisión especial que el admin cobra al repartidor por el servicio
 ADMIN_PEDIDO_TEMPLATE_NAME = 1012  # Nombre de la plantilla al guardar pedido especial como plantilla
 ADMIN_PEDIDO_USE_TEMPLATE  = 1013  # Seleccionar plantilla para pre-llenar pedido especial
+RECHAZAR_MOTIVO            = 1014  # Capturar motivo de rechazo (rechazar_conv)
+RECHAZAR_CONFIRMAR         = 1015  # Confirmacion antes de pedir motivo (rechazar_conv)
 
 # Estados para el panel de gestión de ubicaciones del aliado
 ALLY_LOCS_MENU       = 920   # Panel principal (lista + operaciones vía callbacks)
@@ -394,3 +393,12 @@ PEDIDO_GUARDAR_DIR_PARKING = 1007  # Dificultad de parqueo al guardar nueva dir 
 PEDIDO_GUARDAR_CUST_PARKING = 1008 # Dificultad de parqueo al guardar cliente nuevo tras crear pedido
 ADMIN_PEDIDO_GUARDAR_PARKING = 1009 # Dificultad de parqueo al guardar cliente tras pedido especial admin
 RUTA_GUARDAR_CUST_PARKING  = 1010  # Dificultad de parqueo al guardar cliente de parada en ruta
+
+# =========================
+# Estados para recarga directa por Admin Plataforma (recarga_directa_conv)
+# Prefijo callbacks: plat_rdir_   |  Prefijo user_data: recdir_
+# =========================
+RECARGA_DIR_TIPO   = 1016  # Seleccion de tipo (COURIER/ALLY/ADMIN) via callbacks
+RECARGA_DIR_BUSCAR = 1019  # Texto de busqueda por nombre + seleccion de usuario via callbacks
+RECARGA_DIR_MONTO  = 1017  # Texto con el monto a recargar
+RECARGA_DIR_NOTA   = 1018  # Texto con nota opcional + confirmacion via callbacks

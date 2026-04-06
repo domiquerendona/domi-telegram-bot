@@ -267,7 +267,11 @@ class OrderDeliveryFeeTests(unittest.TestCase):
 
         expired_order_id = self._create_order(status="PUBLISHED", ally_id=self.ally_id)
         context = _DummyContext()
-        cycle_info = {"ally_id": self.ally_id, "admin_id": self.local_admin_id}
+        cycle_info = {
+            "ally_id": self.ally_id,
+            "admin_id": self.local_admin_id,
+            "market_retry_count": order_delivery.MARKET_RETRY_LIMIT,
+        }
         with patch.object(order_delivery, "_cancel_no_response_job", return_value=None), \
              patch.object(order_delivery, "_cancel_order_expire_job", return_value=None), \
              patch.object(order_delivery, "_cancel_offer_jobs", return_value=None):

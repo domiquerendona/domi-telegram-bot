@@ -36,9 +36,16 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
     _handle_text_field_input, _geo_siguiente_o_gps, _mostrar_confirmacion_geocode,
     cancel_conversacion, cancel_por_texto, ensure_terms,
-    show_main_menu, show_flow_menu, _fmt_pesos,
+    show_main_menu, show_flow_menu, _fmt_pesos, build_offer_demand_badge_text,
+    build_offer_suggestion_button_row,
 )
-from order_delivery import publish_order_to_couriers, repost_order_to_couriers, repost_route_to_couriers, publish_route_to_couriers
+from order_delivery import (
+    publish_order_to_couriers,
+    repost_order_to_couriers,
+    repost_route_to_couriers,
+    publish_route_to_couriers,
+    build_market_launch_status_text,
+)
 from services import (
     ensure_user, get_user_by_telegram_id, get_ally_by_user_id,
     get_approved_admin_link_for_ally, get_admin_link_for_ally,
@@ -75,12 +82,37 @@ from services import (
     get_ally_parking_fee_enabled,
     get_active_terms_version, save_terms_acceptance,
     resolve_location, resolve_location_next, save_confirmed_geocoding,
-    get_fee_config,
+    get_fee_config, build_offer_demand_preview,
     save_order_template, list_order_templates, get_order_template_by_id,
     increment_order_template_usage, delete_order_template,
     get_admin_balance,
 )
 
+
+PEDIDO_BASE_PRESET_AMOUNTS = (20000, 50000, 100000, 200000)
+PEDIDO_BASE_CALLBACK_PATTERN = (
+    r"^pedido_base_(" + "|".join(str(amount) for amount in PEDIDO_BASE_PRESET_AMOUNTS) + r"|otro)$"
+)
+PICKUP_PREVIEW_CONFIRM_CALLBACK = "pickup_preview_confirm"
+PICKUP_PREVIEW_CHANGE_CALLBACK = "pickup_preview_change"
+PICKUP_PREVIEW_CALLBACK_PATTERN = r"^pickup_preview_(confirm|change)$"
+
+
+def _pedido_base_keyboard():
+    """Construye el teclado de montos fijos para base requerida."""
+    keyboard = []
+    current_row = []
+    for amount in PEDIDO_BASE_PRESET_AMOUNTS:
+        current_row.append(
+            InlineKeyboardButton(_fmt_pesos(amount), callback_data=f"pedido_base_{amount}")
+        )
+        if len(current_row) == 2:
+            keyboard.append(current_row)
+            current_row = []
+    if current_row:
+        keyboard.append(current_row)
+    keyboard.append([InlineKeyboardButton("Otro valor", callback_data="pedido_base_otro")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 def nuevo_pedido_desde_cotizador(update, context):
@@ -818,19 +850,7 @@ def pedido_requiere_base_callback(update, context):
 
     elif data == "pedido_base_si":
         context.user_data["requires_cash"] = True
-        # Mostrar opciones de monto
-        keyboard = [
-            [
-                InlineKeyboardButton("$5.000", callback_data="pedido_base_5000"),
-                InlineKeyboardButton("$10.000", callback_data="pedido_base_10000"),
-            ],
-            [
-                InlineKeyboardButton("$20.000", callback_data="pedido_base_20000"),
-                InlineKeyboardButton("$50.000", callback_data="pedido_base_50000"),
-            ],
-            [InlineKeyboardButton("Otro valor", callback_data="pedido_base_otro")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = _pedido_base_keyboard()
         query.edit_message_text(
             "VALOR DE BASE\n\n"
             "Cuanto debe adelantar el repartidor?",
@@ -847,22 +867,21 @@ def pedido_valor_base_callback(update, context):
     query.answer()
     data = query.data
 
-    valores_map = {
-        "pedido_base_5000": 5000,
-        "pedido_base_10000": 10000,
-        "pedido_base_20000": 20000,
-        "pedido_base_50000": 50000,
-    }
-
-    if data in valores_map:
-        context.user_data["cash_required_amount"] = valores_map[data]
-        return calcular_cotizacion_y_confirmar(query, context, edit=True)
-
-    elif data == "pedido_base_otro":
+    if data == "pedido_base_otro":
         query.edit_message_text(
             "Escribe el valor de la base (solo numeros):"
         )
         return PEDIDO_VALOR_BASE
+
+    if data.startswith("pedido_base_"):
+        raw_amount = data[len("pedido_base_"):]
+        try:
+            amount = int(raw_amount)
+        except ValueError:
+            return PEDIDO_VALOR_BASE
+        if amount in PEDIDO_BASE_PRESET_AMOUNTS:
+            context.user_data["cash_required_amount"] = amount
+            return calcular_cotizacion_y_confirmar(query, context, edit=True)
 
     return PEDIDO_VALOR_BASE
 
@@ -2066,14 +2085,121 @@ def pedido_pickup_guardar_callback(update, context):
     return continuar_despues_pickup(query, context, edit=False)
 
 
-def continuar_despues_pickup(query, context, edit=True):
-    """Continua el flujo despues de seleccionar el pickup."""
+def _pickup_preview_chat_id(query_or_update):
+    if hasattr(query_or_update, "message") and query_or_update.message:
+        return query_or_update.message.chat_id
+    return getattr(query_or_update, "chat_id", None)
+
+
+def _clear_pickup_preview_location(context, chat_id):
+    message_id = context.user_data.pop("pickup_preview_location_message_id", None)
+    if not message_id or not chat_id:
+        return
+    try:
+        context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+def mostrar_preview_pickup(query_or_update, context, edit=False):
+    """Muestra un preview del pickup seleccionado antes de continuar el flujo."""
+    pickup_label = context.user_data.get("pickup_label") or "Recogida"
+    pickup_address = context.user_data.get("pickup_address") or "No disponible"
+    pickup_city = context.user_data.get("pickup_city", "")
+    pickup_barrio = context.user_data.get("pickup_barrio", "")
+    pickup_lat = context.user_data.get("pickup_lat")
+    pickup_lng = context.user_data.get("pickup_lng")
+    pickup_area = "{}, {}".format(pickup_barrio, pickup_city).strip(", ") or "No disponible"
+
+    keyboard = []
+    if has_valid_coords(pickup_lat, pickup_lng):
+        gmaps_url = "https://www.google.com/maps?q={},{}".format(pickup_lat, pickup_lng)
+        keyboard.append([InlineKeyboardButton("Abrir en Google Maps", url=gmaps_url)])
+    keyboard.append([InlineKeyboardButton("Confirmar recogida", callback_data=PICKUP_PREVIEW_CONFIRM_CALLBACK)])
+    keyboard.append([InlineKeyboardButton("Cambiar pickup", callback_data=PICKUP_PREVIEW_CHANGE_CALLBACK)])
+
+    text = (
+        "PREVIEW DEL PUNTO DE RECOGIDA\n\n"
+        "Punto: {}\n"
+        "Direccion: {}\n"
+        "Zona: {}\n\n"
+        "Te envio el pin de esta recogida en el siguiente mensaje para que la revises antes de continuar.\n\n"
+        "Confirmas que este es el punto de recogida?"
+    ).format(pickup_label, pickup_address, pickup_area)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if edit and hasattr(query_or_update, 'edit_message_text'):
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+    elif hasattr(query_or_update, 'message') and query_or_update.message:
+        query_or_update.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        query_or_update.edit_message_text(text, reply_markup=reply_markup)
+
+    chat_id = _pickup_preview_chat_id(query_or_update)
+    _clear_pickup_preview_location(context, chat_id)
+    if chat_id and has_valid_coords(pickup_lat, pickup_lng):
+        try:
+            msg = context.bot.send_location(
+                chat_id=chat_id,
+                latitude=float(pickup_lat),
+                longitude=float(pickup_lng),
+            )
+            context.user_data["pickup_preview_location_message_id"] = msg.message_id
+        except Exception:
+            context.user_data.pop("pickup_preview_location_message_id", None)
+
+    logger.info(
+        "pickup_preview_shown ally_id=%s chat_id=%s pickup_label=%s",
+        context.user_data.get("ally_id"),
+        chat_id,
+        pickup_label,
+    )
+    return PEDIDO_PICKUP_SELECTOR
+
+
+def _continuar_flujo_despues_pickup_confirmado(query, context, edit=True):
+    """Continua el flujo una vez el aliado confirma el pickup seleccionado."""
     # Verificar si ya tenemos tipo de servicio
     if not context.user_data.get("service_type"):
         return mostrar_selector_tipo_servicio(query, context, edit=edit)
 
     # Ya tenemos tipo, preguntar por base
     return mostrar_pregunta_base(query, context, edit=edit)
+
+
+def continuar_despues_pickup(query, context, edit=True):
+    """Muestra preview del pickup y espera confirmacion del aliado."""
+    if not context.user_data.get("pickup_address"):
+        return _continuar_flujo_despues_pickup_confirmado(query, context, edit=edit)
+    return mostrar_preview_pickup(query, context, edit=edit)
+
+
+def pedido_pickup_preview_callback(update, context):
+    """Maneja la confirmacion o cambio del pickup previsualizado."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    _clear_pickup_preview_location(context, _pickup_preview_chat_id(query))
+
+    if data == PICKUP_PREVIEW_CONFIRM_CALLBACK:
+        logger.info(
+            "pickup_preview_confirmed ally_id=%s chat_id=%s",
+            context.user_data.get("ally_id"),
+            _pickup_preview_chat_id(query),
+        )
+        return _continuar_flujo_despues_pickup_confirmado(query, context, edit=True)
+
+    if data == PICKUP_PREVIEW_CHANGE_CALLBACK:
+        logger.info(
+            "pickup_preview_change_requested ally_id=%s chat_id=%s",
+            context.user_data.get("ally_id"),
+            _pickup_preview_chat_id(query),
+        )
+        return mostrar_selector_pickup(query, context, edit=True)
+
+    query.edit_message_text("Opcion no valida.")
+    return ConversationHandler.END
 
 
 def _pedido_incentivo_keyboard(prefix: str = "pedido_inc_", order_id: int = None):
@@ -2111,6 +2237,31 @@ def _pedido_confirmacion_keyboard(context):
     n_extras = len(paradas_extra)
     confirmar_label = "Confirmar ruta ({} paradas)".format(n_extras + 1) if n_extras else "Confirmar pedido"
     rows = _pedido_incentivo_keyboard()
+    if paradas_extra:
+        demand_preview = build_offer_demand_preview(
+            pickup_lat=context.user_data.get("pickup_lat"),
+            pickup_lng=context.user_data.get("pickup_lng"),
+            distance_km=context.user_data.get("ruta_distancia_desde_pedido", 0),
+            ally_id=context.user_data.get("ally_id"),
+            current_incentive=int(context.user_data.get("pedido_incentivo", 0) or 0),
+        )
+    else:
+        demand_preview = build_offer_demand_preview(
+            pickup_lat=context.user_data.get("pickup_lat"),
+            pickup_lng=context.user_data.get("pickup_lng"),
+            distance_km=context.user_data.get("quote_distance_km", 0),
+            ally_id=context.user_data.get("ally_id"),
+            requires_cash=context.user_data.get("requires_cash", False),
+            cash_required_amount=context.user_data.get("cash_required_amount", 0),
+            current_incentive=int(context.user_data.get("pedido_incentivo", 0) or 0),
+        )
+    suggested_row = build_offer_suggestion_button_row(
+        demand_preview,
+        "pedido_inc_{amount}",
+        allowed_amounts=(1000, 1500, 2000, 3000),
+    )
+    if suggested_row:
+        rows.insert(0, suggested_row)
     rows.append([InlineKeyboardButton("+ Agregar otra entrega", callback_data="pedido_agregar_parada")])
     rows.append([InlineKeyboardButton(confirmar_label, callback_data="pedido_confirmar")])
     rows.append([InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")])
@@ -2197,9 +2348,18 @@ def _construir_resumen_ruta_desde_pedido(context):
         text += "\n{}".format(mensaje_ahorro)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        distance_km=total_km,
+        ally_id=context.user_data.get("ally_id"),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        text += "\n\n{}".format(demand_block)
     text += (
-        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
     )
     return text
@@ -2294,9 +2454,21 @@ def construir_resumen_pedido(context):
         resumen += "Subsidio domicilio: -" + _fmt_pesos(subsidio_efectivo_cache) + "\n"
         resumen += "Domicilio al cliente: " + _fmt_pesos(customer_delivery_fee_cache) + "\n"
 
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=context.user_data.get("pickup_lat"),
+        pickup_lng=context.user_data.get("pickup_lng"),
+        distance_km=distancia,
+        ally_id=ally_id_ctx,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        resumen += "\n" + demand_block + "\n"
+
     resumen += (
-        "\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Deseas agregar un incentivo antes de confirmar? (Tambien puedes hacerlo despues de publicar)\n\n"
         "Confirmas este pedido?"
     )
@@ -2963,6 +3135,16 @@ def _admin_ped_preview_text(ctx):
     except Exception:
         pass
 
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=ctx.get("admin_ped_pickup_lat"),
+        pickup_lng=ctx.get("admin_ped_pickup_lng"),
+        distance_km=distancia_km,
+        admin_id=ctx.get("admin_ped_admin_id"),
+        team_only=bool(team_only),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+
     text = (
         "Resumen del pedido especial:\n\n"
         "Recogida: {}\n"
@@ -2977,6 +3159,7 @@ def _admin_ped_preview_text(ctx):
         "Visibilidad: {}\n"
         "Instrucciones: {}\n\n"
         "Total oferta al courier: ${:,}"
+        "{}"
         "{}"
     ).format(
         ctx.get("admin_ped_pickup_addr", ""),
@@ -2993,12 +3176,25 @@ def _admin_ped_preview_text(ctx):
         visibilidad_label,
         instruc,
         total,
+        "\n\n{}".format(demand_block) if demand_block else "",
         saldo_bajo_warning,
     )
     keyboard = [
         [InlineKeyboardButton("Confirmar y publicar", callback_data="admin_pedido_confirmar")],
+    ]
+    suggested_row = build_offer_suggestion_button_row(
+        demand_preview,
+        "admin_pedido_inc_{amount}",
+        allowed_amounts=(1000, 1500, 2000, 3000),
+    )
+    if suggested_row:
+        keyboard.append(suggested_row)
+    keyboard.extend([
         [
+            InlineKeyboardButton("+$1,000", callback_data="admin_pedido_inc_1000"),
             InlineKeyboardButton("+$1,500", callback_data="admin_pedido_inc_1500"),
+        ],
+        [
             InlineKeyboardButton("+$2,000", callback_data="admin_pedido_inc_2000"),
             InlineKeyboardButton("+$3,000", callback_data="admin_pedido_inc_3000"),
         ],
@@ -3006,7 +3202,7 @@ def _admin_ped_preview_text(ctx):
         [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
         [InlineKeyboardButton("Guardar como plantilla", callback_data="admin_pedido_guardar_plantilla")],
         [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
-    ]
+    ])
     return text, InlineKeyboardMarkup(keyboard)
 
 
@@ -3896,11 +4092,7 @@ def admin_pedido_confirmar_callback(update, context):
             " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
             comision_str,
             visibilidad_str,
-            (
-                "Ofertando a {} repartidores activos.".format(published_count)
-                if published_count > 0
-                else "Por ahora no hay repartidores disponibles. El pedido sigue activo y se ofrecera apenas haya uno."
-            ),
+            build_market_launch_status_text(published_count),
         )
     )
     # Ofrecer guardar cliente si fue ingreso manual (no seleccionado de agenda) y tiene coords
@@ -4666,14 +4858,7 @@ def _pedido_confirmar_como_ruta(query, context):
             pass
 
     count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
-    if count > 0:
-        msg = "Ruta #{} creada y publicada.\nPronto un repartidor sera asignado.".format(route_id)
-    else:
-        msg = (
-            "Ruta #{} creada.\n"
-            "Por ahora no hay repartidores disponibles, pero la ruta sigue activa "
-            "y se ofrecera apenas haya uno."
-        ).format(route_id)
+    msg = "Ruta #{} creada y publicada.\n{}".format(route_id, build_market_launch_status_text(count))
 
     query.edit_message_text(msg)
     context.user_data.clear()
@@ -4916,6 +5101,7 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
         pricing["distance_km"], pricing["total_fee"], requires_cash, cash_required_amount,
         products_list=context.user_data.get("buy_products_list", ""),
     )
+    market_status_text = build_market_launch_status_text(published_count)
 
     try:
         context.bot.send_message(
@@ -4933,9 +5119,7 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
 
     if should_offer_save_customer:
         query.edit_message_text(
-            "Pedido #{} creado exitosamente.\n\n".format(order_id)
-            + ("Por ahora no hay repartidores elegibles. El pedido sigue activo y se ofrecera apenas haya uno.\n\n"
-               if published_count == 0 else "")
+            "Pedido #{} creado exitosamente.\n\n{}\n\n".format(order_id, market_status_text)
             + "Quieres guardar este cliente para futuros pedidos?",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
@@ -4960,9 +5144,7 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
 
     if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng) and not addr_already_saved:
         success_text = (
-            "Pedido #{} creado exitosamente.\n".format(order_id)
-            + ("Por ahora no hay repartidores elegibles. El pedido sigue activo y se ofrecera apenas haya uno.\n\n"
-               if published_count == 0 else "\n")
+            "Pedido #{} creado exitosamente.\n{}\n\n".format(order_id, market_status_text)
             + "Deseas agregar esta direccion a la agenda de {}?".format(
                 existing_customer["name"] or "este cliente"
             )
@@ -4981,18 +5163,10 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
     except Exception:
         pass
     context.user_data.clear()
-    if published_count == 0:
-        show_main_menu(
-            update, context,
-            "Pedido #{} creado exitosamente.\n"
-            "Por ahora no hay repartidores elegibles. "
-            "El pedido sigue activo y se ofrecera apenas haya uno.".format(order_id),
-        )
-    else:
-        show_main_menu(
-            update, context,
-            "Pedido #{} creado exitosamente.\nPronto un repartidor sera asignado.".format(order_id),
-        )
+    show_main_menu(
+        update, context,
+        "Pedido #{} creado exitosamente.\n{}".format(order_id, market_status_text),
+    )
     return ConversationHandler.END
 
 
@@ -5619,7 +5793,8 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_direccion_cliente)
         ],
         PEDIDO_PICKUP_SELECTOR: [
-            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_")
+            CallbackQueryHandler(pedido_pickup_callback, pattern=r"^pickup_select_"),
+            CallbackQueryHandler(pedido_pickup_preview_callback, pattern=PICKUP_PREVIEW_CALLBACK_PATTERN),
         ],
         PEDIDO_PICKUP_LISTA: [
             CallbackQueryHandler(pedido_pickup_lista_callback, pattern=r"^pickup_list_")
@@ -5654,7 +5829,7 @@ nuevo_pedido_conv = ConversationHandler(
             CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$")
         ],
         PEDIDO_VALOR_BASE: [
-            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(5000|10000|20000|50000|otro)$"),
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=PEDIDO_BASE_CALLBACK_PATTERN),
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto)
         ],
@@ -5823,7 +5998,7 @@ admin_pedido_conv = ConversationHandler(
         ],
         ADMIN_PEDIDO_INSTRUC: [
             CallbackQueryHandler(admin_pedido_sin_instruc_callback, pattern=r"^admin_pedido_sin_instruc$"),
-            CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(admin_pedido_inc_fijo_callback, pattern=r"^admin_pedido_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
             CallbackQueryHandler(admin_pedido_team_toggle_callback, pattern=r"^admin_pedido_team_toggle$"),
             CallbackQueryHandler(admin_pedido_guardar_plantilla_callback, pattern=r"^admin_pedido_guardar_plantilla$"),

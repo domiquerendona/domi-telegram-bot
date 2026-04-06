@@ -30,7 +30,6 @@ from handlers.states import (
     ALLY_PHONE,
     ALLY_CITY,
     ALLY_BARRIO,
-    ALLY_ADDRESS,
     ALLY_UBICACION,
     ALLY_CONFIRM,
     ALLY_TEAM,
@@ -39,7 +38,6 @@ from handlers.states import (
     COURIER_PHONE,
     COURIER_CITY,
     COURIER_BARRIO,
-    COURIER_RESIDENCE_ADDRESS,
     COURIER_RESIDENCE_LOCATION,
     COURIER_PLATE,
     COURIER_BIKETYPE,
@@ -54,7 +52,6 @@ from handlers.states import (
     LOCAL_ADMIN_PHONE,
     LOCAL_ADMIN_CITY,
     LOCAL_ADMIN_BARRIO,
-    LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
     LOCAL_ADMIN_CEDULA_FRONT,
     LOCAL_ADMIN_CEDULA_BACK,
@@ -175,9 +172,10 @@ def _send_back_prompt(update, flow, state):
             ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
             ALLY_CITY: "Escribe la ciudad del negocio:",
             ALLY_BARRIO: "Escribe el barrio del negocio:",
-            ALLY_ADDRESS: "Escribe la dirección del negocio:",
             ALLY_UBICACION: (
-                "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+                "Ubicacion del negocio\n\n"
+                "Escribe la direccion exacta (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
             ),
             ALLY_CONFIRM: "Escribe SI para confirmar tu registro.",
         },
@@ -187,8 +185,13 @@ def _send_back_prompt(update, flow, state):
             COURIER_PHONE: "Escribe tu número de celular:",
             COURIER_CITY: "Escribe la ciudad donde trabajas:",
             COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
-            COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            COURIER_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            COURIER_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
             COURIER_BIKETYPE: "Escribe el tipo de moto:",
             COURIER_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
@@ -203,8 +206,13 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_PHONE: "Escribe tu número de teléfono:",
             LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
-            LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             LOCAL_ADMIN_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
             LOCAL_ADMIN_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
             LOCAL_ADMIN_SELFIE: "Envía una foto de tu cara (selfie):",
@@ -666,7 +674,63 @@ def _fmt_pesos(amount: int) -> str:
     return f"${amount:,}".replace(",", ".")
 
 
+def build_offer_demand_badge_text(preview: dict) -> str:
+    """Renderiza un bloque compacto de semaforo de demanda para previews."""
+    if not preview:
+        return ""
+
+    signal_label = preview.get("signal_label") or "NO DISPONIBLE"
+    eligible_count = int(preview.get("eligible_count") or 0)
+    nearest_km = preview.get("nearest_km")
+    suggested_incentive = int(preview.get("suggested_incentive") or 0)
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    current_incentive = int(preview.get("current_incentive") or 0)
+    reason = (preview.get("reason") or "").strip()
+
+    lines = [
+        "Semaforo de demanda actual: {}".format(signal_label),
+        "Repartidores elegibles cerca ahora: {}".format(eligible_count),
+    ]
+    if nearest_km is not None:
+        lines[-1] += " (mas cercano ~{:.1f} km)".format(float(nearest_km))
+    if reason:
+        lines.append(reason)
+
+    if suggested_incentive <= 0:
+        lines.append("Incentivo sugerido ahora: opcional.")
+    else:
+        lines.append("Sugerencia opcional para acelerar: {}".format(_fmt_pesos(suggested_incentive)))
+        if extra_suggested > 0:
+            lines.append("Si quieres moverlo mas rapido, agrega al menos {} mas.".format(_fmt_pesos(extra_suggested)))
+        elif current_incentive > 0:
+            lines.append("Tu incentivo actual ya cubre esta sugerencia.")
+
+    return "\n".join(lines)
+
+
 # ---------- TÉRMINOS Y CONDICIONES ----------
+
+def build_offer_suggestion_button_row(preview: dict, callback_template: str, allowed_amounts=None):
+    """Construye una fila discreta de sugerencia cuando falta incentivo para la demanda actual."""
+    if not preview or not callback_template:
+        return None
+
+    signal_code = (preview.get("signal_code") or "").strip().upper()
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    if signal_code not in ("MEDIUM", "HIGH") or extra_suggested <= 0:
+        return None
+
+    allowed = set(int(v) for v in (allowed_amounts or []))
+    if allowed and extra_suggested not in allowed:
+        return None
+
+    return [
+        InlineKeyboardButton(
+            "Aplicar sugerencia ({})".format(_fmt_pesos(extra_suggested)),
+            callback_data=callback_template.format(amount=extra_suggested),
+        )
+    ]
+
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     logger.debug(

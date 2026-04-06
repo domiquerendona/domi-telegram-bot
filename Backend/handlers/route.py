@@ -42,6 +42,8 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _OPTIONS_HINT,
     _fmt_pesos,
+    build_offer_demand_badge_text,
+    build_offer_suggestion_button_row,
     _geo_siguiente_o_gps,
     _handle_text_field_input,
     _mostrar_confirmacion_geocode,
@@ -83,8 +85,9 @@ from services import (
     set_address_parking_status,
     PARKING_FEE_AMOUNT,
     get_ally_parking_fee_enabled,
+    build_offer_demand_preview,
 )
-from order_delivery import publish_route_to_couriers
+from order_delivery import publish_route_to_couriers, build_market_launch_status_text
 
 
 def _ruta_no_more_text(point_label: str):
@@ -282,7 +285,10 @@ def _ruta_incentivo_keyboard():
     """Botones de incentivo pre-confirmacion para ruta."""
     return [
         [
+            InlineKeyboardButton("+1000", callback_data="ruta_inc_1000"),
             InlineKeyboardButton("+1500", callback_data="ruta_inc_1500"),
+        ],
+        [
             InlineKeyboardButton("+2000", callback_data="ruta_inc_2000"),
             InlineKeyboardButton("+3000", callback_data="ruta_inc_3000"),
         ],
@@ -351,12 +357,29 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        distance_km=total_km,
+        ally_id=context.user_data.get("ruta_ally_id"),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        text += "\n\n{}".format(demand_block)
     text += (
-        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
     )
-    keyboard = _ruta_incentivo_keyboard() + [
+    keyboard = _ruta_incentivo_keyboard()
+    suggested_row = build_offer_suggestion_button_row(
+        demand_preview,
+        "ruta_inc_{amount}",
+        allowed_amounts=(1000, 1500, 2000, 3000),
+    )
+    if suggested_row:
+        keyboard.insert(0, suggested_row)
+    keyboard += [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
     ]
@@ -1002,7 +1025,7 @@ def ruta_distancia_km_handler(update, context):
 
 
 def ruta_inc_fijo_callback(update, context):
-    """Agrega incentivo fijo (+1500/+2000/+3000) antes de confirmar ruta."""
+    """Agrega incentivo fijo (+1000/+1500/+2000/+3000) antes de confirmar ruta."""
     query = update.callback_query
     query.answer()
     data = query.data  # "ruta_inc_1500" etc
@@ -1150,9 +1173,9 @@ def ruta_confirmacion_callback(update, context):
         show_main_menu(update, context)
         return ConversationHandler.END
     if count > 0:
-        base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
+        base_msg = "Ruta #{} creada exitosamente.\n{}".format(route_id, build_market_launch_status_text(count))
     else:
-        base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
+        base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
     query.edit_message_text(base_msg)
     context.user_data.clear()
     show_main_menu(update, context)
@@ -1371,7 +1394,7 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
-            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(ruta_inc_otro_start, pattern=r"^ruta_inc_otro$"),
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
         ],

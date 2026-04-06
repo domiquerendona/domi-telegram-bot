@@ -83,14 +83,18 @@ El flujo estándar de un pedido de aliado es el siguiente:
 
 0 min → pedido publicado  
 5 min → sugerencia de incentivo adicional  
-10 min → expiración automática  
+10 min → reintento automático del mercado (1/3)
+20 min → reintento automático del mercado (2/3)
+30 min → reintento automático del mercado (3/3)
+40 min → cancelación automática sin costo si nadie acepta
 
 ### Cancelación del aliado
 
-≤60 segundos desde creación → cancelación sin costo  
->60 segundos desde creación → cobro de $300  
-Expiración automática → cobro de $300  
-Pedidos creados por administrador (`ally_id = None`) → nunca se cobra comisión  
+≤2 minutos desde creación y sin repartidor asignado → cancelación sin costo  
+>2 minutos desde creación y sin repartidor asignado → cobro de $300  
+Con repartidor ya asignado (`ACCEPTED`) → cobro de $800 ($600 repartidor / $200 plataforma)  
+Cancelación automática final tras 3 reintentos del mercado → sin costo
+Pedidos creados por administrador (`ally_id = None`) → misma ventana; el cobro recae sobre el admin creador  
 
 Todo queda registrado. Ningún pedido se pierde. Ningún repartidor acepta dos veces el mismo pedido. Los datos del cliente están protegidos.
 
@@ -165,11 +169,11 @@ El administrador que crea el pedido no paga comisión. El courier que entrega el
 
 **Pedido expirado sin courier — creado por aliado:**
 
-Si ningún repartidor acepta el pedido antes de que expire, el aliado paga $300 de todas formas. El destino de ese cobro sigue el mismo modelo: $200 al admin del aliado y $100 a Plataforma.
+Si ningún repartidor acepta el pedido después de 3 reintentos automáticos del mercado, no se genera ningún cobro.
 
 **Pedido expirado sin courier — creado por admin:**
 
-Si un pedido especial de admin no es tomado por ningún repartidor, no se genera ningún cobro.
+Si un pedido especial de admin no es tomado por ningún repartidor después de 3 reintentos automáticos del mercado, no se genera ningún cobro.
 
 **El saldo es prepago.** Tanto los aliados como los repartidores necesitan tener saldo suficiente para que su pedido o su oferta sean válidos. El saldo lo recarga el administrador local a sus miembros, y el administrador local debe tener saldo propio para hacerlo. El admin de plataforma registra ingresos externos para fondear su propio saldo operativo.
 

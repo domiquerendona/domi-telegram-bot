@@ -23,6 +23,9 @@ from telegram.ext import (
 )
 
 from services import (
+    ADMIN_INVITE_START_PREFIX,
+    ADMIN_INVITE_USER_DATA_KEY,
+    audit_admin_invite_event,
     register_platform_income,
     build_order_pricing_breakdown,
     admin_puede_operar,
@@ -53,7 +56,12 @@ from services import (
     _get_missing_role_commands,
     get_user_by_id,
     resolve_admin_telegram_id,
+    get_admin_registration_invites,
+    resolve_admin_invite_from_start_arg,
     get_available_admin_teams,
+    get_admin_invite_registrations,
+    has_recent_invite_open,
+    regenerate_admin_invite_by_role,
     # Alertas de oferta
     get_offer_alerts_config,
     save_offer_voice,
@@ -167,6 +175,7 @@ from services import (
     get_order_by_id,
     get_orders_by_ally,
     get_orders_by_courier,
+    get_courier_active_order_stage_line,
     get_active_order_for_courier,
     get_active_route_for_courier,
     get_pending_route_stops,
@@ -267,6 +276,7 @@ from services import (
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
     get_all_pending_fee_collections,
+    get_expiring_ally_subscriptions,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback
 from db import (
@@ -339,6 +349,7 @@ from handlers.recharges import (
     recargar_conv,
     configurar_pagos_conv,
     ingreso_conv,
+    recarga_directa_conv,
     cmd_saldo,
     cmd_recargar,
     cmd_recargas_pendientes,
@@ -363,7 +374,6 @@ from handlers.registration import (
     ally_phone,
     ally_city,
     ally_barrio,
-    ally_address,
     ally_ubicacion_handler,
     ally_ubicacion_location_handler,
     ally_geo_ubicacion_callback,
@@ -376,7 +386,6 @@ from handlers.registration import (
     courier_phone,
     courier_city,
     courier_barrio,
-    courier_residence_address,
     courier_residence_location,
     courier_geo_ubicacion_callback,
     courier_plate,
@@ -479,6 +488,7 @@ from handlers.admin_panel import (
     admin_config_callback,
     admin_parking_review,
     admin_parking_review_callback,
+    rechazar_conv,
 )
 from handlers.courier_panel import (
     courier_earnings_start,
@@ -529,9 +539,17 @@ FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
+def _build_bot_deep_link(context, payload: str) -> str:
+    username = (os.getenv("BOT_USERNAME", "") or "").strip().lstrip("@")
+    if not username:
+        username = (getattr(context.bot, "username", "") or "").strip().lstrip("@")
+    return "https://t.me/{}?start={}".format(username, payload) if username and payload else ""
+
+
 def start(update, context):
     """Comando /start y /menu: bienvenida con estado del usuario."""
     user_tg = update.effective_user
+    start_arg = (context.args[0] if getattr(context, "args", None) else "").strip()
 
     # Crear/asegurar user en users y tomar users.id (interno)
     user_row = ensure_user(user_tg.id, user_tg.username)
@@ -548,6 +566,73 @@ def start(update, context):
     except Exception as e:
         logger.exception("Error en get_admin_by_user_id en /start")
         admin_local = None
+
+    invite_info = resolve_admin_invite_from_start_arg(start_arg) if start_arg else None
+    invite_warning = ""
+    if start_arg.startswith(ADMIN_INVITE_START_PREFIX):
+        if invite_info:
+            context.user_data[ADMIN_INVITE_USER_DATA_KEY] = invite_info["token"]
+            audit_admin_invite_event(
+                invite_info["token"],
+                telegram_id=user_tg.id,
+                user_id=user_db_id,
+                outcome="START_OPENED",
+                note="Deep link de invitacion abierto en /start.",
+            )
+            logger.info(
+                "[admin_invite_start] telegram_id=%s admin_id=%s role_scope=%s team_code=%s",
+                user_tg.id,
+                invite_info["admin_id"],
+                invite_info["role_scope"],
+                invite_info["team_code"],
+            )
+            # Notificar al admin local (no al admin de plataforma) que alguien abrio su enlace.
+            # Solo una vez por telegram_id cada 24h para evitar spam si la persona abre varias veces.
+            admin_tg_id = invite_info.get("admin_telegram_id")
+            if admin_tg_id and int(admin_tg_id) != int(ADMIN_USER_ID):
+                already_notified = has_recent_invite_open(
+                    invite_info["admin_id"], user_tg.id, hours=24
+                )
+                if not already_notified:
+                    role_scope = invite_info.get("role_scope", "")
+                    rol_texto = (
+                        "aliado o repartidor" if role_scope == "BOTH"
+                        else "aliado" if role_scope == "ALLY"
+                        else "repartidor"
+                    )
+                    try:
+                        context.bot.send_message(
+                            chat_id=admin_tg_id,
+                            text=(
+                                "Alguien abrio tu enlace de invitacion ({}).\n"
+                                "Si completa el registro lo veras en /aliados_pendientes o /repartidores_pendientes.\n"
+                                "Usa /mis_invitados para ver el historial."
+                            ).format(rol_texto),
+                        )
+                    except Exception:
+                        pass
+            # Tokens BOTH muestran pantalla de seleccion de rol
+            if invite_info.get("role_scope") == "BOTH":
+                update.message.reply_text(
+                    f"Bienvenido al equipo {invite_info['team_name']}!\n\n"
+                    "Que vas a registrar?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Soy aliado (negocio)", callback_data="invite_role_ally")],
+                        [InlineKeyboardButton("Soy repartidor", callback_data="invite_role_courier")],
+                    ])
+                )
+                return
+        else:
+            context.user_data.pop(ADMIN_INVITE_USER_DATA_KEY, None)
+            logger.info(
+                "[admin_invite_start_invalid] telegram_id=%s start_arg=%s",
+                user_tg.id,
+                start_arg,
+            )
+            invite_warning = (
+                "Invitacion detectada:\n"
+                "- Ese enlace ya no esta disponible. Pide al administrador un enlace nuevo.\n\n"
+            )
 
     es_admin_plataforma_flag = es_admin_plataforma(user_tg.id)
 
@@ -578,37 +663,77 @@ def start(update, context):
             elif admin_status == "INACTIVE":
                 siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
             elif admin_status == "REJECTED":
-                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+                motivo_adm = admin_local.get("rejection_reason") if isinstance(admin_local, dict) else (admin_local["rejection_reason"] if admin_local["rejection_reason"] else None)
+                if motivo_adm:
+                    siguientes_pasos.append(
+                        "• Tu registro de administrador fue RECHAZADO.\n"
+                        "  Motivo: {}\n"
+                        "  Contacta al Administrador de Plataforma si tienes preguntas.".format(motivo_adm)
+                    )
+                else:
+                    siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
         else:
             # Administrador Local normal: mostrar requisitos
             if admin_status == "PENDING":
-                siguientes_pasos.append("• Tu registro de administrador está pendiente de aprobación.")
+                siguientes_pasos.append("• Tu registro de administrador esta pendiente de aprobacion.")
             elif admin_status == "APPROVED":
                 siguientes_pasos.append(
-                    "• Tu administrador fue APROBADO, pero no podrás operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo mínimo, más saldo master suficiente)."
+                    "• Tu administrador fue APROBADO, pero no podras operar hasta cumplir requisitos (5 aliados y 10 repartidores con saldo minimo, mas saldo master suficiente)."
                 )
                 siguientes_pasos.append("• Usa /mi_admin para ver requisitos y tu estado operativo.")
             elif admin_status == "INACTIVE":
-                siguientes_pasos.append("• Tu cuenta de administrador está INACTIVA. Contacta al Administrador de Plataforma.")
+                siguientes_pasos.append("• Tu cuenta de administrador esta INACTIVA. Contacta al Administrador de Plataforma.")
             elif admin_status == "REJECTED":
-                siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
+                motivo_adm = admin_local.get("rejection_reason") if isinstance(admin_local, dict) else (admin_local["rejection_reason"] if admin_local["rejection_reason"] else None)
+                if motivo_adm:
+                    siguientes_pasos.append(
+                        "• Tu registro de administrador fue RECHAZADO.\n"
+                        "  Motivo: {}\n"
+                        "  Contacta al Administrador de Plataforma si tienes preguntas.".format(motivo_adm)
+                    )
+                else:
+                    siguientes_pasos.append("• Tu registro de administrador fue RECHAZADO. Contacta al Administrador de Plataforma.")
 
     # Aliado
     if ally:
         estado_lineas.append(f"• Aliado: {ally['business_name']} (estado: {ally['status']}).")
         if ally["status"] == "APPROVED":
             siguientes_pasos.append("• Puedes crear pedidos con /nuevo_pedido.")
+        elif ally["status"] == "REJECTED":
+            motivo_ally = ally["rejection_reason"] if ally["rejection_reason"] else None
+            if motivo_ally:
+                siguientes_pasos.append(
+                    "• Tu registro de aliado fue RECHAZADO.\n"
+                    "  Motivo: {}\n"
+                    "  Contacta al administrador si tienes preguntas.".format(motivo_ally)
+                )
+            else:
+                siguientes_pasos.append("• Tu registro de aliado fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        elif ally["status"] == "INACTIVE":
+            siguientes_pasos.append("• Tu negocio esta INACTIVO. Contacta al administrador.")
         else:
-            siguientes_pasos.append("• Tu negocio aún no está aprobado. Cuando esté APPROVED podrás usar /nuevo_pedido.")
+            siguientes_pasos.append("• Tu negocio aun no esta aprobado. Cuando este APPROVED podras usar /nuevo_pedido.")
 
     # Repartidor
     if courier:
-        codigo = courier["code"] if courier["code"] else "sin código"
-        estado_lineas.append(f"• Repartidor código interno: {codigo} (estado: {courier['status']}).")
+        codigo = courier["code"] if courier["code"] else "sin codigo"
+        estado_lineas.append(f"• Repartidor codigo interno: {codigo} (estado: {courier['status']}).")
         if courier["status"] == "APPROVED":
-            siguientes_pasos.append("• Pronto podrás activarte y recibir ofertas (ONLINE) desde tu panel de repartidor.")
+            siguientes_pasos.append("• Pronto podras activarte y recibir ofertas (ONLINE) desde tu panel de repartidor.")
+        elif courier["status"] == "REJECTED":
+            motivo_courier = courier["rejection_reason"] if courier["rejection_reason"] else None
+            if motivo_courier:
+                siguientes_pasos.append(
+                    "• Tu registro de repartidor fue RECHAZADO.\n"
+                    "  Motivo: {}\n"
+                    "  Contacta al administrador si tienes preguntas.".format(motivo_courier)
+                )
+            else:
+                siguientes_pasos.append("• Tu registro de repartidor fue RECHAZADO. Contacta al Administrador de Plataforma.")
+        elif courier["status"] == "INACTIVE":
+            siguientes_pasos.append("• Tu cuenta de repartidor esta INACTIVA. Contacta al administrador.")
         else:
-            siguientes_pasos.append("• Tu registro de repartidor aún está pendiente de aprobación.")
+            siguientes_pasos.append("• Tu registro de repartidor aun esta pendiente de aprobacion.")
 
     # Si no tiene ningún perfil
     if not estado_lineas:
@@ -622,6 +747,26 @@ def start(update, context):
         estado_text = "\n".join(estado_lineas)
 
     siguientes_text = "\n".join(siguientes_pasos) if siguientes_pasos else "• Usa los comandos principales para continuar."
+    invite_text = invite_warning
+    if invite_info:
+        team_label = "{} ({})".format(invite_info["team_name"], invite_info["team_code"])
+        role_label = "aliado" if invite_info["role_scope"] == "ALLY" else "repartidor"
+        if invite_info["role_scope"] == "ALLY":
+            if ally and ally["status"] in ("PENDING", "APPROVED"):
+                invite_action = "- Ya tienes un perfil de aliado existente. El enlace no cambia tu equipo automaticamente."
+            else:
+                invite_action = "- Usa /soy_aliado para continuar tu registro directo con ese equipo."
+        else:
+            if courier and courier["status"] in ("PENDING", "APPROVED"):
+                invite_action = "- Ya tienes un perfil de repartidor existente. El enlace no cambia tu equipo automaticamente."
+            else:
+                invite_action = "- Usa /soy_repartidor para continuar tu registro directo con ese equipo."
+        invite_text = (
+            "Invitacion detectada:\n"
+            f"- Equipo: {team_label}\n"
+            f"- Registro directo para: {role_label}\n"
+            f"{invite_action}\n\n"
+        )
 
     # Construir menú agrupado por rol
     missing_cmds = _get_missing_role_commands(ally, courier, admin_local, es_admin_plataforma_flag)
@@ -668,6 +813,9 @@ def start(update, context):
         comandos.append("• /tarifas  - Configurar tarifas")
         comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
+        comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
+        comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
+        comandos.append("• /mis_invitados  - Ver registros creados via enlace de invitacion")
     elif admin_local:
         admin_status = admin_local["status"]
         if admin_status == "INACTIVE" and "/soy_admin" in missing_cmds:
@@ -677,6 +825,9 @@ def start(update, context):
         if admin_status == "APPROVED":
             comandos.append("• /recargas_pendientes  - Ver solicitudes de recarga")
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
+            comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
+            comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
+            comandos.append("• /mis_invitados  - Ver registros creados via enlace de invitacion")
     else:
         if "/soy_admin" in missing_cmds:
             comandos.append("• /soy_admin  - Registrarte como administrador")
@@ -690,6 +841,7 @@ def start(update, context):
         f"{estado_text}\n\n"
         "Siguiente paso recomendado:\n"
         f"{siguientes_text}\n\n"
+        f"{invite_text}"
         "Menú por secciones:\n"
         + "\n".join(comandos)
         + "\n"
@@ -1046,6 +1198,7 @@ def courier_pedidos_en_curso(update, context):
             _row_value(active_order, "status", "-"),
         )
         order_status = _row_value(active_order, "status")
+        order_stage_line = get_courier_active_order_stage_line(active_order)
         pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
         customer_city = _row_value(active_order, "customer_city") or ""
         customer_barrio = _row_value(active_order, "customer_barrio") or ""
@@ -1062,9 +1215,11 @@ def courier_pedidos_en_curso(update, context):
 
         kb = []
         if order_status == "ACCEPTED":
+            if order_stage_line:
+                msg += "\n{}".format(order_stage_line)
             kb.append([
                 InlineKeyboardButton(
-                    "Confirmar llegada",
+                    "Confirmar llegada al pickup",
                     callback_data="order_pickup_{}".format(order_id),
                 ),
             ])
@@ -1324,7 +1479,9 @@ def mi_admin(update, context):
         f"Estado: {status}\n"
         f"Equipo: {team_name}\n"
         f"Código de equipo: {team_code}\n"
-        "Compártelo a tus repartidores para que soliciten unirse a tu equipo.\n\n"
+        "Usa /ver_enlaces_admin para ver tus enlaces directos de registro.\n"
+        "Usa /regenerar_enlaces_admin para invalidar los actuales y crear otros.\n"
+        "Tu código de equipo sigue disponible como respaldo.\n\n"
     )
 
     # Administrador de Plataforma: siempre operativo
@@ -1342,6 +1499,7 @@ def mi_admin(update, context):
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
             [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
+            [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
@@ -1395,6 +1553,7 @@ def mi_admin(update, context):
         [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
+        [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
         [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
@@ -1406,6 +1565,171 @@ def mi_admin(update, context):
         "Selecciona una opción:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+def _send_admin_registration_links(update, context, regenerate: bool = False, alias_used: bool = False):
+    result = get_admin_registration_invites(update.effective_user.id, regenerate=regenerate)
+    if not result.get("ok"):
+        update.message.reply_text(result.get("message") or "No se pudieron generar tus enlaces.")
+        return
+
+    ally_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['ally_token']}")
+    courier_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['courier_token']}")
+    both_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['both_token']}")
+
+    if not ally_url or not courier_url or not both_url:
+        update.message.reply_text(
+            "No pude construir la URL pública del bot en este momento.\n"
+            "Intenta de nuevo más tarde."
+        )
+        return
+
+    mode = result.get("mode")
+    if regenerate:
+        intro = (
+            "Regeneré nuevos enlaces directos de registro.\n"
+            "Los enlaces anteriores quedaron invalidados.\n\n"
+        )
+    elif mode == "created":
+        intro = "Creé nuevos enlaces directos de registro porque no había enlaces activos.\n\n"
+    else:
+        intro = "Estos son tus enlaces directos de registro activos.\n\n"
+
+    alias_note = ""
+    if alias_used and not regenerate:
+        alias_note = (
+            "Este comando ahora muestra tus enlaces activos.\n"
+            "Si quieres invalidarlos y crear otros, usa /regenerar_enlaces_admin.\n\n"
+        )
+
+    update.message.reply_text(
+        intro
+        + alias_note
+        + f"Equipo: {result['team_name']} ({result['team_code']})\n\n"
+        + f"Enlace combinado (vence: {result['both_expires_text']}):\n"
+        + f"{both_url}\n\n"
+        + f"Enlace solo para aliados (vence: {result['ally_expires_text']}):\n"
+        + f"{ally_url}\n\n"
+        + f"Enlace solo para repartidores (vence: {result['courier_expires_text']}):\n"
+        + f"{courier_url}\n\n"
+        + f"Vigencia configurada: {result['hours_valid']} horas.\n"
+        + "El enlace combinado pregunta el rol al abrirlo."
+    )
+
+
+def ver_enlaces_admin(update, context):
+    _send_admin_registration_links(update, context, regenerate=False)
+
+
+def regenerar_enlaces_admin(update, context):
+    """Muestra botones para elegir qué enlace(s) regenerar."""
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["status"] != "APPROVED":
+        update.message.reply_text("Este comando es solo para administradores aprobados.")
+        return
+    update.message.reply_text(
+        "Que enlace quieres regenerar?\n"
+        "El enlace anterior de ese tipo quedara invalidado.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Enlace combinado (aliados + repartidores)", callback_data="regen_invite_BOTH")],
+            [InlineKeyboardButton("Solo aliados", callback_data="regen_invite_ALLY")],
+            [InlineKeyboardButton("Solo repartidores", callback_data="regen_invite_COURIER")],
+            [InlineKeyboardButton("Los tres a la vez", callback_data="regen_invite_ALL")],
+        ])
+    )
+
+
+def generar_enlaces_admin(update, context):
+    _send_admin_registration_links(update, context, regenerate=False, alias_used=True)
+
+
+def mis_invitados(update, context):
+    """Muestra los registros y stats de conversion de los enlaces de invitacion del admin."""
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["status"] != "APPROVED":
+        update.message.reply_text("Este comando es solo para administradores aprobados.")
+        return
+    rows, total_opens = get_admin_invite_registrations(admin["id"])
+    total_reg = len(rows)
+    conversion = f"{total_reg}/{total_opens}" if total_opens else str(total_reg)
+    pct = f" ({round(total_reg * 100 / total_opens)}%)" if total_opens else ""
+    STATUS_LABELS = {
+        "PENDING": "Pendiente",
+        "APPROVED": "Aprobado",
+        "INACTIVE": "Inactivo",
+        "REJECTED": "Rechazado",
+    }
+    lineas = [
+        "Registros via enlace de invitacion:",
+        f"Abrieron el enlace: {total_opens}",
+        f"Completaron registro: {conversion}{pct}\n",
+    ]
+    if not rows:
+        lineas.append("Nadie ha completado el registro aun.")
+    else:
+        for row in rows:
+            outcome = (_row_value(row, "outcome", 0) or "").upper()
+            created_at = str(_row_value(row, "created_at", 3) or "")[:10]
+            if outcome == "ALLY_PENDING_CREATED":
+                nombre = _row_value(row, "ally_name", 4) or "—"
+                status = _row_value(row, "ally_status", 5) or "PENDING"
+                rol = "Aliado"
+            else:
+                nombre = _row_value(row, "courier_name", 6) or "—"
+                status = _row_value(row, "courier_status", 7) or "PENDING"
+                rol = "Repartidor"
+            estado = STATUS_LABELS.get(status, status)
+            lineas.append(f"• {nombre} ({rol}) — {estado} — {created_at}")
+    update.message.reply_text("\n".join(lineas))
+
+
+def regen_invite_callback(update, context):
+    """Ejecuta la regeneracion del tipo de enlace elegido por el admin."""
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+    role_key = data.replace("regen_invite_", "")
+
+    roles_map = {
+        "ALLY": ["ALLY"],
+        "COURIER": ["COURIER"],
+        "BOTH": ["BOTH"],
+        "ALL": ["ALLY", "COURIER", "BOTH"],
+    }
+    roles = roles_map.get(role_key)
+    if not roles:
+        query.edit_message_text("Opcion no reconocida.")
+        return
+
+    result = regenerate_admin_invite_by_role(update.effective_user.id, roles)
+    if not result.get("ok"):
+        query.edit_message_text(result.get("message") or "Error al regenerar el enlace.")
+        return
+
+    lineas = [
+        f"Enlace(s) regenerados para equipo {result['team_name']} ({result['team_code']}).\n"
+        "Los anteriores quedaron invalidados.\n"
+    ]
+    prefix = ADMIN_INVITE_START_PREFIX
+
+    def make_url(token):
+        return _build_bot_deep_link(context, f"{prefix}{token}")
+
+    if "both_token" in result:
+        lineas.append(
+            f"Enlace combinado (vence: {result['both_expires_text']}):\n{make_url(result['both_token'])}"
+        )
+    if "ally_token" in result:
+        lineas.append(
+            f"Enlace aliados (vence: {result['ally_expires_text']}):\n{make_url(result['ally_token'])}"
+        )
+    if "courier_token" in result:
+        lineas.append(
+            f"Enlace repartidores (vence: {result['courier_expires_text']}):\n{make_url(result['courier_token'])}"
+        )
+    query.edit_message_text("\n\n".join(lineas))
+
+
 
 
 def mi_perfil(update, context):
@@ -1674,83 +1998,50 @@ def pendientes_callback(update, context):
 
 
 def courier_approval_callback(update, context):
-    """Aprobación / rechazo global de repartidores (solo Admin Plataforma)."""
+    """Aprobacion global de repartidores (solo Admin Plataforma). Rechazo va por rechazar_conv."""
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     query.answer()
 
-    # En tu main(), este handler ^courier_(approve|reject)_\d+$ está pensado para ADMIN PLATAFORMA.
-    # La aprobación por Admin Local va por admin_local_callback con local_courier_approve/reject/block.
+    # La aprobacion por Admin Local va por admin_local_callback con local_courier_approve.
     if user_id != ADMIN_USER_ID:
         query.answer("Solo el administrador de plataforma puede usar estos botones.", show_alert=True)
         return
 
     partes = data.split("_")  # courier_approve_3
-    if len(partes) != 3 or partes[0] != "courier":
-        query.answer("Datos de botón no válidos.", show_alert=True)
+    if len(partes) != 3 or partes[0] != "courier" or partes[1] != "approve":
+        query.answer("Datos de boton no validos.", show_alert=True)
         return
 
-    accion = partes[1]
     try:
         courier_id = int(partes[2])
     except ValueError:
-        query.answer("ID de repartidor no válido.", show_alert=True)
+        query.answer("ID de repartidor no valido.", show_alert=True)
         return
 
-    if accion not in ("approve", "reject"):
-        query.answer("Acción no reconocida.", show_alert=True)
+    result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
+    if not result.get("ok"):
+        query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
         return
 
-    nuevo_estado = "APPROVED" if accion == "approve" else "REJECTED"
-
-    # Actualizar estado global del courier
-    bonus_granted = False
-    if nuevo_estado == "APPROVED":
-        result = approve_role_registration(update.effective_user.id, "COURIER", courier_id)
-        if not result.get("ok"):
-            query.answer(result.get("message") or "No se pudo aprobar el repartidor.", show_alert=True)
-            return
-        bonus_granted = bool(result.get("bonus_granted"))
-    else:
-        try:
-            update_courier_status(courier_id, nuevo_estado, changed_by=f"tg:{update.effective_user.id}")
-        except Exception as e:
-            logger.error("update_courier_status: %s", e)
-            query.answer("Error actualizando repartidor. Revisa logs.", show_alert=True)
-            return
     _resolve_important_alert(context, "courier_registration_{}".format(courier_id))
 
-    courier = result.get("profile") if nuevo_estado == "APPROVED" else get_courier_by_id(courier_id)
+    courier = result.get("profile")
     if not courier:
-        query.edit_message_text("No se encontró el repartidor después de actualizar.")
+        query.edit_message_text("No se encontro el repartidor despues de actualizar.")
         return
 
-    courier_user_db_id = courier["user_id"]
     full_name = courier["full_name"]
 
-    # Notificar al repartidor si existe get_user_by_id (recomendado).
-    # Si no existe, solo omitimos notificación sin romper.
     try:
-        u = get_user_by_id(courier_user_db_id)
-        courier_telegram_id = u["telegram_id"]
-
-        if accion == "approve":
-            msg = _build_role_welcome_message("COURIER", profile=courier, bonus_granted=bonus_granted, reactivated=False)
-        else:
-            msg = (
-                "Tu registro como repartidor ha sido RECHAZADO, {}.\n"
-                "Si crees que es un error, comunícate con el administrador."
-            ).format(full_name)
-
-        context.bot.send_message(chat_id=courier_telegram_id, text=msg)
+        msg = _build_role_welcome_message("COURIER", profile=courier, bonus_granted=bool(result.get("bonus_granted")), reactivated=False)
+        u = get_user_by_id(courier["user_id"])
+        context.bot.send_message(chat_id=u["telegram_id"], text=msg)
     except Exception as e:
         logger.warning("Error notificando repartidor: %s", e)
 
-    if nuevo_estado == "APPROVED":
-        query.edit_message_text("✅ El repartidor '{}' ha sido APROBADO.".format(full_name))
-    else:
-        query.edit_message_text("❌ El repartidor '{}' ha sido RECHAZADO.".format(full_name))
+    query.edit_message_text("El repartidor '{}' ha sido APROBADO.".format(full_name))
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     logger.debug(
         "[terms][ensure] role=%s telegram_id=%s via_callback=%s",
@@ -2284,6 +2575,31 @@ def _recover_pending_fee_collections(bot):
         logger.warning("_recover_pending_fee_collections: %s", e)
 
 
+def _notify_expiring_subscriptions_job(context):
+    """Job diario: notifica a aliados cuya suscripcion vence en los proximos 3 dias."""
+    try:
+        expiring = get_expiring_ally_subscriptions(days=3)
+        for s in expiring:
+            try:
+                ally_tg_id = s["ally_telegram_id"]
+                if not ally_tg_id:
+                    continue
+                expires_str = str(s["expires_at"])[:10]
+                context.bot.send_message(
+                    chat_id=ally_tg_id,
+                    text=(
+                        "Recordatorio de suscripcion\n\n"
+                        "Tu suscripcion vence el {}.\n"
+                        "Renovarla desde el menu 'Mi suscripcion' te permite seguir "
+                        "disfrutando del servicio sin cobro por cada domicilio.".format(expires_str)
+                    ),
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("_notify_expiring_subscriptions_job: %s", e)
+
+
 def main():
     # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
     # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
@@ -2338,6 +2654,11 @@ def main():
     dp.add_handler(CommandHandler("referencias", cmd_referencias))
     # comandos de los administradores
     dp.add_handler(CommandHandler("mi_admin", mi_admin))
+    dp.add_handler(CommandHandler("ver_enlaces_admin", ver_enlaces_admin))
+    dp.add_handler(CommandHandler("regenerar_enlaces_admin", regenerar_enlaces_admin))
+    dp.add_handler(CommandHandler("generar_enlaces_admin", generar_enlaces_admin))
+    dp.add_handler(CallbackQueryHandler(regen_invite_callback, pattern="^regen_invite_(ALLY|COURIER|BOTH|ALL)$"))
+    dp.add_handler(CommandHandler("mis_invitados", mis_invitados))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
 
     # Sistema de recargas
@@ -2371,12 +2692,11 @@ def main():
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
-    # Aprobación / rechazo Aliados (botones ally_approve_ID / ally_reject_ID o similar)
-    # Ajusta el patrón si tu callback_data exacto difiere
-    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern=r"^ally_(approve|reject)_\d+$"))
+    # Aprobación Aliados (botones ally_approve_ID); rechazo va por rechazar_conv
+    dp.add_handler(CallbackQueryHandler(ally_approval_callback, pattern=r"^ally_approve_\d+$"))
 
-    # Aprobación / rechazo Repartidores (botones courier_approve_ID / courier_reject_ID)
-    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_(approve|reject)_\d+$"))
+    # Aprobación Repartidores (botones courier_approve_ID); rechazo va por rechazar_conv
+    dp.add_handler(CallbackQueryHandler(courier_approval_callback, pattern=r"^courier_approve_\d+$"))
 
     # -------------------------
     # Panel admin plataforma (botones admin_*)
@@ -2385,8 +2705,18 @@ def main():
     # 1) Admins pendientes (handlers específicos)
     dp.add_handler(CallbackQueryHandler(admins_pendientes, pattern=r"^admin_admins_pendientes$"))
     dp.add_handler(CallbackQueryHandler(admin_ver_pendiente, pattern=r"^admin_ver_pendiente_\d+$"))
-    dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_(aprobar|rechazar)_\d+$"))
-    dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_(accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|release|release_reason|release_confirm|release_abort|cancel|find_another|wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?$"))
+    dp.add_handler(CallbackQueryHandler(admin_aprobar_rechazar_callback, pattern=r"^admin_aprobar_\d+$"))  # rechazo va por rechazar_conv
+    dp.add_handler(
+        CallbackQueryHandler(
+            order_courier_callback,
+            pattern=(
+                r"^order_((accept|reject|busy|pickup|delivered|delivered_confirm|delivered_cancel|"
+                r"release|release_reason|release_confirm|release_abort|cancel|find_another|"
+                r"wait_courier|call_courier|confirm_pickup|pinissue)_\d+(?:_.+)?|"
+                r"(cancel_confirm|cancel_abort|find_another_confirm|find_another_abort)_\d+)$"
+            ),
+        )
+    )
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_pickupconfirm_(approve|reject)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^admin_pinissue_(fin|cancel_courier|cancel_ally)_\d+$"))
     dp.add_handler(CallbackQueryHandler(order_courier_callback, pattern=r"^order_repost_\d+$"))  # aliado re-oferta pedido
@@ -2441,6 +2771,7 @@ def main():
         pattern=r"^parking_(rev_yes_\d+|rev_no_\d+|ver_todas|noop_\d+)$"
     ))
 
+    dp.add_handler(rechazar_conv)  # debe ir ANTES de admin_menu_callback
     dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_|ruta_pickup_)"))
 
     # Configuracion de tarifas (botones pricing_*)
@@ -2466,7 +2797,7 @@ def main():
         first=60,
         name="expire_live_locations",
     )
-    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|repost|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
+    dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_(aceptar|rechazar|ocupado|entregar|liberar|liberar_motivo|liberar_confirmar|liberar_abort|pinissue|cancelar_aliado|find_another|wait_courier|repost|orden|pickup_confirm|pickupconfirm|arrival_enroute|arrival_release)_"))  # callbacks de rutas
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^admin_ruta_pinissue_(fin|cancel_courier|cancel_ally)_"))
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^order_(arrived_pickup|arrival_enroute|arrival_release)_\d+$"))  # llegada al pickup (pedidos normales)
     dp.add_handler(CallbackQueryHandler(handle_route_callback, pattern=r"^ruta_pickup_pinissue_\d+$"))  # pin recogida ruta
@@ -2486,6 +2817,7 @@ def main():
     dp.add_handler(profile_change_conv)
     dp.add_handler(configurar_pagos_conv)
     dp.add_handler(ingreso_conv)
+    dp.add_handler(recarga_directa_conv)
 
     # -------------------------
     # Registro de Administradores Locales
@@ -2538,6 +2870,14 @@ def main():
 
     # Recuperar jobs persistidos tras reinicio
     recover_scheduled_jobs(updater.job_queue)
+
+    # Job diario: notificar suscripciones proximas a vencer (cada 24 h, primer disparo en 1 h)
+    updater.job_queue.run_repeating(
+        _notify_expiring_subscriptions_job,
+        interval=86400,
+        first=3600,
+        name="notify_expiring_subscriptions",
+    )
 
     # Rehidratar ofertas activas que pudieron quedar a mitad del ciclo por reinicio
     recover_active_offer_dispatches(updater)

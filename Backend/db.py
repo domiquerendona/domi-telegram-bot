@@ -5,6 +5,9 @@ import json
 import time
 import logging
 import uuid
+import base64
+import hashlib
+import hmac
 from typing import Tuple
 from datetime import datetime, timedelta, timezone
 
@@ -24,6 +27,11 @@ P = "%s" if DB_ENGINE == "postgres" else "?"
 
 # IntegrityError compatible multi-motor
 _IntegrityError = psycopg2.IntegrityError if DB_ENGINE == "postgres" else sqlite3.IntegrityError
+
+SUPPORT_TYPE_DELIVERY_PIN = "DELIVERY_PIN"
+SUPPORT_TYPE_ROUTE_STOP_PIN = "ROUTE_STOP_PIN"
+SUPPORT_TYPE_PICKUP_PIN = "PICKUP_PIN"
+SUPPORT_TYPE_ROUTE_PICKUP_PIN = "ROUTE_PICKUP_PIN"
 
 # ----------------- Normalización -----------------
 
@@ -335,7 +343,7 @@ def get_connection():
 
 STANDARD_ROLE_STATUSES = {"PENDING", "APPROVED", "REJECTED", "INACTIVE"}
 
-ORDER_CANCEL_GRACE_SECONDS = 60
+ORDER_CANCEL_GRACE_SECONDS = 120
 ORDER_CANCEL_AFTER_GRACE_TOTAL = 300
 ORDER_CANCEL_WITH_COURIER_TOTAL = 800
 ORDER_CANCEL_WITH_COURIER_COURIER_SHARE = 600
@@ -600,6 +608,42 @@ def init_db():
         );
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role ON registration_reset_audit(role_type, role_id)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER NOT NULL,
+            role_scope TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            uses_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TEXT,
+            expires_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role ON admin_invite_tokens(admin_id, role_scope, is_active)")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invite_token_id INTEGER NOT NULL,
+            admin_id INTEGER NOT NULL,
+            role_scope TEXT NOT NULL,
+            telegram_id INTEGER,
+            user_id INTEGER,
+            target_role_id INTEGER,
+            outcome TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (invite_token_id) REFERENCES admin_invite_tokens(id),
+            FOREIGN KEY (admin_id) REFERENCES admins(id)
+        );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token ON admin_invite_token_uses(invite_token_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin ON admin_invite_token_uses(admin_id, created_at)")
 
     # ============================================================
     # C) MIGRACIONES DE COLUMNAS (antes de UPDATE/INSERT que las usan)
@@ -1285,6 +1329,7 @@ def init_db():
             route_seq INTEGER,
             courier_id INTEGER NOT NULL,
             admin_id INTEGER NOT NULL,
+            support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN',
             status TEXT NOT NULL DEFAULT 'PENDING',
             resolution TEXT,
             created_at TEXT DEFAULT (datetime('now')),
@@ -1294,6 +1339,11 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status ON order_support_requests(admin_id, status)")
+    cur.execute("PRAGMA table_info(order_support_requests)")
+    support_cols = [col[1] for col in cur.fetchall()]
+    if 'support_type' not in support_cols:
+        cur.execute("ALTER TABLE order_support_requests ADD COLUMN support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN'")
 
     # Migración: agregar campos para base requerida en orders
     cur.execute("PRAGMA table_info(orders)")
@@ -2035,6 +2085,48 @@ def _init_db_postgres():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            admin_id BIGINT NOT NULL,
+            role_scope TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            uses_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at TIMESTAMP,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role
+        ON admin_invite_tokens(admin_id, role_scope, is_active)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+            id BIGSERIAL PRIMARY KEY,
+            invite_token_id BIGINT NOT NULL,
+            admin_id BIGINT NOT NULL,
+            role_scope TEXT NOT NULL,
+            telegram_id BIGINT,
+            user_id BIGINT,
+            target_role_id BIGINT,
+            outcome TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token
+        ON admin_invite_token_uses(invite_token_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin
+        ON admin_invite_token_uses(admin_id, created_at)
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS welcome_bonus_grants (
             id BIGSERIAL PRIMARY KEY,
             role_type TEXT NOT NULL,
@@ -2126,6 +2218,11 @@ def _init_db_postgres():
     _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
     _pg_add_col("admin_allies", "parking_fee_enabled", "INTEGER DEFAULT 0")
+    _pg_add_col("order_support_requests", "support_type", "TEXT NOT NULL DEFAULT 'DELIVERY_PIN'")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status "
+        "ON order_support_requests(admin_id, status)"
+    )
 
     # routes: additional_incentive para incentivos agregados por el aliado
     _pg_add_col("routes", "additional_incentive", "INTEGER DEFAULT 0")
@@ -2423,7 +2520,8 @@ def get_admin_by_user_id(user_id: int):
     cur.execute(f"""
         SELECT
             id, user_id, person_id, full_name, phone, city, barrio,
-            status, created_at, team_name, document_number, team_code
+            status, created_at, team_name, document_number, team_code,
+            rejection_reason, rejected_at
         FROM admins
         WHERE user_id = {P} AND is_deleted = 0
         ORDER BY id DESC
@@ -2459,7 +2557,9 @@ def get_admin_by_id(admin_id: int):
             residence_lng,         -- 13
             cedula_front_file_id,  -- 14
             cedula_back_file_id,   -- 15
-            selfie_file_id         -- 16
+            selfie_file_id,        -- 16
+            rejection_reason,      -- 17
+            rejected_at            -- 18
         FROM admins
         WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC
@@ -2570,6 +2670,21 @@ def get_ally_telegram_id(ally_id: int):
         WHERE a.id = {P}
         LIMIT 1
     """, (ally_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_value(row, "telegram_id", 0) if row else None
+
+
+def get_admin_telegram_id(admin_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT u.telegram_id
+        FROM users u
+        JOIN admins a ON a.user_id = u.id
+        WHERE a.id = {P} AND a.is_deleted = 0
+        LIMIT 1
+    """, (admin_id,))
     row = cur.fetchone()
     conn.close()
     return _row_value(row, "telegram_id", 0) if row else None
@@ -3236,7 +3351,7 @@ def get_active_orders_without_courier(limit: int = 20):
         SELECT
             o.id,
             o.status,
-            o.pickup_address,
+            aloc.address AS pickup_address,
             o.pickup_lat,
             o.pickup_lng,
             o.customer_name,
@@ -3244,6 +3359,7 @@ def get_active_orders_without_courier(limit: int = 20):
             COALESCE(al.business_name, 'Admin') AS ally_name
         FROM orders o
         LEFT JOIN allies al ON al.id = o.ally_id
+        LEFT JOIN ally_locations aloc ON aloc.id = o.pickup_location_id
         WHERE o.status NOT IN ('DELIVERED', 'CANCELLED')
           AND (o.courier_id IS NULL OR o.courier_id = 0)
           AND o.pickup_lat IS NOT NULL
@@ -4436,11 +4552,17 @@ def get_active_order_for_courier(courier_id: int):
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT *
-        FROM orders
-        WHERE courier_id = {P}
-          AND status IN ('ACCEPTED', 'PICKED_UP')
-        ORDER BY accepted_at DESC
+        SELECT
+            o.*,
+            COALESCE(aloc.address, adloc.address) AS pickup_address
+        FROM orders o
+        LEFT JOIN ally_locations aloc
+            ON aloc.id = o.pickup_location_id AND o.ally_id IS NOT NULL
+        LEFT JOIN admin_locations adloc
+            ON adloc.id = o.pickup_location_id AND o.creator_admin_id IS NOT NULL
+        WHERE o.courier_id = {P}
+          AND o.status IN ('ACCEPTED', 'PICKED_UP')
+        ORDER BY o.accepted_at DESC
         LIMIT 1;
         """,
         (courier_id,),
@@ -8045,7 +8167,9 @@ def get_courier_by_id(courier_id: int):
             COALESCE(availability_status, 'INACTIVE') AS availability_status, -- 20
             cedula_front_file_id,  -- 21
             cedula_back_file_id,   -- 22
-            selfie_file_id         -- 23
+            selfie_file_id,        -- 23
+            rejection_reason,      -- 24
+            rejected_at            -- 25
         FROM couriers
         WHERE id = {P}
           AND (is_deleted IS NULL OR is_deleted = 0);
@@ -10740,6 +10864,91 @@ def update_recharge_status(request_id: int, status: str, decided_by_admin_id: in
     conn.close()
 
 
+def get_all_active_couriers():
+    """
+    Retorna todos los repartidores con status='APPROVED' en la tabla couriers.
+    Incluye datos del vinculo activo (balance, admin_id, team_name) si existe.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.phone,
+            c.city,
+            ac.balance,
+            ac.admin_id AS link_admin_id,
+            a.team_name AS link_team_name
+        FROM couriers c
+        LEFT JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
+        LEFT JOIN admins a ON a.id = ac.admin_id
+        WHERE c.status = 'APPROVED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
+        ORDER BY c.full_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_active_allies():
+    """
+    Retorna todos los aliados con status='APPROVED' en la tabla allies.
+    Incluye datos del vinculo activo (balance, admin_id, team_name) si existe.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            aa.balance,
+            aa.admin_id AS link_admin_id,
+            adm.team_name AS link_team_name
+        FROM allies a
+        LEFT JOIN admin_allies aa ON aa.ally_id = a.id AND aa.status = 'APPROVED'
+        LEFT JOIN admins adm ON adm.id = aa.admin_id
+        WHERE a.status = 'APPROVED'
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY a.business_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_local_admins_approved():
+    """
+    Retorna todos los admins locales (no Plataforma) con status='APPROVED'.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS admin_id,
+            a.full_name,
+            a.team_name,
+            a.team_code,
+            a.balance,
+            u.telegram_id
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE a.status = 'APPROVED'
+          AND (a.team_code IS NULL OR a.team_code != 'PLATFORM')
+        ORDER BY a.team_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, to_id: int,
                         amount: int, ref_type: str = None, ref_id: int = None, note: str = None) -> int:
     """
@@ -12184,44 +12393,102 @@ def reset_route_offer_queue(route_id):
 # order_support_requests — solicitudes de ayuda por pin mal ubicado
 # ---------------------------------------------------------------------------
 
-def create_order_support_request(courier_id: int, admin_id: int,
-                                  order_id: int = None, route_id: int = None,
-                                  route_seq: int = None) -> int:
-    """Crea una solicitud de ayuda. Retorna el id generado."""
+def _get_pending_support_request_in_tx(cur, order_id: int = None, route_id: int = None,
+                                       route_seq: int = None, support_type: str = None):
+    where = ["status = 'PENDING'"]
+    params = []
+    if order_id is not None:
+        where.append(f"order_id = {P}")
+        params.append(order_id)
+    else:
+        where.append(f"route_id = {P}")
+        where.append(f"route_seq = {P}")
+        params.extend([route_id, route_seq])
+    if support_type:
+        where.append(f"support_type = {P}")
+        params.append(support_type)
+    cur.execute(
+        "SELECT * FROM order_support_requests WHERE " + " AND ".join(where) + " LIMIT 1",
+        tuple(params),
+    )
+    return cur.fetchone()
+
+
+def create_or_get_pending_support_request(courier_id: int, admin_id: int,
+                                          order_id: int = None, route_id: int = None,
+                                          route_seq: int = None,
+                                          support_type: str = SUPPORT_TYPE_DELIVERY_PIN):
+    """
+    Crea una solicitud PENDING si no existe otra para el mismo scope.
+    Retorna (support_id, created_new).
+    """
     conn = get_connection()
     cur = conn.cursor()
     now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
-    support_id = _insert_returning_id(
-        cur,
-        f"""
-        INSERT INTO order_support_requests
-            (order_id, route_id, route_seq, courier_id, admin_id, status, created_at)
-        VALUES ({P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
-        """,
-        (order_id, route_id, route_seq, courier_id, admin_id),
+    try:
+        if DB_ENGINE == "sqlite":
+            cur.execute("BEGIN IMMEDIATE")
+        else:
+            cur.execute("BEGIN")
+            cur.execute("LOCK TABLE order_support_requests IN SHARE ROW EXCLUSIVE MODE")
+
+        existing = _get_pending_support_request_in_tx(
+            cur,
+            order_id=order_id,
+            route_id=route_id,
+            route_seq=route_seq,
+            support_type=support_type,
+        )
+        if existing:
+            conn.commit()
+            return int(_row_value(existing, "id", 0)), False
+
+        support_id = _insert_returning_id(
+            cur,
+            f"""
+            INSERT INTO order_support_requests
+                (order_id, route_id, route_seq, courier_id, admin_id, support_type, status, created_at)
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, 'PENDING', {now_sql})
+            """,
+            (order_id, route_id, route_seq, courier_id, admin_id, support_type),
+        )
+        conn.commit()
+        return support_id, True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def create_order_support_request(courier_id: int, admin_id: int,
+                                  order_id: int = None, route_id: int = None,
+                                  route_seq: int = None,
+                                  support_type: str = SUPPORT_TYPE_DELIVERY_PIN) -> int:
+    """Compatibilidad: crea o reutiliza una solicitud PENDING y retorna su id."""
+    support_id, _created = create_or_get_pending_support_request(
+        courier_id=courier_id,
+        admin_id=admin_id,
+        order_id=order_id,
+        route_id=route_id,
+        route_seq=route_seq,
+        support_type=support_type,
     )
-    conn.commit()
-    conn.close()
     return support_id
 
 
 def get_pending_support_request(order_id: int = None, route_id: int = None,
-                                 route_seq: int = None):
+                                 route_seq: int = None, support_type: str = None):
     """Retorna la solicitud PENDING para un pedido o parada de ruta."""
     conn = get_connection()
     cur = conn.cursor()
-    if order_id is not None:
-        cur.execute(
-            f"SELECT * FROM order_support_requests WHERE order_id = {P} AND status = 'PENDING' LIMIT 1",
-            (order_id,)
-        )
-    else:
-        cur.execute(
-            f"""SELECT * FROM order_support_requests
-                WHERE route_id = {P} AND route_seq = {P} AND status = 'PENDING' LIMIT 1""",
-            (route_id, route_seq)
-        )
-    row = cur.fetchone()
+    row = _get_pending_support_request_in_tx(
+        cur,
+        order_id=order_id,
+        route_id=route_id,
+        route_seq=route_seq,
+        support_type=support_type,
+    )
     conn.close()
     return dict(row) if row else None
 
@@ -12262,48 +12529,11 @@ def cancel_route_stop(route_id: int, seq: int, resolution: str):
     conn.close()
 
 
-def get_all_pending_support_requests():
-    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
+def _support_request_base_select():
+    return """
         SELECT
             sr.id, sr.order_id, sr.route_id, sr.route_seq,
-            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
-            sr.created_at, sr.resolved_at,
-            c.full_name  AS courier_name,
-            c.phone      AS courier_phone,
-            u.telegram_id AS courier_telegram_id,
-            c.live_lat   AS courier_lat,
-            c.live_lng   AS courier_lng,
-            o.customer_address AS delivery_address,
-            o.customer_name    AS customer_name,
-            o.customer_phone   AS customer_phone,
-            o.status           AS order_status,
-            o.dropoff_lat,
-            o.dropoff_lng,
-            a.full_name  AS admin_name
-        FROM order_support_requests sr
-        LEFT JOIN couriers c ON c.id = sr.courier_id
-        LEFT JOIN users u ON u.id = c.user_id
-        LEFT JOIN orders o ON o.id = sr.order_id
-        LEFT JOIN admins a ON a.id = sr.admin_id
-        WHERE sr.status = 'PENDING'
-        ORDER BY sr.created_at DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_support_request_full(support_id: int):
-    """Retorna una solicitud con todos sus datos JOIN para panel web."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT
-            sr.id, sr.order_id, sr.route_id, sr.route_seq,
-            sr.courier_id, sr.admin_id, sr.status, sr.resolution,
+            sr.courier_id, sr.admin_id, sr.support_type, sr.status, sr.resolution,
             sr.created_at, sr.resolved_at, sr.resolved_by,
             c.full_name  AS courier_name,
             c.phone      AS courier_phone,
@@ -12316,14 +12546,63 @@ def get_support_request_full(support_id: int):
             o.status           AS order_status,
             o.dropoff_lat,
             o.dropoff_lng,
-            a.full_name  AS admin_name
+            aloc.address       AS order_pickup_address,
+            o.pickup_lat       AS order_pickup_lat,
+            o.pickup_lng       AS order_pickup_lng,
+            o.ally_id          AS order_ally_id,
+            o.creator_admin_id AS order_creator_admin_id,
+            r.status           AS route_status,
+            r.pickup_address   AS route_pickup_address,
+            r.pickup_lat       AS route_pickup_lat,
+            r.pickup_lng       AS route_pickup_lng,
+            r.ally_id          AS route_ally_id,
+            rd.customer_name   AS route_customer_name,
+            rd.customer_phone  AS route_customer_phone,
+            rd.customer_address AS route_customer_address,
+            rd.dropoff_lat     AS route_dropoff_lat,
+            rd.dropoff_lng     AS route_dropoff_lng,
+            a.full_name        AS admin_name,
+            a.team_name        AS admin_team_name
         FROM order_support_requests sr
         LEFT JOIN couriers c ON c.id = sr.courier_id
         LEFT JOIN users u ON u.id = c.user_id
         LEFT JOIN orders o ON o.id = sr.order_id
+        LEFT JOIN ally_locations aloc ON aloc.id = o.pickup_location_id
+        LEFT JOIN routes r ON r.id = sr.route_id
+        LEFT JOIN route_destinations rd ON rd.route_id = sr.route_id AND rd.sequence = sr.route_seq
         LEFT JOIN admins a ON a.id = sr.admin_id
-        WHERE sr.id = {P}
-    """, (support_id,))
+    """
+
+
+def list_pending_support_requests(admin_id: int = None, limit: int = 20, offset: int = 0):
+    """Lista solicitudes PENDING con soporte para filtro por admin y paginacion."""
+    conn = get_connection()
+    cur = conn.cursor()
+    where = ["sr.status = 'PENDING'"]
+    params = []
+    if admin_id is not None:
+        where.append(f"sr.admin_id = {P}")
+        params.append(admin_id)
+    query = _support_request_base_select() + " WHERE " + " AND ".join(where) + " ORDER BY sr.created_at DESC"
+    if limit is not None:
+        query += f" LIMIT {P} OFFSET {P}"
+        params.extend([limit, offset])
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_pending_support_requests():
+    """Retorna todas las solicitudes PENDING con datos JOIN para panel web."""
+    return list_pending_support_requests(admin_id=None, limit=None, offset=0)
+
+
+def get_support_request_full(support_id: int):
+    """Retorna una solicitud con todos sus datos JOIN para panel web."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(_support_request_base_select() + f" WHERE sr.id = {P}", (support_id,))
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -12349,6 +12628,361 @@ def get_or_create_ally_public_token(ally_id: int) -> str:
     conn.commit()
     conn.close()
     return token
+
+
+_ADMIN_INVITE_ROLE_SCOPES = {"ALLY", "COURIER", "BOTH"}
+_ADMIN_INVITE_TOKEN_VERSION = "a1"
+_ADMIN_INVITE_SIGNATURE_BYTES = 12
+_BASE36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def _normalize_admin_invite_role_scope(role_scope: str) -> str:
+    role = (role_scope or "").strip().upper()
+    if role not in _ADMIN_INVITE_ROLE_SCOPES:
+        raise ValueError("role_scope invalido.")
+    return role
+
+
+def _hash_admin_invite_token(raw_token: str) -> str:
+    token = (raw_token or "").strip()
+    if not token:
+        raise ValueError("Token de invitacion vacio.")
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _get_admin_invite_secret() -> str:
+    secret = (os.getenv("ADMIN_INVITE_SECRET") or os.getenv("BOT_TOKEN") or "local-admin-invite-secret").strip()
+    return secret or "local-admin-invite-secret"
+
+
+def _base36_encode(value: int) -> str:
+    number = int(value)
+    if number < 0:
+        raise ValueError("Solo se permiten enteros positivos para base36.")
+    if number == 0:
+        return "0"
+    digits = []
+    while number:
+        number, remainder = divmod(number, 36)
+        digits.append(_BASE36_ALPHABET[remainder])
+    return "".join(reversed(digits))
+
+
+def _base36_decode(raw: str) -> int:
+    text = (raw or "").strip().lower()
+    if not text:
+        raise ValueError("Valor base36 vacio.")
+    value = 0
+    for char in text:
+        idx = _BASE36_ALPHABET.find(char)
+        if idx < 0:
+            raise ValueError("Valor base36 invalido.")
+        value = (value * 36) + idx
+    return value
+
+
+def _admin_invite_storage_timestamp(value=None) -> str:
+    dt = _coerce_datetime(value).replace(microsecond=0)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _admin_invite_exp_ts(expires_at) -> int:
+    return int(_coerce_datetime(expires_at).replace(microsecond=0).timestamp())
+
+
+def _admin_invite_signature(invite_id: int, admin_id: int, role_scope: str, exp_ts: int) -> str:
+    payload = (
+        f"{_ADMIN_INVITE_TOKEN_VERSION}:{int(invite_id)}:{int(admin_id)}:"
+        f"{_normalize_admin_invite_role_scope(role_scope)}:{int(exp_ts)}"
+    )
+    digest = hmac.new(
+        _get_admin_invite_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()[:_ADMIN_INVITE_SIGNATURE_BYTES]
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def build_admin_invite_token(invite_row) -> str:
+    if not invite_row:
+        raise ValueError("Fila de invitacion requerida.")
+    expires_at = _row_value(invite_row, "expires_at", 5)
+    if expires_at is None:
+        raise ValueError("La invitacion no tiene expiracion configurada.")
+    invite_id = int(_row_value(invite_row, "id", 0))
+    admin_id = int(_row_value(invite_row, "admin_id", 1))
+    role_scope = _normalize_admin_invite_role_scope(_row_value(invite_row, "role_scope", 2))
+    exp_ts = _admin_invite_exp_ts(expires_at)
+    signature = _admin_invite_signature(invite_id, admin_id, role_scope, exp_ts)
+    return (
+        f"{_ADMIN_INVITE_TOKEN_VERSION}."
+        f"{_base36_encode(invite_id)}."
+        f"{_base36_encode(exp_ts)}."
+        f"{signature}"
+    )
+
+
+def _parse_admin_invite_token(raw_token: str):
+    token = (raw_token or "").strip()
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 4 or parts[0] != _ADMIN_INVITE_TOKEN_VERSION:
+        return None
+    try:
+        invite_id = _base36_decode(parts[1])
+        exp_ts = _base36_decode(parts[2])
+    except ValueError:
+        return None
+    signature = parts[3].strip()
+    if not signature:
+        return None
+    return invite_id, exp_ts, signature
+
+
+def get_active_admin_invite_token(admin_id: int, role_scope: str):
+    role = _normalize_admin_invite_role_scope(role_scope)
+    conn = get_connection()
+    cur = conn.cursor()
+    now_cmp = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        SELECT id, admin_id, role_scope, uses_count, last_used_at, expires_at, created_at, updated_at
+        FROM admin_invite_tokens
+        WHERE admin_id = {P}
+          AND role_scope = {P}
+          AND is_active = 1
+          AND (expires_at IS NULL OR expires_at > {now_cmp})
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (admin_id, role),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def rotate_admin_invite_token(admin_id: int, role_scope: str, expires_at=None) -> str:
+    role = _normalize_admin_invite_role_scope(role_scope)
+    expires_at_value = _admin_invite_storage_timestamp(
+        expires_at or (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=7))
+    )
+    placeholder_hash = f"pending_{uuid.uuid4().hex}"
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        cur.execute(
+            f"UPDATE admin_invite_tokens SET is_active = 0, updated_at = {now_sql} "
+            f"WHERE admin_id = {P} AND role_scope = {P} AND is_active = 1",
+            (admin_id, role),
+        )
+        invite_id = _insert_returning_id(
+            cur,
+            f"""
+            INSERT INTO admin_invite_tokens
+                (admin_id, role_scope, token_hash, is_active, uses_count, last_used_at, expires_at, created_at, updated_at)
+            VALUES ({P}, {P}, {P}, 1, 0, NULL, {P}, {now_sql}, {now_sql})
+            """,
+            (admin_id, role, placeholder_hash, expires_at_value),
+        )
+        cur.execute(
+            f"""
+            SELECT id, admin_id, role_scope, uses_count, last_used_at, expires_at, created_at, updated_at
+            FROM admin_invite_tokens
+            WHERE id = {P}
+            LIMIT 1
+            """,
+            (invite_id,),
+        )
+        invite_row = cur.fetchone()
+        raw_token = build_admin_invite_token(invite_row)
+        token_hash = _hash_admin_invite_token(raw_token)
+        cur.execute(
+            f"UPDATE admin_invite_tokens SET token_hash = {P}, updated_at = {now_sql} WHERE id = {P}",
+            (token_hash, invite_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return raw_token
+
+
+def resolve_admin_invite_token(raw_token: str):
+    token = (raw_token or "").strip()
+    parsed = _parse_admin_invite_token(token)
+    if not parsed:
+        return None
+    invite_id, exp_ts, _ = parsed
+    conn = get_connection()
+    cur = conn.cursor()
+    now_cmp = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(
+        f"""
+        SELECT
+            t.id,
+            t.admin_id,
+            t.role_scope,
+            t.uses_count,
+            t.last_used_at,
+            t.expires_at,
+            t.token_hash,
+            COALESCE(a.team_name, a.full_name) AS team_name,
+            a.team_code,
+            a.status AS admin_status,
+            u.telegram_id AS admin_telegram_id
+        FROM admin_invite_tokens t
+        JOIN admins a ON a.id = t.admin_id
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE t.id = {P}
+          AND t.is_active = 1
+          AND a.is_deleted = 0
+          AND a.status = 'APPROVED'
+          AND (t.expires_at IS NULL OR t.expires_at > {now_cmp})
+        LIMIT 1
+        """,
+        (invite_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    row_exp_ts = _admin_invite_exp_ts(_row_value(row, "expires_at", 5))
+    if row_exp_ts != exp_ts:
+        return None
+    expected_token = build_admin_invite_token(row)
+    if not hmac.compare_digest(expected_token, token):
+        return None
+    stored_hash = (_row_value(row, "token_hash", 6) or "").strip()
+    if stored_hash and not hmac.compare_digest(stored_hash, _hash_admin_invite_token(token)):
+        return None
+    return row
+
+
+def record_admin_invite_token_use(
+    raw_token: str,
+    telegram_id: int = None,
+    user_id: int = None,
+    outcome: str = "",
+    target_role_id: int = None,
+    note: str = None,
+    increment_counter: bool = False,
+) -> bool:
+    invite_row = resolve_admin_invite_token(raw_token)
+    if not invite_row:
+        return False
+    invite_id = _row_value(invite_row, "id", 0)
+    admin_id = _row_value(invite_row, "admin_id", 1)
+    role_scope = _row_value(invite_row, "role_scope", 2)
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    try:
+        cur.execute(
+            f"""
+            INSERT INTO admin_invite_token_uses
+                (invite_token_id, admin_id, role_scope, telegram_id, user_id, target_role_id, outcome, note, created_at)
+            VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {now_sql})
+            """,
+            (
+                invite_id,
+                admin_id,
+                role_scope,
+                telegram_id,
+                user_id,
+                target_role_id,
+                (outcome or "").strip() or "UNKNOWN",
+                (note or "").strip() or None,
+            ),
+        )
+        if increment_counter:
+            cur.execute(
+                f"""
+                UPDATE admin_invite_tokens
+                SET uses_count = COALESCE(uses_count, 0) + 1,
+                    last_used_at = {now_sql},
+                    updated_at = {now_sql}
+                WHERE id = {P}
+                """,
+                (invite_id,),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return True
+
+
+def get_admin_invite_registrations(admin_id: int):
+    """Retorna los registros completados via enlace de invitacion y el total de aperturas del enlace."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT
+                u.outcome,
+                u.role_scope,
+                u.target_role_id,
+                u.created_at,
+                a.business_name  AS ally_name,
+                a.status         AS ally_status,
+                c.full_name      AS courier_name,
+                c.status         AS courier_status
+            FROM admin_invite_token_uses u
+            LEFT JOIN allies a   ON u.outcome = 'ALLY_PENDING_CREATED'    AND a.id = u.target_role_id
+            LEFT JOIN couriers c ON u.outcome = 'COURIER_PENDING_CREATED' AND c.id = u.target_role_id
+            WHERE u.admin_id = {P}
+              AND u.outcome IN ('ALLY_PENDING_CREATED', 'COURIER_PENDING_CREATED')
+              AND u.target_role_id IS NOT NULL
+            ORDER BY u.created_at DESC
+            """,
+            (admin_id,),
+        )
+        registrations = cur.fetchall()
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM admin_invite_token_uses
+            WHERE admin_id = {P} AND outcome = 'START_OPENED'
+            """,
+            (admin_id,),
+        )
+        opens_row = cur.fetchone()
+        total_opens = int(_row_value(opens_row, 0, 0) or 0)
+        return registrations, total_opens
+    finally:
+        conn.close()
+
+
+def has_recent_invite_open(admin_id: int, telegram_id: int, hours: int = 24) -> bool:
+    """Retorna True si este telegram_id ya abrio el enlace de este admin en las ultimas N horas."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        cutoff_expr = f"NOW() - INTERVAL '{hours} hours'"
+    else:
+        cutoff_expr = f"datetime('now', '-{hours} hours')"
+    try:
+        cur.execute(
+            f"""
+            SELECT 1 FROM admin_invite_token_uses
+            WHERE admin_id = {P}
+              AND telegram_id = {P}
+              AND outcome = 'START_OPENED'
+              AND created_at >= {cutoff_expr}
+            LIMIT 1
+            """,
+            (admin_id, telegram_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
 
 
 def get_ally_by_public_token(token: str):
@@ -12619,6 +13253,33 @@ def expire_old_ally_subscriptions():
     if changed:
         logger.info("%s suscripcion(es) marcadas como EXPIRED.", changed)
     return changed
+
+
+def get_expiring_ally_subscriptions(days: int = 3):
+    """
+    Retorna suscripciones ACTIVE que vencen en los proximos `days` dias.
+    Incluye telegram_id del aliado y nombre del negocio.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        date_expr = "expires_at <= NOW() + INTERVAL '{}' DAY".format(days)
+    else:
+        date_expr = "expires_at <= datetime('now', '+{} days')".format(days)
+    cur.execute(f"""
+        SELECT s.id, s.ally_id, s.expires_at, s.admin_id,
+               u.telegram_id AS ally_telegram_id,
+               a.business_name AS ally_name
+        FROM ally_subscriptions s
+        JOIN allies a ON a.id = s.ally_id
+        JOIN users u ON u.id = a.user_id
+        WHERE s.status = 'ACTIVE'
+          AND {date_expr}
+        ORDER BY s.expires_at ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_ally_subscription_info(ally_id: int):
