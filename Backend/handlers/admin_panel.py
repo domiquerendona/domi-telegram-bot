@@ -911,8 +911,10 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
-        [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
-        [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
+        [
+            InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open"),
+            InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates"),
+        ],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
