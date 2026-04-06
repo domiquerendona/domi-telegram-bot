@@ -37,6 +37,7 @@ from handlers.common import (
     _geo_siguiente_o_gps,
     _handle_phone_input,
     _handle_text_field_input,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     _schedule_important_alerts,
     _set_flow_step,
@@ -411,6 +412,7 @@ def ally_geo_ubicacion_callback(update, context):
     context.user_data["ally_registration_user_id"] = db_user["id"]
 
     if query.data == "ally_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -1030,6 +1032,7 @@ def courier_geo_ubicacion_callback(update, context):
     query.answer()
 
     if query.data == "courier_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -2032,6 +2035,7 @@ def admin_geo_ubicacion_callback(update, context):
     query.answer()
 
     if query.data == "admin_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)

@@ -18,6 +18,8 @@ from services import (
     has_accepted_terms,
     save_terms_acceptance,
     save_terms_session_ack,
+    upsert_geocoding_text_cache,
+    normalize_text_for_cache,
 )
 
 from handlers.states import (
@@ -435,6 +437,27 @@ def _cotizar_resolver_ubicacion(update, context):
     if not texto:
         return None
     return resolve_location(texto)
+
+
+def _maybe_cache_confirmed_geo(context):
+    """Cachea el candidato confirmado si es un resultado alternativo (via 'No, esta no es').
+
+    Solo actua cuando pending_geo_seen tiene mas de un elemento, lo que indica que el
+    usuario rechazo el primer candidato (ya cacheado por resolve_location) y confirmo uno
+    alternativo devuelto por resolve_location_next (no cacheado).
+    Debe llamarse ANTES de popear las claves pending_geo_* en cada handler *_geo_si.
+    """
+    text = context.user_data.get("pending_geo_text", "")
+    seen = context.user_data.get("pending_geo_seen") or []
+    lat = context.user_data.get("pending_geo_lat")
+    lng = context.user_data.get("pending_geo_lng")
+    if len(seen) > 1 and text and lat is not None and lng is not None:
+        try:
+            upsert_geocoding_text_cache(
+                normalize_text_for_cache(text), lat, lng, source="next_candidate"
+            )
+        except Exception:
+            pass
 
 
 def _mostrar_confirmacion_geocode(

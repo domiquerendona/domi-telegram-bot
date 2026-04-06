@@ -34,7 +34,8 @@ from handlers.states import (
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER, _OPTIONS_HINT,
-    _handle_text_field_input, _geo_siguiente_o_gps, _mostrar_confirmacion_geocode,
+    _handle_text_field_input, _geo_siguiente_o_gps, _maybe_cache_confirmed_geo,
+    _mostrar_confirmacion_geocode,
     cancel_conversacion, cancel_por_texto, ensure_terms,
     show_main_menu, show_flow_menu, _fmt_pesos, build_offer_demand_badge_text,
     build_offer_suggestion_button_row,
@@ -1363,6 +1364,7 @@ def pedido_geo_ubicacion_callback(update, context):
     query.answer()
 
     if query.data == "pedido_geo_si":
+        _maybe_cache_confirmed_geo(context)
         source = context.user_data.pop("pedido_pending_location_source", "")
         raw_link = context.user_data.pop("pedido_pending_location_link", None)
         expanded_link = context.user_data.pop("pedido_pending_location_expanded_link", None)
@@ -1888,6 +1890,7 @@ def pedido_pickup_geo_callback(update, context):
     query.answer()
 
     if query.data == "pickup_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -3806,6 +3809,7 @@ def admin_pedido_geo_callback(update, context):
     query.answer()
     pending = context.user_data.get("admin_ped_geo_cust_pending", {})
     if query.data == "admin_pedido_geo_si":
+        _maybe_cache_confirmed_geo(context)
         logger.info(
             "[admin_pedido_location_confirm] status=confirmed source=%s lat=%s lng=%s",
             pending.get("source", "geocode"),

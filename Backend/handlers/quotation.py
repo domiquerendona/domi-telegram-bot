@@ -24,6 +24,7 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _cotizar_resolver_ubicacion,
     _geo_siguiente_o_gps,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     cancel_conversacion,
     cancel_por_texto,
@@ -346,6 +347,7 @@ def cotizar_recogida_geo_callback(update, context):
     query.answer()
 
     if query.data == "cotizar_recogida_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -413,6 +415,7 @@ def cotizar_entrega_geo_callback(update, context):
     query.answer()
 
     if query.data == "cotizar_entrega_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)

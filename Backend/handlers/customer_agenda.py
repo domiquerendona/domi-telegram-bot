@@ -92,6 +92,7 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _geo_siguiente_o_gps,
     _handle_text_field_input,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     cancel_conversacion,
     cancel_por_texto,
@@ -772,6 +773,7 @@ def clientes_geo_callback(update, context):
         return CLIENTES_MENU
 
     if query.data == "cust_geo_si":
+        _maybe_cache_confirmed_geo(context)
         formatted = context.user_data.pop("clientes_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
@@ -1802,6 +1804,7 @@ def admin_clientes_geo_callback(update, context):
         return ADMIN_CUST_MENU
 
     if query.data == "acust_geo_si":
+        _maybe_cache_confirmed_geo(context)
         formatted = context.user_data.pop("acust_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
@@ -2752,6 +2755,7 @@ def ally_clientes_geo_callback(update, context):
         return ALLY_CUST_MENU
 
     if query.data == "allycust_geo_si":
+        _maybe_cache_confirmed_geo(context)
         formatted = context.user_data.pop("allycust_geo_formatted", "")
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
@@ -4126,6 +4130,7 @@ def plat_corr_callback(update, context):
         return PLAT_CORR_COORDS
 
     if data == "plat_corr_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
