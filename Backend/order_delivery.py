@@ -103,7 +103,7 @@ from db import (
     resolve_pending_fee_collection,
     get_pending_fee_collection,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -234,6 +234,29 @@ PICKUP_AUTOCONFIRM_SECONDS = 120        # 2 min → auto-confirmar llegada al pi
 WAITING_OVERRIDE_REMINDER_SECONDS = 10 * 60
 SUPPORT_REQUEST_REMINDER_SECONDS = 3 * 60
 SUPPORT_REQUEST_ESCALATION_SECONDS = 6 * 60
+LOW_BALANCE_ALERT_THRESHOLD = 5000  # Notificar al admin si el saldo del miembro cae por debajo
+
+
+def _notify_admin_member_low_balance(context, admin_id, member_type, member_name, new_balance):
+    """Notifica al admin cuando un miembro queda con saldo bajo tras cobro de fee."""
+    try:
+        admin_tg_id = get_admin_telegram_id(admin_id)
+        if not admin_tg_id:
+            return
+        tipo_label = "Repartidor" if member_type == "COURIER" else "Aliado"
+        context.bot.send_message(
+            chat_id=admin_tg_id,
+            text=(
+                "Aviso de saldo bajo\n\n"
+                "{} {} quedo con saldo de ${:,} tras el cobro del servicio.\n"
+                "Se recomienda recargar para mantener operatividad.".format(
+                    tipo_label, member_name, new_balance
+                )
+            ),
+        )
+    except Exception as e:
+        logger.warning("_notify_admin_member_low_balance admin=%s: %s", admin_id, e)
+
 
 WAITING_OVERRIDE_NOTE = (
     "La liberacion automatica por demora quedo anulada porque decidiste esperar mas."
@@ -4766,6 +4789,28 @@ def _apply_delivery_fees(context, order, courier_id):
                 logger.warning("No se pudo verificar saldo post-fee del courier %s: %s", courier_id, e)
         else:
             logger.warning("No se pudo cobrar fee al courier: %s", courier_msg_raw)
+
+    # Alerta proactiva de saldo bajo al admin del courier
+    if fee_courier_ok and courier_admin_id:
+        try:
+            bal_c = get_courier_link_balance(courier_id, courier_admin_id)
+            if 300 <= bal_c < LOW_BALANCE_ALERT_THRESHOLD:
+                c_row = get_courier_by_id(courier_id)
+                c_name = c_row["full_name"] if c_row else "Sin nombre"
+                _notify_admin_member_low_balance(context, courier_admin_id, "COURIER", c_name, bal_c)
+        except Exception:
+            pass
+
+    # Alerta proactiva de saldo bajo al admin del aliado
+    if fee_ally_ok and ally_admin_id and ally_id:
+        try:
+            bal_a = get_ally_link_balance(ally_id, ally_admin_id)
+            if bal_a < LOW_BALANCE_ALERT_THRESHOLD:
+                a_row = get_ally_by_id(ally_id)
+                a_name = a_row["business_name"] if a_row else "Sin nombre"
+                _notify_admin_member_low_balance(context, ally_admin_id, "ALLY", a_name, bal_a)
+        except Exception:
+            pass
 
     return {
         "ally_admin_id": ally_admin_id,
