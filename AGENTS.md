@@ -122,6 +122,7 @@ Prefijos establecidos:
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
 - Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
+- Flujo recarga directa (plataforma): recdir_tipo, recdir_target_id, recdir_target_name, recdir_monto, recdir_nota
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 - Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
 - Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id

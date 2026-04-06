@@ -32,6 +32,9 @@ from handlers.states import (
     RECARGAR_COMPROBANTE,
     RECARGAR_MONTO,
     RECARGAR_ROL,
+    RECARGA_DIR_TIPO,
+    RECARGA_DIR_MONTO,
+    RECARGA_DIR_NOTA,
     SOCIEDAD_RETIRO_MONTO,
 )
 from handlers.common import (
@@ -102,6 +105,10 @@ from services import (
     upsert_admin_ally_link,
     update_recharge_proof,
     user_has_platform_admin,
+    direct_recharge_by_platform,
+    get_all_active_couriers,
+    get_all_active_allies,
+    get_all_local_admins_approved,
 )
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
@@ -963,6 +970,7 @@ def plat_recargas_callback(update, context):
             [InlineKeyboardButton("📋 Pendientes de todos los admins", callback_data="plat_rec_pending")],
             [InlineKeyboardButton("📊 Historial contable", callback_data="plat_rec_history")],
             [InlineKeyboardButton("⚠️ Alertas de admins locales", callback_data="plat_rec_alerts")],
+            [InlineKeyboardButton("💳 Recarga directa a usuario", callback_data="plat_rdir_inicio")],
             [InlineKeyboardButton("⬅ Volver al panel", callback_data="admin_volver_panel")],
         ]
         query.edit_message_text(
@@ -2396,6 +2404,396 @@ ingreso_conv = ConversationHandler(
     ],
     allow_reentry=True,
     name="ingreso_conv",
+    persistent=True,
+)
+
+
+# =============================================================================
+# RECARGA DIRECTA POR ADMIN DE PLATAFORMA (recarga_directa_conv)
+# Entry: callback plat_rdir_inicio
+# Prefijo callbacks: plat_rdir_   |  Prefijo user_data: recdir_
+# Solo accesible para Admin de Plataforma.
+# Flujo: tipo de usuario → seleccionar usuario → monto → nota → confirmar
+# =============================================================================
+
+_RECDIR_TIPO_LABEL = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}
+
+
+def _recdir_cancelar(update_or_query, context):
+    """Limpia user_data del flujo y termina la conversacion."""
+    for k in ("recdir_tipo", "recdir_target_id", "recdir_target_name", "recdir_monto", "recdir_nota"):
+        context.user_data.pop(k, None)
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text("Recarga directa cancelada.")
+    elif hasattr(update_or_query, "edit_message_text"):
+        try:
+            update_or_query.edit_message_text("Recarga directa cancelada.")
+        except Exception:
+            pass
+    return ConversationHandler.END
+
+
+def recarga_directa_inicio(update, context):
+    """Entry point del flujo de recarga directa. Verifica que sea Admin Plataforma."""
+    query = update.callback_query
+    query.answer()
+
+    if not user_has_platform_admin(update.effective_user.id):
+        query.edit_message_text("Solo el Admin de Plataforma puede hacer recargas directas.")
+        return ConversationHandler.END
+
+    keyboard = [
+        [InlineKeyboardButton("Repartidor", callback_data="plat_rdir_tipo_COURIER")],
+        [InlineKeyboardButton("Aliado", callback_data="plat_rdir_tipo_ALLY")],
+        [InlineKeyboardButton("Admin Local", callback_data="plat_rdir_tipo_ADMIN")],
+        [InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")],
+    ]
+    query.edit_message_text(
+        "Recarga directa\n\n"
+        "Selecciona el tipo de usuario a recargar:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RECARGA_DIR_TIPO
+
+
+def recarga_directa_tipo_callback(update, context):
+    """Recibe el tipo seleccionado y muestra la lista de usuarios correspondiente."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "plat_rdir_cancel":
+        return _recdir_cancelar(query, context)
+
+    if not data.startswith("plat_rdir_tipo_"):
+        return RECARGA_DIR_TIPO
+
+    tipo = data.replace("plat_rdir_tipo_", "")
+    if tipo not in ("COURIER", "ALLY", "ADMIN"):
+        query.edit_message_text("Tipo no reconocido.")
+        return ConversationHandler.END
+
+    context.user_data["recdir_tipo"] = tipo
+    label = _RECDIR_TIPO_LABEL.get(tipo, tipo)
+
+    if tipo == "COURIER":
+        usuarios = get_all_active_couriers()
+        if not usuarios:
+            query.edit_message_text(
+                "No hay repartidores APPROVED en el sistema.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")]]),
+            )
+            return RECARGA_DIR_TIPO
+        keyboard = []
+        for u in usuarios:
+            nombre = u["full_name"] or "Sin nombre"
+            saldo = u["balance"] if u["balance"] is not None else 0
+            team = u["link_team_name"] or "Sin equipo"
+            keyboard.append([InlineKeyboardButton(
+                "{} | ${:,} | {}".format(nombre, saldo, team),
+                callback_data="plat_rdir_usr_{}".format(u["courier_id"]),
+            )])
+    elif tipo == "ALLY":
+        usuarios = get_all_active_allies()
+        if not usuarios:
+            query.edit_message_text(
+                "No hay aliados APPROVED en el sistema.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")]]),
+            )
+            return RECARGA_DIR_TIPO
+        keyboard = []
+        for u in usuarios:
+            nombre = u["business_name"] or u["owner_name"] or "Sin nombre"
+            saldo = u["balance"] if u["balance"] is not None else 0
+            team = u["link_team_name"] or "Sin equipo"
+            keyboard.append([InlineKeyboardButton(
+                "{} | ${:,} | {}".format(nombre, saldo, team),
+                callback_data="plat_rdir_usr_{}".format(u["ally_id"]),
+            )])
+    else:  # ADMIN
+        usuarios = get_all_local_admins_approved()
+        if not usuarios:
+            query.edit_message_text(
+                "No hay admins locales APPROVED en el sistema.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")]]),
+            )
+            return RECARGA_DIR_TIPO
+        keyboard = []
+        for u in usuarios:
+            nombre = u["team_name"] or u["full_name"] or "Sin nombre"
+            saldo = u["balance"] if u["balance"] is not None else 0
+            code = u["team_code"] or ""
+            label_btn = "{} [{}] | ${:,}".format(nombre, code, saldo) if code else "{} | ${:,}".format(nombre, saldo)
+            keyboard.append([InlineKeyboardButton(
+                label_btn,
+                callback_data="plat_rdir_usr_{}".format(u["admin_id"]),
+            )])
+
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")])
+    query.edit_message_text(
+        "Selecciona el {} a recargar:".format(_RECDIR_TIPO_LABEL.get(tipo, tipo)),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RECARGA_DIR_TIPO
+
+
+def recarga_directa_usuario_callback(update, context):
+    """Recibe el usuario seleccionado y solicita el monto."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "plat_rdir_cancel":
+        return _recdir_cancelar(query, context)
+
+    if not data.startswith("plat_rdir_usr_"):
+        return RECARGA_DIR_TIPO
+
+    try:
+        target_id = int(data.replace("plat_rdir_usr_", ""))
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return ConversationHandler.END
+
+    tipo = context.user_data.get("recdir_tipo")
+    if tipo == "COURIER":
+        usuarios = get_all_active_couriers()
+        match = next((u for u in usuarios if u["courier_id"] == target_id), None)
+        target_name = match["full_name"] if match else "Repartidor #{}".format(target_id)
+    elif tipo == "ALLY":
+        usuarios = get_all_active_allies()
+        match = next((u for u in usuarios if u["ally_id"] == target_id), None)
+        target_name = (match["business_name"] or match["owner_name"]) if match else "Aliado #{}".format(target_id)
+    else:
+        usuarios = get_all_local_admins_approved()
+        match = next((u for u in usuarios if u["admin_id"] == target_id), None)
+        target_name = (match["team_name"] or match["full_name"]) if match else "Admin #{}".format(target_id)
+
+    context.user_data["recdir_target_id"] = target_id
+    context.user_data["recdir_target_name"] = target_name
+
+    query.edit_message_text(
+        "Recarga directa a: {} ({})\n\n"
+        "Escribe el monto a recargar (solo numeros, minimo $1,000).\n"
+        "Ejemplo: 50000".format(target_name, _RECDIR_TIPO_LABEL.get(tipo, tipo))
+    )
+    return RECARGA_DIR_MONTO
+
+
+def recarga_directa_monto_handler(update, context):
+    """Recibe el monto y solicita una nota opcional."""
+    texto = update.message.text.strip().replace(".", "").replace(",", "")
+    try:
+        monto = int(texto)
+    except ValueError:
+        update.message.reply_text("Por favor ingresa solo numeros. Ejemplo: 50000")
+        return RECARGA_DIR_MONTO
+
+    if monto < 1000:
+        update.message.reply_text("El monto minimo es $1,000.")
+        return RECARGA_DIR_MONTO
+
+    if monto > 5000000:
+        update.message.reply_text("El monto maximo por recarga directa es $5,000,000.")
+        return RECARGA_DIR_MONTO
+
+    context.user_data["recdir_monto"] = monto
+
+    tipo = context.user_data.get("recdir_tipo", "")
+    nombre = context.user_data.get("recdir_target_name", "")
+
+    keyboard = [[InlineKeyboardButton("Sin nota — Confirmar recarga", callback_data="plat_rdir_sin_nota")],
+                [InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")]]
+    update.message.reply_text(
+        "Monto: ${:,}\n"
+        "Destino: {} ({})\n\n"
+        "Escribe una nota descriptiva (motivo, referencia, etc.)\n"
+        "o usa el boton para confirmar sin nota.".format(
+            monto, nombre, _RECDIR_TIPO_LABEL.get(tipo, tipo)
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RECARGA_DIR_NOTA
+
+
+def recarga_directa_nota_handler(update, context):
+    """Recibe la nota de texto y muestra la confirmacion final."""
+    nota = update.message.text.strip()
+    if nota.lower() == "cancelar":
+        return _recdir_cancelar(update, context)
+
+    context.user_data["recdir_nota"] = nota
+    return _recdir_mostrar_confirmacion(update.message.reply_text, context)
+
+
+def recarga_directa_confirmar_callback(update, context):
+    """Callback: sin nota o confirmar recarga."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data == "plat_rdir_cancel":
+        return _recdir_cancelar(query, context)
+
+    if data == "plat_rdir_sin_nota":
+        context.user_data["recdir_nota"] = None
+        return _recdir_mostrar_confirmacion(query.edit_message_text, context)
+
+    if data == "plat_rdir_confirmar":
+        return _recdir_ejecutar(query, context)
+
+    return RECARGA_DIR_NOTA
+
+
+def _recdir_mostrar_confirmacion(send_fn, context):
+    """Muestra el resumen de la recarga directa para confirmacion final."""
+    tipo = context.user_data.get("recdir_tipo", "")
+    nombre = context.user_data.get("recdir_target_name", "")
+    monto = context.user_data.get("recdir_monto", 0)
+    nota = context.user_data.get("recdir_nota")
+
+    resumen = (
+        "CONFIRMAR RECARGA DIRECTA\n\n"
+        "Tipo: {}\n"
+        "Destino: {}\n"
+        "Monto: ${:,}\n"
+        "{}Nota: {}\n\n"
+        "El saldo saldra de la Sociedad.\n"
+        "Esta accion no se puede deshacer."
+    ).format(
+        _RECDIR_TIPO_LABEL.get(tipo, tipo),
+        nombre,
+        monto,
+        "",
+        nota if nota else "(sin nota)",
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("Confirmar recarga", callback_data="plat_rdir_confirmar")],
+        [InlineKeyboardButton("Cancelar", callback_data="plat_rdir_cancel")],
+    ]
+    send_fn(resumen, reply_markup=InlineKeyboardMarkup(keyboard))
+    return RECARGA_DIR_NOTA
+
+
+def _recdir_ejecutar(query, context):
+    """Ejecuta la recarga directa y notifica al destinatario."""
+    user_tg = query.from_user
+    admin = get_admin_by_telegram_id(user_tg.id)
+    if not admin:
+        query.edit_message_text("Error: no se encontro tu perfil de administrador.")
+        return ConversationHandler.END
+
+    platform_admin_id = admin["id"]
+    user_row = ensure_user(user_tg.id, user_tg.username)
+    platform_user_id = user_row["id"]
+
+    tipo = context.user_data.get("recdir_tipo")
+    target_id = context.user_data.get("recdir_target_id")
+    monto = context.user_data.get("recdir_monto")
+    nota = context.user_data.get("recdir_nota")
+    nombre = context.user_data.get("recdir_target_name", "")
+
+    if not all([tipo, target_id, monto]):
+        query.edit_message_text("Error: datos incompletos. Usa el flujo nuevamente.")
+        return ConversationHandler.END
+
+    success, msg = direct_recharge_by_platform(
+        target_type=tipo,
+        target_id=target_id,
+        platform_admin_id=platform_admin_id,
+        platform_user_id=platform_user_id,
+        amount=monto,
+        note=nota,
+    )
+
+    for k in ("recdir_tipo", "recdir_target_id", "recdir_target_name", "recdir_monto", "recdir_nota"):
+        context.user_data.pop(k, None)
+
+    if not success:
+        query.edit_message_text("Error al ejecutar la recarga: {}".format(msg))
+        return ConversationHandler.END
+
+    # Notificar al destinatario en Telegram
+    telegram_id_destino = None
+    nuevo_saldo = None
+    try:
+        if tipo == "COURIER":
+            courier = get_courier_by_id(target_id)
+            if courier:
+                user_dest = get_user_by_id(courier["user_id"])
+                if user_dest:
+                    telegram_id_destino = user_dest["telegram_id"]
+            link = get_approved_admin_link_for_courier(target_id)
+            nuevo_saldo = link["balance"] if link else None
+        elif tipo == "ALLY":
+            ally = get_ally_by_id(target_id)
+            if ally:
+                user_dest = get_user_by_id(ally["user_id"])
+                if user_dest:
+                    telegram_id_destino = user_dest["telegram_id"]
+            link = get_approved_admin_link_for_ally(target_id)
+            nuevo_saldo = link["balance"] if link else None
+        elif tipo == "ADMIN":
+            admin_dest = get_admin_by_id(target_id)
+            if admin_dest:
+                user_dest = get_user_by_id(admin_dest["user_id"])
+                if user_dest:
+                    telegram_id_destino = user_dest["telegram_id"]
+            nuevo_saldo = get_admin_balance(target_id)
+    except Exception as e:
+        logger.warning("recarga_directa: no se pudo obtener telegram_id del destinatario: %s", e)
+
+    if telegram_id_destino:
+        try:
+            msg_destino = "Tu saldo fue recargado por Plataforma.\n\nMonto: ${:,}".format(monto)
+            if nuevo_saldo is not None:
+                msg_destino += "\nNuevo saldo: ${:,}".format(int(nuevo_saldo))
+            if nota:
+                msg_destino += "\nNota: {}".format(nota)
+            query.bot.send_message(chat_id=telegram_id_destino, text=msg_destino)
+        except Exception as e:
+            logger.warning("recarga_directa: no se pudo notificar al destinatario: %s", e)
+
+    confirmacion = (
+        "Recarga directa ejecutada.\n\n"
+        "Destino: {} ({})\n"
+        "Monto: ${:,}\n"
+        "{}Nuevo saldo: {}"
+    ).format(
+        nombre,
+        _RECDIR_TIPO_LABEL.get(tipo, tipo),
+        monto,
+        "Nota: {}\n".format(nota) if nota else "",
+        "${:,}".format(int(nuevo_saldo)) if nuevo_saldo is not None else "N/D",
+    )
+    query.edit_message_text(confirmacion)
+    return ConversationHandler.END
+
+
+recarga_directa_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(recarga_directa_inicio, pattern=r"^plat_rdir_inicio$"),
+    ],
+    states={
+        RECARGA_DIR_TIPO: [
+            CallbackQueryHandler(recarga_directa_usuario_callback, pattern=r"^plat_rdir_usr_\d+$"),
+            CallbackQueryHandler(recarga_directa_tipo_callback, pattern=r"^plat_rdir_(tipo_|cancel)"),
+        ],
+        RECARGA_DIR_MONTO: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recarga_directa_monto_handler),
+        ],
+        RECARGA_DIR_NOTA: [
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, recarga_directa_nota_handler),
+            CallbackQueryHandler(recarga_directa_confirmar_callback, pattern=r"^plat_rdir_(sin_nota|confirmar|cancel)$"),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_conversacion),
+        MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+    ],
+    allow_reentry=True,
+    name="recarga_directa_conv",
     persistent=True,
 )
 

@@ -393,3 +393,11 @@ PEDIDO_GUARDAR_DIR_PARKING = 1007  # Dificultad de parqueo al guardar nueva dir 
 PEDIDO_GUARDAR_CUST_PARKING = 1008 # Dificultad de parqueo al guardar cliente nuevo tras crear pedido
 ADMIN_PEDIDO_GUARDAR_PARKING = 1009 # Dificultad de parqueo al guardar cliente tras pedido especial admin
 RUTA_GUARDAR_CUST_PARKING  = 1010  # Dificultad de parqueo al guardar cliente de parada en ruta
+
+# =========================
+# Estados para recarga directa por Admin Plataforma (recarga_directa_conv)
+# Prefijo callbacks: plat_rdir_   |  Prefijo user_data: recdir_
+# =========================
+RECARGA_DIR_TIPO  = 1016  # Seleccion de tipo (COURIER/ALLY/ADMIN) y usuario destino via callbacks
+RECARGA_DIR_MONTO = 1017  # Texto con el monto a recargar
+RECARGA_DIR_NOTA  = 1018  # Texto con nota opcional + confirmacion via callbacks

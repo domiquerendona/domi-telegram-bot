@@ -345,6 +345,7 @@ from handlers.recharges import (
     recargar_conv,
     configurar_pagos_conv,
     ingreso_conv,
+    recarga_directa_conv,
     cmd_saldo,
     cmd_recargar,
     cmd_recargas_pendientes,
@@ -2641,6 +2642,7 @@ def main():
     dp.add_handler(profile_change_conv)
     dp.add_handler(configurar_pagos_conv)
     dp.add_handler(ingreso_conv)
+    dp.add_handler(recarga_directa_conv)
 
     # -------------------------
     # Registro de Administradores Locales
