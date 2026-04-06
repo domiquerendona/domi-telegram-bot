@@ -61,7 +61,7 @@ domi-telegram-bot/
 │   │   ├── location_agenda.py    # admin_dirs_conv, ally_locs_conv (gestión de ubicaciones)
 │   │   ├── customer_agenda.py    # clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
 │   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers, preseleccion por invitacion admin
-│   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, cmd_saldo, admin_local_callback, ally_approval_callback
+│   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, recarga_directa_conv, cmd_saldo, admin_local_callback, ally_approval_callback
 │   │   ├── order.py              # nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv (~99 funciones)
 │   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
 │   │   ├── admin_panel.py        # admin_menu, admin_menu_callback, aliados_pendientes, repartidores_pendientes, admins_pendientes, admin_ver_pendiente, admin_aprobar_rechazar_callback, pendientes, volver_menu_global, courier_pick_admin_callback, reference validation helpers
@@ -208,7 +208,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `location_agenda.py` | `admin_dirs_conv` (mis ubicaciones admin), `ally_locs_conv` (mis ubicaciones aliado) |
 | `customer_agenda.py` | `clientes_conv`, `agenda_conv`, `admin_clientes_conv`, `ally_clientes_conv` |
 | `registration.py` | `ally_conv` (soy_aliado), `courier_conv` (soy_repartidor), `admin_conv` (soy_admin), handlers de cédula/selfie |
-| `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
+| `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `recarga_directa_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
 | `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
 | `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada. Al registrar parada "cliente nuevo": sin campos ciudad/barrio/notas; al confirmar dirección pregunta si guardar en agenda (`ruta_guardar_cust_si/no`). |
 | `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
@@ -345,6 +345,7 @@ Aqu?? se resume el mapa actual de prefijos usados por los flujos:
 | Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng`, `admin_geo_formatted` (temporal geocoding) |
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
+| Recarga directa (plataforma) | `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
 | Agenda clientes (coordenadas) | `clientes_geo_mode` (`corregir_coords` al agregar/corregir coords), `current_customer_id`, `current_address_id`, `clientes_geo_address_input` |
 
@@ -388,6 +389,7 @@ Separador operativo actual: guion bajo (`_`).
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
+| `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point normal), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado en búsqueda), `plat_rdir_presel_{COURIER\|ALLY}_{id}` (entrada directa desde vista saldo bajo), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). `plat_rec_saldo_bajo` (en `plat_recargas_callback`): vista de couriers y aliados con balance < $5.000. Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
 | `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
@@ -997,6 +999,66 @@ Aquí se documenta el modelo funcional ya implementado y los puntos donde ese co
 - Claves user_data: `ingreso_monto`, `ingreso_metodo`
 - Función en db.py: `register_platform_income(admin_id, amount, method, note)`
 - Re-exportada en services.py; importada en main.py desde services.py
+
+### Recarga Manual desde el Admin de Plataforma (IMPLEMENTADO 2026-04-06)
+
+El Admin de Plataforma puede recargar cualquier usuario (repartidor, aliado o admin local) directamente desde el panel de recargas **sin que el usuario deba solicitarla**.
+
+**Entry point:** Panel de Recargas → botón "Recarga directa a usuario" → callback `plat_rdir_inicio`
+
+**Entry points de `recarga_directa_conv`:**
+- `plat_rdir_inicio` → flujo normal (selección de tipo → búsqueda → monto → nota)
+- `plat_rdir_presel_{COURIER|ALLY}_{id}` → acceso directo con usuario ya pre-seleccionado (desde vista "Saldo bajo"), salta al estado `RECARGA_DIR_MONTO`
+
+**Flujo normal (`recarga_directa_conv` en `handlers/recharges.py`):**
+1. Selecciona tipo: Repartidor / Aliado / Admin Local → estado `RECARGA_DIR_TIPO` (1016)
+2. Escribe texto para buscar (o `.` para ver todos) → estado `RECARGA_DIR_BUSCAR` (1019); selecciona usuario con `plat_rdir_usr_{id}`
+3. Escribe el monto → estado `RECARGA_DIR_MONTO` (1017)
+4. Escribe nota o usa "Sin nota" → estado `RECARGA_DIR_NOTA` (1018) → confirmación → `plat_rdir_confirmar`
+
+**Vista "Usuarios con saldo bajo":**
+- Entry point: botón "Usuarios con saldo bajo" en panel recargas → callback `plat_rec_saldo_bajo`
+- Umbral: `RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000` (constante en `handlers/recharges.py`)
+- Muestra couriers y aliados con `balance < 5000` con botones directos "Recargar: {nombre} (${saldo})"
+- Botones generan `plat_rdir_presel_{COURIER|ALLY}_{id}` → inicia `recarga_directa_conv` con usuario pre-seleccionado
+
+**Notificación al Admin Local:**
+- Al ejecutar una recarga directa de plataforma a un COURIER o ALLY que pertenece a un equipo local, se notifica al admin local del equipo (cortesía + aviso del interruptor de ganancias).
+- La captura del admin local previo se hace **antes** de llamar `direct_recharge_by_platform`, porque `approve_recharge_request` internamente activa el vínculo plataforma y desactiva los demás (interruptor). Si se capturara después, ya no habría admin local activo que notificar.
+- Solo notifica si el vínculo activo previo es de un admin local (no plataforma).
+
+**Implementación (`services.py`):**
+- `direct_recharge_by_platform(target_type, target_id, platform_admin_id, platform_user_id, amount, note)` → crea una `recharge_request` PENDING y la aprueba inmediatamente con `approve_recharge_request`. Reutiliza toda la lógica contable: débito de Sociedad, crédito al destinatario, interruptor de ganancias, ledger completo.
+
+**Funciones DB nuevas (`db.py`):**
+- `get_all_active_couriers()` → todos los couriers con `status='APPROVED'` + balance y equipo activo
+- `get_all_active_allies()` → todos los aliados con `status='APPROVED'` + balance y equipo activo
+- `get_all_local_admins_approved()` → todos los admins locales (no Plataforma) con `status='APPROVED'`
+
+Todas re-exportadas en `services.py`.
+
+**User data keys** (prefijo `recdir_`): `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota`
+
+**Callbacks** (prefijo `plat_rdir_`): `plat_rdir_inicio`, `plat_rdir_tipo_{COURIER|ALLY|ADMIN}`, `plat_rdir_cancel`, `plat_rdir_presel_{COURIER|ALLY}_{id}` (entrada directa desde saldo bajo), `plat_rdir_usr_{id}` (usuario seleccionado desde búsqueda), `plat_rdir_sin_nota`, `plat_rdir_confirmar`
+
+**Callbacks adicionales en `plat_recargas_callback`:** `plat_rec_saldo_bajo` (vista de usuarios con saldo bajo)
+
+**Estados nuevos en `states.py`:**
+| Constante | Valor | Descripción |
+|---|---|---|
+| `RECARGA_DIR_TIPO` | 1016 | Selección de tipo (COURIER/ALLY/ADMIN) via callbacks |
+| `RECARGA_DIR_MONTO` | 1017 | Texto con el monto a recargar |
+| `RECARGA_DIR_NOTA` | 1018 | Texto con nota opcional + confirmación via callbacks |
+| `RECARGA_DIR_BUSCAR` | 1019 | Texto de búsqueda por nombre + selección de usuario via callbacks |
+
+Al ejecutar, se notifica al destinatario por Telegram con el monto y su nuevo saldo. Si el usuario pertenece a un equipo local, también se notifica al admin local. El registro queda en `recharge_requests` y en el ledger para auditoría completa (visible en "Historial contable" del panel de recargas).
+
+**Mejoras del panel de recargas (IMPLEMENTADO 2026-04-06):**
+- **Saldo visible en menú**: el panel principal muestra el saldo operativo del Admin de Plataforma al abrir.
+- **Admins locales en vista saldo bajo**: `plat_rec_saldo_bajo` incluye ahora una sección de admins locales con saldo < `RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL = 20000`. Botones "Recargar admin: {nombre}" generan `plat_rdir_presel_ADMIN_{id}`.
+- **Alerta proactiva de saldo bajo**: tras cobrar el fee de servicio, si el saldo del courier o aliado cae entre $300 y $5.000, se notifica automáticamente al admin de su equipo. Implementado en `_notify_admin_member_low_balance` (constante `LOW_BALANCE_ALERT_THRESHOLD = 5000` en `order_delivery.py`).
+
+---
 
 ### Recarga Directa con Plataforma como Fallback
 
@@ -2185,60 +2247,46 @@ El componente Angular (`SoporteComponent`) muestra:
 
 ---
 
-## Enlace de Pedido del Aliado (PARCIALMENTE IMPLEMENTADO — ver nota abajo)
+## Enlace de Pedido del Aliado (IMPLEMENTADO — bandeja + crear pedido 2026-04-06)
 
 > Descripcion funcional completa en `docs/business/contexto-negocio-domiquerendona.md` seccion 5B.
 
-### Que hay que construir (notas tecnicas minimas)
+### Estado actual
 
-**Base de datos - cambios minimos:**
-- Columna `public_token TEXT UNIQUE` en tabla `allies` - UUID por aliado para construir la URL publica.
-- Tabla nueva `ally_form_requests` - bandeja temporal de solicitudes recibidas por formulario.
-  Campos: `id`, `ally_id`, `customer_name`, `customer_phone`, `delivery_address`,
-  `delivery_city`, `delivery_barrio`, `notes`, `lat`, `lng`,
-  `status` (PENDING/CONVERTED_ORDER/SAVED_CONTACT/DISMISSED), `created_at`.
-- No se necesitan cambios en `ally_customers`, `ally_customer_addresses` ni `orders`.
+- **Backend FastAPI** (`web/api/form.py`): completo — `GET /form/{token}`, `POST /form/{token}/lookup-phone`, `POST /form/{token}/quote`, `POST /form/{token}/submit`.
+- **Bot — bandeja**: completo — `ally_bandeja_solicitudes`, lista pendientes/procesadas, detalle de solicitud.
+- **Bot — Crear pedido desde solicitud** (IMPLEMENTADO 2026-04-06): `ally_bandeja_callback` maneja `alybandeja_crear_{id}` y `alybandeja_crearyguardar_{id}` → preview → `alybandeja_confirmar_{id}` / `alybandeja_confirmargsave_{id}` → `create_order` + `publish_order_to_couriers`. Requiere que la solicitud tenga coordenadas (PENDING_REVIEW) y que el aliado tenga pickup configurado.
+- **Frontend**: `FormPedidoComponent` en `/form/:token` implementado.
 
-**Backend - nuevo router publico en FastAPI:**
-- Archivo nuevo: `Backend/web/api/form.py` - router sin autenticacion.
-- `GET /form/{token}` - valida token, retorna nombre del aliado.
-- `POST /form/{token}/submit` - recibe datos, inserta en `ally_form_requests`, notifica al aliado por Telegram.
-- Registro en `web_app.py` sin tocar routers existentes.
-- CORS: agregar dominio del formulario publico a `origins`.
+### Callbacks implementados en `ally_bandeja_callback`
 
-**Bot Telegram - entry points nuevos en main.py:**
-- Handler "Mi enlace de pedidos" en menu del aliado: llama `get_or_create_ally_public_token(ally_id)`.
-- Handler callback "Crear pedido": inicia `nuevo_pedido_conv` con `context.user_data` prellenado.
-- Handler callback "Guardar en agenda": llama `create_ally_customer` + `create_customer_address`.
-- Handler callback "Ignorar": marca solicitud como DISMISSED.
-- Prefijo de callbacks pendiente de aprobacion antes de implementar.
+| Callback | Descripción |
+|---|---|
+| `alybandeja_crear_{id}` | Muestra preview del pedido con "Confirmar y publicar" |
+| `alybandeja_crearyguardar_{id}` | Igual pero también guarda cliente en agenda al confirmar |
+| `alybandeja_confirmar_{id}` | Crea el pedido (`create_order`) y lo publica (`publish_order_to_couriers`) |
+| `alybandeja_confirmargsave_{id}` | Igual + `_ally_bandeja_guardar_en_agenda` |
+| `alybandeja_guardar_{id}` | Solo guarda en agenda (sin crear pedido) |
+| `alybandeja_ignorar_{id}` | Marca solicitud como DISMISSED |
 
-**Frontend - componente publico:**
-- Ruta `/form/:token` sin `AuthGuard` en `app.routes.ts`.
-- Componente `FormPedidoComponent` en `Frontend/src/app/features/public/`.
-- Pasos: telefono (siempre primero) -> reconocimiento de cliente -> direccion -> mapa -> cotizacion.
+**Restricciones:** la solicitud debe tener `lat`/`lng` (status `PENDING_REVIEW`) y el aliado debe tener pickup configurado. Para solicitudes `PENDING_LOCATION` (sin coordenadas), se muestra aviso de contactar al cliente.
 
-**Funciones db.py que hacen falta:**
-- `get_or_create_ally_public_token(ally_id)` -> str (UUID)
-- `get_ally_by_public_token(token)` -> dict
-- `create_ally_form_request(ally_id, ...)` -> int
-- `get_ally_form_request_by_id(request_id, ally_id)` -> dict
-- `update_ally_form_request_status(request_id, status)`
-Todas deben re-exportarse en `services.py`.
+**Pendiente:** notificacion proactiva al aliado via Telegram cuando llega una nueva solicitud desde el formulario web (FastAPI no tiene acceso al contexto del bot; requiere mecanismo de webhook o polling compartido).
 
-**Funciones db.py reutilizables sin cambios:**
-- `get_ally_customer_by_phone(ally_id, phone)` - detecta cliente existente
-- `create_ally_customer`, `create_customer_address` - crea desde solicitud
-- `create_order` - mismo contrato que el flujo bot
+### Funciones clave
 
-**Orden de implementacion recomendado:**
-1. Migracion (columna `public_token` + tabla `ally_form_requests`) + funciones db.py
-2. Router publico `/form/` + notificacion Telegram basica
-3. Handlers bot para Crear / Guardar / Ignorar desde notificacion
-4. Boton "Mi enlace" en menu del aliado
-5. Frontend formulario publico minimo viable
-6. Cotizacion en el formulario
-7. Subsidio del aliado + incentivo del cliente
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `get_or_create_ally_public_token(ally_id)` | `db.py` | UUID del token publico del aliado |
+| `get_ally_by_public_token(token)` | `db.py` | Valida token y retorna aliado |
+| `create_ally_form_request(ally_id, ...)` | `db.py` | Crea solicitud en bandeja |
+| `get_ally_form_request_by_id(request_id, ally_id)` | `db.py` | Retorna solicitud |
+| `update_ally_form_request_status(request_id, ally_id, status)` | `db.py` | Actualiza estado |
+| `mark_ally_form_request_converted(request_id, ally_id, order_id)` | `db.py` | Marca como convertida a pedido |
+| `count_ally_form_requests_by_status(ally_id)` | `db.py` | Conteos por estado para el menu |
+| `list_ally_form_requests_for_ally(ally_id, status, limit)` | `db.py` | Lista solicitudes |
+
+Todas re-exportadas en `services.py`.
 
 ---
 
@@ -2376,12 +2424,15 @@ Entry point: botón "Mi suscripcion" en menú del aliado → callback `ally_mi_s
 | `create_ally_subscription(ally_id, admin_id, price, platform_share, admin_share)` | `db.py` | Crea registro en `ally_subscriptions`, retorna id |
 | `get_active_ally_subscription(ally_id)` | `db.py` | Retorna suscripción activa o None |
 | `expire_old_ally_subscriptions()` | `db.py` | Marca como EXPIRED las suscripciones vencidas (llamado en boot) |
+| `get_expiring_ally_subscriptions(days=3)` | `db.py` | Retorna suscripciones ACTIVE que vencen en los próximos N días con telegram_id del aliado |
 | `get_ally_subscription_info(ally_id)` | `db.py` | Info completa de suscripción (precio + estado + vencimiento) |
 | `check_ally_active_subscription(ally_id)` | `services.py` | Retorna bool — True si hay suscripción activa |
 | `pay_ally_subscription(ally_id, admin_id, price)` | `services.py` | Ejecuta el pago y crea el registro |
 | `get_subscription_summary_for_ally(ally_id, admin_id)` | `services.py` | Resumen para mostrar al aliado |
 
 Todas re-exportadas en `services.py`. `expire_old_ally_subscriptions` se llama en arranque de `main.py`.
+
+**Alerta de vencimiento próximo (IMPLEMENTADO 2026-04-06):** `_notify_expiring_subscriptions_job` en `main.py` corre cada 24 horas (primer disparo 1 hora después del arranque). Notifica al aliado por Telegram cuando su suscripción vence en 3 días o menos.
 
 ---
 

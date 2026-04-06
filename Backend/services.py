@@ -17,7 +17,7 @@ from db import (
     get_geocoding_text_cache, upsert_geocoding_text_cache,
     set_ally_subscription_price, get_ally_subscription_price,
     create_ally_subscription, get_active_ally_subscription,
-    expire_old_ally_subscriptions, get_ally_subscription_info,
+    expire_old_ally_subscriptions, get_ally_subscription_info, get_expiring_ally_subscriptions,
     upsert_scheduled_job, cancel_scheduled_job, mark_job_executed, get_pending_scheduled_jobs,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
@@ -336,6 +336,12 @@ from db import (
     update_ally_delivery_subsidy,
     update_ally_min_purchase_for_subsidy,
     count_ally_form_requests_by_status,
+    # Re-exports recarga directa por plataforma
+    get_all_active_couriers,
+    get_all_active_allies,
+    get_all_local_admins_approved,
+    # Re-exports suscripciones
+    get_expiring_ally_subscriptions,
 )
 import math
 import re
@@ -2510,6 +2516,45 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
         conn.close()
 
     return True, "Solicitud de recarga rechazada."
+
+
+def direct_recharge_by_platform(
+    target_type: str,
+    target_id: int,
+    platform_admin_id: int,
+    platform_user_id: int,
+    amount: int,
+    note: str = None,
+) -> Tuple[bool, str]:
+    """
+    Recarga directa iniciada por el Admin de Plataforma sin solicitud previa del usuario.
+    Crea una recharge_request PENDING y la aprueba inmediatamente en una sola operacion.
+
+    target_type: 'COURIER', 'ALLY' o 'ADMIN'
+    target_id:   couriers.id / allies.id / admins.id segun target_type
+    platform_admin_id: admins.id del Admin de Plataforma
+    platform_user_id:  users.id del Admin de Plataforma (para requested_by_user_id)
+    amount:      monto en COP
+    note:        nota descriptiva (aparece en historial contable)
+
+    Retorna: (success, message)
+    """
+    note_full = "Recarga directa por plataforma"
+    if note:
+        note_full = "Recarga directa por plataforma: " + note
+
+    request_id = create_recharge_request(
+        target_type=target_type,
+        target_id=target_id,
+        admin_id=platform_admin_id,
+        amount=amount,
+        requested_by_user_id=platform_user_id,
+        note=note_full,
+    )
+    if not request_id:
+        return False, "No se pudo crear la solicitud de recarga. Intenta nuevamente."
+
+    return approve_recharge_request(request_id, platform_admin_id)
 
 
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
