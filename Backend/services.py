@@ -462,7 +462,7 @@ def _text_cache_key(text: str, city_hint: str) -> str:
 
 
 def _normalize_reference_key(value: str) -> str:
-    """Normaliza texto para matching de aliases locales."""
+    """Normaliza texto para matching de aliases locales y cache de geocoding."""
     if not value:
         return ""
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
@@ -470,6 +470,10 @@ def _normalize_reference_key(value: str) -> str:
     normalized = re.sub(r"[^\w\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+# Alias publico — usado por handlers para normalizar texto antes de limpiar geocoding_text_cache
+normalize_text_for_cache = _normalize_reference_key
 
 
 def _parse_local_alias_point(raw_value: Any) -> Optional[Dict[str, Any]]:

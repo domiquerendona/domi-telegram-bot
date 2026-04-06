@@ -146,6 +146,7 @@ from services import (
     user_has_platform_admin,
     get_ally_telegram_id_by_ally_id,
     delete_distance_cache_for_coord,
+    normalize_text_for_cache,
 )
 
 
@@ -565,7 +566,8 @@ def _get_city_hint_for_user(update, context):
 
 def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_no, estado):
     """Aplica el mismo pipeline de cotizar para resolver una direccion en agenda."""
-    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
+    city_hint = _get_city_hint_for_user(update, context)
+    loc = resolve_location(texto, city_hint=city_hint)
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -578,6 +580,7 @@ def _clientes_resolver_direccion_para_agenda(update, context, texto, cb_si, cb_n
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["pending_geo_city_hint"] = city_hint
         _agenda_emit_geo_confirmation(
             update,
             context,
@@ -944,6 +947,12 @@ def clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("current_customer_id")
         address_id = context.user_data.get("current_address_id")
         label = context.user_data.get("edit_address_label")
+        old_text = context.user_data.get("clientes_pending_old_address_text", "")
+        if old_text:
+            try:
+                delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
         try:
             update_customer_address(
                 address_id=address_id,
@@ -965,6 +974,7 @@ def clientes_dir_barrio_handler(update, context):
             "current_address_id",
             "clientes_pending_mode",
             "clientes_pending_address_text",
+            "clientes_pending_old_address_text",
             "clientes_pending_lat",
             "clientes_pending_lng",
             "clientes_pending_city",
@@ -1021,6 +1031,7 @@ def clientes_dir_editar_text(update, context):
 
     context.user_data["clientes_pending_mode"] = "dir_editar"
     context.user_data["clientes_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["clientes_pending_old_address_text"] = address.get("address_text") or ""
     context.user_data["clientes_pending_lat"] = resolved.get("lat")
     context.user_data["clientes_pending_lng"] = resolved.get("lng")
     context.user_data["clientes_pending_notes"] = address.get("notes")
@@ -1171,13 +1182,8 @@ def _clear_address_cache(address, new_lat=None, new_lng=None):
     try:
         addr_text = address.get("address_text") or "" if address else ""
         if addr_text:
-            # Normalizar igual que services.py lo hace al buscar en cache
-            import unicodedata
-            norm = unicodedata.normalize("NFD", addr_text.strip().lower())
-            text_key = "".join(c for c in norm if unicodedata.category(c) != "Mn")
-            text_key = " ".join(text_key.split())
             try:
-                delete_geocoding_text_cache(text_key)
+                delete_geocoding_text_cache(normalize_text_for_cache(addr_text))
             except Exception:
                 pass
         old_lat = address.get("lat") if address else None
@@ -1612,7 +1618,8 @@ def admin_clientes_nuevo_dir_label(update, context):
 
 def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
     """Aplica el pipeline de geocoding para resolver una direccion en la agenda del admin."""
-    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
+    city_hint = _get_city_hint_for_user(update, context)
+    loc = resolve_location(texto, city_hint=city_hint)
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -1625,6 +1632,7 @@ def _admin_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["pending_geo_city_hint"] = city_hint
         _agenda_emit_geo_confirmation(
             update,
             context,
@@ -1956,6 +1964,12 @@ def admin_clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("acust_current_customer_id")
         address_id = context.user_data.get("acust_current_address_id")
         label = context.user_data.get("acust_edit_address_label")
+        old_text = context.user_data.get("acust_pending_old_address_text", "")
+        if old_text:
+            try:
+                delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
         try:
             update_admin_customer_address(
                 address_id=address_id,
@@ -1974,8 +1988,9 @@ def admin_clientes_dir_barrio_handler(update, context):
 
         for key in [
             "acust_edit_address_label", "acust_current_address_id",
-            "acust_pending_mode", "acust_pending_address_text", "acust_pending_lat",
-            "acust_pending_lng", "acust_pending_city", "acust_pending_barrio", "acust_pending_notes",
+            "acust_pending_mode", "acust_pending_address_text", "acust_pending_old_address_text",
+            "acust_pending_lat", "acust_pending_lng", "acust_pending_city",
+            "acust_pending_barrio", "acust_pending_notes",
         ]:
             context.user_data.pop(key, None)
         return _admin_clientes_mostrar_menu(update, context, edit_message=False)
@@ -2021,6 +2036,7 @@ def admin_clientes_dir_editar_text(update, context):
 
     context.user_data["acust_pending_mode"] = "dir_editar"
     context.user_data["acust_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["acust_pending_old_address_text"] = address.get("address_text") or ""
     context.user_data["acust_pending_lat"] = resolved.get("lat")
     context.user_data["acust_pending_lng"] = resolved.get("lng")
     context.user_data["acust_pending_notes"] = address.get("notes") if hasattr(address, "get") else address["notes"]
@@ -2559,7 +2575,8 @@ def ally_clientes_nuevo_dir_label(update, context):
 
 def _ally_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
     """Aplica el pipeline de geocoding para resolver una direccion en la agenda del aliado."""
-    loc = resolve_location(texto, city_hint=_get_city_hint_for_user(update, context))
+    city_hint = _get_city_hint_for_user(update, context)
+    loc = resolve_location(texto, city_hint=city_hint)
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa ubicacion.\n\n"
@@ -2572,6 +2589,7 @@ def _ally_clientes_resolver_dir(update, context, texto, cb_si, cb_no, estado):
         return None
 
     if loc.get("method") == "geocode" and loc.get("formatted_address"):
+        context.user_data["pending_geo_city_hint"] = city_hint
         _agenda_emit_geo_confirmation(
             update,
             context,
@@ -2873,6 +2891,12 @@ def ally_clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("allycust_current_customer_id")
         address_id = context.user_data.get("allycust_current_address_id")
         label = context.user_data.get("allycust_edit_address_label")
+        old_text = context.user_data.get("allycust_pending_old_address_text", "")
+        if old_text:
+            try:
+                delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
         try:
             update_customer_address(
                 address_id=address_id, customer_id=customer_id,
@@ -2882,7 +2906,8 @@ def ally_clientes_dir_barrio_handler(update, context):
             update.message.reply_text("Direccion actualizada.")
         except Exception as e:
             update.message.reply_text("Error: {}".format(str(e)))
-        for key in _ALLYCUST_PENDING_KEYS + ["allycust_edit_address_label", "allycust_current_address_id"]:
+        for key in _ALLYCUST_PENDING_KEYS + ["allycust_edit_address_label", "allycust_current_address_id",
+                                              "allycust_pending_old_address_text"]:
             context.user_data.pop(key, None)
         return _ally_clientes_mostrar_menu(update, context, edit_message=False)
 
@@ -2921,6 +2946,7 @@ def ally_clientes_dir_editar_text(update, context):
 
     context.user_data["allycust_pending_mode"] = "dir_editar"
     context.user_data["allycust_pending_address_text"] = resolved.get("formatted_address") or address_text
+    context.user_data["allycust_pending_old_address_text"] = address.get("address_text") or ""
     context.user_data["allycust_pending_lat"] = resolved.get("lat")
     context.user_data["allycust_pending_lng"] = resolved.get("lng")
     context.user_data["allycust_pending_notes"] = address["notes"]
@@ -3792,13 +3818,7 @@ def _plat_corr_cleanup(context):
         context.user_data.pop(k, None)
 
 
-def _plat_corr_normalizar_text_key(text):
-    """Normaliza texto igual que services.py para buscar en geocoding_text_cache."""
-    import unicodedata
-    text = (text or "").strip().lower()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    return " ".join(text.split())
+_plat_corr_normalizar_text_key = normalize_text_for_cache  # alias de compatibilidad
 
 
 def plat_corr_inicio(update, context):

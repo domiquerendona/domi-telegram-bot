@@ -470,6 +470,8 @@ def _mostrar_confirmacion_geocode(
     context.user_data["pending_geo_lng"] = lng
     context.user_data["pending_geo_text"] = original_text
     context.user_data["pending_geo_seen"] = list(seen_ids) if seen_ids is not None else [_pid]
+    # city_hint: si ya hay uno guardado de la llamada inicial, lo conservamos.
+    # El caller puede haber guardado "pending_geo_city_hint" antes de llamar a _mostrar_confirmacion_geocode.
     message.reply_location(latitude=lat, longitude=lng)
     maps_link = f"https://maps.google.com/?q={lat},{lng}"
     keyboard = [[
@@ -498,7 +500,8 @@ def _geo_siguiente_o_gps(
     """Busca el siguiente candidato de geocoding (carga perezosa) o pide GPS si no hay mas."""
     original_text = context.user_data.get("pending_geo_text", "")
     seen = context.user_data.get("pending_geo_seen", [])
-    next_geo = resolve_location_next(original_text, seen) if original_text else None
+    city_hint = context.user_data.get("pending_geo_city_hint")
+    next_geo = resolve_location_next(original_text, seen, city_hint=city_hint) if original_text else None
     if next_geo:
         _pid = next_geo.get("place_id") or f"{next_geo['lat']},{next_geo['lng']}"
         seen.append(_pid)
@@ -520,6 +523,7 @@ def _geo_siguiente_o_gps(
         context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
+        context.user_data.pop("pending_geo_city_hint", None)
         if formatted_storage_key:
             context.user_data.pop(formatted_storage_key, None)
         query.edit_message_text(
