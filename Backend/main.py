@@ -59,6 +59,9 @@ from services import (
     get_admin_registration_invites,
     resolve_admin_invite_from_start_arg,
     get_available_admin_teams,
+    get_admin_invite_registrations,
+    has_recent_invite_open,
+    regenerate_admin_invite_by_role,
     # Alertas de oferta
     get_offer_alerts_config,
     save_offer_voice,
@@ -583,6 +586,42 @@ def start(update, context):
                 invite_info["role_scope"],
                 invite_info["team_code"],
             )
+            # Notificar al admin local (no al admin de plataforma) que alguien abrio su enlace.
+            # Solo una vez por telegram_id cada 24h para evitar spam si la persona abre varias veces.
+            admin_tg_id = invite_info.get("admin_telegram_id")
+            if admin_tg_id and int(admin_tg_id) != int(ADMIN_USER_ID):
+                already_notified = has_recent_invite_open(
+                    invite_info["admin_id"], user_tg.id, hours=24
+                )
+                if not already_notified:
+                    role_scope = invite_info.get("role_scope", "")
+                    rol_texto = (
+                        "aliado o repartidor" if role_scope == "BOTH"
+                        else "aliado" if role_scope == "ALLY"
+                        else "repartidor"
+                    )
+                    try:
+                        context.bot.send_message(
+                            chat_id=admin_tg_id,
+                            text=(
+                                "Alguien abrio tu enlace de invitacion ({}).\n"
+                                "Si completa el registro lo veras en /aliados_pendientes o /repartidores_pendientes.\n"
+                                "Usa /mis_invitados para ver el historial."
+                            ).format(rol_texto),
+                        )
+                    except Exception:
+                        pass
+            # Tokens BOTH muestran pantalla de seleccion de rol
+            if invite_info.get("role_scope") == "BOTH":
+                update.message.reply_text(
+                    f"Bienvenido al equipo {invite_info['team_name']}!\n\n"
+                    "Que vas a registrar?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Soy aliado (negocio)", callback_data="invite_role_ally")],
+                        [InlineKeyboardButton("Soy repartidor", callback_data="invite_role_courier")],
+                    ])
+                )
+                return
         else:
             context.user_data.pop(ADMIN_INVITE_USER_DATA_KEY, None)
             logger.info(
@@ -776,6 +815,7 @@ def start(update, context):
         comandos.append("• /configurar_pagos  - Configurar datos de pago")
         comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
         comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
+        comandos.append("• /mis_invitados  - Ver registros creados via enlace de invitacion")
     elif admin_local:
         admin_status = admin_local["status"]
         if admin_status == "INACTIVE" and "/soy_admin" in missing_cmds:
@@ -787,6 +827,7 @@ def start(update, context):
             comandos.append("• /configurar_pagos  - Configurar datos de pago")
             comandos.append("• /ver_enlaces_admin  - Ver enlaces directos de registro")
             comandos.append("• /regenerar_enlaces_admin  - Invalidar y crear enlaces nuevos")
+            comandos.append("• /mis_invitados  - Ver registros creados via enlace de invitacion")
     else:
         if "/soy_admin" in missing_cmds:
             comandos.append("• /soy_admin  - Registrarte como administrador")
@@ -1534,8 +1575,9 @@ def _send_admin_registration_links(update, context, regenerate: bool = False, al
 
     ally_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['ally_token']}")
     courier_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['courier_token']}")
+    both_url = _build_bot_deep_link(context, f"{ADMIN_INVITE_START_PREFIX}{result['both_token']}")
 
-    if not ally_url or not courier_url:
+    if not ally_url or not courier_url or not both_url:
         update.message.reply_text(
             "No pude construir la URL pública del bot en este momento.\n"
             "Intenta de nuevo más tarde."
@@ -1564,12 +1606,14 @@ def _send_admin_registration_links(update, context, regenerate: bool = False, al
         intro
         + alias_note
         + f"Equipo: {result['team_name']} ({result['team_code']})\n\n"
-        + f"Enlace para aliados (vence: {result['ally_expires_text']}):\n"
+        + f"Enlace combinado (vence: {result['both_expires_text']}):\n"
+        + f"{both_url}\n\n"
+        + f"Enlace solo para aliados (vence: {result['ally_expires_text']}):\n"
         + f"{ally_url}\n\n"
-        + f"Enlace para repartidores (vence: {result['courier_expires_text']}):\n"
+        + f"Enlace solo para repartidores (vence: {result['courier_expires_text']}):\n"
         + f"{courier_url}\n\n"
         + f"Vigencia configurada: {result['hours_valid']} horas.\n"
-        + "Comparte cada enlace según el rol correspondiente."
+        + "El enlace combinado pregunta el rol al abrirlo."
     )
 
 
@@ -1578,11 +1622,114 @@ def ver_enlaces_admin(update, context):
 
 
 def regenerar_enlaces_admin(update, context):
-    _send_admin_registration_links(update, context, regenerate=True)
+    """Muestra botones para elegir qué enlace(s) regenerar."""
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["status"] != "APPROVED":
+        update.message.reply_text("Este comando es solo para administradores aprobados.")
+        return
+    update.message.reply_text(
+        "Que enlace quieres regenerar?\n"
+        "El enlace anterior de ese tipo quedara invalidado.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Enlace combinado (aliados + repartidores)", callback_data="regen_invite_BOTH")],
+            [InlineKeyboardButton("Solo aliados", callback_data="regen_invite_ALLY")],
+            [InlineKeyboardButton("Solo repartidores", callback_data="regen_invite_COURIER")],
+            [InlineKeyboardButton("Los tres a la vez", callback_data="regen_invite_ALL")],
+        ])
+    )
 
 
 def generar_enlaces_admin(update, context):
     _send_admin_registration_links(update, context, regenerate=False, alias_used=True)
+
+
+def mis_invitados(update, context):
+    """Muestra los registros y stats de conversion de los enlaces de invitacion del admin."""
+    admin = get_admin_by_telegram_id(update.effective_user.id)
+    if not admin or admin["status"] != "APPROVED":
+        update.message.reply_text("Este comando es solo para administradores aprobados.")
+        return
+    rows, total_opens = get_admin_invite_registrations(admin["id"])
+    total_reg = len(rows)
+    conversion = f"{total_reg}/{total_opens}" if total_opens else str(total_reg)
+    pct = f" ({round(total_reg * 100 / total_opens)}%)" if total_opens else ""
+    STATUS_LABELS = {
+        "PENDING": "Pendiente",
+        "APPROVED": "Aprobado",
+        "INACTIVE": "Inactivo",
+        "REJECTED": "Rechazado",
+    }
+    lineas = [
+        "Registros via enlace de invitacion:",
+        f"Abrieron el enlace: {total_opens}",
+        f"Completaron registro: {conversion}{pct}\n",
+    ]
+    if not rows:
+        lineas.append("Nadie ha completado el registro aun.")
+    else:
+        for row in rows:
+            outcome = (_row_value(row, "outcome", 0) or "").upper()
+            created_at = str(_row_value(row, "created_at", 3) or "")[:10]
+            if outcome == "ALLY_PENDING_CREATED":
+                nombre = _row_value(row, "ally_name", 4) or "—"
+                status = _row_value(row, "ally_status", 5) or "PENDING"
+                rol = "Aliado"
+            else:
+                nombre = _row_value(row, "courier_name", 6) or "—"
+                status = _row_value(row, "courier_status", 7) or "PENDING"
+                rol = "Repartidor"
+            estado = STATUS_LABELS.get(status, status)
+            lineas.append(f"• {nombre} ({rol}) — {estado} — {created_at}")
+    update.message.reply_text("\n".join(lineas))
+
+
+def regen_invite_callback(update, context):
+    """Ejecuta la regeneracion del tipo de enlace elegido por el admin."""
+    query = update.callback_query
+    query.answer()
+    data = (query.data or "").strip()
+    role_key = data.replace("regen_invite_", "")
+
+    roles_map = {
+        "ALLY": ["ALLY"],
+        "COURIER": ["COURIER"],
+        "BOTH": ["BOTH"],
+        "ALL": ["ALLY", "COURIER", "BOTH"],
+    }
+    roles = roles_map.get(role_key)
+    if not roles:
+        query.edit_message_text("Opcion no reconocida.")
+        return
+
+    result = regenerate_admin_invite_by_role(update.effective_user.id, roles)
+    if not result.get("ok"):
+        query.edit_message_text(result.get("message") or "Error al regenerar el enlace.")
+        return
+
+    lineas = [
+        f"Enlace(s) regenerados para equipo {result['team_name']} ({result['team_code']}).\n"
+        "Los anteriores quedaron invalidados.\n"
+    ]
+    prefix = ADMIN_INVITE_START_PREFIX
+
+    def make_url(token):
+        return _build_bot_deep_link(context, f"{prefix}{token}")
+
+    if "both_token" in result:
+        lineas.append(
+            f"Enlace combinado (vence: {result['both_expires_text']}):\n{make_url(result['both_token'])}"
+        )
+    if "ally_token" in result:
+        lineas.append(
+            f"Enlace aliados (vence: {result['ally_expires_text']}):\n{make_url(result['ally_token'])}"
+        )
+    if "courier_token" in result:
+        lineas.append(
+            f"Enlace repartidores (vence: {result['courier_expires_text']}):\n{make_url(result['courier_token'])}"
+        )
+    query.edit_message_text("\n\n".join(lineas))
+
+
 
 
 def mi_perfil(update, context):
@@ -2510,6 +2657,8 @@ def main():
     dp.add_handler(CommandHandler("ver_enlaces_admin", ver_enlaces_admin))
     dp.add_handler(CommandHandler("regenerar_enlaces_admin", regenerar_enlaces_admin))
     dp.add_handler(CommandHandler("generar_enlaces_admin", generar_enlaces_admin))
+    dp.add_handler(CallbackQueryHandler(regen_invite_callback, pattern="^regen_invite_(ALLY|COURIER|BOTH|ALL)$"))
+    dp.add_handler(CommandHandler("mis_invitados", mis_invitados))
     dp.add_handler(CommandHandler("mi_perfil", mi_perfil))
 
     # Sistema de recargas

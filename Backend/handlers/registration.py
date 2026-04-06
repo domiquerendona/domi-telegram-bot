@@ -165,6 +165,13 @@ def _apply_invite_team_selection(context, prefix: str, invite: dict):
 # ----- REGISTRO DE ALIADO (flujo unificado) -----
 
 def soy_aliado(update, context):
+    # Si viene de un CallbackQuery (boton del enlace combinado), cerrar el spinner y limpiar el mensaje
+    if update.callback_query:
+        try:
+            update.callback_query.answer()
+            update.callback_query.delete_message()
+        except Exception:
+            pass
     user_db_id = get_user_db_id_from_update(update)
     _preserve_invite_token(context)
 
@@ -594,16 +601,25 @@ def ally_confirm(update, context):
     if invite_token:
         invite = _resolve_registration_invite(context, "ALLY")
         if not invite:
-            reply_message.reply_text(
-                "La invitacion ya no esta disponible.\n\n"
-                "Usa /soy_aliado para iniciar de nuevo y elegir equipo."
-            )
-            context.user_data.clear()
-            return ConversationHandler.END
-        _apply_invite_team_selection(context, "ally", invite)
-        selected_admin_id = invite["admin_id"]
-        selected_team_name = invite["team_name"]
-        selected_team_code = invite["team_code"]
+            _clear_invite_token(context)
+            if selected_admin_id:
+                # Token expiro pero el equipo ya fue preseleccionado antes — continuar
+                logger.info(
+                    "[ally_confirm] invite token expired but team already selected admin_id=%s, continuing",
+                    selected_admin_id,
+                )
+            else:
+                # Token expiro y no hay equipo elegido — redirigir a seleccion manual
+                reply_message.reply_text(
+                    "Tu enlace de invitacion ya no esta disponible.\n\n"
+                    "Por favor elige tu equipo para continuar con el registro."
+                )
+                return show_ally_team_selection(update, context, from_callback=False)
+        else:
+            _apply_invite_team_selection(context, "ally", invite)
+            selected_admin_id = invite["admin_id"]
+            selected_team_name = invite["team_name"]
+            selected_team_code = invite["team_code"]
 
     try:
         ally_data = _create_or_reset_ally_from_context(context, user_db_id)
@@ -813,6 +829,13 @@ def ally_team_callback(update, context):
 # ----- REGISTRO DE REPARTIDOR (flujo unificado) -----
 
 def soy_repartidor(update, context):
+    # Si viene de un CallbackQuery (boton del enlace combinado), cerrar el spinner y limpiar el mensaje
+    if update.callback_query:
+        try:
+            update.callback_query.answer()
+            update.callback_query.delete_message()
+        except Exception:
+            pass
     user_db_id = get_user_db_id_from_update(update)
     _preserve_invite_token(context)
 
@@ -1399,16 +1422,25 @@ def courier_confirm(update, context):
     if invite_token:
         invite = _resolve_registration_invite(context, "COURIER")
         if not invite:
-            reply_message.reply_text(
-                "La invitacion ya no esta disponible.\n\n"
-                "Usa /soy_repartidor para iniciar de nuevo y elegir equipo."
-            )
-            context.user_data.clear()
-            return ConversationHandler.END
-        _apply_invite_team_selection(context, "courier", invite)
-        selected_admin_id = invite["admin_id"]
-        selected_team_name = invite["team_name"]
-        selected_team_code = invite["team_code"]
+            _clear_invite_token(context)
+            if selected_admin_id:
+                # Token expiro pero el equipo ya fue preseleccionado antes — continuar
+                logger.info(
+                    "[courier_confirm] invite token expired but team already selected admin_id=%s, continuing",
+                    selected_admin_id,
+                )
+            else:
+                # Token expiro y no hay equipo elegido — redirigir a seleccion manual
+                reply_message.reply_text(
+                    "Tu enlace de invitacion ya no esta disponible.\n\n"
+                    "Por favor elige tu equipo para continuar con el registro."
+                )
+                return show_courier_team_selection(update, context)
+        else:
+            _apply_invite_team_selection(context, "courier", invite)
+            selected_admin_id = invite["admin_id"]
+            selected_team_name = invite["team_name"]
+            selected_team_code = invite["team_code"]
 
     try:
         courier_data = _create_or_reset_courier_from_context(context, user_db_id)
@@ -1620,7 +1652,10 @@ def courier_team_callback(update, context):
 # =============================================================================
 
 ally_conv = ConversationHandler(
-    entry_points=[CommandHandler("soy_aliado", soy_aliado)],
+    entry_points=[
+        CommandHandler("soy_aliado", soy_aliado),
+        CallbackQueryHandler(soy_aliado, pattern=r"^invite_role_ally$"),
+    ],
     states={
         ALLY_NAME: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_name)],
         ALLY_OWNER: [MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_owner)],
@@ -1650,7 +1685,10 @@ ally_conv = ConversationHandler(
 )
 
 courier_conv = ConversationHandler(
-    entry_points=[CommandHandler("soy_repartidor", soy_repartidor)],
+    entry_points=[
+        CommandHandler("soy_repartidor", soy_repartidor),
+        CallbackQueryHandler(soy_repartidor, pattern=r"^invite_role_courier$"),
+    ],
     states={
         COURIER_FULLNAME: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, courier_fullname)

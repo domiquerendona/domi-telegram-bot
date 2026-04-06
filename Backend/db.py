@@ -12630,7 +12630,7 @@ def get_or_create_ally_public_token(ally_id: int) -> str:
     return token
 
 
-_ADMIN_INVITE_ROLE_SCOPES = {"ALLY", "COURIER"}
+_ADMIN_INVITE_ROLE_SCOPES = {"ALLY", "COURIER", "BOTH"}
 _ADMIN_INVITE_TOKEN_VERSION = "a1"
 _ADMIN_INVITE_SIGNATURE_BYTES = 12
 _BASE36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -12917,6 +12917,72 @@ def record_admin_invite_token_use(
     finally:
         conn.close()
     return True
+
+
+def get_admin_invite_registrations(admin_id: int):
+    """Retorna los registros completados via enlace de invitacion y el total de aperturas del enlace."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT
+                u.outcome,
+                u.role_scope,
+                u.target_role_id,
+                u.created_at,
+                a.business_name  AS ally_name,
+                a.status         AS ally_status,
+                c.full_name      AS courier_name,
+                c.status         AS courier_status
+            FROM admin_invite_token_uses u
+            LEFT JOIN allies a   ON u.outcome = 'ALLY_PENDING_CREATED'    AND a.id = u.target_role_id
+            LEFT JOIN couriers c ON u.outcome = 'COURIER_PENDING_CREATED' AND c.id = u.target_role_id
+            WHERE u.admin_id = {P}
+              AND u.outcome IN ('ALLY_PENDING_CREATED', 'COURIER_PENDING_CREATED')
+              AND u.target_role_id IS NOT NULL
+            ORDER BY u.created_at DESC
+            """,
+            (admin_id,),
+        )
+        registrations = cur.fetchall()
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM admin_invite_token_uses
+            WHERE admin_id = {P} AND outcome = 'START_OPENED'
+            """,
+            (admin_id,),
+        )
+        opens_row = cur.fetchone()
+        total_opens = int(_row_value(opens_row, 0, 0) or 0)
+        return registrations, total_opens
+    finally:
+        conn.close()
+
+
+def has_recent_invite_open(admin_id: int, telegram_id: int, hours: int = 24) -> bool:
+    """Retorna True si este telegram_id ya abrio el enlace de este admin en las ultimas N horas."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        cutoff_expr = f"NOW() - INTERVAL '{hours} hours'"
+    else:
+        cutoff_expr = f"datetime('now', '-{hours} hours')"
+    try:
+        cur.execute(
+            f"""
+            SELECT 1 FROM admin_invite_token_uses
+            WHERE admin_id = {P}
+              AND telegram_id = {P}
+              AND outcome = 'START_OPENED'
+              AND created_at >= {cutoff_expr}
+            LIMIT 1
+            """,
+            (admin_id, telegram_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
 
 
 def get_ally_by_public_token(token: str):

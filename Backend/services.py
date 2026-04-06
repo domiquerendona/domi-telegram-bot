@@ -73,6 +73,8 @@ from db import (
     rotate_admin_invite_token,
     resolve_admin_invite_token,
     record_admin_invite_token_use,
+    get_admin_invite_registrations,
+    has_recent_invite_open,
     # Re-exports para que main.py no acceda a db directamente
     ensure_user,
     get_user_by_id,
@@ -3589,7 +3591,7 @@ ADMIN_INVITE_TOKEN_HOURS = _get_admin_invite_token_hours()
 
 def _normalize_admin_invite_role_scope(role_scope: str) -> str:
     role = (role_scope or "").strip().upper()
-    if role not in ("ALLY", "COURIER"):
+    if role not in ("ALLY", "COURIER", "BOTH"):
         raise ValueError("role_scope invalido.")
     return role
 
@@ -3638,7 +3640,8 @@ def resolve_admin_invite_from_token(raw_token: str, expected_role: str = None) -
     if not invite:
         return None
     role_scope = _normalize_admin_invite_role_scope(invite["role_scope"])
-    if expected_role and role_scope != _normalize_admin_invite_role_scope(expected_role):
+    # Tokens BOTH son validos para cualquier rol
+    if expected_role and role_scope != "BOTH" and role_scope != _normalize_admin_invite_role_scope(expected_role):
         return None
     return {
         "token": token,
@@ -3664,6 +3667,22 @@ def resolve_admin_invite_from_start_arg(start_arg: str, expected_role: str = Non
     return resolve_admin_invite_from_token(token, expected_role=expected_role)
 
 
+def _resolve_or_create_admin_invite_both(admin_id: int, regenerate: bool = False) -> Dict[str, Any]:
+    created = False
+    invite_row = None if regenerate else get_active_admin_invite_token(admin_id, "BOTH")
+    raw_token = ""
+    if invite_row:
+        raw_token = build_admin_invite_token(invite_row)
+    else:
+        raw_token = rotate_admin_invite_token(admin_id, "BOTH", expires_at=_admin_invite_expiration_dt())
+        created = True
+    invite = resolve_admin_invite_from_token(raw_token)
+    if not invite:
+        raise ValueError("No se pudo resolver invitacion BOTH para admin.")
+    invite["created"] = created
+    return invite
+
+
 def get_admin_registration_invites(actor_telegram_id: int, regenerate: bool = False) -> Dict[str, Any]:
     admin = get_admin_by_telegram_id(actor_telegram_id)
     if not admin:
@@ -3682,7 +3701,8 @@ def get_admin_registration_invites(actor_telegram_id: int, regenerate: bool = Fa
 
     ally_invite = _resolve_or_create_admin_invite(admin_id, "ALLY", regenerate=regenerate)
     courier_invite = _resolve_or_create_admin_invite(admin_id, "COURIER", regenerate=regenerate)
-    created_any = ally_invite["created"] or courier_invite["created"]
+    both_invite = _resolve_or_create_admin_invite_both(admin_id, regenerate=regenerate)
+    created_any = ally_invite["created"] or courier_invite["created"] or both_invite["created"]
     return {
         "ok": True,
         "admin_id": admin_id,
@@ -3696,7 +3716,45 @@ def get_admin_registration_invites(actor_telegram_id: int, regenerate: bool = Fa
         "courier_token": courier_invite["token"],
         "courier_expires_at": courier_invite["expires_at"],
         "courier_expires_text": courier_invite["expires_at_text"],
+        "both_token": both_invite["token"],
+        "both_expires_at": both_invite["expires_at"],
+        "both_expires_text": both_invite["expires_at_text"],
     }
+
+def regenerate_admin_invite_by_role(actor_telegram_id: int, roles: list) -> Dict[str, Any]:
+    """Regenera tokens de invitacion para los roles indicados (ALLY, COURIER, BOTH o combinacion).
+    `roles` es una lista con alguno de: 'ALLY', 'COURIER', 'BOTH'.
+    Retorna dict con ok, team_name, team_code y los tokens resultantes."""
+    admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not admin:
+        return {"ok": False, "message": "No tienes perfil de administrador."}
+    admin_id = admin["id"]
+    if (admin["status"] or "").upper() != "APPROVED":
+        return {"ok": False, "message": "Tus enlaces estaran disponibles cuando tu admin este APPROVED."}
+
+    result = {
+        "ok": True,
+        "admin_id": admin_id,
+        "team_name": admin["team_name"] or admin["full_name"] or "Admin",
+        "team_code": admin["team_code"] or "-",
+        "hours_valid": ADMIN_INVITE_TOKEN_HOURS,
+        "roles_regenerated": roles,
+    }
+    roles_upper = [r.upper() for r in roles]
+    if "ALLY" in roles_upper:
+        inv = _resolve_or_create_admin_invite(admin_id, "ALLY", regenerate=True)
+        result["ally_token"] = inv["token"]
+        result["ally_expires_text"] = inv["expires_at_text"]
+    if "COURIER" in roles_upper:
+        inv = _resolve_or_create_admin_invite(admin_id, "COURIER", regenerate=True)
+        result["courier_token"] = inv["token"]
+        result["courier_expires_text"] = inv["expires_at_text"]
+    if "BOTH" in roles_upper:
+        inv = _resolve_or_create_admin_invite_both(admin_id, regenerate=True)
+        result["both_token"] = inv["token"]
+        result["both_expires_text"] = inv["expires_at_text"]
+    return result
+
 
 def audit_admin_invite_event(
     raw_token: str,
