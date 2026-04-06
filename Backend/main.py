@@ -536,6 +536,11 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 # Configurar en Railway como variable de entorno FORM_BASE_URL.
 # Ejemplo: https://form.domiquerendona.com
 FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
+
+# URL pública del panel web Angular.
+# Si está definida, el bot muestra un botón directo al panel para admins y repartidores.
+# Ejemplo: https://angular-production-44c8.up.railway.app
+WEB_PANEL_URL = os.getenv("WEB_PANEL_URL", "").strip().rstrip("/")
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
@@ -1090,6 +1095,13 @@ def mi_repartidor(update, context):
             )
         )
     update.message.reply_text(msg, reply_markup=reply_markup)
+    if WEB_PANEL_URL:
+        update.message.reply_text(
+            "Tambien puedes ver tus ganancias y perfil en el panel web:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 Mi panel web", url=WEB_PANEL_URL + "/courier")
+            ]])
+        )
 
 
 def courier_orders_history(update, context):
@@ -1503,6 +1515,8 @@ def mi_admin(update, context):
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
+        if WEB_PANEL_URL:
+            keyboard.append([InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)])
         update.message.reply_text(
             header +
             "Como Administrador de Plataforma, tu operación está habilitada.\n"
@@ -1558,6 +1572,8 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
     ]
+    if WEB_PANEL_URL:
+        keyboard.append([InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)])
 
     update.message.reply_text(
         header + estado_msg +
