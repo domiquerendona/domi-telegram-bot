@@ -1053,6 +1053,11 @@ Todas re-exportadas en `services.py`.
 
 Al ejecutar, se notifica al destinatario por Telegram con el monto y su nuevo saldo. Si el usuario pertenece a un equipo local, también se notifica al admin local. El registro queda en `recharge_requests` y en el ledger para auditoría completa (visible en "Historial contable" del panel de recargas).
 
+**Mejoras del panel de recargas (IMPLEMENTADO 2026-04-06):**
+- **Saldo visible en menú**: el panel principal muestra el saldo operativo del Admin de Plataforma al abrir.
+- **Admins locales en vista saldo bajo**: `plat_rec_saldo_bajo` incluye ahora una sección de admins locales con saldo < `RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL = 20000`. Botones "Recargar admin: {nombre}" generan `plat_rdir_presel_ADMIN_{id}`.
+- **Alerta proactiva de saldo bajo**: tras cobrar el fee de servicio, si el saldo del courier o aliado cae entre $300 y $5.000, se notifica automáticamente al admin de su equipo. Implementado en `_notify_admin_member_low_balance` (constante `LOW_BALANCE_ALERT_THRESHOLD = 5000` en `order_delivery.py`).
+
 ---
 
 ### Recarga Directa con Plataforma como Fallback
@@ -2242,60 +2247,46 @@ El componente Angular (`SoporteComponent`) muestra:
 
 ---
 
-## Enlace de Pedido del Aliado (PARCIALMENTE IMPLEMENTADO — ver nota abajo)
+## Enlace de Pedido del Aliado (IMPLEMENTADO — bandeja + crear pedido 2026-04-06)
 
 > Descripcion funcional completa en `docs/business/contexto-negocio-domiquerendona.md` seccion 5B.
 
-### Que hay que construir (notas tecnicas minimas)
+### Estado actual
 
-**Base de datos - cambios minimos:**
-- Columna `public_token TEXT UNIQUE` en tabla `allies` - UUID por aliado para construir la URL publica.
-- Tabla nueva `ally_form_requests` - bandeja temporal de solicitudes recibidas por formulario.
-  Campos: `id`, `ally_id`, `customer_name`, `customer_phone`, `delivery_address`,
-  `delivery_city`, `delivery_barrio`, `notes`, `lat`, `lng`,
-  `status` (PENDING/CONVERTED_ORDER/SAVED_CONTACT/DISMISSED), `created_at`.
-- No se necesitan cambios en `ally_customers`, `ally_customer_addresses` ni `orders`.
+- **Backend FastAPI** (`web/api/form.py`): completo — `GET /form/{token}`, `POST /form/{token}/lookup-phone`, `POST /form/{token}/quote`, `POST /form/{token}/submit`.
+- **Bot — bandeja**: completo — `ally_bandeja_solicitudes`, lista pendientes/procesadas, detalle de solicitud.
+- **Bot — Crear pedido desde solicitud** (IMPLEMENTADO 2026-04-06): `ally_bandeja_callback` maneja `alybandeja_crear_{id}` y `alybandeja_crearyguardar_{id}` → preview → `alybandeja_confirmar_{id}` / `alybandeja_confirmargsave_{id}` → `create_order` + `publish_order_to_couriers`. Requiere que la solicitud tenga coordenadas (PENDING_REVIEW) y que el aliado tenga pickup configurado.
+- **Frontend**: `FormPedidoComponent` en `/form/:token` implementado.
 
-**Backend - nuevo router publico en FastAPI:**
-- Archivo nuevo: `Backend/web/api/form.py` - router sin autenticacion.
-- `GET /form/{token}` - valida token, retorna nombre del aliado.
-- `POST /form/{token}/submit` - recibe datos, inserta en `ally_form_requests`, notifica al aliado por Telegram.
-- Registro en `web_app.py` sin tocar routers existentes.
-- CORS: agregar dominio del formulario publico a `origins`.
+### Callbacks implementados en `ally_bandeja_callback`
 
-**Bot Telegram - entry points nuevos en main.py:**
-- Handler "Mi enlace de pedidos" en menu del aliado: llama `get_or_create_ally_public_token(ally_id)`.
-- Handler callback "Crear pedido": inicia `nuevo_pedido_conv` con `context.user_data` prellenado.
-- Handler callback "Guardar en agenda": llama `create_ally_customer` + `create_customer_address`.
-- Handler callback "Ignorar": marca solicitud como DISMISSED.
-- Prefijo de callbacks pendiente de aprobacion antes de implementar.
+| Callback | Descripción |
+|---|---|
+| `alybandeja_crear_{id}` | Muestra preview del pedido con "Confirmar y publicar" |
+| `alybandeja_crearyguardar_{id}` | Igual pero también guarda cliente en agenda al confirmar |
+| `alybandeja_confirmar_{id}` | Crea el pedido (`create_order`) y lo publica (`publish_order_to_couriers`) |
+| `alybandeja_confirmargsave_{id}` | Igual + `_ally_bandeja_guardar_en_agenda` |
+| `alybandeja_guardar_{id}` | Solo guarda en agenda (sin crear pedido) |
+| `alybandeja_ignorar_{id}` | Marca solicitud como DISMISSED |
 
-**Frontend - componente publico:**
-- Ruta `/form/:token` sin `AuthGuard` en `app.routes.ts`.
-- Componente `FormPedidoComponent` en `Frontend/src/app/features/public/`.
-- Pasos: telefono (siempre primero) -> reconocimiento de cliente -> direccion -> mapa -> cotizacion.
+**Restricciones:** la solicitud debe tener `lat`/`lng` (status `PENDING_REVIEW`) y el aliado debe tener pickup configurado. Para solicitudes `PENDING_LOCATION` (sin coordenadas), se muestra aviso de contactar al cliente.
 
-**Funciones db.py que hacen falta:**
-- `get_or_create_ally_public_token(ally_id)` -> str (UUID)
-- `get_ally_by_public_token(token)` -> dict
-- `create_ally_form_request(ally_id, ...)` -> int
-- `get_ally_form_request_by_id(request_id, ally_id)` -> dict
-- `update_ally_form_request_status(request_id, status)`
-Todas deben re-exportarse en `services.py`.
+**Pendiente:** notificacion proactiva al aliado via Telegram cuando llega una nueva solicitud desde el formulario web (FastAPI no tiene acceso al contexto del bot; requiere mecanismo de webhook o polling compartido).
 
-**Funciones db.py reutilizables sin cambios:**
-- `get_ally_customer_by_phone(ally_id, phone)` - detecta cliente existente
-- `create_ally_customer`, `create_customer_address` - crea desde solicitud
-- `create_order` - mismo contrato que el flujo bot
+### Funciones clave
 
-**Orden de implementacion recomendado:**
-1. Migracion (columna `public_token` + tabla `ally_form_requests`) + funciones db.py
-2. Router publico `/form/` + notificacion Telegram basica
-3. Handlers bot para Crear / Guardar / Ignorar desde notificacion
-4. Boton "Mi enlace" en menu del aliado
-5. Frontend formulario publico minimo viable
-6. Cotizacion en el formulario
-7. Subsidio del aliado + incentivo del cliente
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `get_or_create_ally_public_token(ally_id)` | `db.py` | UUID del token publico del aliado |
+| `get_ally_by_public_token(token)` | `db.py` | Valida token y retorna aliado |
+| `create_ally_form_request(ally_id, ...)` | `db.py` | Crea solicitud en bandeja |
+| `get_ally_form_request_by_id(request_id, ally_id)` | `db.py` | Retorna solicitud |
+| `update_ally_form_request_status(request_id, ally_id, status)` | `db.py` | Actualiza estado |
+| `mark_ally_form_request_converted(request_id, ally_id, order_id)` | `db.py` | Marca como convertida a pedido |
+| `count_ally_form_requests_by_status(ally_id)` | `db.py` | Conteos por estado para el menu |
+| `list_ally_form_requests_for_ally(ally_id, status, limit)` | `db.py` | Lista solicitudes |
+
+Todas re-exportadas en `services.py`.
 
 ---
 
@@ -2433,12 +2424,15 @@ Entry point: botón "Mi suscripcion" en menú del aliado → callback `ally_mi_s
 | `create_ally_subscription(ally_id, admin_id, price, platform_share, admin_share)` | `db.py` | Crea registro en `ally_subscriptions`, retorna id |
 | `get_active_ally_subscription(ally_id)` | `db.py` | Retorna suscripción activa o None |
 | `expire_old_ally_subscriptions()` | `db.py` | Marca como EXPIRED las suscripciones vencidas (llamado en boot) |
+| `get_expiring_ally_subscriptions(days=3)` | `db.py` | Retorna suscripciones ACTIVE que vencen en los próximos N días con telegram_id del aliado |
 | `get_ally_subscription_info(ally_id)` | `db.py` | Info completa de suscripción (precio + estado + vencimiento) |
 | `check_ally_active_subscription(ally_id)` | `services.py` | Retorna bool — True si hay suscripción activa |
 | `pay_ally_subscription(ally_id, admin_id, price)` | `services.py` | Ejecuta el pago y crea el registro |
 | `get_subscription_summary_for_ally(ally_id, admin_id)` | `services.py` | Resumen para mostrar al aliado |
 
 Todas re-exportadas en `services.py`. `expire_old_ally_subscriptions` se llama en arranque de `main.py`.
+
+**Alerta de vencimiento próximo (IMPLEMENTADO 2026-04-06):** `_notify_expiring_subscriptions_job` en `main.py` corre cada 24 horas (primer disparo 1 hora después del arranque). Notifica al aliado por Telegram cuando su suscripción vence en 3 días o menos.
 
 ---
 

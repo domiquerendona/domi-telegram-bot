@@ -967,6 +967,8 @@ def plat_recargas_callback(update, context):
 
     # ---- Menú principal ----
     if data == "plat_rec_menu":
+        platform_admin = get_platform_admin()
+        balance_plat = int((platform_admin["balance"] or 0)) if platform_admin else 0
         keyboard = [
             [InlineKeyboardButton("📋 Pendientes de todos los admins", callback_data="plat_rec_pending")],
             [InlineKeyboardButton("📊 Historial contable", callback_data="plat_rec_history")],
@@ -976,7 +978,7 @@ def plat_recargas_callback(update, context):
             [InlineKeyboardButton("⬅ Volver al panel", callback_data="admin_volver_panel")],
         ]
         query.edit_message_text(
-            "Panel de Recargas\n\nSelecciona una vista:",
+            "Panel de Recargas\n\nTu saldo operativo: ${:,}\n\nSelecciona una vista:".format(balance_plat),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -987,19 +989,21 @@ def plat_recargas_callback(update, context):
                     if (u["balance"] or 0) < RECARGA_DIR_SALDO_BAJO_UMBRAL]
         allies = [u for u in get_all_active_allies()
                   if (u["balance"] or 0) < RECARGA_DIR_SALDO_BAJO_UMBRAL]
+        admins_low = [a for a in get_all_local_admins_approved()
+                      if (a["balance"] or 0) < RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL]
 
-        if not couriers and not allies:
+        if not couriers and not allies and not admins_low:
             query.edit_message_text(
-                "Sin alertas: todos los usuarios tienen saldo >= ${:,}.".format(RECARGA_DIR_SALDO_BAJO_UMBRAL),
+                "Sin alertas de saldo bajo.",
                 reply_markup=InlineKeyboardMarkup([[back_btn]])
             )
             return
 
-        lines = ["Usuarios con saldo bajo (< ${:,}):\n".format(RECARGA_DIR_SALDO_BAJO_UMBRAL)]
+        lines = ["Alertas de saldo bajo:\n"]
         keyboard = []
 
         if couriers:
-            lines.append("Repartidores ({}):\n".format(len(couriers)))
+            lines.append("Repartidores con saldo < ${:,}:\n".format(RECARGA_DIR_SALDO_BAJO_UMBRAL))
             for u in couriers:
                 nombre = u["full_name"] or "Sin nombre"
                 saldo = u["balance"] or 0
@@ -1011,7 +1015,7 @@ def plat_recargas_callback(update, context):
                 )])
 
         if allies:
-            lines.append("\nAliados ({}):\n".format(len(allies)))
+            lines.append("\nAliados con saldo < ${:,}:\n".format(RECARGA_DIR_SALDO_BAJO_UMBRAL))
             for u in allies:
                 nombre = u["business_name"] or u["owner_name"] or "Sin nombre"
                 saldo = u["balance"] or 0
@@ -1020,6 +1024,18 @@ def plat_recargas_callback(update, context):
                 keyboard.append([InlineKeyboardButton(
                     "Recargar: {} (${:,})".format(nombre, saldo),
                     callback_data="plat_rdir_presel_ALLY_{}".format(u["ally_id"]),
+                )])
+
+        if admins_low:
+            lines.append("\nAdmins locales con saldo bajo (< ${:,}):\n".format(RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL))
+            for a in admins_low:
+                nombre = a["full_name"] or "Sin nombre"
+                saldo = a["balance"] or 0
+                team = a["team_name"] or "Sin equipo"
+                lines.append("  {} ({}) | ${:,}".format(nombre, team, saldo))
+                keyboard.append([InlineKeyboardButton(
+                    "Recargar admin: {} (${:,})".format(nombre, saldo),
+                    callback_data="plat_rdir_presel_ADMIN_{}".format(a["admin_id"]),
                 )])
 
         keyboard.append([back_btn])
@@ -2469,7 +2485,8 @@ ingreso_conv = ConversationHandler(
 # =============================================================================
 
 _RECDIR_TIPO_LABEL = {"COURIER": "Repartidor", "ALLY": "Aliado", "ADMIN": "Admin Local"}
-RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000  # Balance minimo para aparecer en vista "saldo bajo"
+RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000   # Balance minimo couriers/aliados para vista "saldo bajo"
+RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL = 20000  # Balance minimo admins locales para alerta
 
 
 def _recdir_cancelar(update_or_query, context):
@@ -2581,7 +2598,7 @@ def recarga_directa_presel(update, context):
         query.edit_message_text("Error de formato en pre-seleccion.")
         return ConversationHandler.END
 
-    if tipo not in ("COURIER", "ALLY"):
+    if tipo not in ("COURIER", "ALLY", "ADMIN"):
         query.edit_message_text("Tipo no soportado en pre-seleccion.")
         return ConversationHandler.END
 
@@ -2941,7 +2958,7 @@ def _recdir_ejecutar(query, context):
 recarga_directa_conv = ConversationHandler(
     entry_points=[
         CallbackQueryHandler(recarga_directa_inicio, pattern=r"^plat_rdir_inicio$"),
-        CallbackQueryHandler(recarga_directa_presel, pattern=r"^plat_rdir_presel_(COURIER|ALLY)_\d+$"),
+        CallbackQueryHandler(recarga_directa_presel, pattern=r"^plat_rdir_presel_(COURIER|ALLY|ADMIN)_\d+$"),
     ],
     states={
         RECARGA_DIR_TIPO: [

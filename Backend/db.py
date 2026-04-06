@@ -13189,6 +13189,33 @@ def expire_old_ally_subscriptions():
     return changed
 
 
+def get_expiring_ally_subscriptions(days: int = 3):
+    """
+    Retorna suscripciones ACTIVE que vencen en los proximos `days` dias.
+    Incluye telegram_id del aliado y nombre del negocio.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        date_expr = "expires_at <= NOW() + INTERVAL '{}' DAY".format(days)
+    else:
+        date_expr = "expires_at <= datetime('now', '+{} days')".format(days)
+    cur.execute(f"""
+        SELECT s.id, s.ally_id, s.expires_at, s.admin_id,
+               u.telegram_id AS ally_telegram_id,
+               a.business_name AS ally_name
+        FROM ally_subscriptions s
+        JOIN allies a ON a.id = s.ally_id
+        JOIN users u ON u.id = a.user_id
+        WHERE s.status = 'ACTIVE'
+          AND {date_expr}
+        ORDER BY s.expires_at ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def get_ally_subscription_info(ally_id: int):
     """
     Retorna la suscripcion mas reciente del aliado (activa o no), o None.
