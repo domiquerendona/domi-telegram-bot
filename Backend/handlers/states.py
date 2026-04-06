@@ -398,6 +398,7 @@ RUTA_GUARDAR_CUST_PARKING  = 1010  # Dificultad de parqueo al guardar cliente de
 # Estados para recarga directa por Admin Plataforma (recarga_directa_conv)
 # Prefijo callbacks: plat_rdir_   |  Prefijo user_data: recdir_
 # =========================
-RECARGA_DIR_TIPO  = 1016  # Seleccion de tipo (COURIER/ALLY/ADMIN) y usuario destino via callbacks
-RECARGA_DIR_MONTO = 1017  # Texto con el monto a recargar
-RECARGA_DIR_NOTA  = 1018  # Texto con nota opcional + confirmacion via callbacks
+RECARGA_DIR_TIPO   = 1016  # Seleccion de tipo (COURIER/ALLY/ADMIN) via callbacks
+RECARGA_DIR_BUSCAR = 1019  # Texto de busqueda por nombre + seleccion de usuario via callbacks
+RECARGA_DIR_MONTO  = 1017  # Texto con el monto a recargar
+RECARGA_DIR_NOTA   = 1018  # Texto con nota opcional + confirmacion via callbacks

@@ -834,6 +834,36 @@ Flujo de UI del ingreso externo (ConversationHandler ingreso_conv en main.py):
 - Claves de user_data: ingreso_monto, ingreso_metodo
 - Accesible desde: menu Finanzas del Admin de Plataforma
 
+9C. Recarga manual directa del Admin de Plataforma (IMPLEMENTADO 2026-04-06)
+
+El Admin de Plataforma puede recargar cualquier usuario activo (courier, aliado o admin local)
+sin que el usuario deba solicitarla. El flujo solicitud-aprobacion existente sigue intacto.
+
+ConversationHandler: recarga_directa_conv (handlers/recharges.py)
+Entry points: plat_rdir_inicio (flujo normal) | plat_rdir_presel_{COURIER|ALLY}_{id} (pre-seleccionado)
+Estados: RECARGA_DIR_TIPO=1016, RECARGA_DIR_BUSCAR=1019, RECARGA_DIR_MONTO=1017, RECARGA_DIR_NOTA=1018
+
+Implementacion tecnica:
+- direct_recharge_by_platform(services.py): crea recharge_request PENDING y la aprueba con
+  approve_recharge_request. Reutiliza toda la logica contable (interruptor de ganancias, ledger).
+- get_all_active_couriers, get_all_active_allies, get_all_local_admins_approved (db.py):
+  funciones para listar usuarios activos; re-exportadas en services.py.
+- RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000: umbral de saldo bajo para la vista de alerta.
+
+Vista saldo bajo:
+- Callback plat_rec_saldo_bajo: lista couriers y aliados con balance < 5000.
+- Cada boton genera plat_rdir_presel_{COURIER|ALLY}_{id} → inicia conv con usuario pre-seleccionado.
+
+Notificacion al Admin Local:
+- Al recargar un courier/ally de un equipo local, se captura su admin activo ANTES de llamar
+  a direct_recharge_by_platform (el interruptor lo cambiaria a plataforma durante la aprobacion).
+- Solo se notifica si el link activo previo no es de plataforma (team_code != 'PLATFORM').
+
+PROHIBIDO:
+- Llamar direct_recharge_by_platform sin verificar balance del admin de plataforma antes.
+- Capturar el admin local DESPUES de direct_recharge_by_platform (el interruptor ya lo desactivaria).
+- Saltear el ledger: toda recarga directa debe quedar registrada igual que una solicitud normal.
+
 9D. Recarga directa con plataforma como fallback (CRÍTICO)
 
 Un aliado o repartidor puede siempre solicitar recarga directamente al Admin de Plataforma,

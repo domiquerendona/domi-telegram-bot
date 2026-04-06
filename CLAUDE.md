@@ -389,7 +389,7 @@ Separador operativo actual: guion bajo (`_`).
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
-| `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point desde panel recargas), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
+| `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point normal), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado en búsqueda), `plat_rdir_presel_{COURIER\|ALLY}_{id}` (entrada directa desde vista saldo bajo), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). `plat_rec_saldo_bajo` (en `plat_recargas_callback`): vista de couriers y aliados con balance < $5.000. Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
 | `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
@@ -1006,11 +1006,26 @@ El Admin de Plataforma puede recargar cualquier usuario (repartidor, aliado o ad
 
 **Entry point:** Panel de Recargas → botón "Recarga directa a usuario" → callback `plat_rdir_inicio`
 
-**Flujo (`recarga_directa_conv` en `handlers/recharges.py`):**
+**Entry points de `recarga_directa_conv`:**
+- `plat_rdir_inicio` → flujo normal (selección de tipo → búsqueda → monto → nota)
+- `plat_rdir_presel_{COURIER|ALLY}_{id}` → acceso directo con usuario ya pre-seleccionado (desde vista "Saldo bajo"), salta al estado `RECARGA_DIR_MONTO`
+
+**Flujo normal (`recarga_directa_conv` en `handlers/recharges.py`):**
 1. Selecciona tipo: Repartidor / Aliado / Admin Local → estado `RECARGA_DIR_TIPO` (1016)
-2. Selecciona usuario de la lista (muestra nombre, saldo actual y equipo) → mismo estado con `plat_rdir_usr_{id}`
+2. Escribe texto para buscar (o `.` para ver todos) → estado `RECARGA_DIR_BUSCAR` (1019); selecciona usuario con `plat_rdir_usr_{id}`
 3. Escribe el monto → estado `RECARGA_DIR_MONTO` (1017)
 4. Escribe nota o usa "Sin nota" → estado `RECARGA_DIR_NOTA` (1018) → confirmación → `plat_rdir_confirmar`
+
+**Vista "Usuarios con saldo bajo":**
+- Entry point: botón "Usuarios con saldo bajo" en panel recargas → callback `plat_rec_saldo_bajo`
+- Umbral: `RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000` (constante en `handlers/recharges.py`)
+- Muestra couriers y aliados con `balance < 5000` con botones directos "Recargar: {nombre} (${saldo})"
+- Botones generan `plat_rdir_presel_{COURIER|ALLY}_{id}` → inicia `recarga_directa_conv` con usuario pre-seleccionado
+
+**Notificación al Admin Local:**
+- Al ejecutar una recarga directa de plataforma a un COURIER o ALLY que pertenece a un equipo local, se notifica al admin local del equipo (cortesía + aviso del interruptor de ganancias).
+- La captura del admin local previo se hace **antes** de llamar `direct_recharge_by_platform`, porque `approve_recharge_request` internamente activa el vínculo plataforma y desactiva los demás (interruptor). Si se capturara después, ya no habría admin local activo que notificar.
+- Solo notifica si el vínculo activo previo es de un admin local (no plataforma).
 
 **Implementación (`services.py`):**
 - `direct_recharge_by_platform(target_type, target_id, platform_admin_id, platform_user_id, amount, note)` → crea una `recharge_request` PENDING y la aprueba inmediatamente con `approve_recharge_request`. Reutiliza toda la lógica contable: débito de Sociedad, crédito al destinatario, interruptor de ganancias, ledger completo.
@@ -1024,16 +1039,19 @@ Todas re-exportadas en `services.py`.
 
 **User data keys** (prefijo `recdir_`): `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota`
 
-**Callbacks** (prefijo `plat_rdir_`): `plat_rdir_inicio`, `plat_rdir_tipo_{COURIER|ALLY|ADMIN}`, `plat_rdir_usr_{id}`, `plat_rdir_sin_nota`, `plat_rdir_confirmar`, `plat_rdir_cancel`
+**Callbacks** (prefijo `plat_rdir_`): `plat_rdir_inicio`, `plat_rdir_tipo_{COURIER|ALLY|ADMIN}`, `plat_rdir_cancel`, `plat_rdir_presel_{COURIER|ALLY}_{id}` (entrada directa desde saldo bajo), `plat_rdir_usr_{id}` (usuario seleccionado desde búsqueda), `plat_rdir_sin_nota`, `plat_rdir_confirmar`
+
+**Callbacks adicionales en `plat_recargas_callback`:** `plat_rec_saldo_bajo` (vista de usuarios con saldo bajo)
 
 **Estados nuevos en `states.py`:**
 | Constante | Valor | Descripción |
 |---|---|---|
-| `RECARGA_DIR_TIPO` | 1016 | Selección de tipo y usuario destino via callbacks |
+| `RECARGA_DIR_TIPO` | 1016 | Selección de tipo (COURIER/ALLY/ADMIN) via callbacks |
 | `RECARGA_DIR_MONTO` | 1017 | Texto con el monto a recargar |
 | `RECARGA_DIR_NOTA` | 1018 | Texto con nota opcional + confirmación via callbacks |
+| `RECARGA_DIR_BUSCAR` | 1019 | Texto de búsqueda por nombre + selección de usuario via callbacks |
 
-Al ejecutar, se notifica al destinatario por Telegram con el monto y su nuevo saldo. El registro queda en `recharge_requests` y en el ledger para auditoría completa (visible en "Historial contable" del panel de recargas).
+Al ejecutar, se notifica al destinatario por Telegram con el monto y su nuevo saldo. Si el usuario pertenece a un equipo local, también se notifica al admin local. El registro queda en `recharge_requests` y en el ledger para auditoría completa (visible en "Historial contable" del panel de recargas).
 
 ---
 
