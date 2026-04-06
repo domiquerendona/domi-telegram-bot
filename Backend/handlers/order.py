@@ -98,6 +98,18 @@ PICKUP_PREVIEW_CHANGE_CALLBACK = "pickup_preview_change"
 PICKUP_PREVIEW_CALLBACK_PATTERN = r"^pickup_preview_(confirm|change)$"
 
 
+def _order_city_hint(context):
+    """Extrae barrio+ciudad del aliado o admin en sesion para mejorar geocoding."""
+    ally = context.user_data.get("ally")
+    if ally:
+        parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+        if parts:
+            return ", ".join(parts)
+    # Para flujos de admin: admin_id disponible pero sin row completo en user_data
+    # No intentamos BD aqui para mantener el helper rapido y sin IO
+    return None
+
+
 def _pedido_base_keyboard():
     """Construye el teclado de montos fijos para base requerida."""
     keyboard = []
@@ -1286,7 +1298,7 @@ def pedido_ubicacion_handler(update, context):
 
     # 5) Geocoding: si el texto no es URL, intentar como direccion escrita
     if "http" not in texto:
-        geo = resolve_location(texto)
+        geo = resolve_location(texto, city_hint=_order_city_hint(context))
         if geo and geo.get("lat") is not None and geo.get("lng") is not None:
             source = "geocode" if geo.get("method") in ("geocode", "geocode_cache") else "resolved_text"
             return _pedido_solicitar_confirmacion_ubicacion(
@@ -1794,7 +1806,7 @@ def pedido_pickup_nueva_ubicacion_handler(update, context):
         return PEDIDO_PICKUP_NUEVA_UBICACION
 
     # Mismo pipeline de resolucion usado en cotizacion
-    loc = resolve_location(text)
+    loc = resolve_location(text, city_hint=_order_city_hint(context))
     if loc and loc.get("lat") is not None and loc.get("lng") is not None:
         if loc.get("method") == "geocode" and loc.get("formatted_address"):
             _mostrar_confirmacion_geocode(
@@ -3408,7 +3420,7 @@ def admin_pedido_nueva_dir_start(update, context):
 def admin_pedido_pickup_text_handler(update, context):
     """Geocodifica el texto ingresado como nueva direccion de recogida."""
     texto = update.message.text.strip()
-    geo = resolve_location(texto)
+    geo = resolve_location(texto, city_hint=_order_city_hint(context))
     if not geo:
         update.message.reply_text(
             "No pude encontrar esa direccion. Intentalo de nuevo o envia tu ubicacion GPS."
@@ -3483,7 +3495,7 @@ def admin_pedido_geo_pickup_callback(update, context):
     else:
         original = pending.get("original_text", "")
         seen = [pending["address"]] if pending.get("address") else []
-        next_geo = resolve_location_next(original, seen) if original else None
+        next_geo = resolve_location_next(original, seen, city_hint=_order_city_hint(context)) if original else None
         if next_geo:
             context.user_data["admin_ped_geo_pickup_pending"] = {
                 "address": next_geo.get("address", ""),
@@ -3703,7 +3715,7 @@ def admin_pedido_cust_phone_handler(update, context):
 def admin_pedido_cust_addr_handler(update, context):
     """Geocodifica la direccion de entrega del cliente."""
     texto = update.message.text.strip()
-    geo = resolve_location(texto)
+    geo = resolve_location(texto, city_hint=_order_city_hint(context))
     if not geo or geo.get("lat") is None or geo.get("lng") is None:
         update.message.reply_text(
             "No pude encontrar esa direccion. Intentalo de nuevo o envia GPS."
@@ -3831,7 +3843,7 @@ def admin_pedido_geo_callback(update, context):
                 current_pid = "{},{}".format(pending["lat"], pending["lng"])
             if current_pid:
                 seen = [current_pid]
-        next_geo = resolve_location_next(original, seen) if original else None
+        next_geo = resolve_location_next(original, seen, city_hint=_order_city_hint(context)) if original else None
         if next_geo and next_geo.get("lat") is not None and next_geo.get("lng") is not None:
             next_pid = next_geo.get("place_id") or "{},{}".format(next_geo["lat"], next_geo["lng"])
             if next_pid not in seen:
@@ -4681,7 +4693,7 @@ def pedido_extra_direccion_handler(update, context):
     if not texto:
         update.message.reply_text("Escribe la direccion de entrega:")
         return PEDIDO_PARADA_EXTRA_DIRECCION
-    geo = resolve_location(texto)
+    geo = resolve_location(texto, city_hint=_order_city_hint(context))
     if geo and has_valid_coords(geo.get("lat"), geo.get("lng")):
         context.user_data["pedido_extra_geo_pending"] = {
             "lat": geo["lat"],

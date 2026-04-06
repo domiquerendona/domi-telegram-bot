@@ -1098,6 +1098,7 @@ def clientes_dir_corregir_coords_handler(update, context):
         update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
         return CLIENTES_DIR_CORREGIR_COORDS
 
+    _clear_address_cache(address)
     try:
         update_customer_address(
             address_id=address_id,
@@ -1135,6 +1136,7 @@ def clientes_dir_corregir_coords_location_handler(update, context):
         context.user_data.pop("clientes_geo_mode", None)
         return clientes_mostrar_menu(update, context, edit_message=False)
 
+    _clear_address_cache(address)
     try:
         update_customer_address(
             address_id=address_id,
@@ -1156,6 +1158,38 @@ def clientes_dir_corregir_coords_location_handler(update, context):
 
     context.user_data.pop("clientes_geo_mode", None)
     return clientes_mostrar_menu(update, context, edit_message=False)
+
+
+def _clear_address_cache(address, new_lat=None, new_lng=None):
+    """Limpia geocoding_text_cache y map_distance_cache al corregir coords de una direccion.
+
+    address: row de la direccion (antes de actualizar).
+    new_lat/new_lng: nuevas coords (si se quieren borrar tambien del cache nuevo — normalmente no).
+    Solo se borran las entradas de las coords ANTIGUAS para que la proxima cotizacion
+    recalcule con datos frescos.
+    """
+    try:
+        addr_text = address.get("address_text") or "" if address else ""
+        if addr_text:
+            # Normalizar igual que services.py lo hace al buscar en cache
+            import unicodedata
+            norm = unicodedata.normalize("NFD", addr_text.strip().lower())
+            text_key = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+            text_key = " ".join(text_key.split())
+            try:
+                delete_geocoding_text_cache(text_key)
+            except Exception:
+                pass
+        old_lat = address.get("lat") if address else None
+        old_lng = address.get("lng") if address else None
+        if old_lat is not None and old_lng is not None:
+            old_coord_key = "{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5))
+            try:
+                delete_distance_cache_for_coord(old_coord_key)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # =========================
@@ -2062,6 +2096,7 @@ def admin_clientes_dir_corregir_handler(update, context):
         update.message.reply_text("No se pudo obtener coordenadas. Intenta de nuevo o escribe 'cancelar'.")
         return ADMIN_CUST_DIR_CORREGIR
 
+    _clear_address_cache(address)
     try:
         update_admin_customer_address(
             address_id=address_id,
@@ -2099,6 +2134,7 @@ def admin_clientes_dir_corregir_location_handler(update, context):
         context.user_data.pop("acust_geo_mode", None)
         return _admin_clientes_mostrar_menu(update, context, edit_message=False)
 
+    _clear_address_cache(address)
     try:
         update_admin_customer_address(
             address_id=address_id,

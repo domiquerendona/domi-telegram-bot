@@ -917,13 +917,14 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
 def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> dict:
     """
-    Estrategia en 3 capas para calcular distancia de forma economica:
+    Estrategia en capas para calcular distancia de forma economica:
 
-    Capa 1 - Haversine: calculo local gratuito (distancia * factor urbano).
-    Capa 2 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
-    Capa 3 - Google API: solo si hay cuota disponible (costoso).
+    Capa 1 - Cache (map_distance_cache): solo entradas con provider != 'haversine'.
+    Capa 2 - Google Distance Matrix API: solo si hay cuota disponible (costoso).
+    Capa 2.5 - OSRM (red vial real, gratuito, sin cuota).
+    Capa 3 - Haversine x factor: fallback local. NO se cachea para reintentar OSRM/API luego.
 
-    Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
+    Retorna dict con: distance_km, source ('cache(provider)'|'google'|'osrm'|'haversine'), used_api (bool)
     """
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
