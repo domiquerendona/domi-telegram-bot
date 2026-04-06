@@ -184,6 +184,18 @@ def nuevo_pedido_desde_cotizador(update, context):
     return PEDIDO_NOMBRE
 
 
+def _build_nuevo_pedido_keyboard(ally_id):
+    keyboard = [
+        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
+        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
+    ]
+    last_order = get_last_order_by_ally(ally_id)
+    if last_order:
+        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
+    keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
+    return keyboard
+
+
 def nuevo_pedido(update, context):
     user = update.effective_user
     message = update.effective_message
@@ -257,23 +269,11 @@ def nuevo_pedido(update, context):
 
         show_flow_menu(update, context, "Iniciando nuevo pedido...")
 
-        keyboard = [
-            [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
-            [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
-        ]
-
-        last_order = get_last_order_by_ally(ally["id"])
-        if last_order:
-            keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
-
-        keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
         if message:
             message.reply_text(
                 "CREAR NUEVO PEDIDO\n\n"
                 "Selecciona una opcion:",
-                reply_markup=reply_markup
+                reply_markup=InlineKeyboardMarkup(_build_nuevo_pedido_keyboard(ally["id"]))
             )
         return PEDIDO_SELECTOR_CLIENTE
     except Exception as e:
@@ -5757,18 +5757,9 @@ def nuevo_pedido_tras_terms(update, context):
     context.user_data["active_ally_id"] = ally["id"]
     context.user_data["ally"] = ally
 
-    keyboard = [
-        [InlineKeyboardButton("Cliente recurrente", callback_data="pedido_cliente_recurrente")],
-        [InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")],
-    ]
-    last_order = get_last_order_by_ally(ally["id"])
-    if last_order:
-        keyboard.append([InlineKeyboardButton("Repetir ultimo pedido", callback_data="pedido_repetir_ultimo")])
-    keyboard.append([InlineKeyboardButton("Varias entregas (ruta)", callback_data="pedido_a_ruta")])
-
     update.effective_message.reply_text(
         "CREAR NUEVO PEDIDO\n\nSelecciona una opcion:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(_build_nuevo_pedido_keyboard(ally["id"]))
     )
     return PEDIDO_SELECTOR_CLIENTE
 
