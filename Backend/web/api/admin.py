@@ -92,7 +92,7 @@ def list_admins(admin=Depends(get_current_user)):
             "barrio": r["barrio"] if hasattr(r, "__getitem__") else r[5],
             "status": r["status"] if hasattr(r, "__getitem__") else r[6],
             "team_name": r["team_name"] if hasattr(r, "__getitem__") else r[8],
-            "document_number": r["document_number"] if hasattr(r, "__getitem__") else r[9],
+            "document_number": r["document_number"] or "" if hasattr(r, "__getitem__") else (r[9] or ""),
             "created_at": str(r["created_at"]) if hasattr(r, "__getitem__") else str(r[7]),
         })
     return result
@@ -420,15 +420,18 @@ def create_web_user_endpoint(
     password = (payload.get("password") or "").strip()
     role = payload.get("role", "ADMIN_LOCAL")
     admin_id = payload.get("admin_id")
+    courier_id = payload.get("courier_id")
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="username y password son requeridos")
-    if role not in ("ADMIN_PLATFORM", "ADMIN_LOCAL"):
+    if role not in ("ADMIN_PLATFORM", "ADMIN_LOCAL", "COURIER"):
         raise HTTPException(status_code=400, detail="role invalido")
+    if role == "COURIER" and not courier_id:
+        raise HTTPException(status_code=400, detail="courier_id es requerido para rol COURIER")
 
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     try:
-        new_id = create_web_user(username, hashed, role=role, admin_id=admin_id or None)
+        new_id = create_web_user(username, hashed, role=role, admin_id=admin_id or None, courier_id=courier_id or None)
     except Exception as exc:
         msg = str(exc)
         if "UNIQUE" in msg or "unique" in msg.lower() or "duplicate" in msg.lower():

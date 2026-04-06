@@ -7,8 +7,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 import os
+from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    CallbackQueryHandler,
+    ConversationHandler,
+    Filters,
+    MessageHandler,
+)
 
 from handlers.common import (
     _resolve_important_alert,
@@ -27,6 +34,7 @@ from services import (
     get_active_orders_without_courier,
     get_admin_balance,
     get_admin_by_id,
+    get_admin_by_telegram_id,
     get_admin_by_user_id,
     get_admin_link_for_ally,
     get_admin_reference_validator_permission,
@@ -44,6 +52,7 @@ from services import (
     get_all_couriers,
     get_all_local_admins,
     get_all_online_couriers,
+    get_admin_telegram_id,
     get_ally_approval_notification_chat_id,
     get_ally_by_id,
     get_ally_reset_state_by_id,
@@ -67,8 +76,14 @@ from services import (
     get_user_by_telegram_id,
     get_user_db_id_from_update,
     list_ally_links_by_admin,
+    list_pending_support_requests,
     list_approved_admin_teams,
     list_courier_links_by_admin,
+    get_support_request_full,
+    SUPPORT_TYPE_DELIVERY_PIN,
+    SUPPORT_TYPE_ROUTE_STOP_PIN,
+    SUPPORT_TYPE_PICKUP_PIN,
+    SUPPORT_TYPE_ROUTE_PICKUP_PIN,
     platform_clear_admin_registration_reset,
     platform_clear_ally_registration_reset,
     platform_clear_courier_registration_reset,
@@ -89,8 +104,242 @@ from order_delivery import admin_orders_panel
 from profile_changes import admin_change_requests_list
 from handlers.config import tarifas_start
 from handlers.registration import _create_or_reset_courier_from_context
+from handlers.states import RECHAZAR_MOTIVO, RECHAZAR_CONFIRMAR
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+SUPPORT_PAGE_SIZE = 6
+
+
+def _support_type_label(support_type: str) -> str:
+    labels = {
+        SUPPORT_TYPE_DELIVERY_PIN: "Entrega pedido",
+        SUPPORT_TYPE_PICKUP_PIN: "Pickup pedido",
+        SUPPORT_TYPE_ROUTE_STOP_PIN: "Parada ruta",
+        SUPPORT_TYPE_ROUTE_PICKUP_PIN: "Pickup ruta",
+    }
+    return labels.get(support_type, support_type or "Soporte")
+
+
+def _support_created_label(created_at) -> str:
+    if not created_at:
+        return "-"
+    if hasattr(created_at, "timetuple"):
+        dt = created_at
+    else:
+        dt = None
+        raw = str(created_at).strip()
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ):
+            try:
+                dt = datetime.strptime(raw[:len(fmt)], fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return raw
+
+    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds = max(0, int((now_dt - dt).total_seconds()))
+    if seconds < 60:
+        age = "menos de 1 min"
+    elif seconds < 3600:
+        age = "{} min".format(seconds // 60)
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        age = "{}h {} min".format(hours, minutes) if minutes else "{}h".format(hours)
+    return "{} ({})".format(dt.strftime("%Y-%m-%d %H:%M"), age)
+
+
+def _support_owner_line(req) -> str:
+    ally_id = _row_value(req, "order_ally_id", 0) or _row_value(req, "route_ally_id", 0)
+    if ally_id:
+        ally = get_ally_by_id(int(ally_id))
+        if ally:
+            return "Aliado responsable: {}".format(
+                _row_value(ally, "business_name") or _row_value(ally, "owner_name") or "N/D"
+            )
+    creator_admin_id = _row_value(req, "order_creator_admin_id", 0)
+    if creator_admin_id:
+        admin = get_admin_by_id(int(creator_admin_id))
+        if admin:
+            return "Admin creador: {}".format(_row_value(admin, "full_name") or "N/D")
+    return ""
+
+
+def _support_target_lines(req):
+    support_type = _row_value(req, "support_type")
+    lines = []
+    if support_type == SUPPORT_TYPE_DELIVERY_PIN:
+        lines.append("Direccion de entrega: {}".format(_row_value(req, "delivery_address") or "N/D"))
+        target_lat = _row_value(req, "dropoff_lat")
+        target_lng = _row_value(req, "dropoff_lng")
+    elif support_type == SUPPORT_TYPE_PICKUP_PIN:
+        lines.append("Punto de recogida: {}".format(_row_value(req, "order_pickup_address") or "N/D"))
+        target_lat = _row_value(req, "order_pickup_lat")
+        target_lng = _row_value(req, "order_pickup_lng")
+    elif support_type == SUPPORT_TYPE_ROUTE_STOP_PIN:
+        lines.append(
+            "Parada {}: {}".format(
+                _row_value(req, "route_seq") or "-",
+                _row_value(req, "route_customer_address") or "N/D",
+            )
+        )
+        lines.append("Cliente: {}".format(_row_value(req, "route_customer_name") or "N/D"))
+        target_lat = _row_value(req, "route_dropoff_lat")
+        target_lng = _row_value(req, "route_dropoff_lng")
+    else:
+        lines.append("Punto de recogida: {}".format(_row_value(req, "route_pickup_address") or "N/D"))
+        target_lat = _row_value(req, "route_pickup_lat")
+        target_lng = _row_value(req, "route_pickup_lng")
+
+    courier_lat = _row_value(req, "courier_lat")
+    courier_lng = _row_value(req, "courier_lng")
+    if target_lat is not None and target_lng is not None:
+        lines.append("Pin objetivo: https://maps.google.com/?q={},{}".format(target_lat, target_lng))
+    if courier_lat is not None and courier_lng is not None:
+        lines.append("Courier en vivo: https://maps.google.com/?q={},{}".format(courier_lat, courier_lng))
+    return lines
+
+
+def _support_summary_label(req) -> str:
+    support_type = _support_type_label(_row_value(req, "support_type"))
+    courier_name = (_row_value(req, "courier_name") or "Repartidor").strip()
+    if _row_value(req, "order_id", 0):
+        order_id = int(_row_value(req, "order_id", 0))
+        return "{} | Pedido #{} | {}".format(support_type, order_id, courier_name)
+    route_id = int(_row_value(req, "route_id", 0) or 0)
+    seq = _row_value(req, "route_seq", 0)
+    if seq:
+        return "{} | Ruta #{} parada {} | {}".format(support_type, route_id, seq, courier_name)
+    return "{} | Ruta #{} | {}".format(support_type, route_id, courier_name)
+
+
+def _support_action_rows(req):
+    support_id = int(_row_value(req, "id", 0) or 0)
+    order_id = int(_row_value(req, "order_id", 0) or 0)
+    route_id = int(_row_value(req, "route_id", 0) or 0)
+    route_seq = int(_row_value(req, "route_seq", 0) or 0)
+    support_type = _row_value(req, "support_type")
+
+    if support_type == SUPPORT_TYPE_DELIVERY_PIN:
+        return [
+            [InlineKeyboardButton("Finalizar servicio", callback_data="admin_pinissue_fin_{}".format(order_id))],
+            [InlineKeyboardButton("Cancelar falla repartidor", callback_data="admin_pinissue_cancel_courier_{}".format(order_id))],
+            [InlineKeyboardButton("Cancelar falla aliado", callback_data="admin_pinissue_cancel_ally_{}".format(order_id))],
+        ]
+    if support_type == SUPPORT_TYPE_PICKUP_PIN:
+        return [
+            [InlineKeyboardButton("Confirmar llegada", callback_data="admin_pickup_confirm_{}_{}".format(order_id, support_id))],
+            [InlineKeyboardButton("Liberar pedido", callback_data="admin_pickup_release_{}_{}".format(order_id, support_id))],
+        ]
+    if support_type == SUPPORT_TYPE_ROUTE_STOP_PIN:
+        suffix = "{}_{}".format(route_id, route_seq)
+        return [
+            [InlineKeyboardButton("Finalizar parada", callback_data="admin_ruta_pinissue_fin_{}".format(suffix))],
+            [InlineKeyboardButton("Cancelar falla repartidor", callback_data="admin_ruta_pinissue_cancel_courier_{}".format(suffix))],
+            [InlineKeyboardButton("Cancelar falla aliado", callback_data="admin_ruta_pinissue_cancel_ally_{}".format(suffix))],
+        ]
+    return [
+        [InlineKeyboardButton("Confirmar llegada", callback_data="admin_ruta_pickup_confirm_{}_{}".format(route_id, support_id))],
+        [InlineKeyboardButton("Liberar ruta", callback_data="admin_ruta_pickup_release_{}_{}".format(route_id, support_id))],
+    ]
+
+
+def _get_support_inbox_actor(telegram_id: int):
+    admin = get_admin_by_telegram_id(telegram_id)
+    is_platform = user_has_platform_admin(telegram_id)
+    if not admin and not is_platform:
+        return None, False
+    return admin, is_platform
+
+
+def _render_support_requests_list(query, offset: int = 0, edit: bool = False):
+    admin, is_platform = _get_support_inbox_actor(query.from_user.id)
+    if not admin and not is_platform:
+        query.answer("No tienes permisos para ver esta bandeja.", show_alert=True)
+        return
+
+    admin_filter = None if is_platform else admin["id"]
+    rows = list_pending_support_requests(admin_id=admin_filter, limit=SUPPORT_PAGE_SIZE + 1, offset=offset)
+    has_next = len(rows) > SUPPORT_PAGE_SIZE
+    rows = rows[:SUPPORT_PAGE_SIZE]
+
+    scope_text = "todas las solicitudes" if is_platform else "las solicitudes de tu equipo"
+    text = "Bandeja de soportes pendientes.\nRevisa {}.".format(scope_text)
+    keyboard = []
+    if rows:
+        for req in rows:
+            keyboard.append([
+                InlineKeyboardButton(
+                    _support_summary_label(req),
+                    callback_data="admin_support_view_{}_{}".format(req["id"], offset),
+                )
+            ])
+    else:
+        text = "No hay soportes pendientes en este momento."
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("Anterior", callback_data="admin_support_list_{}".format(max(0, offset - SUPPORT_PAGE_SIZE))))
+    if has_next:
+        nav.append(InlineKeyboardButton("Siguiente", callback_data="admin_support_list_{}".format(offset + SUPPORT_PAGE_SIZE)))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton("Actualizar", callback_data="admin_support_list_{}".format(offset))])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    if edit:
+        query.edit_message_text(text, reply_markup=markup)
+    else:
+        query.message.reply_text(text, reply_markup=markup)
+
+
+def _render_support_request_detail(query, support_id: int, offset: int):
+    admin, is_platform = _get_support_inbox_actor(query.from_user.id)
+    if not admin and not is_platform:
+        query.answer("No tienes permisos para ver esta solicitud.", show_alert=True)
+        return
+
+    req = get_support_request_full(support_id)
+    if not req or _row_value(req, "status") != "PENDING":
+        query.edit_message_text(
+            "Esta solicitud ya no esta pendiente.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a la bandeja", callback_data="admin_support_list_{}".format(offset))]
+            ]),
+        )
+        return
+
+    if not is_platform and admin["id"] != req["admin_id"]:
+        query.edit_message_text("No tienes permiso para revisar esta solicitud.")
+        return
+
+    can_resolve = is_platform or (admin and admin["id"] == req["admin_id"])
+    assigned_admin = _row_value(req, "admin_name") or "N/D"
+    lines = [
+        "{}".format(_support_type_label(_row_value(req, "support_type"))),
+        "Solicitud #{}".format(_row_value(req, "id") or "-"),
+        "Asignada a: {}".format(assigned_admin),
+        "Creada: {}".format(_support_created_label(_row_value(req, "created_at"))),
+        "",
+        "Repartidor: {}".format(_row_value(req, "courier_name") or "N/D"),
+        "Telefono: {}".format(_row_value(req, "courier_phone") or "N/D"),
+    ]
+    owner_line = _support_owner_line(req)
+    if owner_line:
+        lines.append(owner_line)
+    lines.extend(_support_target_lines(req))
+
+    keyboard = []
+    if can_resolve:
+        keyboard.extend(_support_action_rows(req))
+    keyboard.append([InlineKeyboardButton("Volver a la bandeja", callback_data="admin_support_list_{}".format(offset))])
+    query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 def _registration_reset_status_label(reset_state):
@@ -178,6 +427,14 @@ def _render_platform_ally_detail(query, ally_id: int):
     parking_enabled = get_ally_parking_fee_enabled(ally_id)
     parking_label = "Cobro parqueo dificil: {}".format("ACTIVO" if parking_enabled else "INACTIVO")
 
+    ally_rejection_reason = _row_value(ally, "rejection_reason", default=None)
+    ally_rejected_at = _row_value(ally, "rejected_at", default=None)
+    ally_rechazo_lineas = ""
+    if ally_rejection_reason:
+        ally_rechazo_lineas += "\nMotivo de rechazo: {}".format(ally_rejection_reason)
+    if ally_rejected_at:
+        ally_rechazo_lineas += "\nFecha de rechazo: {}".format(str(ally_rejected_at)[:10])
+
     texto = (
         "Detalle del aliado:\n\n"
         "ID: {id}\n"
@@ -187,7 +444,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         "Dirección: {address}\n"
         "Ciudad: {city}\n"
         "Barrio: {barrio}\n"
-        "Estado: {status}\n"
+        "Estado: {status}{rechazo_lineas}\n"
         "Equipo: {equipo}\n"
         "Reinicio de registro: {reset_status}\n"
         "{subsidio_label}\n"
@@ -203,6 +460,7 @@ def _render_platform_ally_detail(query, ally_id: int):
         city=_row_value(ally, "city", "-"),
         barrio=_row_value(ally, "barrio", "-"),
         status=_row_value(ally, "status", "-"),
+        rechazo_lineas=ally_rechazo_lineas,
         equipo=equipo_label,
         reset_status=reset_status,
         subsidio_label=subsidio_label,
@@ -653,10 +911,12 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
+        [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
         [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
         [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
         [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
         [InlineKeyboardButton("📍 Repartidores online", callback_data="config_couriers_online")],
+        [InlineKeyboardButton("📌 Corregir coords de aliados", callback_data="plat_corr_inicio")],
     ]
 
     update.message.reply_text(
@@ -681,6 +941,36 @@ def admin_menu_callback(update, context):
             query.answer("Error de formato.", show_alert=True)
             return
         return admin_orders_panel(update, context, admin_id, is_platform=False)
+
+    if data == "admin_support_open":
+        query.answer()
+        _render_support_requests_list(query, offset=0, edit=False)
+        return
+
+    if data.startswith("admin_support_list_"):
+        query.answer()
+        try:
+            offset = int(data.replace("admin_support_list_", ""))
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        _render_support_requests_list(query, offset=max(0, offset), edit=True)
+        return
+
+    if data.startswith("admin_support_view_"):
+        query.answer()
+        parts = data.replace("admin_support_view_", "").split("_")
+        if len(parts) != 2:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        try:
+            support_id = int(parts[0])
+            offset = int(parts[1])
+        except ValueError:
+            query.answer("Error de formato.", show_alert=True)
+            return
+        _render_support_request_detail(query, support_id, max(0, offset))
+        return
 
     # Gestión de usuarios (solo Admin Plataforma)
     if data == "admin_gestion_usuarios":
@@ -839,6 +1129,13 @@ def admin_menu_callback(update, context):
         adm_document = admin_obj["document_number"] or "-"
         adm_team_code = admin_obj["team_code"] or "-"
         adm_status = admin_obj["status"] or "-"
+        adm_rejection_reason = admin_obj.get("rejection_reason")
+        adm_rejected_at = admin_obj.get("rejected_at")
+        adm_rechazo_lineas = ""
+        if adm_rejection_reason:
+            adm_rechazo_lineas += "\nMotivo de rechazo: {}".format(adm_rejection_reason)
+        if adm_rejected_at:
+            adm_rechazo_lineas += "\nFecha de rechazo: {}".format(str(adm_rejected_at)[:10])
 
         # Tipo de admin
         tipo_admin = "PLATAFORMA" if adm_team_code == "PLATFORM" else "ADMIN LOCAL"
@@ -862,30 +1159,40 @@ def admin_menu_callback(update, context):
             maps_line = ""
 
         texto = (
-            "ADMIN ID: {}\n"
-            "Nombre: {}\n"
-            "Equipo: {}\n"
-            "Team code: {}\n"
-            "Ciudad/Barrio: {} / {}\n"
-            "Telefono: {}\n"
-            "Documento: {}\n"
-            "Estado: {}\n"
-            "Tipo: {}\n"
-            "Dirección residencia: {}\n"
-            "Ubicación residencia: {}\n"
-            "{}\n"
-            "\n"
+            "ADMIN ID: {adm_id}\n"
+            "Nombre: {adm_full_name}\n"
+            "Equipo: {adm_team_name}\n"
+            "Team code: {adm_team_code}\n"
+            "Ciudad/Barrio: {adm_city} / {adm_barrio}\n"
+            "Telefono: {adm_phone}\n"
+            "Documento: {adm_document}\n"
+            "Estado: {adm_status}{rechazo_lineas}\n"
+            "Tipo: {tipo_admin}\n"
+            "Dirección residencia: {residence_address}\n"
+            "Ubicación residencia: {residence_location}\n"
+            "{maps_line}\n"
             "CONTADORES:\n"
-            "Mensajeros vinculados: {}\n"
-            "Mensajeros con saldo >= 5000: {}\n"
-            "Reinicio de registro: {}"
+            "Mensajeros vinculados: {num_couriers}\n"
+            "Mensajeros con saldo >= 5000: {num_couriers_balance}\n"
+            "Reinicio de registro: {reset_status}"
         ).format(
-            adm_id, adm_full_name, adm_team_name, adm_team_code,
-            adm_city, adm_barrio, adm_phone, adm_document, adm_status, tipo_admin,
-            residence_address or "No registrada",
-            residence_location,
-            maps_line,
-            num_couriers, num_couriers_balance, reset_status
+            adm_id=adm_id,
+            adm_full_name=adm_full_name,
+            adm_team_name=adm_team_name,
+            adm_team_code=adm_team_code,
+            adm_city=adm_city,
+            adm_barrio=adm_barrio,
+            adm_phone=adm_phone,
+            adm_document=adm_document,
+            adm_status=adm_status,
+            rechazo_lineas=adm_rechazo_lineas,
+            tipo_admin=tipo_admin,
+            residence_address=residence_address or "No registrada",
+            residence_location=residence_location,
+            maps_line=maps_line,
+            num_couriers=num_couriers,
+            num_couriers_balance=num_couriers_balance,
+            reset_status=reset_status,
         )
         texto += "\nPermiso validar referencias: {}".format(perm_status)
 
@@ -900,7 +1207,7 @@ def admin_menu_callback(update, context):
             if adm_status == "PENDING":
                 keyboard.append([
                     InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
-                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                    InlineKeyboardButton("❌ Rechazar", callback_data="admin_rechazar_{}".format(adm_id)),
                 ])
             if adm_status == "APPROVED":
                 keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
@@ -911,7 +1218,8 @@ def admin_menu_callback(update, context):
             if adm_status == "INACTIVE":
                 keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="admin_set_status_{}_APPROVED".format(adm_id))])
                 _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
-            # REJECTED: sin botones de accion (estado terminal)
+            if adm_status == "REJECTED":
+                _append_registration_reset_button(keyboard, "admin", adm_id, adm_status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅️ Volver a la lista", callback_data="admin_admins_registrados")])
         keyboard.append([InlineKeyboardButton("⬅️ Volver al Panel", callback_data="admin_volver_panel")])
@@ -1058,7 +1366,7 @@ def admin_menu_callback(update, context):
         if adm_status == "PENDING":
             keyboard.append([
                 InlineKeyboardButton("✅ Aprobar", callback_data="admin_set_status_{}_APPROVED".format(adm_id)),
-                InlineKeyboardButton("❌ Rechazar", callback_data="admin_set_status_{}_REJECTED".format(adm_id)),
+                InlineKeyboardButton("❌ Rechazar", callback_data="admin_rechazar_{}".format(adm_id)),
             ])
         if adm_status == "APPROVED":
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="admin_set_status_{}_INACTIVE".format(adm_id))])
@@ -1099,8 +1407,8 @@ def admin_menu_callback(update, context):
 
         reset_state = get_admin_reset_state_by_id(adm_id)
         if action == "enable":
-            if admin_obj["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if admin_obj["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
@@ -1113,6 +1421,18 @@ def admin_menu_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_admin_telegram_id(adm_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("admin reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -1137,6 +1457,19 @@ def admin_menu_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_admin_telegram_id(adm_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "El reinicio de tu registro fue REVOCADO por el administrador.\n\n"
+                            "Ya no puedes iniciar un nuevo registro con esa autorizacion. "
+                            "Contacta al administrador si crees que es un error."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("admin reset clear notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro revocado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -1554,21 +1887,6 @@ def admin_menu_callback(update, context):
         )
         return
 
-    # Rechazar admin local
-    if data.startswith("admin_rechazar_"):
-        query.answer()
-        admin_id = int(data.split("_")[-1])
-
-        update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
-
-        query.edit_message_text(
-            "❌ Administrador rechazado.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅ Volver", callback_data="admin_admins_pendientes")]
-            ])
-        )
-        return
-
     # Por si llega algo raro
     query.answer("Opción no reconocida.", show_alert=True)
 
@@ -1956,19 +2274,7 @@ def admin_aprobar_rechazar_callback(update, context):
         query.edit_message_text("✅ Administrador aprobado (APPROVED).")
         return
 
-    if accion == "rechazar":
-        try:
-            update_admin_status_by_id(admin_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
-        except Exception as e:
-            logger.error("update_admin_status_by_id REJECTED: %s", e)
-            query.edit_message_text("Error rechazando administrador. Revisa logs.")
-            return
-
-        _resolve_important_alert(context, "admin_registration_{}".format(admin_id))
-        query.edit_message_text("❌ Administrador rechazado (REJECTED).")
-        return
-
-    query.answer("Acción no reconocida.", show_alert=True)
+    query.answer("Accion no reconocida.", show_alert=True)
 
 
 def pendientes(update, context):
@@ -2297,6 +2603,15 @@ def admin_config_callback(update, context):
         reset_state = get_courier_reset_state_by_id(courier_id)
         reset_status = _registration_reset_status_label(reset_state)
 
+        rejection_reason = _row_value(courier, "rejection_reason", default=None)
+        rejected_at = _row_value(courier, "rejected_at", default=None)
+        rechazo_lineas = ""
+        if rejection_reason:
+            rechazo_lineas += "\nMotivo de rechazo: {}".format(rejection_reason)
+        if rejected_at:
+            fecha_str = str(rejected_at)[:10] if rejected_at else ""
+            rechazo_lineas += "\nFecha de rechazo: {}".format(fecha_str)
+
         texto = (
             "Detalle del repartidor:\n\n"
             "ID: {id}\n"
@@ -2307,7 +2622,7 @@ def admin_config_callback(update, context):
             "Barrio: {barrio}\n"
             "Placa: {plate}\n"
             "Tipo de moto: {bike_type}\n"
-            "Estado: {status}\n"
+            "Estado: {status}{rechazo_lineas}\n"
             "Reinicio de registro: {reset_status}"
         ).format(
             id=courier["id"],
@@ -2319,6 +2634,7 @@ def admin_config_callback(update, context):
             plate=courier["plate"],
             bike_type=courier["bike_type"],
             status=courier["status"],
+            rechazo_lineas=rechazo_lineas,
             reset_status=reset_status,
         )
 
@@ -2334,6 +2650,8 @@ def admin_config_callback(update, context):
             keyboard.append([InlineKeyboardButton("⛔ Desactivar", callback_data="config_courier_disable_{}".format(courier_id))])
         if status == "INACTIVE":
             keyboard.append([InlineKeyboardButton("✅ Activar", callback_data="config_courier_enable_{}".format(courier_id))])
+            _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
+        if status == "REJECTED":
             _append_registration_reset_button(keyboard, "config_courier", courier_id, status, reset_state)
 
         keyboard.append([InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")])
@@ -2570,13 +2888,6 @@ def admin_config_callback(update, context):
         query.edit_message_text("Aliado activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data.startswith("config_ally_reject_"):
-        ally_id = int(data.split("_")[-1])
-        update_ally_status_by_id(ally_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
-        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_aliados")]]
-        query.edit_message_text("Aliado rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
     if data.startswith("config_ally_reset_"):
         payload = data.replace("config_ally_reset_", "")
         parts = payload.rsplit("_", 1)
@@ -2611,6 +2922,18 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_ally_approval_notification_chat_id(ally_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("ally reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -2635,6 +2958,19 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_ally_approval_notification_chat_id(ally_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "El reinicio de tu registro de aliado fue REVOCADO por el administrador.\n\n"
+                            "Ya no puedes iniciar un nuevo registro con esa autorizacion. "
+                            "Contacta al administrador si crees que es un error."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("ally reset clear notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro revocado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -2690,13 +3026,6 @@ def admin_config_callback(update, context):
         query.edit_message_text("Repartidor activado (APPROVED).", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data.startswith("config_courier_reject_"):
-        courier_id = int(data.split("_")[-1])
-        update_courier_status_by_id(courier_id, "REJECTED", changed_by=f"tg:{update.effective_user.id}")
-        kb = [[InlineKeyboardButton("⬅ Volver", callback_data="config_gestion_repartidores")]]
-        query.edit_message_text("Repartidor rechazado (REJECTED).", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
     if data.startswith("config_courier_reset_"):
         payload = data.replace("config_courier_reset_", "")
         parts = payload.rsplit("_", 1)
@@ -2717,8 +3046,8 @@ def admin_config_callback(update, context):
         reset_state = get_courier_reset_state_by_id(courier_id)
 
         if action == "enable":
-            if courier["status"] != "INACTIVE":
-                query.answer("Primero debe estar INACTIVE para autorizar reinicio.", show_alert=True)
+            if courier["status"] not in ("INACTIVE", "REJECTED"):
+                query.answer("Primero debe estar INACTIVE o REJECTED para autorizar reinicio.", show_alert=True)
                 return
             if reset_state and reset_state.get("registration_reset_active"):
                 query.answer("Este reinicio ya está autorizado.", show_alert=True)
@@ -2731,6 +3060,18 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_courier_approval_notification_chat_id(courier_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "Tu reinicio de registro ha sido autorizado.\n\n"
+                            "Puedes volver a usar el bot y completar tu registro nuevamente."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("courier reset notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro autorizado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -2755,6 +3096,19 @@ def admin_config_callback(update, context):
             except ValueError as e:
                 query.answer(str(e), show_alert=True)
                 return
+            try:
+                _tg = get_courier_approval_notification_chat_id(courier_id)
+                if _tg:
+                    context.bot.send_message(
+                        chat_id=_tg,
+                        text=(
+                            "El reinicio de tu registro de repartidor fue REVOCADO por el administrador.\n\n"
+                            "Ya no puedes iniciar un nuevo registro con esa autorizacion. "
+                            "Contacta al administrador si crees que es un error."
+                        ),
+                    )
+            except Exception as _e:
+                logger.warning("courier reset clear notify: %s", _e)
             query.edit_message_text(
                 "Reinicio de registro revocado correctamente.",
                 reply_markup=InlineKeyboardMarkup([
@@ -2939,6 +3293,191 @@ def admin_parking_review_callback(update, context):
             logger.warning("admin_parking_review_callback: no se pudo notificar al aliado: %s", _e)
 
         admin_parking_review(update, context, show_all=context.user_data.get("parking_show_all", False))
+
+
+# =============================================================================
+# rechazar_conv — Flujo de rechazo con motivo y notificacion al usuario
+# =============================================================================
+
+def rechazar_inicio(update, context):
+    """Entry point: admin pulsa Rechazar. Muestra confirmacion antes de pedir motivo."""
+    query = update.callback_query
+    query.answer()
+    data = query.data
+
+    if data.startswith("config_courier_reject_"):
+        role_id = int(data.replace("config_courier_reject_", ""))
+        role = "COURIER"
+        obj = get_courier_by_id(role_id)
+        nombre = obj["full_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("courier_reject_"):
+        role_id = int(data.replace("courier_reject_", ""))
+        role = "COURIER"
+        obj = get_courier_by_id(role_id)
+        nombre = obj["full_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("config_ally_reject_"):
+        role_id = int(data.replace("config_ally_reject_", ""))
+        role = "ALLY"
+        obj = get_ally_by_id(role_id)
+        nombre = obj["business_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("ally_reject_"):
+        role_id = int(data.replace("ally_reject_", ""))
+        role = "ALLY"
+        obj = get_ally_by_id(role_id)
+        nombre = obj["business_name"] if obj else "ID {}".format(role_id)
+    elif data.startswith("admin_rechazar_"):
+        role_id = int(data.replace("admin_rechazar_", ""))
+        role = "ADMIN"
+        obj = get_admin_by_id(role_id)
+        nombre = obj["full_name"] if obj else "ID {}".format(role_id)
+    else:
+        query.edit_message_text("Accion no reconocida.")
+        return ConversationHandler.END
+
+    context.user_data["rechazar_role"] = role
+    context.user_data["rechazar_id"] = role_id
+    context.user_data["rechazar_nombre"] = nombre
+    context.user_data["rechazar_source"] = data
+
+    kb = [
+        [
+            InlineKeyboardButton("Si, rechazar", callback_data="rechazar_confirmar_si"),
+            InlineKeyboardButton("No, cancelar", callback_data="rechazar_cancelar"),
+        ]
+    ]
+    query.edit_message_text(
+        "Confirmar rechazo\n\n"
+        "Vas a rechazar definitivamente a: {}\n\n"
+        "Esta accion no se puede deshacer desde la UI. Continuar?".format(nombre),
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return RECHAZAR_CONFIRMAR
+
+
+def rechazar_confirmar_si(update, context):
+    """Admin confirma el rechazo: ahora pide el motivo."""
+    query = update.callback_query
+    query.answer()
+    nombre = context.user_data.get("rechazar_nombre", "")
+    kb = [[InlineKeyboardButton("Cancelar", callback_data="rechazar_cancelar")]]
+    query.edit_message_text(
+        "Escribe el motivo del rechazo para {}.\n"
+        "Se guardara en BD y se enviara al usuario por Telegram.\n\n"
+        "O pulsa Cancelar.".format(nombre),
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return RECHAZAR_MOTIVO
+
+
+def rechazar_con_motivo(update, context):
+    """Recibe el texto del motivo, ejecuta el rechazo y notifica al usuario."""
+    motivo = update.message.text.strip()
+    if not motivo:
+        update.message.reply_text("El motivo no puede estar vacio. Escribe el motivo o pulsa Cancelar.")
+        return RECHAZAR_MOTIVO
+
+    role = context.user_data.pop("rechazar_role", None)
+    role_id = context.user_data.pop("rechazar_id", None)
+    nombre = context.user_data.pop("rechazar_nombre", "")
+    changed_by = "tg:{}".format(update.effective_user.id)
+
+    if not role or not role_id:
+        update.message.reply_text("Error: datos de rechazo perdidos. Inicia el proceso de nuevo.")
+        return ConversationHandler.END
+
+    try:
+        if role == "COURIER":
+            update_courier_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_courier_approval_notification_chat_id(role_id)
+            label = "Repartidor"
+        elif role == "ALLY":
+            update_ally_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_ally_approval_notification_chat_id(role_id)
+            label = "Aliado"
+        else:
+            update_admin_status_by_id(role_id, "REJECTED", rejection_reason=motivo, changed_by=changed_by)
+            chat_id = get_admin_telegram_id(role_id)
+            label = "Administrador"
+    except Exception as e:
+        logger.error("rechazar_con_motivo %s %s: %s", role, role_id, e)
+        update.message.reply_text("Error al aplicar el rechazo. Revisa los logs.")
+        return ConversationHandler.END
+
+    if chat_id:
+        try:
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Tu solicitud de registro como {} fue revisada y no fue aprobada.\n\n"
+                    "Motivo: {}\n\n"
+                    "Si tienes preguntas, contacta directamente al administrador."
+                ).format(label, motivo),
+            )
+        except Exception as e:
+            logger.warning("rechazar_con_motivo: no se pudo notificar al usuario %s: %s", chat_id, e)
+
+    update.message.reply_text(
+        "{} rechazado. Motivo guardado en BD.\n\n"
+        "El usuario fue notificado por Telegram.".format(nombre)
+    )
+    return ConversationHandler.END
+
+
+def rechazar_cancelar(update, context):
+    """Admin cancela el rechazo en cualquier punto del flujo."""
+    query = update.callback_query
+    query.answer()
+    role = context.user_data.pop("rechazar_role", None)
+    role_id = context.user_data.pop("rechazar_id", None)
+    context.user_data.pop("rechazar_nombre", None)
+    source = context.user_data.pop("rechazar_source", "")
+
+    # Solo mostrar back button si el admin vino de una vista de detalle (config_* o admin_ver_*)
+    # Para ally_reject_ y courier_reject_ (vistas de pendientes) no hay back callback util
+    if source.startswith("config_courier_reject_") and role_id:
+        back_cb = "config_ver_courier_{}".format(role_id)
+        back_label = "Volver al repartidor"
+    elif source.startswith("config_ally_reject_") and role_id:
+        back_cb = "config_ver_ally_{}".format(role_id)
+        back_label = "Volver al aliado"
+    elif source.startswith("admin_rechazar_") and role_id:
+        back_cb = "admin_ver_admin_{}".format(role_id)
+        back_label = "Volver al administrador"
+    else:
+        back_cb = None
+
+    kb = [[InlineKeyboardButton(back_label, callback_data=back_cb)]] if back_cb else []
+    query.edit_message_text(
+        "Rechazo cancelado.",
+        reply_markup=InlineKeyboardMarkup(kb) if kb else None,
+    )
+    return ConversationHandler.END
+
+
+rechazar_conv = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^config_courier_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^courier_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^config_ally_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^ally_reject_\d+$"),
+        CallbackQueryHandler(rechazar_inicio, pattern=r"^admin_rechazar_\d+$"),
+    ],
+    states={
+        RECHAZAR_CONFIRMAR: [
+            CallbackQueryHandler(rechazar_confirmar_si, pattern=r"^rechazar_confirmar_si$"),
+            CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+        ],
+        RECHAZAR_MOTIVO: [
+            CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+            MessageHandler(Filters.text & ~Filters.command, rechazar_con_motivo),
+        ],
+    },
+    fallbacks=[
+        CallbackQueryHandler(rechazar_cancelar, pattern=r"^rechazar_cancelar$"),
+    ],
+    name="rechazar_conv",
+    persistent=True,
+)
 
 
 def config_ally_subsidy_start(update, context):

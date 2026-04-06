@@ -23,6 +23,8 @@ class Permission(str, Enum):
     VIEW_COURIERS_MAP       = "view_couriers_map"
     VIEW_UNASSIGNED_ORDERS  = "view_unassigned_orders"
     MANAGE_SETTINGS         = "manage_settings"       # Solo PLATFORM_ADMIN
+    VIEW_OWN_EARNINGS       = "view_own_earnings"     # Courier: sus propias ganancias
+    VIEW_OWN_PROFILE        = "view_own_profile"      # Todos: ver perfil propio
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +42,7 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.VIEW_COURIERS_MAP,
         Permission.VIEW_UNASSIGNED_ORDERS,
         Permission.MANAGE_SETTINGS,    # Exclusivo: configuración global
+        Permission.VIEW_OWN_PROFILE,
     },
     UserRole.ADMIN_LOCAL: {
         Permission.VIEW_DASHBOARD,
@@ -51,9 +54,14 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.VIEW_COURIERS_MAP,
         Permission.VIEW_UNASSIGNED_ORDERS,
         # SIN MANAGE_SETTINGS: configuración es exclusiva de plataforma
+        Permission.VIEW_OWN_PROFILE,
     },
-    UserRole.COURIER: set(),   # Sin acceso al panel web
-    UserRole.ALLY:    set(),   # Sin acceso al panel web
+    UserRole.COURIER: {
+        Permission.VIEW_DASHBOARD,
+        Permission.VIEW_OWN_EARNINGS,
+        Permission.VIEW_OWN_PROFILE,
+    },
+    UserRole.ALLY: set(),   # Sin acceso al panel web
 }
 
 

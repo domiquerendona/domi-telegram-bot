@@ -14,7 +14,7 @@ Este archivo describe la estructura del proyecto, flujos de trabajo y convencion
 
 1. **Bot de Telegram** (Backend/): bot conversacional que gestiona pedidos, registros y operaciones de todos los actores del sistema.
 2. **API Web** (Backend/web/): API REST con FastAPI que expone endpoints para el panel administrativo.
-3. **Panel Web** (Frontend/): aplicación Angular 21 con SSR para administradores del panel. Soporta dos roles: `ADMIN_PLATFORM` (acceso total) y `ADMIN_LOCAL` (vistas filtradas por equipo).
+3. **Panel Web** (Frontend/): aplicación Angular 21 con SSR para administradores y repartidores. Soporta tres roles: `ADMIN_PLATFORM` (acceso total), `ADMIN_LOCAL` (vistas filtradas por equipo) y `COURIER` (panel propio de ganancias y perfil).
 
 Los actores principales del sistema son:
 - **Platform Admin**: administrador global de la plataforma (un solo usuario).
@@ -60,8 +60,8 @@ domi-telegram-bot/
 │   │   ├── quotation.py          # cotizar_conv (flujo de cotización de envío)
 │   │   ├── location_agenda.py    # admin_dirs_conv, ally_locs_conv (gestión de ubicaciones)
 │   │   ├── customer_agenda.py    # clientes_conv, agenda_conv, admin_clientes_conv, ally_clientes_conv
-│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers
-│   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, cmd_saldo, admin_local_callback, ally_approval_callback
+│   │   ├── registration.py       # soy_aliado/ally_conv, soy_repartidor/courier_conv, soy_admin/admin_conv, admin_cedula handlers, preseleccion por invitacion admin
+│   │   ├── recharges.py          # recargar_conv, configurar_pagos_conv, ingreso_conv, recarga_directa_conv, cmd_saldo, admin_local_callback, ally_approval_callback
 │   │   ├── order.py              # nuevo_pedido_conv, pedido_incentivo_conv, offer_suggest_inc_conv, admin_pedido_conv (~99 funciones)
 │   │   ├── route.py              # nueva_ruta_conv (flujo de rutas multi-parada, ~32 funciones)
 │   │   ├── admin_panel.py        # admin_menu, admin_menu_callback, aliados_pendientes, repartidores_pendientes, admins_pendientes, admin_ver_pendiente, admin_aprobar_rechazar_callback, pendientes, volver_menu_global, courier_pick_admin_callback, reference validation helpers
@@ -80,7 +80,10 @@ domi-telegram-bot/
 │       │   ├── __init__.py
 │       │   ├── admin.py          # Endpoints: POST /admin/users/{id}/approve, etc.
 │       │   ├── dashboard.py      # Endpoints del dashboard
-│       │   └── users.py          # Endpoints de usuarios
+│       │   ├── users.py          # Endpoints de usuarios
+│       │   ├── form.py           # Endpoints públicos del formulario de pedido del aliado
+│       │   ├── courier.py        # Endpoints panel repartidor: GET /courier/dashboard|earnings|profile
+│       │   └── profile.py        # Endpoint genérico: GET /profile (todos los roles)
 │       ├── auth/
 │       │   ├── __init__.py
 │       │   ├── dependencies.py   # get_current_user (dependencia FastAPI)
@@ -116,16 +119,23 @@ domi-telegram-bot/
 │           │   ├── interceptors/ # auth.interceptor.ts
 │           │   └── services/     # api.ts (servicio HTTP)
 │           ├── features/
-│           │   └── superadmin/
-│           │       ├── dashboard/
-│           │       ├── settings/
-│           │       └── users/
+│           │   ├── superadmin/
+│           │   │   ├── dashboard/
+│           │   │   ├── settings/
+│           │   │   └── users/
+│           │   ├── courier/
+│           │   │   ├── dashboard/    # CourierDashboardComponent — KPIs del repartidor
+│           │   │   └── ganancias/    # CourierGananciasComponent — entregas filtradas por periodo
+│           │   └── shared/
+│           │       └── perfil/       # PerfilComponent — perfil compartido todos los roles
 │           └── layout/
-│               ├── components/   # header/, sidebar/
-│               └── superadmin-layout/
+│               ├── components/         # header/, sidebar/
+│               ├── superadmin-layout/
+│               └── courier-layout/     # Layout con sidebar morado (#4338ca) para repartidores — mismo diseño que admin
 │
 ├── docs/
 │   ├── HITOS.md                  # Documento histórico de hitos
+│   ├── roadmap_futuro.md         # Mejoras futuras importantes activables por etapa
 │   ├── reglas_operativas.md      # Matriz de estados y botones UI
 │   ├── testing_strategy.md       # Estrategia de testing vigente
 │   ├── alineacion_codigo_documentacion_2026-03-12.md  # Snapshot histórico de auditoría
@@ -198,7 +208,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 | `location_agenda.py` | `admin_dirs_conv` (mis ubicaciones admin), `ally_locs_conv` (mis ubicaciones aliado) |
 | `customer_agenda.py` | `clientes_conv`, `agenda_conv`, `admin_clientes_conv`, `ally_clientes_conv` |
 | `registration.py` | `ally_conv` (soy_aliado), `courier_conv` (soy_repartidor), `admin_conv` (soy_admin), handlers de cédula/selfie |
-| `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
+| `recharges.py` | `recargar_conv`, `configurar_pagos_conv`, `ingreso_conv`, `recarga_directa_conv`, `cmd_saldo`, `admin_local_callback`, `ally_approval_callback` |
 | `order.py` | `nuevo_pedido_conv`, `pedido_incentivo_conv`, `offer_suggest_inc_conv`, `admin_pedido_conv` — flujo completo de creación de pedidos (~99 funciones) |
 | `route.py` | `nueva_ruta_conv` — flujo de rutas multi-parada. Al registrar parada "cliente nuevo": sin campos ciudad/barrio/notas; al confirmar dirección pregunta si guardar en agenda (`ruta_guardar_cust_si/no`). |
 | `admin_panel.py` | `admin_menu`, `admin_menu_callback`, `aliados_pendientes`, `repartidores_pendientes`, `admins_pendientes`, `admin_ver_pendiente`, `admin_aprobar_rechazar_callback`, `pendientes`, `volver_menu_global`, `courier_pick_admin_callback`, helpers de referencias |
@@ -207,6 +217,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
+  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad y ahora agota 3 reintentos automáticos antes de cancelar. Los defaults del ciclo de mercado son configurables por `settings` (`market_retry_limit`, `order_market_cycle_seconds`, `route_market_cycle_seconds`) y el contador de reintentos se reconstruye al recuperar ofertas activas tras reinicio.
 - **`profile_changes.py`**: flujo de solicitudes de cambio de perfil de usuarios.
 
 ### Regla Anti-Importación Circular
@@ -299,24 +310,38 @@ Aquí solo se conserva el contexto técnico: las migraciones del proyecto son no
 | `identities` | Identidad global (teléfono + documento únicos) |
 | `admin_couriers` | Vínculos admin ↔ repartidor con estado y balance |
 | `admin_allies` | Vínculos admin ↔ aliado con estado y balance |
+| `admin_invite_tokens` | Tokens robustos de invitación por admin y rol (`ALLY` / `COURIER`). Guarda hash, expiración, estado activo y contador de conversiones (`PENDING` creado). El token compartible es firmado y se reconstruye desde la fila activa; no se persiste en texto plano. |
+| `admin_invite_token_uses` | Auditoría de eventos de invitación (apertura del `/start`, preselección del equipo y creación del `PENDING`), con admin, rol, usuario y resultado. |
 | `admin_locations` | Ubicaciones de recogida guardadas por administradores (para pedidos especiales). Columna `status TEXT DEFAULT 'ACTIVE'` para soft-delete. |
 | `admin_customers` | Clientes de entrega del admin (personas que le solicitan domicilios). Campos: `admin_id`, `name`, `phone`, `notes`, `status`. |
 | `admin_customer_addresses` | Direcciones de entrega de cada cliente del admin. Campos: `customer_id`, `label`, `address_text`, `city`, `barrio`, `notes`, `lat`, `lng`, `status`, `use_count INTEGER DEFAULT 0`, `parking_status TEXT DEFAULT 'NOT_ASKED'`, `parking_reviewed_by INTEGER`, `parking_reviewed_at TEXT`. |
 | `orders` | Pedidos con todo su ciclo de vida. Columnas de tracking: `courier_arrived_at` (timestamp GPS), `courier_accepted_lat/lng` (posición al aceptar, base T+5), `dropoff_lat/lng` (coordenadas del punto de entrega). Columnas de pedido admin: `creator_admin_id` (NULL = pedido de aliado, valor = admin creador), `ally_id` (nullable, NULL en pedidos especiales de admin) |
-| `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `status` (PENDING/RESOLVED), `resolution` (DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. |
+| `order_support_requests` | Solicitudes de ayuda por pin mal ubicado. Campos: `order_id` (nullable), `route_id` (nullable), `route_seq` (nullable, para rutas), `courier_id`, `admin_id`, `support_type` (`PICKUP_PIN`, `DELIVERY_PIN`, `ROUTE_PICKUP_PIN`, `ROUTE_STOP_PIN`), `status` (PENDING/RESOLVED), `resolution` (CONFIRMED_ARRIVAL/RELEASED/DELIVERED/CANCELLED_COURIER/CANCELLED_ALLY), `created_at`, `resolved_at`, `resolved_by`. El tipo de soporte distingue explícitamente ayuda para pickup vs ayuda para entrega. |
 | `recharge_requests` | Solicitudes de recarga de saldo |
 | `ledger` | Libro contable de todas las transacciones |
 | `settings` | Configuración del sistema (clave-valor) |
 | `profile_change_requests` | Solicitudes de cambio de perfil |
-| `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
+| `web_users` | Usuarios del panel web (login con contraseña hasheada). Campos: `id`, `username` (UNIQUE), `password_hash` (bcrypt), `role` (`ADMIN_PLATFORM`\|`ADMIN_LOCAL`\|`COURIER`), `status` (`APPROVED`\|`INACTIVE`), `admin_id` (FK → admins.id, NULL para ADMIN_PLATFORM y COURIER), `courier_id` (FK → couriers.id, solo para rol COURIER), `created_at`, `updated_at`. Seed inicial desde `WEB_ADMIN_USER`/`WEB_ADMIN_PASSWORD` via `ensure_web_admin()`. |
 | `geocoding_text_cache` | Caché de geocodificación por texto para evitar llamadas repetidas a Google Maps API. Campos: `text_key` (TEXT UNIQUE — versión normalizada del texto buscado), `lat` (REAL), `lng` (REAL), `display_name` (TEXT), `city` (TEXT), `barrio` (TEXT), `created_at` (TIMESTAMP). Funciones: `get_geocoding_text_cache(text_key)`, `upsert_geocoding_text_cache(...)`. |
 | `ally_subscriptions` | Registro histórico de suscripciones mensuales de aliados. Campos: `id`, `ally_id` (FK → allies.id), `admin_id` (FK → admins.id), `price` (INTEGER — precio total cobrado al aliado), `platform_share` (INTEGER — parte fija que va a plataforma, mínimo $20.000), `admin_share` (INTEGER — margen del admin = price − platform_share), `starts_at` (TIMESTAMP), `expires_at` (TIMESTAMP), `status` (TEXT: `ACTIVE`\|`EXPIRED`\|`CANCELLED`), `created_at`. |
-| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. |
+| `admin_allies` | (**Columna nueva 2026-03-22**) `subscription_price INTEGER DEFAULT NULL` — precio de suscripción mensual que el admin ha configurado para este aliado. NULL = sin precio configurado. (**Columna nueva 2026-03-28**) `parking_fee_enabled INTEGER DEFAULT 0` — toggle de cobro por parqueo difícil para este aliado. 0 = desactivado (default), 1 = activo. (**Columna nueva**) `custom_pricing_json TEXT DEFAULT NULL` — Tarifas personalizadas por el admin para este aliado; si es NULL usa las globales de plataforma. |
 | `scheduled_jobs` | Persistencia de timers del bot para recuperación tras reinicios. Campos: `job_name` (TEXT PRIMARY KEY), `callback_name` (TEXT — nombre de la función en `JOB_REGISTRY` de `order_delivery.py`), `fire_at` (TIMESTAMP — momento programado de disparo), `job_data` (TEXT JSON — contexto serializado del job), `status` (TEXT: `PENDING`\|`EXECUTED`\|`CANCELLED`), `created_at`, `updated_at`. Funciones en `db.py`: `schedule_job`, `cancel_scheduled_job`, `mark_job_executed`, `get_pending_scheduled_jobs` (re-exportadas en `services.py`). |
 
 ---
 
 ## Flujos de Conversación (Bot de Telegram)
+
+### Patron unificado de direccion + GPS en registros (IMPLEMENTADO 2026-04-04)
+
+Los tres flujos de registro (aliado, repartidor, admin local) usan un paso unico para capturar la direccion y sus coordenadas. El paso anterior (barrio) incluye en su `next_prompt` el mensaje completo que explica las opciones:
+
+- **Texto escrito**: se geocodifica con `resolve_location()` → se muestra confirmacion con pin → al confirmar se guarda `formatted_address` (clave `address`/`residence_address`/`admin_residence_address`) y lat/lng.
+- **Link de Google Maps o coordenadas**: se parsean con `extract_lat_lng_from_text()` → se guardan directamente (y el texto como address).
+- **PIN de Telegram**: se guardan lat/lng directamente (address queda vacio).
+
+Claves temporales usadas durante geocoding: `ally_geo_formatted`, `courier_geo_formatted`, `admin_geo_formatted`. Se hacen pop en el callback de confirmacion.
+
+Estados eliminados (ya no existen en los ConversationHandlers): `ALLY_ADDRESS`, `COURIER_RESIDENCE_ADDRESS`, `LOCAL_ADMIN_RESIDENCE_ADDRESS`. Las constantes siguen definidas en `states.py` por compatibilidad de rango pero no se usan.
 
 ### Convenciones de Estado (`context.user_data`)
 
@@ -325,11 +350,12 @@ Aqu?? se resume el mapa actual de prefijos usados por los flujos:
 
 | Flujo | Prefijos de claves |
 |-------|-------------------|
-| Registro aliado | `ally_phone`, `ally_name`, `ally_owner`, `ally_document`, `city`, `barrio`, `address`, `ally_lat`, `ally_lng` |
-| Registro repartidor | `phone`, `courier_fullname`, `courier_idnumber`, `city`, `barrio`, `residence_address`, `courier_lat`, `courier_lng` |
-| Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng` |
+| Registro aliado | `ally_phone`, `ally_name`, `ally_owner`, `ally_document`, `city`, `barrio`, `address`, `ally_lat`, `ally_lng`, `ally_geo_formatted` (temporal geocoding) |
+| Registro repartidor | `phone`, `courier_fullname`, `courier_idnumber`, `city`, `barrio`, `residence_address`, `courier_lat`, `courier_lng`, `courier_geo_formatted` (temporal geocoding) |
+| Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng`, `admin_geo_formatted` (temporal geocoding) |
 | Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
+| Recarga directa (plataforma) | `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
 | Agenda clientes (coordenadas) | `clientes_geo_mode` (`corregir_coords` al agregar/corregir coords), `current_customer_id`, `current_address_id`, `clientes_geo_address_input` |
 
@@ -357,7 +383,7 @@ Separador operativo actual: guion bajo (`_`).
 | `dir_` | Gestión de direcciones de recogida |
 | `guardar_` | Guardar dirección de cliente |
 | `menu_` | Navegación de menú |
-| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤150m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado), `order_pickup_pinissue_{id}` (courier reporta pin de **recogida** mal ubicado — disponible cuando courier está lejos del pickup ≥150m), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤150m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
+| `order_` | Ofertas y entrega de pedidos. Incluye: `order_find_another_{id}` (aliado busca otro courier), `order_call_courier_{id}` (aliado ve teléfono del courier), `order_wait_courier_{id}` (aliado sigue esperando), `order_delivered_confirm_{id}` / `order_delivered_cancel_{id}` (confirmación de entrega en courier — requiere GPS activo y radio ≤150m), `order_confirm_pickup_{id}` (courier confirma recogida del pedido), `order_pinissue_{id}` (courier reporta pin de entrega mal ubicado para pedir ayuda al admin en el cierre de la entrega), `order_pickup_pinissue_{id}` (courier reporta pin de **recogida** mal ubicado para pedir ayuda al admin al marcar su llegada al pickup), `order_release_reason_{id}_{reason}` / `order_release_confirm_{id}_{reason}` / `order_release_abort_{id}` (liberación responsable con motivo), `order_arrived_pickup_{id}` (courier pulsa "Confirmar llegada al pickup" — requiere GPS activo ≤150m del pickup), `order_arrival_enroute_{id}` (courier responde "Sigo en camino" en T+15 — notifica al aliado), `order_arrival_release_{id}` (courier decide liberar desde el mensaje T+15 porque no puede llegar) |
 | `admin_pinissue_` | Panel de soporte de pin mal ubicado — pedidos (entrega). Incluye: `admin_pinissue_fin_{id}` (admin finaliza servicio), `admin_pinissue_cancel_courier_{id}` (admin cancela, falla del courier), `admin_pinissue_cancel_ally_{id}` (admin cancela, falla del aliado) |
 | `admin_pickup_` | Panel de soporte de pin mal ubicado — pedidos (recogida). Incluye: `admin_pickup_confirm_{order_id}_{support_id}` (admin confirma llegada del courier), `admin_pickup_release_{order_id}_{support_id}` (admin libera el pedido para re-oferta) |
 | `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas (entrega). Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
@@ -373,7 +399,8 @@ Separador operativo actual: guion bajo (`_`).
 | `terms_` | Aceptación de términos y condiciones |
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
-| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
+| `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point normal), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado en búsqueda), `plat_rdir_presel_{COURIER\|ALLY}_{id}` (entrada directa desde vista saldo bajo), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). `plat_rec_saldo_bajo` (en `plat_recargas_callback`): vista de couriers y aliados con balance < $5.000. Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar) |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
 | `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
@@ -391,10 +418,12 @@ En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en cur
 - Muestra el pedido activo (`orders.status` en `ACCEPTED`/`PICKED_UP`) y/o la ruta activa (`routes.status` en `ACCEPTED`).
 - Botones:
   - Si `orders.status == ACCEPTED`:
-    - "Solicitar confirmacion de recogida" → `order_pickup_{id}`.
+    - "Confirmar llegada al pickup" → `order_pickup_{id}`.
+    - Si el repartidor ya está en tienda pero el pin de recogida está mal, usa `order_pickup_pinissue_{id}`. Este soporte solo sirve para marcar la llegada al pickup o liberar el pedido; no corresponde a finalizar la entrega.
     - "Liberar pedido" → `order_release_{id}` → requiere motivo y confirmación (`order_release_reason_{id}_{reason}` → `order_release_confirm_{id}_{reason}`).
   - Si `orders.status == PICKED_UP`:
     - "Finalizar pedido" → `order_delivered_confirm_{id}` → pregunta "Ya entregaste?" → `order_delivered_{id}` o `order_delivered_cancel_{id}`.
+    - Si el repartidor ya entregó pero el pin del cliente está mal, usa `order_pinissue_{id}`. Este soporte sí corresponde al cierre de la entrega y el admin puede finalizar el servicio o cancelar con atribución de falla.
   - "Entregar siguiente parada" (ruta) → `ruta_entregar_{route_id}_{seq}` (si hay paradas pendientes).
   - "Liberar ruta" → `ruta_liberar_{route_id}` → requiere motivo y confirmación (`ruta_liberar_motivo_{route_id}_{reason}` → `ruta_liberar_confirmar_{route_id}_{reason}`).
 - Mientras exista pedido o ruta en curso, el courier no puede aceptar nuevas ofertas (`order_accept_*` / `ruta_aceptar_*`).
@@ -552,11 +581,12 @@ export const serverRoutes: ServerRoute[] = [
 
 **`server.ts` — fragmento clave:**
 ```typescript
-const angularApp = new AngularNodeAppEngine({
-  allowedHosts: ['angular-production-44c8.up.railway.app', 'localhost'],
-});
+const allowedHosts = process.env['ALLOWED_HOSTS']
+  ? process.env['ALLOWED_HOSTS'].split(',')
+  : ['angular-production-44c8.up.railway.app', 'localhost'];
+const angularApp = new AngularNodeAppEngine({ allowedHosts });
 ```
-Sin `allowedHosts`, Angular SSR rechaza cualquier request cuyo `Host` header no sea `localhost`.
+Sin `allowedHosts`, Angular SSR rechaza cualquier request cuyo `Host` header no sea `localhost`. El valor por defecto protege producción; para staging se pasa `ALLOWED_HOSTS` como variable de entorno en Railway.
 
 ### Inicializar/Reiniciar Base de Datos (LOCAL)
 
@@ -695,9 +725,11 @@ node_modules/
 
 **`Frontend/Dockerfile`** — fragmento crítico:
 ```dockerfile
+ARG BACKEND_URL=https://backend-production-dc5f.up.railway.app
+
 COPY . .
-RUN printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.ts \
- && printf 'export const environment = { production: true, apiBaseUrl: "https://backend-production-dc5f.up.railway.app" };\n' > src/environments/environment.prod.ts
+RUN printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.ts \
+ && printf "export const environment = { production: true, apiBaseUrl: \"${BACKEND_URL}\" };\n" > src/environments/environment.prod.ts
 RUN npm run build -- --configuration production
 ```
 Los `printf` sobreescriben los env files **después** de copiar el código fuente y **antes** de compilar. `--configuration production` es obligatorio para que Angular use `environment.prod.ts`.
@@ -708,7 +740,29 @@ Los `printf` sobreescriben los env files **después** de copiar el código fuent
 2. **SIEMPRE** verificar que `.angular/` esté en `.dockerignore` antes de hacer deploy.
 3. Si el build en Railway tarda menos de 20 segundos, es señal de que usó caché stale.
 4. Si `apiBaseUrl` aparece como `localhost:8000` en el navegador (ver DevTools → Network), la causa es alguno de los dos puntos anteriores.
-5. Al cambiar el dominio de producción del backend, actualizar los `printf` en el `Dockerfile`.
+5. Al cambiar el dominio de producción del backend, actualizar el valor por defecto del `ARG BACKEND_URL` en el `Dockerfile`.
+
+#### Entorno de staging del frontend (CONFIGURADO 2026-04-01)
+
+El frontend soporta dos servicios Railway independientes: DEV (staging) y PROD (main). Mismo código, distinta configuración.
+
+| Variable | Servicio PROD | Servicio DEV (staging) |
+|----------|--------------|------------------------|
+| `BACKEND_URL` | No se pasa (usa default del ARG) | URL del backend DEV en Railway |
+| `ALLOWED_HOSTS` | No se pasa (usa default del código) | Dominio Railway asignado al servicio DEV, ej. `angular-staging-xxxx.up.railway.app,localhost` |
+
+**Pasos para crear el servicio de staging en Railway:**
+1. New Service → GitHub Repo → mismo repositorio
+2. Root Directory: `Frontend` / Branch: `staging` / Builder: Dockerfile
+3. Agregar variable `BACKEND_URL` apuntando al backend DEV
+4. Railway asigna un dominio → copiar ese dominio y agregarlo como `ALLOWED_HOSTS`
+5. Redeploy
+
+**Flujo resultante:**
+```
+push a staging  →  Railway redespliega "angular-DEV"   →  apunta al backend DEV
+push a main     →  Railway redespliega "angular-PROD"  →  apunta al backend PROD
+```
 
 ---
 
@@ -724,7 +778,7 @@ Aquí solo se mantiene un resumen explicativo de las ramas que existen hoy en el
 | `main` | Permanente | Producción (Railway PROD) |
 | `staging` | Permanente | Integración y trabajo diario |
 | `claude/` | Temporal | Ramas temporales de asistentes |
-| `verify/` | Temporal | Validaciones acotadas, especialmente de BD |
+| `verify/` | Temporal | Validaciones acotadas cuando se quiera aislar un cambio |
 | `luisa-web` | Permanente | Rama de trabajo de la colaboradora Luisa |
 
 ### Flujo de Trabajo
@@ -732,6 +786,7 @@ Aquí solo se mantiene un resumen explicativo de las ramas que existen hoy en el
 ```
 staging   ──(validado)──►  main
 verify/*  ──merge──►  staging  ──(validado)──►  main
+           (opcional)
                         (entorno DEV:
                          BOT_TOKEN DEV
                          DATABASE_URL separada)
@@ -788,6 +843,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 |-----|-------------|--------|
 | Admin Plataforma | `ADMIN_PLATFORM` | Datos globales + gestión de usuarios del panel |
 | Admin Local | `ADMIN_LOCAL` | Datos filtrados por su equipo (admin_id) |
+| Repartidor | `COURIER` | Solo su propio dashboard, ganancias y perfil (`/courier/*`) |
 
 **Flujo de autenticación:**
 1. `POST /auth/login` verifica bcrypt → retorna `{ token, username, role }`
@@ -795,6 +851,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 3. `AuthService` (Angular) lee `admin_role` y mantiene permisos en signals
 4. `RoleGuard` (`role.guard.ts`) protege rutas por permiso (ej. `manage_settings`)
 5. `AuthGuard` verifica presencia del token; si no existe, llama `authService.clear()` y redirige a login
+6. Post-login: `authService.homeRoute()` redirige a `/courier` para COURIER, `/superadmin` para el resto
 
 **Seeding del admin inicial:**
 - `ensure_web_admin()` en `db.py` crea el usuario `ADMIN_PLATFORM` al arrancar la app si no existe.
@@ -811,34 +868,79 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `POST /admin/web-users` — crea nuevo usuario (username, password, role, admin_id opcional)
 - `PATCH /admin/web-users/{id}/status` — activa (`APPROVED`) o inactiva (`INACTIVE`) un usuario
 
-**Funciones nuevas en `db.py` (re-exportadas en `services.py`):**
-- `create_web_user(username, password_hash, role, admin_id)` → int
-- `get_web_user_by_username(username)` → row
-- `get_web_user_by_id(user_id)` → row
+**Funciones en `db.py` relacionadas con el panel web:**
+- `create_web_user(username, password_hash, role, admin_id, courier_id=None)` → int
+- `get_web_user_by_username(username)` → row (incluye `courier_id`, `created_at`)
+- `get_web_user_by_id(user_id)` → row (incluye `courier_id`, `created_at`)
 - `list_web_users()` → list[row]
 - `update_web_user_status(user_id, status)`
 - `update_web_user_password(user_id, password_hash)`
 - `ensure_web_admin()` — seed idempotente desde env vars
+- `get_courier_web_dashboard(courier_id)` → dict con `entregas_hoy`, `entregas_mes`, `tarifa_mes`, `saldo`, `total_entregas`
+- `get_courier_web_earnings(courier_id, start_s, end_s)` → list con pedidos DELIVERED del repartidor en el rango de fechas
+- `get_courier_web_profile(courier_id)` → dict con `full_name`, `phone`, `city`, `status`, `vehicle_type`
+- `update_admin_name_phone(admin_id, full_name, phone)` — actualiza nombre y teléfono en tabla `admins` (sin `updated_at` — esa columna no existe en admins)
+- `update_courier_name_phone(courier_id, full_name, phone)` — actualiza nombre y teléfono en tabla `couriers` (sin `updated_at` — esa columna no existe en couriers)
+- `get_admin_recent_activity(admin_id)` → list — últimos 5 cambios de estado en `admin_couriers`/`admin_allies` del equipo. `admin_id=None` = todos (Platform Admin)
+- `get_courier_recent_activity(courier_id)` → list — últimas 5 entregas DELIVERED del repartidor
+
+**`WebUser` dataclass (`web/users/repository.py`):**
+- Campo `created_at: Optional[str]` — fecha de creación del usuario del panel (mapeado desde índice 7 en row SQLite)
 
 **Frontend Angular:**
-- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `clear()`
+- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
-- Sidebar: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`
+- Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
+- Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar morado `#4338ca` 260px (idéntico al admin), header con barra de búsqueda y avatar, footer con `base="/courier"`. Incluye rutas legales/soporte bajo `/courier/`.
+- `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`. Diseño con tarjetas de gradiente igual al admin (indigo, blue, teal, purple, dark). Control flow `@if`.
+- `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`. Tabs de periodo con paleta morada (`#4338ca`). Tarjetas de resumen con gradiente. Control flow `@if/@for`.
+- `PerfilComponent` (`features/shared/perfil/`) — perfil compartido para todos los roles, llama `GET /profile`. Incluye: avatar con iniciales (morado para todos los roles), edición inline de nombre/teléfono, cambio de contraseña, campo "Miembro desde", indicador de estado animado, sección de actividad reciente
+- `FooterComponent` (`layout/components/footer/footer.ts`) — acepta `@Input() base = '/superadmin'`. Usar `base="/courier"` en el courier layout para que los links apunten al prefijo correcto.
+- Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`, `/courier/terminos`, `/courier/datos-personales`, `/courier/politica-uso`, `/courier/centro-ayuda`, `/courier/contacto`, `/courier/preguntas-frecuentes`
+- Ruta perfil admin: `/superadmin/perfil`
+
+**Bugs corregidos en `db.py` (2026-04-01):**
+- `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
+- `get_admin_recent_activity`: `a.name` → `a.business_name` (tabla `allies`)
+- `get_admin_panel_users_data`: `ORDER BY id DESC` → `ORDER BY 1 DESC` en UNION ALL (compatibilidad SQLite)
+- `web/schemas/user.py`: `document_number: str` → `document_number: str = ""` (nullable en BD)
+- `web/api/admin.py`: mapping `document_number` con `or ""`
 
 **Permisos por rol (frontend y backend son espejo):**
 
-| Permiso | ADMIN_PLATFORM | ADMIN_LOCAL |
-|---------|:-:|:-:|
-| `view_dashboard` | ✓ | ✓ |
-| `view_users` | ✓ | ✓ |
-| `approve_user` | ✓ | ✓ |
-| `reject_user` | ✓ | — |
-| `deactivate_user` | ✓ | ✓ |
-| `reactivate_user` | ✓ | ✓ |
-| `view_couriers_map` | ✓ | ✓ |
-| `view_unassigned_orders` | ✓ | ✓ |
-| `manage_settings` | ✓ | — |
+| Permiso | ADMIN_PLATFORM | ADMIN_LOCAL | COURIER |
+|---------|:-:|:-:|:-:|
+| `view_dashboard` | ✓ | ✓ | ✓ |
+| `view_users` | ✓ | ✓ | — |
+| `approve_user` | ✓ | ✓ | — |
+| `reject_user` | ✓ | — | — |
+| `deactivate_user` | ✓ | ✓ | — |
+| `reactivate_user` | ✓ | ✓ | — |
+| `view_couriers_map` | ✓ | ✓ | — |
+| `view_unassigned_orders` | ✓ | ✓ | — |
+| `manage_settings` | ✓ | — | — |
+| `view_own_earnings` | — | — | ✓ |
+| `view_own_profile` | ✓ | ✓ | ✓ |
+
+**Endpoints del panel repartidor (IMPLEMENTADO 2026-04-01):**
+- `GET /courier/dashboard` — KPIs: entregas hoy/mes, tarifa mes, saldo, total histórico. Requiere rol `COURIER` + `courier_id` vinculado.
+- `GET /courier/earnings?period=hoy|semana|mes` — lista de pedidos DELIVERED con tarifa, incentivo, aliado y ciudad destino.
+- `GET /courier/profile` — nombre, teléfono, ciudad, vehículo, estado del repartidor.
+
+**Endpoints de perfil (`web/api/profile.py`) — todos los roles (IMPLEMENTADO 2026-04-01):**
+- `GET /profile` — perfil del usuario autenticado. Retorna `{ username, role, created_at, detail }`. Para `ADMIN_PLATFORM` consulta `admins WHERE team_code = 'PLATFORM'`; para `ADMIN_LOCAL` consulta `admins WHERE id = admin_id`; para `COURIER` llama `get_courier_web_profile`.
+- `PATCH /profile/password` — cambia contraseña del usuario autenticado. Body: `{ current_password, new_password }`. Verifica bcrypt antes de actualizar.
+- `PATCH /profile/detail` — actualiza nombre y teléfono. Body: `{ full_name, phone }`. Escribe en `admins` o `couriers` según el rol. Para `ADMIN_PLATFORM` sin `admin_id` vinculado: busca el admin con `team_code = 'PLATFORM'` automáticamente.
+- `GET /profile/activity` — actividad reciente. Para admin: últimos 5 cambios en su equipo (`get_admin_recent_activity`). Para courier: últimas 5 entregas (`get_courier_recent_activity`).
+
+**Nota técnica importante — tablas `admins` y `couriers`:** estas tablas **no tienen columna `updated_at`**. Cualquier UPDATE sobre ellas debe omitir ese campo. Solo las tablas de vínculo (`admin_couriers`, `admin_allies`) tienen `updated_at`.
+
+**Cómo crear un usuario COURIER en el panel:**
+1. Admin Plataforma → panel Administradores → formulario "Nuevo usuario" → rol "Repartidor" → seleccionar repartidor aprobado del dropdown.
+2. Equivalente API: `POST /admin/web-users` con `role: "COURIER"` y `courier_id: <id del courier en BD>`.
+3. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
+4. Solo ve sus propios datos; no puede acceder a `/superadmin`.
 
 ---
 
@@ -939,6 +1041,66 @@ Aquí se documenta el modelo funcional ya implementado y los puntos donde ese co
 - Claves user_data: `ingreso_monto`, `ingreso_metodo`
 - Función en db.py: `register_platform_income(admin_id, amount, method, note)`
 - Re-exportada en services.py; importada en main.py desde services.py
+
+### Recarga Manual desde el Admin de Plataforma (IMPLEMENTADO 2026-04-06)
+
+El Admin de Plataforma puede recargar cualquier usuario (repartidor, aliado o admin local) directamente desde el panel de recargas **sin que el usuario deba solicitarla**.
+
+**Entry point:** Panel de Recargas → botón "Recarga directa a usuario" → callback `plat_rdir_inicio`
+
+**Entry points de `recarga_directa_conv`:**
+- `plat_rdir_inicio` → flujo normal (selección de tipo → búsqueda → monto → nota)
+- `plat_rdir_presel_{COURIER|ALLY}_{id}` → acceso directo con usuario ya pre-seleccionado (desde vista "Saldo bajo"), salta al estado `RECARGA_DIR_MONTO`
+
+**Flujo normal (`recarga_directa_conv` en `handlers/recharges.py`):**
+1. Selecciona tipo: Repartidor / Aliado / Admin Local → estado `RECARGA_DIR_TIPO` (1016)
+2. Escribe texto para buscar (o `.` para ver todos) → estado `RECARGA_DIR_BUSCAR` (1019); selecciona usuario con `plat_rdir_usr_{id}`
+3. Escribe el monto → estado `RECARGA_DIR_MONTO` (1017)
+4. Escribe nota o usa "Sin nota" → estado `RECARGA_DIR_NOTA` (1018) → confirmación → `plat_rdir_confirmar`
+
+**Vista "Usuarios con saldo bajo":**
+- Entry point: botón "Usuarios con saldo bajo" en panel recargas → callback `plat_rec_saldo_bajo`
+- Umbral: `RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000` (constante en `handlers/recharges.py`)
+- Muestra couriers y aliados con `balance < 5000` con botones directos "Recargar: {nombre} (${saldo})"
+- Botones generan `plat_rdir_presel_{COURIER|ALLY}_{id}` → inicia `recarga_directa_conv` con usuario pre-seleccionado
+
+**Notificación al Admin Local:**
+- Al ejecutar una recarga directa de plataforma a un COURIER o ALLY que pertenece a un equipo local, se notifica al admin local del equipo (cortesía + aviso del interruptor de ganancias).
+- La captura del admin local previo se hace **antes** de llamar `direct_recharge_by_platform`, porque `approve_recharge_request` internamente activa el vínculo plataforma y desactiva los demás (interruptor). Si se capturara después, ya no habría admin local activo que notificar.
+- Solo notifica si el vínculo activo previo es de un admin local (no plataforma).
+
+**Implementación (`services.py`):**
+- `direct_recharge_by_platform(target_type, target_id, platform_admin_id, platform_user_id, amount, note)` → crea una `recharge_request` PENDING y la aprueba inmediatamente con `approve_recharge_request`. Reutiliza toda la lógica contable: débito de Sociedad, crédito al destinatario, interruptor de ganancias, ledger completo.
+
+**Funciones DB nuevas (`db.py`):**
+- `get_all_active_couriers()` → todos los couriers con `status='APPROVED'` + balance y equipo activo
+- `get_all_active_allies()` → todos los aliados con `status='APPROVED'` + balance y equipo activo
+- `get_all_local_admins_approved()` → todos los admins locales (no Plataforma) con `status='APPROVED'`
+
+Todas re-exportadas en `services.py`.
+
+**User data keys** (prefijo `recdir_`): `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota`
+
+**Callbacks** (prefijo `plat_rdir_`): `plat_rdir_inicio`, `plat_rdir_tipo_{COURIER|ALLY|ADMIN}`, `plat_rdir_cancel`, `plat_rdir_presel_{COURIER|ALLY}_{id}` (entrada directa desde saldo bajo), `plat_rdir_usr_{id}` (usuario seleccionado desde búsqueda), `plat_rdir_sin_nota`, `plat_rdir_confirmar`
+
+**Callbacks adicionales en `plat_recargas_callback`:** `plat_rec_saldo_bajo` (vista de usuarios con saldo bajo)
+
+**Estados nuevos en `states.py`:**
+| Constante | Valor | Descripción |
+|---|---|---|
+| `RECARGA_DIR_TIPO` | 1016 | Selección de tipo (COURIER/ALLY/ADMIN) via callbacks |
+| `RECARGA_DIR_MONTO` | 1017 | Texto con el monto a recargar |
+| `RECARGA_DIR_NOTA` | 1018 | Texto con nota opcional + confirmación via callbacks |
+| `RECARGA_DIR_BUSCAR` | 1019 | Texto de búsqueda por nombre + selección de usuario via callbacks |
+
+Al ejecutar, se notifica al destinatario por Telegram con el monto y su nuevo saldo. Si el usuario pertenece a un equipo local, también se notifica al admin local. El registro queda en `recharge_requests` y en el ledger para auditoría completa (visible en "Historial contable" del panel de recargas).
+
+**Mejoras del panel de recargas (IMPLEMENTADO 2026-04-06):**
+- **Saldo visible en menú**: el panel principal muestra el saldo operativo del Admin de Plataforma al abrir.
+- **Admins locales en vista saldo bajo**: `plat_rec_saldo_bajo` incluye ahora una sección de admins locales con saldo < `RECARGA_DIR_ADMIN_SALDO_BAJO_UMBRAL = 20000`. Botones "Recargar admin: {nombre}" generan `plat_rdir_presel_ADMIN_{id}`.
+- **Alerta proactiva de saldo bajo**: tras cobrar el fee de servicio, si el saldo del courier o aliado cae entre $300 y $5.000, se notifica automáticamente al admin de su equipo. Implementado en `_notify_admin_member_low_balance` (constante `LOW_BALANCE_ALERT_THRESHOLD = 5000` en `order_delivery.py`).
+
+---
 
 ### Recarga Directa con Plataforma como Fallback
 
@@ -1113,6 +1275,8 @@ Ruta ofertada → courier acepta
     → Al confirmar aliado: revela primera parada
 ```
 
+La oferta de rutas usa por defecto `route_market_cycle_seconds = 420` (7 min por ciclo) y el mismo contador de 3 reintentos automáticos antes de la cancelación final sin cargo. En cada reintento el creador recibe un mensaje corto confirmando que la búsqueda automática sigue activa.
+
 ### Pantalla de reordenamiento de paradas (nueva — 2026-03-24)
 
 Al aceptar una ruta, el courier ve la lista de paradas en el orden sugerido y puede reorganizarlas:
@@ -1259,20 +1423,85 @@ Disponible en el flujo de creación de pedido (`nuevo_pedido_conv`). Antes de co
 - DB: `add_order_incentive(order_id, delta)` en `db.py`, re-exportada en `services.py`
 - `ally_increment_order_incentive(telegram_id, order_id, delta)` en `services.py`
 
+### Semaforo de demanda pre-confirmacion (IMPLEMENTADO 2026-04-04)
+
+Antes de confirmar un servicio, el preview ahora muestra un bloque de semaforo de demanda con:
+
+- nivel `BAJA` / `MEDIA` / `ALTA`
+- cantidad de repartidores elegibles cerca del pickup en ese momento
+- incentivo sugerido segun escasez, distancia, base requerida y visibilidad del mercado
+
+Aplica de forma uniforme a:
+
+- pedido del aliado (`construir_resumen_pedido`)
+- ruta del aliado (`_ruta_mostrar_confirmacion` y ruta derivada desde pedido)
+- pedido especial del admin (`_admin_ped_preview_text`)
+
+Motor usado:
+
+- `build_offer_demand_preview(...)` en `Backend/services.py`
+- consulta `get_eligible_couriers_for_order(...)`
+- filtra tambien couriers sin saldo operativo para fee
+- si el admin limita visibilidad con `team_only`, la recomendacion usa solo su equipo
+
+Modo red pequena vigente:
+
+- umbrales suavizados para no abrumar al aliado mientras la red sigue creciendo
+- `0` elegibles -> `ALTA` con sugerencia base moderada
+- `1-2` elegibles -> `MEDIA` con sugerencia suave
+- `3+` elegibles -> `BAJA` y el incentivo queda como opcional
+- este bloque no bloquea publicacion, no cambia matching y no aplica cobros automaticos; solo orienta antes de confirmar
+
+Mejora aplicada sobre ese bloque (2026-04-04):
+
+- cuando el semaforo sale en `MEDIA` o `ALTA` y falta incentivo para alcanzar la sugerencia, el preview muestra un boton discreto `Aplicar sugerencia`
+- aplica en pedido del aliado, ruta del aliado y pedido especial del admin
+- se reutilizan callbacks existentes de incentivo; no hay cobro automatico ni publicacion automatica
+
+Recordatorio de escalado futuro:
+
+- recalibrar este semaforo cuando la operacion tenga volumen sostenido y una red claramente mayor de aliados/repartidores activos
+- en esa etapa retomar: umbrales mas exigentes, incentivo sugerido con un toque y estado del mercado en vivo post-publicacion
+- referencia tecnica actual: bloque de umbrales en `build_offer_demand_preview(...)` de `Backend/services.py`
+- roadmap centralizado: `docs/roadmap_futuro.md`
+
+### Estado simple post-publicacion (IMPLEMENTADO 2026-04-04)
+
+Despues de publicar un pedido o ruta, el creador ahora ve un bloque corto con:
+
+- busqueda en curso
+- cantidad ofertada en ese momento o aviso de que aun no hay elegibles
+- ciclo actual del mercado (`1/N`)
+- aclaracion explicita de cancelacion sin cargo si se agotan los ciclos
+
+Motor usado:
+
+- `build_market_launch_status_text(...)` en `Backend/order_delivery.py`
+
 ### Ciclo de pedido actualizado (IMPLEMENTADO 2026-03-09)
 
 **Ciclo de pedido**
 
 0 min → pedido publicado  
 5 min → sugerencia de incentivo adicional  
-10 min → expiración automática  
+10 min → reintento automático del mercado (1/3)
+20 min → reintento automático del mercado (2/3)
+30 min → reintento automático del mercado (3/3)
+40 min → cancelación automática sin costo si nadie acepta
+
+Defaults configurables desde `settings`:
+- `market_retry_limit` → cantidad de reintentos automáticos antes de cancelar (default `3`)
+- `order_market_cycle_seconds` → duración de cada ciclo de mercado del pedido (default `600`)
+- `route_market_cycle_seconds` → duración de cada ciclo de mercado de la ruta (default `420`)
 
 **Cancelación del aliado**
 
-Cancelación manual (en cualquier momento) → sin costo
-Expiración automática (nadie tomó el servicio en 10 min) → sin costo
-Pedidos creados por administrador (ally_id = None) → sin costo
-**El fee $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
+Cancelación manual dentro de los primeros 2 minutos y sin courier asignado → sin costo
+Cancelación manual después de 2 minutos y antes de asignar courier → cobro de $300
+Cancelación manual con courier ya asignado (`ACCEPTED`) → penalidad de $800 ($600 courier / $200 plataforma)
+Cancelación automática final (nadie tomó el servicio tras 3 reintentos del mercado) → sin costo
+Pedidos creados por administrador (`ally_id = None`) → misma ventana; el cobro recae sobre el admin creador
+**El fee estándar de servicio $300 al aliado SOLO se cobra cuando el servicio es entregado correctamente.**
 
 ### Sugerencia T+5 — "Nadie ha tomado el pedido" (IMPLEMENTADO 2026-03-06)
 
@@ -1419,7 +1648,7 @@ ADMIN_PEDIDO_TARIFA (912): admin_pedido_tarifa_handler → ADMIN_PEDIDO_INSTRUC
 
 ADMIN_PEDIDO_INSTRUC (913):
   admin_pedido_instruc_handler / admin_pedido_sin_instruc_callback → preview
-  admin_pedido_inc_fijo_callback (1500/2000/3000) → actualiza preview
+  admin_pedido_inc_fijo_callback (1000/1500/2000/3000) → actualiza preview
   admin_pedido_inc_otro_callback → ADMIN_PEDIDO_INC_MONTO
   admin_pedido_confirmar_callback → crea pedido → publica → END
 
@@ -1914,11 +2143,42 @@ _is_courier_gps_active(courier) → bool
 
 ## Flujo de Soporte por Pin Mal Ubicado (IMPLEMENTADO 2026-03-12)
 
-### Flujo completo — Pedido normal
+### Regla clave
+
+Hay dos solicitudes de ayuda distintas para pedidos:
+
+- `order_pickup_pinissue_{id}`: el courier todavia esta en `ACCEPTED` y necesita que el admin le marque la llegada al punto de recogida para seguir el flujo normal. Este caso NO debe finalizar el servicio.
+- `order_pinissue_{id}`: el courier ya esta en `PICKED_UP` y necesita ayuda para cerrar la entrega porque el pin del cliente esta mal ubicado. Este caso SI corresponde al cierre de entrega.
+
+La idempotencia de `order_support_requests` se evalua por scope + `support_type`, para que pickup y entrega no se mezclen aunque pertenezcan al mismo pedido.
+
+### Caso 1 â€” Ayuda para marcar llegada al pickup (pedido en `ACCEPTED`)
+
+```
+Courier reporta "Estoy aqui pero el pin de recogida esta mal" (order_pickup_pinissue_{id})
+  â†’ Crea order_support_requests con `support_type=PICKUP_PIN` (idempotente por tipo)
+  â†’ Notifica al admin del equipo en Telegram:
+      - Datos del pedido y del punto de recogida
+      - Link Google Maps al pin de recogida guardado
+      - Link Google Maps a ubicaciÃ³n actual del courier
+      - Botones: Confirmar llegada / Liberar pedido
+  â†’ Courier: esta ayuda solo sirve para marcar la llegada al pickup y seguir el flujo normal
+
+Admin toca Confirmar llegada:
+  â†’ resolve_support_request(CONFIRMED_ARRIVAL)
+  â†’ set_courier_arrived(order_id)
+  â†’ Se notifica al aliado para confirmar la llegada o auto-confirmar en T+2
+
+Admin toca Liberar pedido:
+  â†’ resolve_support_request(RELEASED)
+  â†’ El pedido se libera para re-oferta
+```
+
+### Caso 2 — Ayuda para finalizar entrega (pedido en `PICKED_UP`)
 
 ```
 Courier reporta "Estoy aquí pero el pin está mal" (order_pinissue_{id})
-  → Crea order_support_requests (idempotente: no crea duplicados)
+  → Crea order_support_requests con `support_type=DELIVERY_PIN` (idempotente por tipo)
   → Notifica al admin del equipo en Telegram:
       - Datos del pedido y cliente
       - Link Google Maps al pin de entrega guardado (dropoff_lat/lng)
@@ -2029,60 +2289,46 @@ El componente Angular (`SoporteComponent`) muestra:
 
 ---
 
-## Enlace de Pedido del Aliado (PARCIALMENTE IMPLEMENTADO — ver nota abajo)
+## Enlace de Pedido del Aliado (IMPLEMENTADO — bandeja + crear pedido 2026-04-06)
 
 > Descripcion funcional completa en `docs/business/contexto-negocio-domiquerendona.md` seccion 5B.
 
-### Que hay que construir (notas tecnicas minimas)
+### Estado actual
 
-**Base de datos - cambios minimos:**
-- Columna `public_token TEXT UNIQUE` en tabla `allies` - UUID por aliado para construir la URL publica.
-- Tabla nueva `ally_form_requests` - bandeja temporal de solicitudes recibidas por formulario.
-  Campos: `id`, `ally_id`, `customer_name`, `customer_phone`, `delivery_address`,
-  `delivery_city`, `delivery_barrio`, `notes`, `lat`, `lng`,
-  `status` (PENDING/CONVERTED_ORDER/SAVED_CONTACT/DISMISSED), `created_at`.
-- No se necesitan cambios en `ally_customers`, `ally_customer_addresses` ni `orders`.
+- **Backend FastAPI** (`web/api/form.py`): completo — `GET /form/{token}`, `POST /form/{token}/lookup-phone`, `POST /form/{token}/quote`, `POST /form/{token}/submit`.
+- **Bot — bandeja**: completo — `ally_bandeja_solicitudes`, lista pendientes/procesadas, detalle de solicitud.
+- **Bot — Crear pedido desde solicitud** (IMPLEMENTADO 2026-04-06): `ally_bandeja_callback` maneja `alybandeja_crear_{id}` y `alybandeja_crearyguardar_{id}` → preview → `alybandeja_confirmar_{id}` / `alybandeja_confirmargsave_{id}` → `create_order` + `publish_order_to_couriers`. Requiere que la solicitud tenga coordenadas (PENDING_REVIEW) y que el aliado tenga pickup configurado.
+- **Frontend**: `FormPedidoComponent` en `/form/:token` implementado.
 
-**Backend - nuevo router publico en FastAPI:**
-- Archivo nuevo: `Backend/web/api/form.py` - router sin autenticacion.
-- `GET /form/{token}` - valida token, retorna nombre del aliado.
-- `POST /form/{token}/submit` - recibe datos, inserta en `ally_form_requests`, notifica al aliado por Telegram.
-- Registro en `web_app.py` sin tocar routers existentes.
-- CORS: agregar dominio del formulario publico a `origins`.
+### Callbacks implementados en `ally_bandeja_callback`
 
-**Bot Telegram - entry points nuevos en main.py:**
-- Handler "Mi enlace de pedidos" en menu del aliado: llama `get_or_create_ally_public_token(ally_id)`.
-- Handler callback "Crear pedido": inicia `nuevo_pedido_conv` con `context.user_data` prellenado.
-- Handler callback "Guardar en agenda": llama `create_ally_customer` + `create_customer_address`.
-- Handler callback "Ignorar": marca solicitud como DISMISSED.
-- Prefijo de callbacks pendiente de aprobacion antes de implementar.
+| Callback | Descripción |
+|---|---|
+| `alybandeja_crear_{id}` | Muestra preview del pedido con "Confirmar y publicar" |
+| `alybandeja_crearyguardar_{id}` | Igual pero también guarda cliente en agenda al confirmar |
+| `alybandeja_confirmar_{id}` | Crea el pedido (`create_order`) y lo publica (`publish_order_to_couriers`) |
+| `alybandeja_confirmargsave_{id}` | Igual + `_ally_bandeja_guardar_en_agenda` |
+| `alybandeja_guardar_{id}` | Solo guarda en agenda (sin crear pedido) |
+| `alybandeja_ignorar_{id}` | Marca solicitud como DISMISSED |
 
-**Frontend - componente publico:**
-- Ruta `/form/:token` sin `AuthGuard` en `app.routes.ts`.
-- Componente `FormPedidoComponent` en `Frontend/src/app/features/public/`.
-- Pasos: telefono (siempre primero) -> reconocimiento de cliente -> direccion -> mapa -> cotizacion.
+**Restricciones:** la solicitud debe tener `lat`/`lng` (status `PENDING_REVIEW`) y el aliado debe tener pickup configurado. Para solicitudes `PENDING_LOCATION` (sin coordenadas), se muestra aviso de contactar al cliente.
 
-**Funciones db.py que hacen falta:**
-- `get_or_create_ally_public_token(ally_id)` -> str (UUID)
-- `get_ally_by_public_token(token)` -> dict
-- `create_ally_form_request(ally_id, ...)` -> int
-- `get_ally_form_request_by_id(request_id, ally_id)` -> dict
-- `update_ally_form_request_status(request_id, status)`
-Todas deben re-exportarse en `services.py`.
+**Pendiente:** notificacion proactiva al aliado via Telegram cuando llega una nueva solicitud desde el formulario web (FastAPI no tiene acceso al contexto del bot; requiere mecanismo de webhook o polling compartido).
 
-**Funciones db.py reutilizables sin cambios:**
-- `get_ally_customer_by_phone(ally_id, phone)` - detecta cliente existente
-- `create_ally_customer`, `create_customer_address` - crea desde solicitud
-- `create_order` - mismo contrato que el flujo bot
+### Funciones clave
 
-**Orden de implementacion recomendado:**
-1. Migracion (columna `public_token` + tabla `ally_form_requests`) + funciones db.py
-2. Router publico `/form/` + notificacion Telegram basica
-3. Handlers bot para Crear / Guardar / Ignorar desde notificacion
-4. Boton "Mi enlace" en menu del aliado
-5. Frontend formulario publico minimo viable
-6. Cotizacion en el formulario
-7. Subsidio del aliado + incentivo del cliente
+| Función | Archivo | Descripción |
+|---------|---------|-------------|
+| `get_or_create_ally_public_token(ally_id)` | `db.py` | UUID del token publico del aliado |
+| `get_ally_by_public_token(token)` | `db.py` | Valida token y retorna aliado |
+| `create_ally_form_request(ally_id, ...)` | `db.py` | Crea solicitud en bandeja |
+| `get_ally_form_request_by_id(request_id, ally_id)` | `db.py` | Retorna solicitud |
+| `update_ally_form_request_status(request_id, ally_id, status)` | `db.py` | Actualiza estado |
+| `mark_ally_form_request_converted(request_id, ally_id, order_id)` | `db.py` | Marca como convertida a pedido |
+| `count_ally_form_requests_by_status(ally_id)` | `db.py` | Conteos por estado para el menu |
+| `list_ally_form_requests_for_ally(ally_id, status, limit)` | `db.py` | Lista solicitudes |
+
+Todas re-exportadas en `services.py`.
 
 ---
 
@@ -2220,12 +2466,15 @@ Entry point: botón "Mi suscripcion" en menú del aliado → callback `ally_mi_s
 | `create_ally_subscription(ally_id, admin_id, price, platform_share, admin_share)` | `db.py` | Crea registro en `ally_subscriptions`, retorna id |
 | `get_active_ally_subscription(ally_id)` | `db.py` | Retorna suscripción activa o None |
 | `expire_old_ally_subscriptions()` | `db.py` | Marca como EXPIRED las suscripciones vencidas (llamado en boot) |
+| `get_expiring_ally_subscriptions(days=3)` | `db.py` | Retorna suscripciones ACTIVE que vencen en los próximos N días con telegram_id del aliado |
 | `get_ally_subscription_info(ally_id)` | `db.py` | Info completa de suscripción (precio + estado + vencimiento) |
 | `check_ally_active_subscription(ally_id)` | `services.py` | Retorna bool — True si hay suscripción activa |
 | `pay_ally_subscription(ally_id, admin_id, price)` | `services.py` | Ejecuta el pago y crea el registro |
 | `get_subscription_summary_for_ally(ally_id, admin_id)` | `services.py` | Resumen para mostrar al aliado |
 
 Todas re-exportadas en `services.py`. `expire_old_ally_subscriptions` se llama en arranque de `main.py`.
+
+**Alerta de vencimiento próximo (IMPLEMENTADO 2026-04-06):** `_notify_expiring_subscriptions_job` en `main.py` corre cada 24 horas (primer disparo 1 hora después del arranque). Notifica al aliado por Telegram cuando su suscripción vence en 3 días o menos.
 
 ---
 
@@ -2508,4 +2757,3 @@ Función que reemplaza el antiguo `_get_route_total_duration` (eliminado 2026-03
 Requiere la columna `routes.courier_arrived_at` (agregada 2026-03-29).
 
 *Última actualización: 2026-03-29*
-

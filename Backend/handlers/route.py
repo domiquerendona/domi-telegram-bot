@@ -42,6 +42,8 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _OPTIONS_HINT,
     _fmt_pesos,
+    build_offer_demand_badge_text,
+    build_offer_suggestion_button_row,
     _geo_siguiente_o_gps,
     _handle_text_field_input,
     _mostrar_confirmacion_geocode,
@@ -83,8 +85,31 @@ from services import (
     set_address_parking_status,
     PARKING_FEE_AMOUNT,
     get_ally_parking_fee_enabled,
+    build_offer_demand_preview,
 )
-from order_delivery import publish_route_to_couriers
+from order_delivery import publish_route_to_couriers, build_market_launch_status_text
+
+
+def _route_city_hint(context):
+    """Extrae barrio+ciudad del aliado en sesion para mejorar geocoding de rutas."""
+    ally = context.user_data.get("ally")
+    if ally:
+        parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+        if parts:
+            return ", ".join(parts)
+    return None
+
+
+def _ruta_no_more_text(point_label: str):
+    return (
+        "No encontre mas opciones para {}.\n\n"
+        "Envia otra ubicacion para continuar:\n"
+        "- Un PIN de Telegram\n"
+        "- Un link de Google Maps\n"
+        "- Coordenadas (ej: 4.81,-75.69)\n"
+        "- Nombre del lugar o barrio con ciudad"
+    ).format(point_label)
+
 
 def nueva_ruta_desde_cotizador(update, context):
     """Entry point de nueva_ruta_conv cuando el aliado elige 'Varias entregas' desde el cotizador."""
@@ -270,7 +295,10 @@ def _ruta_incentivo_keyboard():
     """Botones de incentivo pre-confirmacion para ruta."""
     return [
         [
+            InlineKeyboardButton("+1000", callback_data="ruta_inc_1000"),
             InlineKeyboardButton("+1500", callback_data="ruta_inc_1500"),
+        ],
+        [
             InlineKeyboardButton("+2000", callback_data="ruta_inc_2000"),
             InlineKeyboardButton("+3000", callback_data="ruta_inc_3000"),
         ],
@@ -339,12 +367,29 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    demand_preview = build_offer_demand_preview(
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        distance_km=total_km,
+        ally_id=context.user_data.get("ruta_ally_id"),
+        current_incentive=incentivo,
+    )
+    demand_block = build_offer_demand_badge_text(demand_preview)
+    if demand_block:
+        text += "\n\n{}".format(demand_block)
     text += (
-        "\n\nSugerencia: En horas de alta demanda los repartidores toman primero los servicios mejor pagos. "
-        "Si agregas incentivo, es mas probable que te tomen rapido.\n\n"
+        "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
     )
-    keyboard = _ruta_incentivo_keyboard() + [
+    keyboard = _ruta_incentivo_keyboard()
+    suggested_row = build_offer_suggestion_button_row(
+        demand_preview,
+        "ruta_inc_{amount}",
+        allowed_amounts=(1000, 1500, 2000, 3000),
+    )
+    if suggested_row:
+        keyboard.insert(0, suggested_row)
+    keyboard += [
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
     ]
@@ -473,30 +518,35 @@ def ruta_pickup_nueva_ubicacion_handler(update, context):
     expanded = expand_short_url(raw) or raw
     coords = extract_lat_lng_from_text(expanded)
     if coords:
-        context.user_data["ruta_pickup_lat"] = coords[0]
-        context.user_data["ruta_pickup_lng"] = coords[1]
         context.user_data["ruta_pickup_location_id"] = None
-        update.message.reply_text(
-            "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
-        )
-        return RUTA_PICKUP_NUEVA_DETALLES
-    geo = resolve_location(text)
-    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
-        context.user_data["ruta_pickup_location_id"] = None
-        context.user_data["ruta_pickup_geo_formatted"] = geo.get("formatted_address", "")
+        context.user_data.pop("ruta_pickup_geo_formatted", None)
         _mostrar_confirmacion_geocode(
-            update.message, context, geo, text,
-            "ruta_pickup_geo_si", "ruta_pickup_geo_no",
+            update.message,
+            context,
+            {"lat": coords[0], "lng": coords[1]},
+            text,
+            "ruta_pickup_geo_si",
+            "ruta_pickup_geo_no",
+            header_text="Confirma el punto exacto de recogida antes de continuar.",
+            question_text="Es esta la ubicacion de recogida correcta?",
         )
         return RUTA_PICKUP_NUEVA_UBICACION
-    if geo and geo.get("lat") is not None:
-        context.user_data["ruta_pickup_lat"] = geo["lat"]
-        context.user_data["ruta_pickup_lng"] = geo["lng"]
+    _hint = _route_city_hint(context)
+    geo = resolve_location(text, city_hint=_hint)
+    if geo and geo.get("lat") is not None and geo.get("lng") is not None:
+        context.user_data["pending_geo_city_hint"] = _hint
         context.user_data["ruta_pickup_location_id"] = None
-        update.message.reply_text(
-            "Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:"
+        _mostrar_confirmacion_geocode(
+            update.message,
+            context,
+            geo,
+            text,
+            "ruta_pickup_geo_si", "ruta_pickup_geo_no",
+            header_text="Confirma el punto exacto de recogida antes de continuar.",
+            question_text="Es esta la ubicacion de recogida correcta?",
+            formatted_storage_key="ruta_pickup_geo_formatted",
         )
-        return RUTA_PICKUP_NUEVA_DETALLES
+        return RUTA_PICKUP_NUEVA_UBICACION
     update.message.reply_text(
         "No pude encontrar esa ubicacion.\n\n"
         "Intenta con:\n"
@@ -518,6 +568,9 @@ def ruta_pickup_geo_callback(update, context):
         formatted = context.user_data.pop("ruta_pickup_geo_formatted", "")
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return RUTA_PICKUP_NUEVA_UBICACION
         context.user_data["ruta_pickup_lat"] = lat
         context.user_data["ruta_pickup_lng"] = lng
         if formatted:
@@ -529,17 +582,37 @@ def ruta_pickup_geo_callback(update, context):
             query.message.reply_text(formatted)
         return RUTA_PICKUP_NUEVA_DETALLES
     return _geo_siguiente_o_gps(
-        query, context, "ruta_pickup_geo_si", "ruta_pickup_geo_no", RUTA_PICKUP_NUEVA_UBICACION
+        query,
+        context,
+        "ruta_pickup_geo_si",
+        "ruta_pickup_geo_no",
+        RUTA_PICKUP_NUEVA_UBICACION,
+        header_text="Confirma el punto exacto de recogida antes de continuar.",
+        question_text="Es esta la ubicacion de recogida correcta?",
+        no_more_text=_ruta_no_more_text("la recogida"),
+        formatted_storage_key="ruta_pickup_geo_formatted",
     )
 
 
 def ruta_pickup_nueva_ubicacion_location_handler(update, context):
     loc = update.message.location
-    context.user_data["ruta_pickup_lat"] = loc.latitude
-    context.user_data["ruta_pickup_lng"] = loc.longitude
     context.user_data["ruta_pickup_location_id"] = None
-    update.message.reply_text("Ubicacion recibida. Ahora escribe la descripcion de la direccion de recogida:")
-    return RUTA_PICKUP_NUEVA_DETALLES
+    context.user_data.pop("ruta_pickup_geo_formatted", None)
+    _mostrar_confirmacion_geocode(
+        update.message,
+        context,
+        {
+            "lat": loc.latitude,
+            "lng": loc.longitude,
+            "formatted_address": "Ubicacion enviada desde Telegram.",
+        },
+        "",
+        "ruta_pickup_geo_si",
+        "ruta_pickup_geo_no",
+        header_text="Confirma el punto exacto de recogida antes de continuar.",
+        question_text="Es esta la ubicacion de recogida correcta?",
+    )
+    return RUTA_PICKUP_NUEVA_UBICACION
 
 
 def ruta_pickup_nueva_detalles_handler(update, context):
@@ -783,35 +856,40 @@ def ruta_parada_ubicacion_handler(update, context):
     expanded = expand_short_url(raw) or raw
     coords = extract_lat_lng_from_text(expanded)
     if coords:
-        context.user_data["ruta_temp_lat"] = coords[0]
-        context.user_data["ruta_temp_lng"] = coords[1]
-        paradas = context.user_data.get("ruta_paradas", [])
-        n = len(paradas) + 1
-        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
-        return RUTA_PARADA_DIRECCION
-    geo = resolve_location(text)
-    if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
-        context.user_data["ruta_parada_geo_formatted"] = geo.get("formatted_address", "")
+        context.user_data.pop("ruta_parada_geo_formatted", None)
         _mostrar_confirmacion_geocode(
-            update.message, context, geo, text,
-            "ruta_parada_geo_si", "ruta_parada_geo_no",
+            update.message,
+            context,
+            {"lat": coords[0], "lng": coords[1]},
+            text,
+            "ruta_parada_geo_si",
+            "ruta_parada_geo_no",
+            header_text="Confirma el punto exacto de la parada antes de continuar.",
+            question_text="Es esta la ubicacion de entrega correcta?",
         )
         return RUTA_PARADA_UBICACION
-    if geo and geo.get("lat") is not None:
-        context.user_data["ruta_temp_lat"] = geo["lat"]
-        context.user_data["ruta_temp_lng"] = geo["lng"]
-        paradas = context.user_data.get("ruta_paradas", [])
-        n = len(paradas) + 1
-        update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
-        return RUTA_PARADA_DIRECCION
+    _hint = _route_city_hint(context)
+    geo = resolve_location(text, city_hint=_hint)
+    if geo and geo.get("lat") is not None and geo.get("lng") is not None:
+        context.user_data["pending_geo_city_hint"] = _hint
+        _mostrar_confirmacion_geocode(
+            update.message,
+            context,
+            geo,
+            text,
+            "ruta_parada_geo_si", "ruta_parada_geo_no",
+            header_text="Confirma el punto exacto de la parada antes de continuar.",
+            question_text="Es esta la ubicacion de entrega correcta?",
+            formatted_storage_key="ruta_parada_geo_formatted",
+        )
+        return RUTA_PARADA_UBICACION
     update.message.reply_text(
         "No pude encontrar esa ubicacion.\n\n"
         "Intenta con:\n"
         "- Un PIN de Telegram\n"
         "- Un link de Google Maps\n"
         "- Coordenadas (ej: 4.81,-75.69)\n"
-        "- Nombre del lugar o barrio con ciudad\n"
-        "- O escribe 'omitir' para ingresar solo la direccion."
+        "- Nombre del lugar o barrio con ciudad"
     )
     return RUTA_PARADA_UBICACION
 
@@ -826,6 +904,9 @@ def ruta_parada_geo_callback(update, context):
         formatted = context.user_data.pop("ruta_parada_geo_formatted", "")
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
+        if lat is None or lng is None:
+            query.edit_message_text("Error: datos de ubicacion perdidos. Intenta de nuevo.")
+            return RUTA_PARADA_UBICACION
         context.user_data["ruta_temp_lat"] = lat
         context.user_data["ruta_temp_lng"] = lng
         if formatted:
@@ -836,18 +917,36 @@ def ruta_parada_geo_callback(update, context):
         query.edit_message_text("PARADA {}\n\nEscribe la descripcion de la direccion de entrega:".format(n))
         return RUTA_PARADA_DIRECCION
     return _geo_siguiente_o_gps(
-        query, context, "ruta_parada_geo_si", "ruta_parada_geo_no", RUTA_PARADA_UBICACION
+        query,
+        context,
+        "ruta_parada_geo_si",
+        "ruta_parada_geo_no",
+        RUTA_PARADA_UBICACION,
+        header_text="Confirma el punto exacto de la parada antes de continuar.",
+        question_text="Es esta la ubicacion de entrega correcta?",
+        no_more_text=_ruta_no_more_text("la parada"),
+        formatted_storage_key="ruta_parada_geo_formatted",
     )
 
 
 def ruta_parada_ubicacion_location_handler(update, context):
     loc = update.message.location
-    context.user_data["ruta_temp_lat"] = loc.latitude
-    context.user_data["ruta_temp_lng"] = loc.longitude
-    paradas = context.user_data.get("ruta_paradas", [])
-    n = len(paradas) + 1
-    update.message.reply_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
-    return RUTA_PARADA_DIRECCION
+    context.user_data.pop("ruta_parada_geo_formatted", None)
+    _mostrar_confirmacion_geocode(
+        update.message,
+        context,
+        {
+            "lat": loc.latitude,
+            "lng": loc.longitude,
+            "formatted_address": "Ubicacion enviada desde Telegram.",
+        },
+        "",
+        "ruta_parada_geo_si",
+        "ruta_parada_geo_no",
+        header_text="Confirma el punto exacto de la parada antes de continuar.",
+        question_text="Es esta la ubicacion de entrega correcta?",
+    )
+    return RUTA_PARADA_UBICACION
 
 
 def ruta_parada_direccion_handler(update, context):
@@ -940,7 +1039,7 @@ def ruta_distancia_km_handler(update, context):
 
 
 def ruta_inc_fijo_callback(update, context):
-    """Agrega incentivo fijo (+1500/+2000/+3000) antes de confirmar ruta."""
+    """Agrega incentivo fijo (+1000/+1500/+2000/+3000) antes de confirmar ruta."""
     query = update.callback_query
     query.answer()
     data = query.data  # "ruta_inc_1500" etc
@@ -1088,9 +1187,9 @@ def ruta_confirmacion_callback(update, context):
         show_main_menu(update, context)
         return ConversationHandler.END
     if count > 0:
-        base_msg = "Ruta #{} creada exitosamente.\nPronto un repartidor sera asignado.".format(route_id)
+        base_msg = "Ruta #{} creada exitosamente.\n{}".format(route_id, build_market_launch_status_text(count))
     else:
-        base_msg = "Ruta #{} creada. No hay repartidores disponibles en este momento.".format(route_id)
+        base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
     query.edit_message_text(base_msg)
     context.user_data.clear()
     show_main_menu(update, context)
@@ -1309,7 +1408,7 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
-            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1500|2000|3000)$"),
+            CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(ruta_inc_otro_start, pattern=r"^ruta_inc_otro$"),
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),
         ],

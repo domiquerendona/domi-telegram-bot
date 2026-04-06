@@ -1,4 +1,8 @@
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -8,6 +12,8 @@ from web.api.auth import router as auth_router
 from web.api.dashboard import router as dashboard_router
 from web.api.users import router as users_router
 from web.api.form import router as form_router
+from web.api.courier import router as courier_router
+from web.api.profile import router as profile_router
 
 
 load_dotenv()
@@ -38,6 +44,8 @@ app.include_router(admin_router)
 app.include_router(users_router)
 app.include_router(dashboard_router)
 app.include_router(form_router)
+app.include_router(courier_router)
+app.include_router(profile_router)
 
 origins = [
     "http://localhost:4200",

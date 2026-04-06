@@ -48,7 +48,7 @@ class AdminResponse(BaseModel):
     barrio: str
     status: str
     team_name: str
-    document_number: str
+    document_number: str = ""
     created_at: str
 
     class Config:

@@ -2,7 +2,9 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
 import logging
+import os
 import unicodedata
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 from db import (
@@ -12,10 +14,11 @@ from db import (
     get_api_usage_today, record_api_usage_event,
     get_api_usage_cost_summary,
     get_distance_cache, upsert_distance_cache,
-    get_geocoding_text_cache, upsert_geocoding_text_cache,
+    get_geocoding_text_cache, upsert_geocoding_text_cache, delete_geocoding_text_cache,
+    delete_distance_cache_for_coord,
     set_ally_subscription_price, get_ally_subscription_price,
     create_ally_subscription, get_active_ally_subscription,
-    expire_old_ally_subscriptions, get_ally_subscription_info,
+    expire_old_ally_subscriptions, get_ally_subscription_info, get_expiring_ally_subscriptions,
     upsert_scheduled_job, cancel_scheduled_job, mark_job_executed, get_pending_scheduled_jobs,
     get_recharge_request, insert_ledger_entry,
     get_admin_balance, update_admin_balance_with_ledger,
@@ -28,6 +31,7 @@ from db import (
     get_platform_sociedad_id,
     get_approved_admin_link_for_courier, get_approved_admin_link_for_ally,
     get_approved_admin_id_for_courier,
+    get_eligible_couriers_for_order,
     upsert_reference_alias_candidate,
     list_reference_alias_candidates,
     get_reference_alias_candidate_by_id,
@@ -37,8 +41,18 @@ from db import (
     get_connection,
     P,
     DB_ENGINE,
+    _row_value,
+    SUPPORT_TYPE_DELIVERY_PIN,
+    SUPPORT_TYPE_ROUTE_STOP_PIN,
+    SUPPORT_TYPE_PICKUP_PIN,
+    SUPPORT_TYPE_ROUTE_PICKUP_PIN,
     get_order_status_by_id,
+    get_order_penalty_config,
     cancel_order,
+    cancel_order_by_actor,
+    cancel_route_by_actor,
+    penalize_courier_for_delay_and_release,
+    penalize_route_courier_for_delay_and_release,
     get_admin_by_telegram_id,
     get_ally_by_telegram_id,
     get_user_by_telegram_id,
@@ -46,6 +60,7 @@ from db import (
     can_admin_validate_references,
     get_courier_telegram_id,
     get_ally_telegram_id,
+    get_admin_telegram_id,
     create_profile_change_request,
     has_pending_profile_change_request,
     list_pending_profile_change_requests,
@@ -54,6 +69,13 @@ from db import (
     mark_profile_change_request_rejected,
     apply_profile_change_request_data,
     sync_all_courier_link_statuses,
+    build_admin_invite_token,
+    get_active_admin_invite_token,
+    rotate_admin_invite_token,
+    resolve_admin_invite_token,
+    record_admin_invite_token_use,
+    get_admin_invite_registrations,
+    has_recent_invite_open,
     # Re-exports para que main.py no acceda a db directamente
     ensure_user,
     get_user_by_id,
@@ -261,10 +283,12 @@ from db import (
     # Re-exports offer queue
     clear_offer_queue,
     # Re-exports order_support_requests
+    create_or_get_pending_support_request,
     create_order_support_request,
     get_pending_support_request,
     resolve_support_request,
     cancel_route_stop,
+    list_pending_support_requests,
     get_all_pending_support_requests,
     get_support_request_full,
     get_all_orders,
@@ -315,6 +339,12 @@ from db import (
     update_ally_delivery_subsidy,
     update_ally_min_purchase_for_subsidy,
     count_ally_form_requests_by_status,
+    # Re-exports recarga directa por plataforma
+    get_all_active_couriers,
+    get_all_active_allies,
+    get_all_local_admins_approved,
+    # Re-exports suscripciones
+    get_expiring_ally_subscriptions,
 )
 import math
 import re
@@ -325,6 +355,17 @@ import urllib.request
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 DEFAULT_LOCAL_DISTANCE_FACTOR = float(os.getenv("LOCAL_DISTANCE_FACTOR", "1.3"))
+
+
+def get_courier_active_order_stage_line(order) -> str:
+    """Resume la etapa operativa del pedido activo del courier para la UI."""
+    if not order:
+        return ""
+    if _row_value(order, "status") != "ACCEPTED":
+        return ""
+    if _row_value(order, "courier_arrived_at"):
+        return "Etapa: Llegada al pickup ya marcada. Esperando confirmacion para continuar."
+    return "Etapa: Debes marcar tu llegada al punto de recogida."
 
 
 def compute_ally_subsidy(delivery_subsidy: int, min_purchase_for_subsidy, purchase_amount) -> int:
@@ -421,7 +462,7 @@ def _text_cache_key(text: str, city_hint: str) -> str:
 
 
 def _normalize_reference_key(value: str) -> str:
-    """Normaliza texto para matching de aliases locales."""
+    """Normaliza texto para matching de aliases locales y cache de geocoding."""
     if not value:
         return ""
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
@@ -429,6 +470,10 @@ def _normalize_reference_key(value: str) -> str:
     normalized = re.sub(r"[^\w\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+# Alias publico — usado por handlers para normalizar texto antes de limpiar geocoding_text_cache
+normalize_text_for_cache = _normalize_reference_key
 
 
 def _parse_local_alias_point(raw_value: Any) -> Optional[Dict[str, Any]]:
@@ -876,13 +921,14 @@ def get_distance_from_api_coords(lat1: float, lng1: float, lat2: float, lng2: fl
 
 def get_smart_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> dict:
     """
-    Estrategia en 3 capas para calcular distancia de forma economica:
+    Estrategia en capas para calcular distancia de forma economica:
 
-    Capa 1 - Haversine: calculo local gratuito (distancia * factor urbano).
-    Capa 2 - Cache: busca si ya calculamos esta ruta antes (map_distance_cache).
-    Capa 3 - Google API: solo si hay cuota disponible (costoso).
+    Capa 1 - Cache (map_distance_cache): solo entradas con provider != 'haversine'.
+    Capa 2 - Google Distance Matrix API: solo si hay cuota disponible (costoso).
+    Capa 2.5 - OSRM (red vial real, gratuito, sin cuota).
+    Capa 3 - Haversine x factor: fallback local. NO se cachea para reintentar OSRM/API luego.
 
-    Retorna dict con: distance_km, source ('cache'|'haversine'|'google'), used_api (bool)
+    Retorna dict con: distance_km, source ('cache(provider)'|'google'|'osrm'|'haversine'), used_api (bool)
     """
     origin_key = _coords_cache_key(lat1, lng1)
     destination_key = _coords_cache_key(lat2, lng2)
@@ -956,6 +1002,7 @@ def quote_order_by_coords(pickup_lat: float, pickup_lng: float, dropoff_lat: flo
         "quote_source": "coords",
         "distance_source": result["source"],
         "used_api": result["used_api"],
+        "is_estimated": result["source"] == "haversine",
     }
 
 
@@ -1333,6 +1380,147 @@ def build_order_pricing_breakdown(
         "distance_km": float(distance_km or 0),
         "config": config,
     }
+
+
+def build_offer_demand_preview(
+    pickup_lat: float,
+    pickup_lng: float,
+    distance_km: float,
+    ally_id: int = None,
+    admin_id: int = None,
+    team_only: bool = False,
+    requires_cash: bool = False,
+    cash_required_amount: int = 0,
+    current_incentive: int = 0,
+) -> dict:
+    """
+    Estima la salud del mercado antes de publicar un servicio y sugiere incentivo.
+
+    La recomendacion se basa en la cantidad real de couriers elegibles para el
+    pickup actual, respetando radio, base requerida y filtro team_only cuando
+    aplica.
+    """
+    preview = {
+        "signal_code": "UNAVAILABLE",
+        "signal_label": "NO DISPONIBLE",
+        "eligible_count": 0,
+        "nearest_km": None,
+        "suggested_incentive": 0,
+        "extra_incentive_suggested": 0,
+        "current_incentive": max(0, int(current_incentive or 0)),
+        "reason": "No pudimos estimar la demanda sin coordenadas validas de recogida.",
+    }
+
+    if not has_valid_coords(pickup_lat, pickup_lng):
+        return preview
+
+    try:
+        eligible = get_eligible_couriers_for_order(
+            ally_id=ally_id,
+            requires_cash=requires_cash,
+            cash_required_amount=int(cash_required_amount or 0),
+            pickup_lat=float(pickup_lat),
+            pickup_lng=float(pickup_lng),
+            order_distance_km=float(distance_km or 0),
+        )
+
+        if team_only and admin_id:
+            eligible = [
+                c for c in eligible
+                if get_approved_admin_id_for_courier(int(c["courier_id"])) == int(admin_id)
+            ]
+
+        relanzables = []
+        for courier in eligible:
+            courier_id = int(courier["courier_id"])
+            courier_admin_id = get_approved_admin_id_for_courier(courier_id)
+            if courier_admin_id is None:
+                continue
+            fee_ok, _ = check_service_fee_available(
+                target_type="COURIER",
+                target_id=courier_id,
+                admin_id=courier_admin_id,
+            )
+            if fee_ok:
+                relanzables.append(courier)
+
+        eligible_count = len(relanzables)
+        nearest_km = None
+        if relanzables:
+            first = relanzables[0]
+            clat = first.get("live_lat") or first.get("residence_lat")
+            clng = first.get("live_lng") or first.get("residence_lng")
+            if clat is not None and clng is not None:
+                nearest_km = haversine_km(
+                    float(pickup_lat),
+                    float(pickup_lng),
+                    float(clat),
+                    float(clng),
+                )
+
+        # Modo red pequena (2026-04-04): con una red aun chica, el semaforo se
+        # mantiene deliberadamente suave para orientar sin alarmar al aliado.
+        # Recordatorio: recalibrar estos umbrales cuando la operacion crezca y
+        # el mercado tenga volumen sostenido de pedidos/couriers.
+        suggested = 0
+        if eligible_count == 0:
+            signal_code = "HIGH"
+            signal_label = "ALTA"
+            reason = "Ahora mismo no vemos repartidores elegibles dentro del radio operativo."
+            suggested = 2000
+        elif eligible_count <= 2:
+            signal_code = "MEDIUM"
+            signal_label = "MEDIA"
+            reason = "Hay pocos repartidores elegibles cerca del pickup, pero el pedido igual puede salir."
+            suggested = 1000
+        else:
+            signal_code = "LOW"
+            signal_label = "BAJA"
+            reason = "Hay una disponibilidad razonable de repartidores para este pickup."
+
+        distance_km = float(distance_km or 0)
+        if distance_km >= 10:
+            suggested = max(suggested, 1500)
+            reason += " La distancia del servicio es larga."
+        elif distance_km >= 5:
+            suggested = max(suggested, 1000)
+            reason += " La distancia del servicio es media."
+
+        if requires_cash and int(cash_required_amount or 0) > 0:
+            suggested = max(suggested, 1500 if eligible_count <= 2 else 1000)
+            reason += " La base requerida reduce el grupo elegible."
+
+        if team_only and admin_id:
+            reason += " La visibilidad limitada a tu equipo reduce el mercado disponible."
+
+        current_incentive = max(0, int(current_incentive or 0))
+        preview.update(
+            {
+                "signal_code": signal_code,
+                "signal_label": signal_label,
+                "eligible_count": eligible_count,
+                "nearest_km": nearest_km,
+                "suggested_incentive": suggested,
+                "extra_incentive_suggested": max(0, suggested - current_incentive),
+                "current_incentive": current_incentive,
+                "reason": reason.strip(),
+            }
+        )
+        logger.info(
+            "offer_demand_preview signal=%s eligible=%s suggested=%s ally_id=%s admin_id=%s team_only=%s distance_km=%.1f requires_cash=%s",
+            preview["signal_label"],
+            eligible_count,
+            suggested,
+            ally_id,
+            admin_id,
+            int(bool(team_only)),
+            distance_km,
+            int(bool(requires_cash)),
+        )
+    except Exception as e:
+        logger.warning("build_offer_demand_preview: %s", e)
+
+    return preview
 
 
 def calcular_precio_ruta(total_distance_km: float, num_stops: int, config: dict = None) -> dict:
@@ -1858,12 +2046,16 @@ def _is_allowed_city(formatted_address: str) -> bool:
     return any(city in normalized for city in allowed)
 
 
-def resolve_location(text: str) -> Optional[Dict[str, Any]]:
+def resolve_location(text: str, city_hint: str = None) -> Optional[Dict[str, Any]]:
     """
     Intenta extraer lat/lng de cualquier entrada del usuario:
     1. Coordenadas directas (4.81,-75.69)
     2. Link de Google Maps (corto o largo)
     3. Geocoding con Google API (solo si hay cuota)
+
+    city_hint: contexto geografico opcional (ej: "Barrio El Jardin, Pereira").
+    Cuando se provee, se usa como primer sufijo de busqueda en la API para mayor precision.
+    Si city_hint ya aparece en el texto, se ignora para no duplicar.
 
     Retorna dict {lat, lng, method} o None.
     """
@@ -1928,15 +2120,19 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
         quota_ok = False
 
     if quota_ok and not is_url_like:
-        # Cascada de consultas: texto original + sufijo ciudad principal.
-        # Limitado a 2 variantes para economizar cuota (max 4 calls vs 8 anteriores).
-        # Si el texto original ya incluye ciudad, la segunda variante es redundante
-        # pero inofensiva — el break por resultado válido la salta de todas formas.
-        # Para más candidatos el usuario puede usar resolve_location_next().
-        _queries = [
-            text,
-            f"{text}, Pereira, Risaralda, Colombia",
-        ]
+        # Cascada de consultas: texto original + sufijo geografico.
+        # city_hint provee contexto especifico del aliado/admin (barrio, ciudad).
+        # Si city_hint ya aparece en el texto, la variante es redundante pero inofensiva.
+        if city_hint and city_hint.lower() not in text.lower():
+            _queries = [
+                f"{text}, {city_hint}",
+                text,
+            ]
+        else:
+            _queries = [
+                text,
+                f"{text}, Pereira, Risaralda, Colombia",
+            ]
         for _q in _queries:
             geo = google_geocode_forward(_q)
             if geo and geo.get("lat") and geo.get("lng"):
@@ -2017,7 +2213,7 @@ def resolve_location(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]:
+def resolve_location_next(text: str, seen_ids: list, city_hint: str = None) -> Optional[Dict[str, Any]]:
     """
     Retorna el siguiente candidato de geocoding distinto a los ya mostrados.
     Carga perezosa: solo se llama cuando el usuario rechaza el candidato anterior.
@@ -2035,10 +2231,10 @@ def resolve_location_next(text: str, seen_ids: list) -> Optional[Dict[str, Any]]
     if not quota_ok:
         return None
 
-    _queries = [
-        text,
-        f"{text}, Pereira, Risaralda, Colombia",
-    ]
+    if city_hint and city_hint.lower() not in text.lower():
+        _queries = [f"{text}, {city_hint}", text]
+    else:
+        _queries = [text, f"{text}, Pereira, Risaralda, Colombia"]
     for _q in _queries:
         geo = google_geocode_forward(_q)
         if geo and geo.get("lat") and geo.get("lng"):
@@ -2337,6 +2533,45 @@ def reject_recharge_request(request_id: int, decided_by_admin_id: int, note: str
         conn.close()
 
     return True, "Solicitud de recarga rechazada."
+
+
+def direct_recharge_by_platform(
+    target_type: str,
+    target_id: int,
+    platform_admin_id: int,
+    platform_user_id: int,
+    amount: int,
+    note: str = None,
+) -> Tuple[bool, str]:
+    """
+    Recarga directa iniciada por el Admin de Plataforma sin solicitud previa del usuario.
+    Crea una recharge_request PENDING y la aprueba inmediatamente en una sola operacion.
+
+    target_type: 'COURIER', 'ALLY' o 'ADMIN'
+    target_id:   couriers.id / allies.id / admins.id segun target_type
+    platform_admin_id: admins.id del Admin de Plataforma
+    platform_user_id:  users.id del Admin de Plataforma (para requested_by_user_id)
+    amount:      monto en COP
+    note:        nota descriptiva (aparece en historial contable)
+
+    Retorna: (success, message)
+    """
+    note_full = "Recarga directa por plataforma"
+    if note:
+        note_full = "Recarga directa por plataforma: " + note
+
+    request_id = create_recharge_request(
+        target_type=target_type,
+        target_id=target_id,
+        admin_id=platform_admin_id,
+        amount=amount,
+        requested_by_user_id=platform_user_id,
+        note=note_full,
+    )
+    if not request_id:
+        return False, "No se pudo crear la solicitud de recarga. Intenta nuevamente."
+
+    return approve_recharge_request(request_id, platform_admin_id)
 
 
 def apply_service_fee(target_type: str, target_id: int, admin_id: int,
@@ -2942,7 +3177,7 @@ def platform_clear_courier_registration_reset(actor_telegram_id: int, courier_id
 
 def can_admin_reregister_via_platform_reset(admin_id: int) -> bool:
     state = get_admin_reset_state_by_id(admin_id)
-    return bool(state and state["status"] == "INACTIVE" and admin_has_active_registration_reset(admin_id))
+    return bool(state and state["status"] in ("INACTIVE", "REJECTED") and admin_has_active_registration_reset(admin_id))
 
 
 def can_ally_reregister_via_platform_reset(ally_id: int) -> bool:
@@ -3353,6 +3588,237 @@ def parse_team_selection_callback(data: str, domain: str):
     return None
 
 
+ADMIN_INVITE_START_PREFIX = "inv_"
+ADMIN_INVITE_USER_DATA_KEY = "admin_invite_token"
+
+
+def _get_admin_invite_token_hours() -> int:
+    raw_value = (os.getenv("ADMIN_INVITE_TOKEN_HOURS", "168") or "168").strip()
+    try:
+        hours = int(raw_value)
+    except ValueError:
+        hours = 168
+    return max(1, hours)
+
+
+ADMIN_INVITE_TOKEN_HOURS = _get_admin_invite_token_hours()
+
+
+def _normalize_admin_invite_role_scope(role_scope: str) -> str:
+    role = (role_scope or "").strip().upper()
+    if role not in ("ALLY", "COURIER", "BOTH"):
+        raise ValueError("role_scope invalido.")
+    return role
+
+
+def _format_admin_invite_expires_at(expires_at) -> str:
+    if not expires_at:
+        return "Sin vencimiento"
+    dt_value = str(expires_at).replace("T", " ").replace("Z", "")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(dt_value.split("+")[0], fmt)
+            return parsed.strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            continue
+    return dt_value
+
+
+def _admin_invite_expiration_dt():
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=ADMIN_INVITE_TOKEN_HOURS)
+
+
+def _resolve_or_create_admin_invite(admin_id: int, role_scope: str, regenerate: bool = False) -> Dict[str, Any]:
+    role = _normalize_admin_invite_role_scope(role_scope)
+    created = False
+    invite_row = None if regenerate else get_active_admin_invite_token(admin_id, role)
+    raw_token = ""
+
+    if invite_row:
+        raw_token = build_admin_invite_token(invite_row)
+    else:
+        raw_token = rotate_admin_invite_token(admin_id, role, expires_at=_admin_invite_expiration_dt())
+        created = True
+
+    invite = resolve_admin_invite_from_token(raw_token, expected_role=role)
+    if not invite:
+        raise ValueError(f"No se pudo resolver invitacion admin para {role}.")
+    invite["created"] = created
+    return invite
+
+
+def resolve_admin_invite_from_token(raw_token: str, expected_role: str = None) -> Optional[Dict[str, Any]]:
+    token = (raw_token or "").strip()
+    if not token:
+        return None
+    invite = resolve_admin_invite_token(token)
+    if not invite:
+        return None
+    role_scope = _normalize_admin_invite_role_scope(invite["role_scope"])
+    # Tokens BOTH son validos para cualquier rol
+    if expected_role and role_scope != "BOTH" and role_scope != _normalize_admin_invite_role_scope(expected_role):
+        return None
+    return {
+        "token": token,
+        "invite_id": invite["id"],
+        "admin_id": invite["admin_id"],
+        "role_scope": role_scope,
+        "team_name": invite["team_name"],
+        "team_code": invite["team_code"],
+        "admin_telegram_id": invite["admin_telegram_id"],
+        "uses_count": invite["uses_count"] or 0,
+        "expires_at": invite["expires_at"],
+        "expires_at_text": _format_admin_invite_expires_at(invite["expires_at"]),
+    }
+
+
+def resolve_admin_invite_from_start_arg(start_arg: str, expected_role: str = None) -> Optional[Dict[str, Any]]:
+    raw = (start_arg or "").strip()
+    if not raw.startswith(ADMIN_INVITE_START_PREFIX):
+        return None
+    token = raw[len(ADMIN_INVITE_START_PREFIX):].strip()
+    if not token:
+        return None
+    return resolve_admin_invite_from_token(token, expected_role=expected_role)
+
+
+def _resolve_or_create_admin_invite_both(admin_id: int, regenerate: bool = False) -> Dict[str, Any]:
+    created = False
+    invite_row = None if regenerate else get_active_admin_invite_token(admin_id, "BOTH")
+    raw_token = ""
+    if invite_row:
+        raw_token = build_admin_invite_token(invite_row)
+    else:
+        raw_token = rotate_admin_invite_token(admin_id, "BOTH", expires_at=_admin_invite_expiration_dt())
+        created = True
+    invite = resolve_admin_invite_from_token(raw_token)
+    if not invite:
+        raise ValueError("No se pudo resolver invitacion BOTH para admin.")
+    invite["created"] = created
+    return invite
+
+
+def get_admin_registration_invites(actor_telegram_id: int, regenerate: bool = False) -> Dict[str, Any]:
+    admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not admin:
+        return {"ok": False, "message": "No tienes perfil de administrador."}
+
+    admin_id = admin["id"]
+    admin_status = (admin["status"] or "").upper()
+    team_name = admin["team_name"] or admin["full_name"] or "Admin"
+    team_code = admin["team_code"] or "-"
+
+    if admin_status != "APPROVED":
+        return {
+            "ok": False,
+            "message": "Tus enlaces estaran disponibles cuando tu admin este APPROVED.",
+        }
+
+    ally_invite = _resolve_or_create_admin_invite(admin_id, "ALLY", regenerate=regenerate)
+    courier_invite = _resolve_or_create_admin_invite(admin_id, "COURIER", regenerate=regenerate)
+    both_invite = _resolve_or_create_admin_invite_both(admin_id, regenerate=regenerate)
+    created_any = ally_invite["created"] or courier_invite["created"] or both_invite["created"]
+    return {
+        "ok": True,
+        "admin_id": admin_id,
+        "team_name": team_name,
+        "team_code": team_code,
+        "mode": "regenerated" if regenerate else ("created" if created_any else "existing"),
+        "hours_valid": ADMIN_INVITE_TOKEN_HOURS,
+        "ally_token": ally_invite["token"],
+        "ally_expires_at": ally_invite["expires_at"],
+        "ally_expires_text": ally_invite["expires_at_text"],
+        "courier_token": courier_invite["token"],
+        "courier_expires_at": courier_invite["expires_at"],
+        "courier_expires_text": courier_invite["expires_at_text"],
+        "both_token": both_invite["token"],
+        "both_expires_at": both_invite["expires_at"],
+        "both_expires_text": both_invite["expires_at_text"],
+    }
+
+def regenerate_admin_invite_by_role(actor_telegram_id: int, roles: list) -> Dict[str, Any]:
+    """Regenera tokens de invitacion para los roles indicados (ALLY, COURIER, BOTH o combinacion).
+    `roles` es una lista con alguno de: 'ALLY', 'COURIER', 'BOTH'.
+    Retorna dict con ok, team_name, team_code y los tokens resultantes."""
+    admin = get_admin_by_telegram_id(actor_telegram_id)
+    if not admin:
+        return {"ok": False, "message": "No tienes perfil de administrador."}
+    admin_id = admin["id"]
+    if (admin["status"] or "").upper() != "APPROVED":
+        return {"ok": False, "message": "Tus enlaces estaran disponibles cuando tu admin este APPROVED."}
+
+    result = {
+        "ok": True,
+        "admin_id": admin_id,
+        "team_name": admin["team_name"] or admin["full_name"] or "Admin",
+        "team_code": admin["team_code"] or "-",
+        "hours_valid": ADMIN_INVITE_TOKEN_HOURS,
+        "roles_regenerated": roles,
+    }
+    roles_upper = [r.upper() for r in roles]
+    if "ALLY" in roles_upper:
+        inv = _resolve_or_create_admin_invite(admin_id, "ALLY", regenerate=True)
+        result["ally_token"] = inv["token"]
+        result["ally_expires_text"] = inv["expires_at_text"]
+    if "COURIER" in roles_upper:
+        inv = _resolve_or_create_admin_invite(admin_id, "COURIER", regenerate=True)
+        result["courier_token"] = inv["token"]
+        result["courier_expires_text"] = inv["expires_at_text"]
+    if "BOTH" in roles_upper:
+        inv = _resolve_or_create_admin_invite_both(admin_id, regenerate=True)
+        result["both_token"] = inv["token"]
+        result["both_expires_text"] = inv["expires_at_text"]
+    return result
+
+
+def audit_admin_invite_event(
+    raw_token: str,
+    telegram_id: int,
+    user_id: int,
+    outcome: str,
+    target_role_id: int = None,
+    note: str = None,
+    increment_counter: bool = False,
+) -> bool:
+    token = (raw_token or "").strip()
+    if not token:
+        return False
+    try:
+        return bool(
+            record_admin_invite_token_use(
+                token,
+                telegram_id=telegram_id,
+                user_id=user_id,
+                outcome=outcome,
+                target_role_id=target_role_id,
+                note=note,
+                increment_counter=increment_counter,
+            )
+        )
+    except Exception:
+        logger.exception("No se pudo auditar uso de invitacion admin. outcome=%s", outcome)
+        return False
+
+
+def audit_admin_invite_submission(
+    raw_token: str,
+    telegram_id: int,
+    user_id: int,
+    outcome: str,
+    target_role_id: int = None,
+    note: str = None,
+) -> bool:
+    return audit_admin_invite_event(
+        raw_token,
+        telegram_id=telegram_id,
+        user_id=user_id,
+        outcome=outcome,
+        target_role_id=target_role_id,
+        note=note,
+        increment_counter=True,
+    )
+
+
 def apply_profile_change_request_update(request_row) -> None:
     """Aplica el cambio de perfil aprobado y coordina migraciones de equipo."""
     target_role = request_row["target_role"]
@@ -3430,12 +3896,14 @@ def update_admin_panel_pricing_settings(payload: dict) -> None:
 
 def cancel_order_from_admin_panel(order_id: int) -> str:
     """Cancela un pedido desde el panel web si todavia no esta finalizado."""
-    status = get_order_status_by_id(order_id)
-    if status is None:
+    outcome = cancel_order_by_actor(order_id, "ADMIN")
+    status = outcome["status_before"]
+    if outcome["code"] == "NOT_FOUND":
         raise LookupError("Pedido no encontrado")
-    if status in ("DELIVERED", "CANCELLED"):
+    if outcome["code"] == "INVALID_STATUS":
         raise ValueError(status)
-    cancel_order(order_id, "ADMIN")
+    if not outcome["ok"]:
+        raise RuntimeError(outcome["message"])
     return status
 
 

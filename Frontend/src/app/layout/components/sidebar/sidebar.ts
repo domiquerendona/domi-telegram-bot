@@ -107,6 +107,12 @@ import { AuthService } from '../../../core/services/auth.service';
           <span *ngIf="!collapsed()">Configuración</span>
         </a>
 
+        <a routerLink="/superadmin/perfil"
+           routerLinkActive="active">
+          <span class="material-symbols-outlined">person</span>
+          <span *ngIf="!collapsed()">Mi perfil</span>
+        </a>
+
       </nav>
     </div>
 

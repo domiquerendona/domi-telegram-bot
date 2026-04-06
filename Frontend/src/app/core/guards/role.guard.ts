@@ -22,6 +22,5 @@ export const roleGuard: CanActivateFn = (route: ActivatedRouteSnapshot) => {
 
   if (authService.hasPermission(requiredPermission)) return true;
 
-  router.navigate(['/superadmin']);
-  return false;
+  return router.createUrlTree(['/superadmin']);
 };

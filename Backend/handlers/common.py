@@ -30,7 +30,6 @@ from handlers.states import (
     ALLY_PHONE,
     ALLY_CITY,
     ALLY_BARRIO,
-    ALLY_ADDRESS,
     ALLY_UBICACION,
     ALLY_CONFIRM,
     ALLY_TEAM,
@@ -39,7 +38,6 @@ from handlers.states import (
     COURIER_PHONE,
     COURIER_CITY,
     COURIER_BARRIO,
-    COURIER_RESIDENCE_ADDRESS,
     COURIER_RESIDENCE_LOCATION,
     COURIER_PLATE,
     COURIER_BIKETYPE,
@@ -54,7 +52,6 @@ from handlers.states import (
     LOCAL_ADMIN_PHONE,
     LOCAL_ADMIN_CITY,
     LOCAL_ADMIN_BARRIO,
-    LOCAL_ADMIN_RESIDENCE_ADDRESS,
     LOCAL_ADMIN_RESIDENCE_LOCATION,
     LOCAL_ADMIN_CEDULA_FRONT,
     LOCAL_ADMIN_CEDULA_BACK,
@@ -175,9 +172,10 @@ def _send_back_prompt(update, flow, state):
             ALLY_PHONE: "Escribe el teléfono de contacto del negocio:",
             ALLY_CITY: "Escribe la ciudad del negocio:",
             ALLY_BARRIO: "Escribe el barrio del negocio:",
-            ALLY_ADDRESS: "Escribe la dirección del negocio:",
             ALLY_UBICACION: (
-                "Envía la ubicación GPS (pin de Telegram) o pega un link de Google Maps."
+                "Ubicacion del negocio\n\n"
+                "Escribe la direccion exacta (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
             ),
             ALLY_CONFIRM: "Escribe SI para confirmar tu registro.",
         },
@@ -187,8 +185,13 @@ def _send_back_prompt(update, flow, state):
             COURIER_PHONE: "Escribe tu número de celular:",
             COURIER_CITY: "Escribe la ciudad donde trabajas:",
             COURIER_BARRIO: "Escribe el barrio o sector principal donde trabajas:",
-            COURIER_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            COURIER_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            COURIER_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             COURIER_PLATE: "Escribe la placa de tu moto (o 'ninguna'):",
             COURIER_BIKETYPE: "Escribe el tipo de moto:",
             COURIER_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
@@ -203,8 +206,13 @@ def _send_back_prompt(update, flow, state):
             LOCAL_ADMIN_PHONE: "Escribe tu número de teléfono:",
             LOCAL_ADMIN_CITY: "¿En qué ciudad vas a operar como Administrador Local?",
             LOCAL_ADMIN_BARRIO: "Escribe tu barrio o zona base de operación:",
-            LOCAL_ADMIN_RESIDENCE_ADDRESS: "Escribe tu dirección de residencia:",
-            LOCAL_ADMIN_RESIDENCE_LOCATION: "Envía tu ubicación GPS (pin de Telegram) o pega un link de Google Maps.",
+            LOCAL_ADMIN_RESIDENCE_LOCATION: (
+                "Direccion de residencia\n\n"
+                "Por seguridad registramos donde vives. "
+                "Solo el equipo administrativo tiene acceso a este dato.\n\n"
+                "Escribe tu direccion completa (ej: Cra 15 #23-45, Barrio Cuba) "
+                "o envia un pin de Telegram."
+            ),
             LOCAL_ADMIN_CEDULA_FRONT: "Envía una foto del frente de tu cédula:",
             LOCAL_ADMIN_CEDULA_BACK: "Envía una foto del reverso de tu cédula:",
             LOCAL_ADMIN_SELFIE: "Envía una foto de tu cara (selfie):",
@@ -429,67 +437,105 @@ def _cotizar_resolver_ubicacion(update, context):
     return resolve_location(texto)
 
 
-def _mostrar_confirmacion_geocode(message, context, geo, original_text, cb_si, cb_no):
-    """Muestra el primer candidato de geocoding con pin, link de Maps y botones de confirmacion.
-    geo: dict con lat, lng, formatted_address, place_id.
+def _mostrar_confirmacion_geocode(
+    message,
+    context,
+    geo,
+    original_text,
+    cb_si,
+    cb_no,
+    header_text=None,
+    question_text="Es correcta?",
+    seen_ids=None,
+    formatted_storage_key=None,
+):
+    """Muestra una ubicacion candidata con pin, link de Maps y botones de confirmacion.
+    geo: dict con lat, lng, formatted_address/address/label y place_id.
     original_text: texto original del usuario (para carga perezosa del siguiente candidato)."""
     lat = geo["lat"]
     lng = geo["lng"]
-    formatted_address = geo.get("formatted_address", "")
+    formatted_address = (
+        geo.get("formatted_address")
+        or geo.get("address")
+        or geo.get("label")
+        or ""
+    )
     _pid = geo.get("place_id") or f"{lat},{lng}"
+    if formatted_storage_key:
+        if formatted_address:
+            context.user_data[formatted_storage_key] = formatted_address
+        else:
+            context.user_data.pop(formatted_storage_key, None)
     context.user_data["pending_geo_lat"] = lat
     context.user_data["pending_geo_lng"] = lng
     context.user_data["pending_geo_text"] = original_text
-    context.user_data["pending_geo_seen"] = [_pid]
+    context.user_data["pending_geo_seen"] = list(seen_ids) if seen_ids is not None else [_pid]
+    # city_hint: si ya hay uno guardado de la llamada inicial, lo conservamos.
+    # El caller puede haber guardado "pending_geo_city_hint" antes de llamar a _mostrar_confirmacion_geocode.
     message.reply_location(latitude=lat, longitude=lng)
     maps_link = f"https://maps.google.com/?q={lat},{lng}"
     keyboard = [[
         InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
         InlineKeyboardButton("No, esta no es", callback_data=cb_no),
     ]]
-    message.reply_text(
-        f"Encontre esta ubicacion:\n\n{formatted_address}\n\n"
-        f"Ver en mapa: {maps_link}\n\n"
-        "Es correcta?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+    text_parts = [header_text or "Encontre esta ubicacion:"]
+    if formatted_address:
+        text_parts.append(formatted_address)
+    text_parts.append(f"Ver en mapa: {maps_link}")
+    text_parts.append(question_text)
+    message.reply_text("\n\n".join(text_parts), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-def _geo_siguiente_o_gps(query, context, cb_si, cb_no, estado):
+def _geo_siguiente_o_gps(
+    query,
+    context,
+    cb_si,
+    cb_no,
+    estado,
+    header_text="Otra opcion:",
+    question_text="Es correcta?",
+    no_more_text=None,
+    formatted_storage_key=None,
+):
     """Busca el siguiente candidato de geocoding (carga perezosa) o pide GPS si no hay mas."""
     original_text = context.user_data.get("pending_geo_text", "")
     seen = context.user_data.get("pending_geo_seen", [])
-    next_geo = resolve_location_next(original_text, seen) if original_text else None
+    city_hint = context.user_data.get("pending_geo_city_hint")
+    next_geo = resolve_location_next(original_text, seen, city_hint=city_hint) if original_text else None
     if next_geo:
         _pid = next_geo.get("place_id") or f"{next_geo['lat']},{next_geo['lng']}"
         seen.append(_pid)
-        context.user_data["pending_geo_seen"] = seen
-        context.user_data["pending_geo_lat"] = next_geo["lat"]
-        context.user_data["pending_geo_lng"] = next_geo["lng"]
-        lat = next_geo["lat"]
-        lng = next_geo["lng"]
-        maps_link = f"https://maps.google.com/?q={lat},{lng}"
-        keyboard = [[
-            InlineKeyboardButton("Si, usar esta ubicacion", callback_data=cb_si),
-            InlineKeyboardButton("No, esta no es", callback_data=cb_no),
-        ]]
         query.edit_message_text("Buscando otra opcion...")
-        query.message.reply_location(latitude=lat, longitude=lng)
-        query.message.reply_text(
-            f"Otra opcion:\n\n{next_geo.get('formatted_address', '')}\n\n"
-            f"Ver en mapa: {maps_link}\n\nEs correcta?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+        _mostrar_confirmacion_geocode(
+            query.message,
+            context,
+            next_geo,
+            original_text,
+            cb_si,
+            cb_no,
+            header_text=header_text,
+            question_text=question_text,
+            seen_ids=seen,
+            formatted_storage_key=formatted_storage_key,
         )
     else:
         context.user_data.pop("pending_geo_lat", None)
         context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
         context.user_data.pop("pending_geo_seen", None)
+        context.user_data.pop("pending_geo_city_hint", None)
+        if formatted_storage_key:
+            context.user_data.pop(formatted_storage_key, None)
         query.edit_message_text(
-            "No encontre mas opciones. Envia la ubicacion de otra forma:\n"
-            "- Un PIN de ubicacion de Telegram\n"
-            "- Un link de Google Maps con coordenadas\n"
-            "- Coordenadas directas (ej: 4.81,-75.69)"
+            no_more_text
+            or (
+                "No encontre mas opciones.\n\n"
+                "Prueba una de estas formas para continuar:\n"
+                "- Envia un PIN de ubicacion de Telegram\n"
+                "- Pega un link de Google Maps con coordenadas\n"
+                "- Escribe coordenadas directas (ej: 4.81,-75.69)\n"
+                "- Escribe una direccion con ciudad"
+            )
         )
     return estado
 
@@ -632,7 +678,63 @@ def _fmt_pesos(amount: int) -> str:
     return f"${amount:,}".replace(",", ".")
 
 
+def build_offer_demand_badge_text(preview: dict) -> str:
+    """Renderiza un bloque compacto de semaforo de demanda para previews."""
+    if not preview:
+        return ""
+
+    signal_label = preview.get("signal_label") or "NO DISPONIBLE"
+    eligible_count = int(preview.get("eligible_count") or 0)
+    nearest_km = preview.get("nearest_km")
+    suggested_incentive = int(preview.get("suggested_incentive") or 0)
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    current_incentive = int(preview.get("current_incentive") or 0)
+    reason = (preview.get("reason") or "").strip()
+
+    lines = [
+        "Semaforo de demanda actual: {}".format(signal_label),
+        "Repartidores elegibles cerca ahora: {}".format(eligible_count),
+    ]
+    if nearest_km is not None:
+        lines[-1] += " (mas cercano ~{:.1f} km)".format(float(nearest_km))
+    if reason:
+        lines.append(reason)
+
+    if suggested_incentive <= 0:
+        lines.append("Incentivo sugerido ahora: opcional.")
+    else:
+        lines.append("Sugerencia opcional para acelerar: {}".format(_fmt_pesos(suggested_incentive)))
+        if extra_suggested > 0:
+            lines.append("Si quieres moverlo mas rapido, agrega al menos {} mas.".format(_fmt_pesos(extra_suggested)))
+        elif current_incentive > 0:
+            lines.append("Tu incentivo actual ya cubre esta sugerencia.")
+
+    return "\n".join(lines)
+
+
 # ---------- TÉRMINOS Y CONDICIONES ----------
+
+def build_offer_suggestion_button_row(preview: dict, callback_template: str, allowed_amounts=None):
+    """Construye una fila discreta de sugerencia cuando falta incentivo para la demanda actual."""
+    if not preview or not callback_template:
+        return None
+
+    signal_code = (preview.get("signal_code") or "").strip().upper()
+    extra_suggested = int(preview.get("extra_incentive_suggested") or 0)
+    if signal_code not in ("MEDIUM", "HIGH") or extra_suggested <= 0:
+        return None
+
+    allowed = set(int(v) for v in (allowed_amounts or []))
+    if allowed and extra_suggested not in allowed:
+        return None
+
+    return [
+        InlineKeyboardButton(
+            "Aplicar sugerencia ({})".format(_fmt_pesos(extra_suggested)),
+            callback_data=callback_template.format(amount=extra_suggested),
+        )
+    ]
+
 
 def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
     logger.debug(

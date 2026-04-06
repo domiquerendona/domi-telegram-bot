@@ -117,15 +117,17 @@ Cada flujo de registro usa su propio prefijo en TODAS sus claves de user_data.
 No compartir claves entre flujos distintos aunque el campo sea "el mismo".
 
 Prefijos establecidos:
-- Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng
-- Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng
-- Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng
-- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, etc.
+- Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng, ally_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en ally_geo_ubicacion_callback)
+- Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng, courier_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en courier_geo_ubicacion_callback)
+- Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
+- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, etc.
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
+- Flujo recarga directa (plataforma): recdir_tipo, recdir_target_id, recdir_target_name, recdir_monto, recdir_nota
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 - Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
 - Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id
 - Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
+- Flujo invitaciones admin: admin_invite_token (token temporal resuelto desde `/start` para preseleccionar admin en registro nuevo de aliado o repartidor)
 
 Reglas:
 - PROHIBIDO leer una clave de flujo A dentro de un handler de flujo B.
@@ -142,6 +144,7 @@ Formato estándar actual: `{dominio}_{accion}` o `{dominio}_{accion}_{id}`
 También se aceptan formatos compuestos cuando el flujo lo requiere, por ejemplo:
 - `pedido_inc_{order_id}x{monto}`
 - `ruta_entregar_{route_id}_{seq}`
+- `pedido_base_{monto}` para montos fijos de base requerida (`20000`, `50000`, `100000`, `200000`)
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local
@@ -445,6 +448,24 @@ No romper flujos existentes que ya funcionan.
 
 Cualquier ajuste debe ser compatible con el flujo actual del bot.
 
+4B. Regla obligatoria de expiración sin penalidad
+
+Cuando un pedido o una ruta se cancela automáticamente porque se agotó la ventana de respuesta del mercado
+(por ejemplo: nadie aceptó / nadie respondió dentro del tiempo configurado del flujo),
+NO debe aplicarse penalidad a ningún actor.
+
+Esto incluye:
+- aliado
+- admin creador de pedido especial
+- repartidor
+
+Reglas:
+- La cancelación automática por falta de respuesta SIEMPRE se considera sin culpa de los actores.
+- Pedido y ruta NO se cancelan en la primera expiración del mercado; deben agotar las repeticiones configuradas del ciclo antes de la cancelación final.
+- Configuración vigente: 3 repeticiones automáticas del ciclo de mercado antes de cancelar definitivamente, respetando el timer propio de cada flujo.
+- El mensaje al creador del servicio DEBE dejar explícito que no se aplicó ningún cargo.
+- PROHIBIDO reutilizar motores de cancelación con penalidad para expiraciones automáticas de mercado.
+
 5. Regla anti-duplicación (OBLIGATORIA)
 
 Antes de escribir código, el agente debe:
@@ -464,6 +485,28 @@ funciones no usadas
 handlers registrados dos veces
 
 callbacks duplicados con distinto patrón
+
+5B. Regla obligatoria de auditoría transversal de flujos
+
+Cuando se cree o cambie un flujo nuevo, el agente DEBE revisar explícitamente si esa misma lógica aplica
+también a otros flujos equivalentes ya existentes.
+
+Objetivo:
+- mantener uniformidad operativa entre flujos que representan la misma regla de negocio
+- evitar que una mejora quede implementada solo en un flujo y no en los demás
+- privilegiar un mismo motor lógico con adaptadores mínimos por flujo
+
+Obligaciones mínimas:
+- auditar los flujos hermanos antes de cerrar el cambio
+- identificar cuáles quedan cubiertos, cuáles no aplican y cuáles requieren adaptación
+- si la regla sí aplica a varios flujos, implementarla de forma uniforme en el mismo ciclo o dejar explícita la brecha y su razón
+- reutilizar helpers, servicios o motores existentes antes de duplicar lógica
+
+Ejemplos típicos de auditoría transversal:
+- pedido de aliado
+- pedido especial de admin
+- ruta multi-parada
+- panel admin vs panel aliado vs callbacks del courier
 
 6. Flujo de trabajo con IA (OBLIGATORIO)
 Antes de cambiar código
@@ -527,8 +570,8 @@ Siempre se trabaja sobre la rama staging.
 
 Todo commit y push del trabajo se hace directamente a origin/staging.
 
-Excepción única:
-- Cambios estructurales de base de datos (ver 7B) se implementan en verify/* y luego se mergean a staging.
+Las ramas temporales `verify/*` o `claude/*` pueden usarse cuando se necesite aislar una validación puntual,
+pero NO son obligatorias para cambios estructurales de base de datos.
 
 Si un bloque se reemplaza, el código anterior debe desaparecer.
 
@@ -558,7 +601,9 @@ afecte lógica de persistencia
 
 Todo cambio estructural de BD debe:
 
-Implementarse en rama verify/*
+Implementarse y validarse en staging por defecto.
+
+Usar rama verify/* solo si el usuario lo pide explícitamente o si hace falta aislar una validación puntual.
 
 Desplegarse en entorno de prueba
 
@@ -572,7 +617,7 @@ persistencia tras redeploy
 
 Solo después puede mergearse a main.
 
-PROHIBIDO saltarse la rama verify/* en cambios de base de datos.
+PROHIBIDO promover a main un cambio de base de datos sin validación funcional previa en staging.
 
 7C. Checklist obligatorio antes de merge a main
 
@@ -642,12 +687,14 @@ Flujo oficial de ramas:
 
   staging   ──(validado)──►  main
   verify/*  ──merge──►  staging  ──(validado)──►  main
+  (opcional)
                          (entorno DEV:
                           BOT_TOKEN DEV
                           DATABASE_URL separada)
 
 Reglas de flujo:
 - PROHIBIDO mergear verify/* directamente a main sin pasar por staging.
+- verify/* es opcional y solo se usa si hace falta aislar una validación puntual.
 - Un cambio puede ir de staging a main solo cuando fue validado funcionalmente en staging.
 - staging debe mantenerse al día con origin/staging.
 
@@ -786,6 +833,36 @@ Flujo de UI del ingreso externo (ConversationHandler ingreso_conv en main.py):
 - Prefijo de callbacks: ingreso_
 - Claves de user_data: ingreso_monto, ingreso_metodo
 - Accesible desde: menu Finanzas del Admin de Plataforma
+
+9C. Recarga manual directa del Admin de Plataforma (IMPLEMENTADO 2026-04-06)
+
+El Admin de Plataforma puede recargar cualquier usuario activo (courier, aliado o admin local)
+sin que el usuario deba solicitarla. El flujo solicitud-aprobacion existente sigue intacto.
+
+ConversationHandler: recarga_directa_conv (handlers/recharges.py)
+Entry points: plat_rdir_inicio (flujo normal) | plat_rdir_presel_{COURIER|ALLY}_{id} (pre-seleccionado)
+Estados: RECARGA_DIR_TIPO=1016, RECARGA_DIR_BUSCAR=1019, RECARGA_DIR_MONTO=1017, RECARGA_DIR_NOTA=1018
+
+Implementacion tecnica:
+- direct_recharge_by_platform(services.py): crea recharge_request PENDING y la aprueba con
+  approve_recharge_request. Reutiliza toda la logica contable (interruptor de ganancias, ledger).
+- get_all_active_couriers, get_all_active_allies, get_all_local_admins_approved (db.py):
+  funciones para listar usuarios activos; re-exportadas en services.py.
+- RECARGA_DIR_SALDO_BAJO_UMBRAL = 5000: umbral de saldo bajo para la vista de alerta.
+
+Vista saldo bajo:
+- Callback plat_rec_saldo_bajo: lista couriers y aliados con balance < 5000.
+- Cada boton genera plat_rdir_presel_{COURIER|ALLY}_{id} → inicia conv con usuario pre-seleccionado.
+
+Notificacion al Admin Local:
+- Al recargar un courier/ally de un equipo local, se captura su admin activo ANTES de llamar
+  a direct_recharge_by_platform (el interruptor lo cambiaria a plataforma durante la aprobacion).
+- Solo se notifica si el link activo previo no es de plataforma (team_code != 'PLATFORM').
+
+PROHIBIDO:
+- Llamar direct_recharge_by_platform sin verificar balance del admin de plataforma antes.
+- Capturar el admin local DESPUES de direct_recharge_by_platform (el interruptor ya lo desactivaria).
+- Saltear el ledger: toda recarga directa debe quedar registrada igual que una solicitud normal.
 
 9D. Recarga directa con plataforma como fallback (CRÍTICO)
 
@@ -1693,6 +1770,7 @@ Los tres flujos que siempre viajan juntos:
 **Aplica especialmente a:**
 - Radios GPS (ARRIVAL_RADIUS_KM, DELIVERY_RADIUS_KM)
 - Timers de tracking (T+5, T+15, T+20, auto-confirm T+2)
+- Ciclos de oferta/expiración de mercado y su número de repeticiones antes de cancelar
 - Botones de ayuda al admin (pin de recogida mal ubicado, pin de entrega mal ubicado)
 - Flujo de confirmación de llegada al pickup
 - Mensajes de estado al courier y al aliado

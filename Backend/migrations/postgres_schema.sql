@@ -237,6 +237,38 @@ CREATE INDEX IF NOT EXISTS idx_registration_reset_audit_role
 -- C) TABLAS DE CONFIGURACIÓN
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS admin_invite_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    role_scope TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    uses_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_tokens_admin_role
+    ON admin_invite_tokens(admin_id, role_scope, is_active);
+
+CREATE TABLE IF NOT EXISTS admin_invite_token_uses (
+    id BIGSERIAL PRIMARY KEY,
+    invite_token_id BIGINT NOT NULL,
+    admin_id BIGINT NOT NULL,
+    role_scope TEXT NOT NULL,
+    telegram_id BIGINT,
+    user_id BIGINT,
+    target_role_id BIGINT,
+    outcome TEXT NOT NULL,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_token
+    ON admin_invite_token_uses(invite_token_id);
+CREATE INDEX IF NOT EXISTS idx_admin_invite_token_uses_admin
+    ON admin_invite_token_uses(admin_id, created_at);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT,
@@ -400,6 +432,8 @@ CREATE TABLE IF NOT EXISTS orders (
     quote_source TEXT,
     canceled_by TEXT,
     courier_arrived_at TIMESTAMP,
+    arrival_wait_override INTEGER DEFAULT 0,
+    arrival_wait_override_at TIMESTAMP,
     courier_accepted_lat REAL,
     courier_accepted_lng REAL,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -697,7 +731,9 @@ CREATE TABLE IF NOT EXISTS routes (
     accepted_at TIMESTAMP,
     delivered_at TIMESTAMP,
     canceled_at TIMESTAMP,
-    courier_arrived_at TIMESTAMP
+    courier_arrived_at TIMESTAMP,
+    arrival_wait_override INTEGER DEFAULT 0,
+    arrival_wait_override_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS route_destinations (
@@ -851,6 +887,7 @@ CREATE TABLE IF NOT EXISTS order_support_requests (
     route_seq INTEGER,
     courier_id BIGINT NOT NULL,
     admin_id BIGINT NOT NULL,
+    support_type TEXT NOT NULL DEFAULT 'DELIVERY_PIN',
     status TEXT NOT NULL DEFAULT 'PENDING',
     resolution TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -859,6 +896,7 @@ CREATE TABLE IF NOT EXISTS order_support_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_order ON order_support_requests(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_support_requests_status ON order_support_requests(status);
+CREATE INDEX IF NOT EXISTS idx_order_support_requests_admin_status ON order_support_requests(admin_id, status);
 
 -- Scheduled jobs (persistencia de timers del bot ante reinicios)
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
