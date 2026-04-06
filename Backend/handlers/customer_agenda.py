@@ -948,9 +948,16 @@ def clientes_dir_barrio_handler(update, context):
         address_id = context.user_data.get("current_address_id")
         label = context.user_data.get("edit_address_label")
         old_text = context.user_data.get("clientes_pending_old_address_text", "")
+        old_lat = context.user_data.get("clientes_pending_old_lat")
+        old_lng = context.user_data.get("clientes_pending_old_lng")
         if old_text:
             try:
                 delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
+        if old_lat is not None and old_lng is not None:
+            try:
+                delete_distance_cache_for_coord("{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5)))
             except Exception:
                 pass
         try:
@@ -975,6 +982,8 @@ def clientes_dir_barrio_handler(update, context):
             "clientes_pending_mode",
             "clientes_pending_address_text",
             "clientes_pending_old_address_text",
+            "clientes_pending_old_lat",
+            "clientes_pending_old_lng",
             "clientes_pending_lat",
             "clientes_pending_lng",
             "clientes_pending_city",
@@ -1032,6 +1041,8 @@ def clientes_dir_editar_text(update, context):
     context.user_data["clientes_pending_mode"] = "dir_editar"
     context.user_data["clientes_pending_address_text"] = resolved.get("formatted_address") or address_text
     context.user_data["clientes_pending_old_address_text"] = address.get("address_text") or ""
+    context.user_data["clientes_pending_old_lat"] = address.get("lat")
+    context.user_data["clientes_pending_old_lng"] = address.get("lng")
     context.user_data["clientes_pending_lat"] = resolved.get("lat")
     context.user_data["clientes_pending_lng"] = resolved.get("lng")
     context.user_data["clientes_pending_notes"] = address.get("notes")
@@ -1965,9 +1976,16 @@ def admin_clientes_dir_barrio_handler(update, context):
         address_id = context.user_data.get("acust_current_address_id")
         label = context.user_data.get("acust_edit_address_label")
         old_text = context.user_data.get("acust_pending_old_address_text", "")
+        old_lat = context.user_data.get("acust_pending_old_lat")
+        old_lng = context.user_data.get("acust_pending_old_lng")
         if old_text:
             try:
                 delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
+        if old_lat is not None and old_lng is not None:
+            try:
+                delete_distance_cache_for_coord("{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5)))
             except Exception:
                 pass
         try:
@@ -1989,6 +2007,7 @@ def admin_clientes_dir_barrio_handler(update, context):
         for key in [
             "acust_edit_address_label", "acust_current_address_id",
             "acust_pending_mode", "acust_pending_address_text", "acust_pending_old_address_text",
+            "acust_pending_old_lat", "acust_pending_old_lng",
             "acust_pending_lat", "acust_pending_lng", "acust_pending_city",
             "acust_pending_barrio", "acust_pending_notes",
         ]:
@@ -2037,6 +2056,8 @@ def admin_clientes_dir_editar_text(update, context):
     context.user_data["acust_pending_mode"] = "dir_editar"
     context.user_data["acust_pending_address_text"] = resolved.get("formatted_address") or address_text
     context.user_data["acust_pending_old_address_text"] = address.get("address_text") or ""
+    context.user_data["acust_pending_old_lat"] = address.get("lat")
+    context.user_data["acust_pending_old_lng"] = address.get("lng")
     context.user_data["acust_pending_lat"] = resolved.get("lat")
     context.user_data["acust_pending_lng"] = resolved.get("lng")
     context.user_data["acust_pending_notes"] = address.get("notes") if hasattr(address, "get") else address["notes"]
@@ -2892,9 +2913,16 @@ def ally_clientes_dir_barrio_handler(update, context):
         address_id = context.user_data.get("allycust_current_address_id")
         label = context.user_data.get("allycust_edit_address_label")
         old_text = context.user_data.get("allycust_pending_old_address_text", "")
+        old_lat = context.user_data.get("allycust_pending_old_lat")
+        old_lng = context.user_data.get("allycust_pending_old_lng")
         if old_text:
             try:
                 delete_geocoding_text_cache(normalize_text_for_cache(old_text))
+            except Exception:
+                pass
+        if old_lat is not None and old_lng is not None:
+            try:
+                delete_distance_cache_for_coord("{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5)))
             except Exception:
                 pass
         try:
@@ -2907,7 +2935,8 @@ def ally_clientes_dir_barrio_handler(update, context):
         except Exception as e:
             update.message.reply_text("Error: {}".format(str(e)))
         for key in _ALLYCUST_PENDING_KEYS + ["allycust_edit_address_label", "allycust_current_address_id",
-                                              "allycust_pending_old_address_text"]:
+                                              "allycust_pending_old_address_text",
+                                              "allycust_pending_old_lat", "allycust_pending_old_lng"]:
             context.user_data.pop(key, None)
         return _ally_clientes_mostrar_menu(update, context, edit_message=False)
 
@@ -2947,6 +2976,8 @@ def ally_clientes_dir_editar_text(update, context):
     context.user_data["allycust_pending_mode"] = "dir_editar"
     context.user_data["allycust_pending_address_text"] = resolved.get("formatted_address") or address_text
     context.user_data["allycust_pending_old_address_text"] = address.get("address_text") or ""
+    context.user_data["allycust_pending_old_lat"] = address.get("lat")
+    context.user_data["allycust_pending_old_lng"] = address.get("lng")
     context.user_data["allycust_pending_lat"] = resolved.get("lat")
     context.user_data["allycust_pending_lng"] = resolved.get("lng")
     context.user_data["allycust_pending_notes"] = address["notes"]

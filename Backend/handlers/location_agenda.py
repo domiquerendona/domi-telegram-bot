@@ -36,6 +36,7 @@ from services import (
     create_admin_location,
     create_ally_location,
     delete_ally_location,
+    delete_distance_cache_for_coord,
     ensure_user,
     get_admin_by_telegram_id,
     get_admin_by_user_id,
@@ -504,6 +505,15 @@ def admin_dirs_nueva_text_handler(update, context):
     label = context.user_data.get("adirs_new_label", "")
     editing_id = context.user_data.get("adirs_editing_id")
 
+    if editing_id and "adirs_old_lat" not in context.user_data:
+        try:
+            old_loc = get_admin_location_by_id(editing_id, admin_id)
+            if old_loc:
+                context.user_data["adirs_old_lat"] = old_loc.get("lat")
+                context.user_data["adirs_old_lng"] = old_loc.get("lng")
+        except Exception:
+            pass
+
     loc = resolve_location(address_text, city_hint=_loc_admin_city_hint(update))
     if not loc or loc.get("lat") is None or loc.get("lng") is None:
         update.message.reply_text(
@@ -542,9 +552,16 @@ def admin_dirs_nueva_tel_handler(update, context):
     lat = context.user_data.get("adirs_pending_lat")
     lng = context.user_data.get("adirs_pending_lng")
     editing_id = context.user_data.pop("adirs_editing_id", None)
+    old_lat = context.user_data.pop("adirs_old_lat", None)
+    old_lng = context.user_data.pop("adirs_old_lng", None)
 
     try:
         if editing_id:
+            if old_lat is not None and old_lng is not None:
+                try:
+                    delete_distance_cache_for_coord("{},{}".format(round(float(old_lat), 5), round(float(old_lng), 5)))
+                except Exception:
+                    pass
             update_admin_location(editing_id, admin_id, label, address, city, barrio, phone=phone, lat=lat, lng=lng)
             update.message.reply_text("Ubicacion actualizada: {}".format(label))
         else:
