@@ -891,22 +891,9 @@ def repartidores_pendientes(update, context):
                     logger.warning("No se pudieron enviar fotos del repartidor %s: %s", courier_id, e)
 
         
-def admin_menu(update, context):
-    """Panel de Administración de Plataforma."""
-    user = update.effective_user
-    user_db_id = get_user_db_id_from_update(update)
-
-    # Solo el Admin de Plataforma aprobado puede usar este comando
-    if not user_has_platform_admin(user.id):
-        update.message.reply_text("Acceso restringido: tu Admin de Plataforma no esta APPROVED.")
-        return
-
-    texto = (
-        "Panel de Administración de Plataforma.\n"
-        "¿Qué deseas revisar?"
-    )
-
-    keyboard = [
+def _build_platform_admin_keyboard():
+    """Construye el teclado del Panel Admin de Plataforma. Fuente unica de verdad."""
+    return [
         [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
         [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
@@ -921,9 +908,20 @@ def admin_menu(update, context):
         [InlineKeyboardButton("📌 Corregir coords de aliados", callback_data="plat_corr_inicio")],
     ]
 
+
+def admin_menu(update, context):
+    """Panel de Administración de Plataforma."""
+    user = update.effective_user
+    user_db_id = get_user_db_id_from_update(update)
+
+    # Solo el Admin de Plataforma aprobado puede usar este comando
+    if not user_has_platform_admin(user.id):
+        update.message.reply_text("Acceso restringido: tu Admin de Plataforma no esta APPROVED.")
+        return
+
     update.message.reply_text(
-        texto,
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "Panel de Administración de Plataforma.\n¿Qué deseas revisar?",
+        reply_markup=InlineKeyboardMarkup(_build_platform_admin_keyboard()),
     )
 
 
@@ -1487,24 +1485,9 @@ def admin_menu_callback(update, context):
     # Volver al panel (reconstruye el teclado sin llamar admin_menu, para evitar update.message)
     if data == "admin_volver_panel":
         query.answer()
-
-        texto = (
-            "Panel de Administración de Plataforma.\n"
-            "¿Qué deseas revisar?"
-        )
-        keyboard = [
-            [InlineKeyboardButton("👥 Gestión de usuarios", callback_data="admin_gestion_usuarios")],
-            [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos")],
-            [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
-            [InlineKeyboardButton("💰 Saldos de todos", callback_data="admin_saldos")],
-            [InlineKeyboardButton("Referencias locales", callback_data="admin_ref_candidates")],
-            [InlineKeyboardButton("📊 Finanzas", callback_data="admin_finanzas")],
-            [InlineKeyboardButton("💳 Recargas", callback_data="plat_rec_menu")],
-        ]
-
         query.edit_message_text(
-            texto,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "Panel de Administración de Plataforma.\n¿Qué deseas revisar?",
+            reply_markup=InlineKeyboardMarkup(_build_platform_admin_keyboard())
         )
         return
 
