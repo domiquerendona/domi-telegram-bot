@@ -273,6 +273,7 @@ from services import (
     compute_ally_subsidy,
     expire_old_ally_subscriptions,
     get_all_pending_fee_collections,
+    get_expiring_ally_subscriptions,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback
 from db import (
@@ -345,6 +346,7 @@ from handlers.recharges import (
     recargar_conv,
     configurar_pagos_conv,
     ingreso_conv,
+    recarga_directa_conv,
     cmd_saldo,
     cmd_recargar,
     cmd_recargas_pendientes,
@@ -2426,6 +2428,31 @@ def _recover_pending_fee_collections(bot):
         logger.warning("_recover_pending_fee_collections: %s", e)
 
 
+def _notify_expiring_subscriptions_job(context):
+    """Job diario: notifica a aliados cuya suscripcion vence en los proximos 3 dias."""
+    try:
+        expiring = get_expiring_ally_subscriptions(days=3)
+        for s in expiring:
+            try:
+                ally_tg_id = s["ally_telegram_id"]
+                if not ally_tg_id:
+                    continue
+                expires_str = str(s["expires_at"])[:10]
+                context.bot.send_message(
+                    chat_id=ally_tg_id,
+                    text=(
+                        "Recordatorio de suscripcion\n\n"
+                        "Tu suscripcion vence el {}.\n"
+                        "Renovarla desde el menu 'Mi suscripcion' te permite seguir "
+                        "disfrutando del servicio sin cobro por cada domicilio.".format(expires_str)
+                    ),
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("_notify_expiring_subscriptions_job: %s", e)
+
+
 def main():
     # Modo sleep: el servicio Railway sigue vivo pero el bot no arranca.
     # Activar: poner PAUSE_BOT_DEV=true en las variables de entorno del servicio DEV en Railway.
@@ -2641,6 +2668,7 @@ def main():
     dp.add_handler(profile_change_conv)
     dp.add_handler(configurar_pagos_conv)
     dp.add_handler(ingreso_conv)
+    dp.add_handler(recarga_directa_conv)
 
     # -------------------------
     # Registro de Administradores Locales
@@ -2693,6 +2721,14 @@ def main():
 
     # Recuperar jobs persistidos tras reinicio
     recover_scheduled_jobs(updater.job_queue)
+
+    # Job diario: notificar suscripciones proximas a vencer (cada 24 h, primer disparo en 1 h)
+    updater.job_queue.run_repeating(
+        _notify_expiring_subscriptions_job,
+        interval=86400,
+        first=3600,
+        name="notify_expiring_subscriptions",
+    )
 
     # Rehidratar ofertas activas que pudieron quedar a mitad del ciclo por reinicio
     recover_active_offer_dispatches(updater)

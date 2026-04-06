@@ -10864,6 +10864,91 @@ def update_recharge_status(request_id: int, status: str, decided_by_admin_id: in
     conn.close()
 
 
+def get_all_active_couriers():
+    """
+    Retorna todos los repartidores con status='APPROVED' en la tabla couriers.
+    Incluye datos del vinculo activo (balance, admin_id, team_name) si existe.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            c.id AS courier_id,
+            c.full_name,
+            c.phone,
+            c.city,
+            ac.balance,
+            ac.admin_id AS link_admin_id,
+            a.team_name AS link_team_name
+        FROM couriers c
+        LEFT JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
+        LEFT JOIN admins a ON a.id = ac.admin_id
+        WHERE c.status = 'APPROVED'
+          AND (c.is_deleted IS NULL OR c.is_deleted = 0)
+        ORDER BY c.full_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_active_allies():
+    """
+    Retorna todos los aliados con status='APPROVED' en la tabla allies.
+    Incluye datos del vinculo activo (balance, admin_id, team_name) si existe.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS ally_id,
+            a.business_name,
+            a.owner_name,
+            a.phone,
+            a.city,
+            aa.balance,
+            aa.admin_id AS link_admin_id,
+            adm.team_name AS link_team_name
+        FROM allies a
+        LEFT JOIN admin_allies aa ON aa.ally_id = a.id AND aa.status = 'APPROVED'
+        LEFT JOIN admins adm ON adm.id = aa.admin_id
+        WHERE a.status = 'APPROVED'
+          AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        ORDER BY a.business_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_local_admins_approved():
+    """
+    Retorna todos los admins locales (no Plataforma) con status='APPROVED'.
+    Usado por recarga directa de plataforma.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT
+            a.id AS admin_id,
+            a.full_name,
+            a.team_name,
+            a.team_code,
+            a.balance,
+            u.telegram_id
+        FROM admins a
+        JOIN users u ON u.id = a.user_id
+        WHERE a.status = 'APPROVED'
+          AND (a.team_code IS NULL OR a.team_code != 'PLATFORM')
+        ORDER BY a.team_name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def insert_ledger_entry(kind: str, from_type: str, from_id: int, to_type: str, to_id: int,
                         amount: int, ref_type: str = None, ref_id: int = None, note: str = None) -> int:
     """
@@ -13102,6 +13187,33 @@ def expire_old_ally_subscriptions():
     if changed:
         logger.info("%s suscripcion(es) marcadas como EXPIRED.", changed)
     return changed
+
+
+def get_expiring_ally_subscriptions(days: int = 3):
+    """
+    Retorna suscripciones ACTIVE que vencen en los proximos `days` dias.
+    Incluye telegram_id del aliado y nombre del negocio.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    if DB_ENGINE == "postgres":
+        date_expr = "expires_at <= NOW() + INTERVAL '{}' DAY".format(days)
+    else:
+        date_expr = "expires_at <= datetime('now', '+{} days')".format(days)
+    cur.execute(f"""
+        SELECT s.id, s.ally_id, s.expires_at, s.admin_id,
+               u.telegram_id AS ally_telegram_id,
+               a.business_name AS ally_name
+        FROM ally_subscriptions s
+        JOIN allies a ON a.id = s.ally_id
+        JOIN users u ON u.id = a.user_id
+        WHERE s.status = 'ACTIVE'
+          AND {date_expr}
+        ORDER BY s.expires_at ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_ally_subscription_info(ally_id: int):
