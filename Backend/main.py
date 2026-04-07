@@ -539,9 +539,12 @@ RESTAURANT_CHAT_ID = int(os.getenv("RESTAURANT_CHAT_ID", "0"))
 FORM_BASE_URL = os.getenv("FORM_BASE_URL", "").rstrip("/")
 
 # URL pública del panel web Angular.
-# Si está definida, el bot muestra un botón directo al panel para admins y repartidores.
-# Ejemplo: https://angular-production-44c8.up.railway.app
+# Railway: https://angular-production-44c8.up.railway.app  → muestra botón inline
+# Local:   http://localhost:4200                            → muestra texto con el link
+# Telegram solo acepta https:// en botones inline.
 WEB_PANEL_URL = os.getenv("WEB_PANEL_URL", "").strip().rstrip("/")
+WEB_PANEL_URL_IS_HTTPS = WEB_PANEL_URL.startswith("https://")
+
 PLATFORM_TEAM_CODE = "PLATFORM"
 
 
@@ -1096,12 +1099,17 @@ def mi_repartidor(update, context):
             )
         )
     update.message.reply_text(msg, reply_markup=reply_markup)
-    if WEB_PANEL_URL:
+    if WEB_PANEL_URL and WEB_PANEL_URL_IS_HTTPS:
         update.message.reply_text(
             "Tambien puedes ver tus ganancias y perfil en el panel web:",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🌐 Mi panel web", url=WEB_PANEL_URL + "/courier")
             ]])
+        )
+    elif WEB_PANEL_URL:
+        update.message.reply_text(
+            "Tambien puedes ver tus ganancias y perfil en el panel web:\n"
+            + WEB_PANEL_URL + "/courier"
         )
 
 
@@ -1516,12 +1524,13 @@ def mi_admin(update, context):
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
-        if WEB_PANEL_URL:
+        if WEB_PANEL_URL and WEB_PANEL_URL_IS_HTTPS:
             keyboard.append([InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)])
         update.message.reply_text(
             header +
             "Como Administrador de Plataforma, tu operación está habilitada.\n"
-            "Selecciona una opción:",
+            "Selecciona una opción:"
+            + ("\n\nPanel web: " + WEB_PANEL_URL if WEB_PANEL_URL and not WEB_PANEL_URL_IS_HTTPS else ""),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -1573,13 +1582,13 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⚙️ Configuraciones", callback_data="admin_config")],
         [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
     ]
-    if WEB_PANEL_URL:
+    if WEB_PANEL_URL and WEB_PANEL_URL_IS_HTTPS:
         keyboard.append([InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)])
-
     update.message.reply_text(
         header + estado_msg +
         "Panel de administración habilitado.\n"
-        "Selecciona una opción:",
+        "Selecciona una opción:"
+        + ("\n\nPanel web: " + WEB_PANEL_URL if WEB_PANEL_URL and not WEB_PANEL_URL_IS_HTTPS else ""),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 

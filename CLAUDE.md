@@ -254,11 +254,21 @@ Las funciones del panel web que filtran por fecha **deben usar el patrón `DB_EN
 | Mes actual | `strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')` | `TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')` |
 
 **Funciones que ya aplican el patrón correctamente:**
-- `get_dashboard_stats_data()` — filtro mes actual
+- `get_dashboard_stats_data()` — filtros mes actual y hoy (via `hoy_filter` y `mes_actual_filter`)
 - `get_admin_panel_earnings_data()` — filtros hoy / semana / mes
 - `get_courier_delivery_time_stats()` — filtro ventana de N días
 
 **Síntoma cuando falta el patrón:** la API lanza excepción en PostgreSQL → FastAPI responde 500 sin cabeceras CORS → Angular recibe `status 0` ("Error 0: sin conexión"). **PROHIBIDO** usar `strftime` o `date('now')` directamente en queries de funciones de panel web sin el bloque `if DB_ENGINE == "postgres"`.
+
+### `_row_value()` y PostgreSQL RealDictCursor (`db.py`)
+
+PostgreSQL con `RealDictCursor` retorna filas como `dict` con claves en minúsculas normalizadas:
+- `COUNT(*)` → clave `"count"` (no `"COUNT(*)"`)
+- `COALESCE(SUM(...), 0)` → clave `"coalesce"` (no el alias si no se especifica uno)
+
+La función `_row_value(row, key, index=0, default=None)` en `db.py` maneja este comportamiento: si la clave no se encuentra en el dict, usa `list(row.values())[index]` como fallback posicional. Sin este fallback, todas las queries de agregación en el panel web retornan el valor `default` (0) en lugar del valor real.
+
+**PROHIBIDO** usar `row.get("COUNT(*)", 0)` directamente en funciones de panel web — siempre usar `_row_value(row, "count")` o un alias SQL explícito (`SELECT COUNT(*) AS total`).
 
 ### Estados Estándar
 
@@ -539,6 +549,17 @@ npm run build
 npm test
 ```
 
+#### Leaflet — import dinámico (mapa.component.ts)
+
+Leaflet se importa dinámicamente con `await import('leaflet')`. El bundler de Angular devuelve el módulo ES como un namespace object donde `L.icon` está en `.default`, no en la raíz. **Siempre usar:**
+
+```typescript
+const leafletModule = await import('leaflet');
+const L = (leafletModule as any).default ?? leafletModule;
+```
+
+**PROHIBIDO** usar `const L = await import('leaflet')` directamente — produce `TypeError: n.icon is not a function` en producción.
+
 El backend permite CORS desde `http://localhost:4200` en modo desarrollo.
 
 #### Configuración SSR (archivos críticos)
@@ -662,9 +683,22 @@ uvicorn web_app:app --reload --port 8000
 Endpoints principales:
 - `GET /` — Health check HTML
 - `POST /admin/users/{user_id}/approve` — Aprobar usuario (requiere rol admin)
+- `GET /admin/courier-locations` — Repartidores activos con GPS (lat/lng, nombre, ciudad, telegram_id)
+- `GET /admin/orders/unassigned` — Pedidos publicados sin courier asignado
 - Endpoints de `/users/` y `/dashboard/`
 
-CORS configurado para permitir `http://localhost:4200` en desarrollo.
+CORS configurado para permitir `http://localhost:4200` en desarrollo y `https://angular-production-44c8.up.railway.app` en producción.
+
+**Global exception handler (CRÍTICO — `web_app.py`):** FastAPI tiene registrado un `@app.exception_handler(Exception)` que convierte cualquier excepción no capturada en `JSONResponse(status_code=500)`. Sin este handler, las excepciones propagan hasta uvicorn que responde `text/plain` sin cabeceras CORS, y Angular recibe `status: 0` ("Unknown Error") en lugar de un error 500 descriptivo. **NUNCA eliminar este handler.**
+
+#### Funciones de mapa en `db.py` / `services.py`
+
+| Función | Descripción |
+|---------|-------------|
+| `get_all_online_couriers()` | Repartidores con `live_location_active = 1` y `availability_status = 'APPROVED'`. JOIN con `users` (para `telegram_id`) y `admins` (para `admin_city`). La tabla `couriers` **no tiene** columna `telegram_id`; está en `users.telegram_id` via `c.user_id`. |
+| `get_active_orders_without_courier()` | Pedidos en status `PUBLISHED` sin courier. Usa `COALESCE(al.business_name, 'Admin') AS ally_name` — la tabla `allies` usa `business_name`, **no** `name`. |
+
+Ambas re-exportadas en `services.py`.
 
 ### Panel Web Angular (Railway) — CONFIGURADO 2026-03-31
 

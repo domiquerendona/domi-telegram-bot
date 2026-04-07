@@ -2430,20 +2430,20 @@ def force_platform_admin(platform_telegram_id: int):
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
 
-    # 2) asegurar admins - buscar por team_code='PLATFORM' (UNIQUE, solo puede haber uno)
-    cur.execute("""
+    # 2) asegurar admins - buscar por team_code='PLATFORM' o por user_id
+    cur.execute(f"""
         SELECT id FROM admins
-        WHERE team_code = 'PLATFORM'
+        WHERE team_code = 'PLATFORM' OR user_id = {P}
         LIMIT 1
-    """)
+    """, (user_id,))
     admin_row = cur.fetchone()
 
     if admin_row:
-        # Ya existe PLATFORM, reasignar al user_id correcto y aprobar
+        # Ya existe, actualizar para asegurar datos correctos
         admin_id = admin_row["id"]
         cur.execute(f"""
             UPDATE admins
-            SET user_id = {P}, status = 'APPROVED', is_deleted = 0
+            SET user_id = {P}, status = 'APPROVED', is_deleted = 0, team_code = 'PLATFORM'
             WHERE id = {P}
         """, (user_id, admin_id))
     else:
