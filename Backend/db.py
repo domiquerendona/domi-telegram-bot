@@ -2430,24 +2430,39 @@ def force_platform_admin(platform_telegram_id: int):
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
 
-    # 2) asegurar admins - buscar por team_code='PLATFORM' o por user_id
-    cur.execute(f"""
-        SELECT id FROM admins
-        WHERE team_code = 'PLATFORM' OR user_id = {P}
-        LIMIT 1
-    """, (user_id,))
-    admin_row = cur.fetchone()
+    # 2) asegurar admins — buscar por user_id Y por team_code por separado
+    #    porque pueden existir dos filas distintas en conflicto
+    cur.execute(f"SELECT id FROM admins WHERE user_id = {P} LIMIT 1", (user_id,))
+    user_row = cur.fetchone()
 
-    if admin_row:
-        # Ya existe, actualizar para asegurar datos correctos
-        admin_id = admin_row["id"]
+    cur.execute("SELECT id FROM admins WHERE team_code = 'PLATFORM' LIMIT 1")
+    platform_row = cur.fetchone()
+
+    if user_row and platform_row and user_row["id"] != platform_row["id"]:
+        # Dos filas distintas en conflicto: user_id=X en una, team_code=PLATFORM en otra.
+        # Usar la fila con user_id correcto como la PLATFORM y limpiar la otra.
         cur.execute(f"""
-            UPDATE admins
-            SET user_id = {P}, status = 'APPROVED', is_deleted = 0, team_code = 'PLATFORM'
+            UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0
             WHERE id = {P}
-        """, (user_id, admin_id))
+        """, (user_row["id"],))
+        cur.execute(f"UPDATE admins SET team_code = NULL WHERE id = {P}", (platform_row["id"],))
+
+    elif user_row:
+        # Solo existe la fila con user_id correcto — asegurar team_code=PLATFORM
+        cur.execute(f"""
+            UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0
+            WHERE id = {P}
+        """, (user_row["id"],))
+
+    elif platform_row:
+        # Solo existe la fila PLATFORM pero con otro user_id — reasignar user_id
+        cur.execute(f"""
+            UPDATE admins SET user_id = {P}, status = 'APPROVED', is_deleted = 0
+            WHERE id = {P}
+        """, (user_id, platform_row["id"]))
+
     else:
-        # No existe, crear nuevo
+        # No existe ninguna, crear nueva
         cur.execute(f"""
             INSERT INTO admins (
                 user_id, full_name, phone, city, barrio,
