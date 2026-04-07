@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| (ninguna) | — | — | — |
+| claude | 2026-04-07 | handlers/order.py, handlers/route.py, docs/roadmap_futuro.md, CLAUDE.md | Botones "Editar" en preview de pedido aliado, pedido admin y ruta | COMPLETADO |
 
 ---
 

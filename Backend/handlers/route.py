@@ -392,6 +392,7 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     if suggested_row:
         keyboard.insert(0, suggested_row)
     keyboard += [
+        [InlineKeyboardButton("Cambiar recogida", callback_data="ruta_edit_pickup")],
         [InlineKeyboardButton("Confirmar ruta", callback_data="ruta_confirmar")],
         [InlineKeyboardButton("Cancelar", callback_data="ruta_cancelar")],
     ]
@@ -401,6 +402,13 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     else:
         update_or_query.message.reply_text(text, reply_markup=markup)
     return RUTA_CONFIRMACION
+
+
+def ruta_edit_pickup_callback(update, context):
+    """Desde el preview de ruta: volver a seleccionar punto de recogida."""
+    query = update.callback_query
+    query.answer()
+    return _ruta_mostrar_selector_pickup(query, context)
 
 
 def nueva_ruta_desde_menu(update, context):
@@ -1388,6 +1396,7 @@ nueva_ruta_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ruta_distancia_km_handler),
         ],
         RUTA_CONFIRMACION: [
+            CallbackQueryHandler(ruta_edit_pickup_callback, pattern=r"^ruta_edit_pickup$"),
             CallbackQueryHandler(ruta_inc_fijo_callback, pattern=r"^ruta_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(ruta_inc_otro_start, pattern=r"^ruta_inc_otro$"),
             CallbackQueryHandler(ruta_confirmacion_callback, pattern=r"^ruta_(confirmar|cancelar)$"),

@@ -592,6 +592,8 @@ def pedido_instrucciones_callback(update, context):
         # Usar solo la nota de la direccion como instrucciones finales
         nota_direccion = context.user_data.get("nota_direccion", "")
         context.user_data["instructions"] = nota_direccion
+        if context.user_data.pop("pedido_edit_from_preview", False):
+            return mostrar_resumen_confirmacion(query, context, edit=True)
         return mostrar_selector_pickup(query, context, edit=True)
 
     return PEDIDO_INSTRUCCIONES_EXTRA
@@ -610,6 +612,8 @@ def pedido_instrucciones_text(update, context):
     else:
         context.user_data["instructions"] = nota_direccion
 
+    if context.user_data.pop("pedido_edit_from_preview", False):
+        return mostrar_resumen_confirmacion_msg(update, context)
     return mostrar_selector_pickup(update, context, edit=False)
 
 
@@ -1413,6 +1417,12 @@ def pedido_geo_ubicacion_callback(update, context):
         context.user_data["dropoff_lat"] = lat
         context.user_data["dropoff_lng"] = lng
         if source == "recent_address" and confirmed_recent_address:
+            if context.user_data.pop("pedido_edit_from_preview", False):
+                query.edit_message_text(
+                    "Ubicacion confirmada.\n\n"
+                    "Se usara esta direccion:\n{}".format(confirmed_recent_address)
+                )
+                return mostrar_resumen_confirmacion(query, context, edit=False)
             query.edit_message_text(
                 "Ubicacion confirmada.\n\n"
                 "Se reutilizara esta direccion:\n{}\n\n"
@@ -1517,6 +1527,9 @@ def pedido_ubicacion_copiar_msg_callback(update, context):
 
 def pedido_direccion_cliente(update, context):
     context.user_data["customer_address"] = update.message.text.strip()
+
+    if context.user_data.pop("pedido_edit_from_preview", False):
+        return mostrar_resumen_confirmacion_msg(update, context)
 
     # Si hay cliente existente (recurrente), preguntar si guardar direccion
     customer_id = context.user_data.get("customer_id")
@@ -2282,6 +2295,11 @@ def _pedido_confirmacion_keyboard(context):
     if suggested_row:
         rows.insert(0, suggested_row)
     rows.append([InlineKeyboardButton("+ Agregar otra entrega", callback_data="pedido_agregar_parada")])
+    rows.append([
+        InlineKeyboardButton("Cambiar recogida", callback_data="pedido_edit_pickup"),
+        InlineKeyboardButton("Cambiar instrucciones", callback_data="pedido_edit_instruc"),
+    ])
+    rows.append([InlineKeyboardButton("Cambiar direccion entrega", callback_data="pedido_edit_dir")])
     rows.append([InlineKeyboardButton(confirmar_label, callback_data="pedido_confirmar")])
     rows.append([InlineKeyboardButton("Cancelar", callback_data="pedido_cancelar")])
     return rows
@@ -2541,6 +2559,39 @@ def pedido_confirmacion(update, context):
     """Fallback: redirige a botones si el usuario escribe texto."""
     # Mostrar resumen con botones
     return mostrar_resumen_confirmacion_msg(update, context)
+
+
+# ---- Editar campos desde el preview (nuevo_pedido_conv) ----
+
+def pedido_edit_instruc_callback(update, context):
+    """Desde el preview: volver a pedir instrucciones al repartidor."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["pedido_edit_from_preview"] = True
+    query.edit_message_text(
+        "Escribe las instrucciones para el repartidor "
+        "(o escribe 'ninguna' para dejar en blanco):"
+    )
+    return PEDIDO_INSTRUCCIONES_EXTRA
+
+
+def pedido_edit_dir_callback(update, context):
+    """Desde el preview: volver a pedir la direccion de entrega."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["pedido_edit_from_preview"] = True
+    query.edit_message_text(
+        "Escribe la nueva direccion de entrega, comparte ubicacion GPS "
+        "o pega un link de Google Maps:"
+    )
+    return PEDIDO_UBICACION
+
+
+def pedido_edit_pickup_callback(update, context):
+    """Desde el preview: volver a seleccionar punto de recogida."""
+    query = update.callback_query
+    query.answer()
+    return mostrar_selector_pickup(query, context, edit=True)
 
 
 def pedido_incentivo_fixed_callback(update, context):
@@ -3189,6 +3240,7 @@ def _admin_ped_preview_text(ctx):
         "Total oferta al courier: ${:,}"
         "{}"
         "{}"
+        "\n\nPara cambiar las instrucciones escribe el nuevo texto en el chat."
     ).format(
         ctx.get("admin_ped_pickup_addr", ""),
         ctx.get("admin_ped_cust_name", ""),
@@ -3229,6 +3281,11 @@ def _admin_ped_preview_text(ctx):
         [InlineKeyboardButton("Otro incentivo", callback_data="admin_pedido_inc_otro")],
         [InlineKeyboardButton(visibilidad_btn, callback_data="admin_pedido_team_toggle")],
         [InlineKeyboardButton("Guardar como plantilla", callback_data="admin_pedido_guardar_plantilla")],
+        [
+            InlineKeyboardButton("Cambiar recogida", callback_data="admin_pedido_edit_pickup"),
+            InlineKeyboardButton("Cambiar tarifa", callback_data="admin_pedido_edit_tarifa"),
+        ],
+        [InlineKeyboardButton("Cambiar cliente / entrega", callback_data="admin_pedido_edit_cust")],
         [InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")],
     ])
     return text, InlineKeyboardMarkup(keyboard)
@@ -4658,6 +4715,45 @@ def admin_pedido_cancelar_callback(update, context):
     return ConversationHandler.END
 
 
+# ---- Editar campos desde el preview (admin_pedido_conv) ----
+
+def admin_pedido_edit_pickup_callback(update, context):
+    """Desde el preview admin: volver a seleccionar punto de recogida."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    locations = get_admin_locations(admin_id)
+    keyboard = []
+    for loc in locations:
+        label = loc["label"] if loc["label"] else loc["address"]
+        keyboard.append([InlineKeyboardButton(
+            label, callback_data="admin_pedido_pickup_{}".format(loc["id"])
+        )])
+    keyboard.append([InlineKeyboardButton("Nueva direccion de recogida", callback_data="admin_pedido_nueva_dir")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "Selecciona el nuevo punto de recogida:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ADMIN_PEDIDO_PICKUP
+
+
+def admin_pedido_edit_cust_callback(update, context):
+    """Desde el preview admin: volver a ingresar nombre del cliente."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Nombre del cliente:")
+    return ADMIN_PEDIDO_CUST_NAME
+
+
+def admin_pedido_edit_tarifa_callback(update, context):
+    """Desde el preview admin: volver a ingresar tarifa al repartidor."""
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text("Escribe la nueva tarifa al repartidor (en pesos):")
+    return ADMIN_PEDIDO_TARIFA
+
+
 # =============================================================================
 # Handlers para agregar paradas extra a un pedido (conversion a ruta en preview)
 # =============================================================================
@@ -5860,6 +5956,9 @@ nuevo_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto)
         ],
         PEDIDO_CONFIRMACION: [
+            CallbackQueryHandler(pedido_edit_instruc_callback, pattern=r"^pedido_edit_instruc$"),
+            CallbackQueryHandler(pedido_edit_dir_callback, pattern=r"^pedido_edit_dir$"),
+            CallbackQueryHandler(pedido_edit_pickup_callback, pattern=r"^pedido_edit_pickup$"),
             CallbackQueryHandler(pedido_retry_quote_callback, pattern=r"^pedido_retry_quote$"),
             CallbackQueryHandler(pedido_incentivo_fixed_callback, pattern=r"^pedido_inc_(1000|1500|2000|3000)$"),
             CallbackQueryHandler(pedido_incentivo_otro_start, pattern=r"^pedido_inc_otro$"),
@@ -6028,6 +6127,9 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_inc_otro_callback, pattern=r"^admin_pedido_inc_otro$"),
             CallbackQueryHandler(admin_pedido_team_toggle_callback, pattern=r"^admin_pedido_team_toggle$"),
             CallbackQueryHandler(admin_pedido_guardar_plantilla_callback, pattern=r"^admin_pedido_guardar_plantilla$"),
+            CallbackQueryHandler(admin_pedido_edit_pickup_callback, pattern=r"^admin_pedido_edit_pickup$"),
+            CallbackQueryHandler(admin_pedido_edit_cust_callback, pattern=r"^admin_pedido_edit_cust$"),
+            CallbackQueryHandler(admin_pedido_edit_tarifa_callback, pattern=r"^admin_pedido_edit_tarifa$"),
             CallbackQueryHandler(admin_pedido_confirmar_callback, pattern=r"^admin_pedido_confirmar$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_instruc_handler),

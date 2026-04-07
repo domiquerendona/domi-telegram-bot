@@ -67,6 +67,22 @@ Referencia tecnica actual:
 
 - `build_market_launch_status_text(...)` en `Backend/order_delivery.py`
 
+### 5. Borrador persistido en BD (retomar pedido tras cerrar el bot)
+
+Los flujos de creacion de pedido y ruta no sobreviven reinicios del proceso ni cierres de sesion del usuario. Si el usuario cierra Telegram a mitad del flujo, pierde todo y debe empezar de nuevo.
+
+Activar despues:
+
+- Nueva tabla `order_drafts` que guarda el estado parcial (user_data del flujo) en BD.
+- Al iniciar `/nuevo_pedido` o `/nueva_ruta`, verificar si hay un borrador en curso: "Tienes un pedido en borrador. Retomar o empezar nuevo?"
+- Al retomar: restaurar user_data desde BD y mostrar el paso donde el usuario se quedó.
+- Al completar o cancelar: borrar el borrador.
+- Protege también contra reinicios del bot en Railway con pedidos a mitad de flujo.
+
+Aplica a los tres flujos: `nuevo_pedido_conv`, `nueva_ruta_conv`, `admin_pedido_conv`.
+
+Referencia tecnica: los flujos ya usan `PicklePersistence` para `user_data`, pero ese archivo se pierde si Railway recrece el contenedor sin volumen persistente. La solucion BD es mas robusta.
+
 ### 4. Tarifa dinamica asistida o automatica
 
 Todavia no conviene activarla de forma fuerte.
