@@ -1085,25 +1085,73 @@ Los estados usan `normalize_role_status()` antes de persistir. **PROHIBIDO** mod
 
 ### Modelo de Contabilidad de Doble Entrada
 
-El sistema implementa contabilidad de doble entrada. El Admin de Plataforma no tiene saldo ilimitado; debe registrar ingresos externos antes de poder aprobar recargas.
+El sistema implementa contabilidad de doble entrada con **dos cuentas independientes** para la plataforma:
 
-**Flujo de fondos:**
+#### Entidades contables del sistema
+
+| Entidad | `team_code` | `admins.balance` | Propósito |
+|---------|-------------|------------------|-----------|
+| Admin Plataforma (Luis Felipe) | `PLATFORM` | Saldo personal — acumula `FEE_INCOME` de su equipo | Ganancias personales del administrador; paga fees de pedidos especiales que él crea |
+| Sociedad Domiquerendona | `SOCIEDAD` | Saldo operativo de la sociedad | Fondos para recargar a todos los miembros; acumula `PLATFORM_FEE`, ingresos externos, suscripciones |
+
+**Regla clave:** el Admin de Plataforma **no** puede aprobar recargas con su saldo personal. Las recargas salen **siempre de la Sociedad**. Su saldo personal es independiente, igual que el de cualquier Admin Local.
+
+**Inicialización:** `ensure_platform_sociedad()` en `db.py` crea la fila `SOCIEDAD` al arrancar el bot. Es idempotente. Llamada en `main.py` junto a `init_db()`.
+
+#### Flujo de fondos
 
 ```
 Pago externo (transferencia/efectivo)
   → register_platform_income(admin_id, amount, method, note)  [db.py]
-  → admins.balance += amount
-  → ledger: kind=INCOME | from_type=EXTERNAL | from_id=0 → to_type=PLATFORM/ADMIN
+  → admins.balance (SOCIEDAD) += amount
+  → ledger: kind=INCOME | from_type=EXTERNAL | from_id=0 → to_type=ADMIN | to_id=sociedad_id
 
-Admin aprueba recarga a repartidor o aliado
+Admin de Plataforma aprueba recarga a repartidor, aliado o admin local
   → approve_recharge_request()  [services.py]
-  → admins.balance -= amount
+  → admins.balance (SOCIEDAD) -= amount        ← sale de Sociedad, no de saldo personal
   → admin_couriers.balance o admin_allies.balance += amount
-  → ledger: kind=RECHARGE | from_type=PLATFORM/ADMIN | from_id=admin_id → to_type=COURIER/ALLY
+  → ledger: kind=RECHARGE | from_type=SOCIEDAD | from_id=sociedad_id → to_type=COURIER/ALLY
+
+Admin Local aprueba recarga a su repartidor o aliado
+  → approve_recharge_request()  [services.py]
+  → admins.balance (Admin Local) -= amount     ← sale de saldo personal del admin local
+  → admin_couriers.balance o admin_allies.balance += amount
+  → ledger: kind=RECHARGE | from_type=ADMIN | from_id=admin_id → to_type=COURIER/ALLY
+
+Delivery completado → fees
+  → FEE_INCOME ($200): va al admin del courier/aliado (personal)
+  → PLATFORM_FEE ($100): va a admins.balance (SOCIEDAD)
+
+Retiro personal del admin de plataforma (de Sociedad a saldo personal)
+  → transfer_sociedad_to_platform(platform_admin_id, amount)  [db.py]
+  → admins.balance (SOCIEDAD) -= amount
+  → admins.balance (PLATFORM) += amount
+  → ledger: kind=SOCIEDAD_ADVANCE
 ```
 
+#### Display en el bot
+
+| Pantalla | Qué muestra |
+|----------|-------------|
+| Mi Perfil — Admin Plataforma | "Saldo personal (ganancias): $X" + "Saldo Sociedad (fondos operativos): $Y" |
+| Mi Perfil — Admin Local | "Saldo personal: $X" |
+| Panel de Recargas (plat_rec_menu) | "Saldo Sociedad (fondos para recargas): $Y" |
+| Mi saldo (admin_mi_saldo) — Admin Plataforma | Saldo personal + Saldo Sociedad con movimientos del día |
+
+#### Funciones clave en `db.py`
+
+| Función | Descripción |
+|---------|-------------|
+| `ensure_platform_sociedad()` | Crea la fila SOCIEDAD si no existe. Idempotente. |
+| `get_platform_sociedad_id()` | Retorna `admins.id` donde `team_code='SOCIEDAD'` |
+| `get_sociedad_balance()` | Retorna `admins.balance` de la Sociedad |
+| `get_sociedad_saldo_hoy(sociedad_id)` | Resumen financiero de la Sociedad para hoy |
+| `register_platform_income(admin_id, amount, method, note)` | Ingreso externo → va a Sociedad |
+| `transfer_sociedad_to_platform(platform_admin_id, amount)` | Retiro de Sociedad al saldo personal del admin |
+
+Todas re-exportadas en `services.py`.
+
 Las restricciones obligatorias de contabilidad y saldo están en `AGENTS.md`.
-Aquí se documenta el modelo funcional ya implementado y los puntos donde ese comportamiento vive.
 
 **Flujo de UI — Registrar ingreso externo** (`ingreso_conv`, `main.py`):
 - Estados: `INGRESO_MONTO=970`, `INGRESO_METODO=971`, `INGRESO_NOTA=972`
@@ -2049,7 +2097,7 @@ Exponer opciones → preguntar → esperar confirmación → ejecutar
 - La plataforma opera como **red cooperativa**: cualquier repartidor activo puede tomar pedidos de cualquier aliado, sin importar a qué admin pertenece cada uno. No existen equipos aislados para el despacho de pedidos.
 - Un Admin Local gestiona su equipo (aprueba/inactiva repartidores y aliados) y gana comisiones de sus propios miembros. Puede aprobar/rechazar miembros pendientes, inactivar activos y reactivar inactivos; el rechazo definitivo (`REJECTED`) es exclusivo del Admin de Plataforma.
 - La referencia de versión financiera estable es el tag `v0.1-admin-saldos` (ledger confiable desde ese punto).
-- El sistema usa **contabilidad de doble entrada**: el Admin de Plataforma debe registrar ingresos externos (`register_platform_income`) para tener saldo y poder aprobar recargas. PROHIBIDO crear saldo sin origen contable.
+- El sistema usa **contabilidad de doble entrada** con dos cuentas separadas: **Admin Plataforma** (`team_code='PLATFORM'`) tiene su saldo personal independiente (FEE_INCOME de su equipo); la **Sociedad** (`team_code='SOCIEDAD'`) tiene los fondos operativos para recargas (recibe PLATFORM_FEE, ingresos externos, suscripciones). Las recargas que aprueba el Admin de Plataforma salen de la Sociedad. PROHIBIDO crear saldo sin origen contable.
 - Las tablas `admin_allies` y `admin_couriers` tienen su propio campo `status` que debe mantenerse sincronizado con `allies.status` / `couriers.status`. Los helpers `_sync_ally_link_status` y `_sync_courier_link_status` en `db.py` garantizan esta sincronía automáticamente en cada actualización de estado.
 
 ---

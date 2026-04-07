@@ -2537,7 +2537,7 @@ def get_admin_by_user_id(user_id: int):
         SELECT
             id, user_id, person_id, full_name, phone, city, barrio,
             status, created_at, team_name, document_number, team_code,
-            rejection_reason, rejected_at
+            rejection_reason, rejected_at, balance
         FROM admins
         WHERE user_id = {P} AND is_deleted = 0
         ORDER BY id DESC
@@ -2575,7 +2575,8 @@ def get_admin_by_id(admin_id: int):
             cedula_back_file_id,   -- 15
             selfie_file_id,        -- 16
             rejection_reason,      -- 17
-            rejected_at            -- 18
+            rejected_at,           -- 18
+            balance                -- 19
         FROM admins
         WHERE id = {P} AND is_deleted = 0
         ORDER BY id DESC

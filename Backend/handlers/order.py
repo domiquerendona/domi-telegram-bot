@@ -3352,7 +3352,7 @@ def admin_nuevo_pedido_start(update, context):
     if not admin or (admin["status"] or "").upper() != "APPROVED":
         query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
         return ConversationHandler.END
-    admin_balance = int(admin["balance"] or 0) if admin.get("balance") is not None else 0
+    admin_balance = get_admin_balance(admin["id"])
     if admin_balance < MIN_ADMIN_OPERATING_BALANCE:
         query.edit_message_text(
             "Saldo insuficiente para crear un pedido especial.\n\n"
