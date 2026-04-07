@@ -3954,11 +3954,31 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
 
     active_route = get_active_route_for_courier(courier["id"])
     if active_route:
-        query.edit_message_text(
-            "No puedes aceptar un nuevo pedido porque ya tienes una ruta en curso (#{}).\n"
-            "Finaliza la ruta primero.".format(active_route["id"])
-        )
-        return
+        live_lat = _row_value(courier, "live_lat")
+        live_lng = _row_value(courier, "live_lng")
+        live_active = int(_row_value(courier, "live_location_active", 0) or 0)
+        if not live_active or not live_lat or not live_lng:
+            query.edit_message_text(
+                "No puedes aceptar otro servicio sin GPS activo.\n\n"
+                "Activa tu ubicacion en vivo para que el sistema verifique "
+                "que el nuevo pickup esta cerca de tu posicion actual."
+            )
+            return
+        new_pickup_lat, new_pickup_lng = _get_pickup_coords(order)
+        if new_pickup_lat and new_pickup_lng:
+            dist_to_pickup = haversine_km(
+                float(live_lat), float(live_lng),
+                float(new_pickup_lat), float(new_pickup_lng)
+            )
+            if dist_to_pickup > MULTI_ORDER_PROXIMITY_KM:
+                query.edit_message_text(
+                    "El punto de recogida de este pedido esta a {:.1f} km de tu posicion actual.\n\n"
+                    "Solo puedes tomar servicios adicionales cuando el nuevo pickup "
+                    "esta a menos de {:.0f} m de donde estas ahora.".format(
+                        dist_to_pickup, MULTI_ORDER_PROXIMITY_KM * 1000
+                    )
+                )
+                return
 
     active_orders = get_active_orders_for_courier(courier["id"])
     # Filtrar el propio pedido (ya aceptado previamente)
@@ -6268,23 +6288,49 @@ def _handle_route_accept(update, context, route_id):
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
-    active_order = get_active_order_for_courier(courier["id"])
-    if active_order:
-        query.edit_message_text(
-            "No puedes aceptar una nueva ruta porque ya tienes un pedido en curso (#{}).".format(
-                active_order["id"]
-            )
-        )
-        return
-
     active_route = get_active_route_for_courier(courier["id"])
     if active_route and active_route["id"] != route_id:
         query.edit_message_text(
-            "No puedes aceptar una nueva ruta porque ya tienes una ruta en curso (#{}).".format(
-                active_route["id"]
-            )
+            "No puedes aceptar una nueva ruta porque ya tienes una ruta en curso (#{}).\n"
+            "Finaliza la ruta primero.".format(active_route["id"])
         )
         return
+
+    active_orders = get_active_orders_for_courier(courier["id"])
+    if active_orders:
+        if len(active_orders) >= MAX_CONCURRENT_ORDERS:
+            query.edit_message_text(
+                "Ya tienes {} pedidos activos. Finaliza uno antes de aceptar una ruta.".format(
+                    len(active_orders)
+                )
+            )
+            return
+        live_lat = _row_value(courier, "live_lat")
+        live_lng = _row_value(courier, "live_lng")
+        live_active = int(_row_value(courier, "live_location_active", 0) or 0)
+        if not live_active or not live_lat or not live_lng:
+            query.edit_message_text(
+                "No puedes aceptar esta ruta sin GPS activo.\n\n"
+                "Activa tu ubicacion en vivo para que el sistema verifique "
+                "que el punto de recogida esta cerca de tu posicion actual."
+            )
+            return
+        route_pickup_lat = _row_value(route, "pickup_lat")
+        route_pickup_lng = _row_value(route, "pickup_lng")
+        if route_pickup_lat and route_pickup_lng:
+            dist_to_pickup = haversine_km(
+                float(live_lat), float(live_lng),
+                float(route_pickup_lat), float(route_pickup_lng)
+            )
+            if dist_to_pickup > MULTI_ORDER_PROXIMITY_KM:
+                query.edit_message_text(
+                    "El punto de recogida de esta ruta esta a {:.1f} km de tu ubicacion actual.\n\n"
+                    "Solo puedes tomar servicios adicionales cuando el nuevo pickup "
+                    "esta a menos de {:.0f} m de donde estas ahora.".format(
+                        dist_to_pickup, MULTI_ORDER_PROXIMITY_KM * 1000
+                    )
+                )
+                return
 
     # Re-verificar saldo antes de asignar (puede haber cambiado desde la publicación)
     courier_id = courier["id"]
