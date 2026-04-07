@@ -2430,57 +2430,55 @@ def force_platform_admin(platform_telegram_id: int):
             (platform_telegram_id, "platform", "ADMIN_PLATFORM"),
         )
 
-    # 2) asegurar admins — buscar por user_id Y por team_code por separado
-    #    porque pueden existir dos filas distintas en conflicto
-    cur.execute(f"SELECT id FROM admins WHERE user_id = {P} LIMIT 1", (user_id,))
-    user_row = cur.fetchone()
-
-    cur.execute("SELECT id FROM admins WHERE team_code = 'PLATFORM' LIMIT 1")
-    platform_row = cur.fetchone()
-
-    if user_row and platform_row and user_row["id"] != platform_row["id"]:
-        # Dos filas distintas en conflicto: user_id=X en una, team_code=PLATFORM en otra.
-        # Primero limpiar el team_code de la fila sobrante, LUEGO asignarlo a la correcta.
-        cur.execute(f"UPDATE admins SET team_code = NULL WHERE id = {P}", (platform_row["id"],))
-        cur.execute(f"""
-            UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0
-            WHERE id = {P}
-        """, (user_row["id"],))
-
-    elif user_row:
-        # Solo existe la fila con user_id correcto — asegurar team_code=PLATFORM
-        cur.execute(f"""
-            UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0
-            WHERE id = {P}
-        """, (user_row["id"],))
-
-    elif platform_row:
-        # Solo existe la fila PLATFORM pero con otro user_id — reasignar user_id
-        cur.execute(f"""
-            UPDATE admins SET user_id = {P}, status = 'APPROVED', is_deleted = 0
-            WHERE id = {P}
-        """, (user_id, platform_row["id"]))
-
-    else:
-        # No existe ninguna, crear nueva
-        cur.execute(f"""
+    # 2) asegurar admins — estrategia según motor de BD
+    if _pg:
+        # PostgreSQL: UPSERT atómico, seguro ante múltiples procesos concurrentes.
+        # Paso A: limpiar cualquier fila sobrante con team_code='PLATFORM' y user_id distinto.
+        cur.execute(
+            "UPDATE admins SET team_code = NULL WHERE team_code = 'PLATFORM' AND user_id != %s",
+            (user_id,)
+        )
+        # Paso B: upsert por user_id — si existe actualiza, si no existe inserta.
+        cur.execute("""
             INSERT INTO admins (
                 user_id, full_name, phone, city, barrio,
                 status, created_at, team_name, document_number, team_code
             )
-            VALUES (
-                {P}, {P}, {P}, {P}, {P},
-                'APPROVED', {NOW}, {P}, {P}, 'PLATFORM'
-            )
+            VALUES (%s, %s, %s, %s, %s, 'APPROVED', NOW(), %s, %s, 'PLATFORM')
+            ON CONFLICT (user_id) DO UPDATE SET
+                team_code  = 'PLATFORM',
+                status     = 'APPROVED',
+                is_deleted = 0
         """, (
             user_id,
             "Administrador de Plataforma",
             "+570000000000",
             "PLATAFORMA",
             "PLATAFORMA",
-            "PLATAFORMA",  # team_name
-            "PLATFORM",    # document_number
+            "PLATAFORMA",
+            "PLATFORM",
         ))
+    else:
+        # SQLite: lógica secuencial (sin concurrencia)
+        cur.execute(f"SELECT id FROM admins WHERE user_id = {P} LIMIT 1", (user_id,))
+        user_row = cur.fetchone()
+        cur.execute("SELECT id FROM admins WHERE team_code = 'PLATFORM' LIMIT 1")
+        platform_row = cur.fetchone()
+
+        if user_row and platform_row and user_row["id"] != platform_row["id"]:
+            cur.execute(f"UPDATE admins SET team_code = NULL WHERE id = {P}", (platform_row["id"],))
+            cur.execute(f"UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0 WHERE id = {P}", (user_row["id"],))
+        elif user_row:
+            cur.execute(f"UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0 WHERE id = {P}", (user_row["id"],))
+        elif platform_row:
+            cur.execute(f"UPDATE admins SET user_id = {P}, status = 'APPROVED', is_deleted = 0 WHERE id = {P}", (user_id, platform_row["id"]))
+        else:
+            cur.execute(f"""
+                INSERT INTO admins (
+                    user_id, full_name, phone, city, barrio,
+                    status, created_at, team_name, document_number, team_code
+                ) VALUES ({P},{P},{P},{P},{P},'APPROVED',{NOW},{P},{P},'PLATFORM')
+            """, (user_id, "Administrador de Plataforma", "+570000000000", "PLATAFORMA", "PLATAFORMA", "PLATAFORMA", "PLATFORM"))
 
     conn.commit()
     conn.close()
