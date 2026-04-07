@@ -24,6 +24,7 @@ from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
     _cotizar_resolver_ubicacion,
     _geo_siguiente_o_gps,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     cancel_conversacion,
     cancel_por_texto,
@@ -31,6 +32,7 @@ from handlers.common import (
 from services import (
     calcular_precio_distancia,
     can_use_cotizador,
+    get_ally_by_id,
     get_ally_by_user_id,
     get_ally_location_by_id,
     get_ally_locations,
@@ -39,6 +41,21 @@ from services import (
     get_smart_distance,
     get_user_db_id_from_update,
 )
+
+
+def _cotizar_city_hint(context):
+    """Retorna barrio+ciudad del aliado en sesion para mejorar geocoding del cotizador."""
+    ally_id = context.user_data.get("cotizar_ally_id")
+    if ally_id:
+        try:
+            ally = get_ally_by_id(ally_id)
+            if ally:
+                parts = [p for p in [ally.get("barrio"), ally.get("city")] if p]
+                if parts:
+                    return ", ".join(parts)
+        except Exception:
+            pass
+    return None
 
 
 def _cotizar_prompt_entrega():
@@ -303,6 +320,7 @@ def cotizar_recogida(update, context):
 
     if loc.get("lat") is not None and loc.get("lng") is not None:
         original_text = update.message.text.strip() if update.message and update.message.text else ""
+        context.user_data["pending_geo_city_hint"] = _cotizar_city_hint(context)
         _mostrar_confirmacion_geocode(
             update.message,
             context,
@@ -329,6 +347,7 @@ def cotizar_recogida_geo_callback(update, context):
     query.answer()
 
     if query.data == "cotizar_recogida_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -369,6 +388,7 @@ def cotizar_entrega(update, context):
 
     if loc.get("lat") is not None and loc.get("lng") is not None:
         original_text = update.message.text.strip() if update.message and update.message.text else ""
+        context.user_data["pending_geo_city_hint"] = _cotizar_city_hint(context)
         _mostrar_confirmacion_geocode(
             update.message,
             context,
@@ -395,6 +415,7 @@ def cotizar_entrega_geo_callback(update, context):
     query.answer()
 
     if query.data == "cotizar_entrega_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)

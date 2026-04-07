@@ -46,6 +46,7 @@ from handlers.common import (
     build_offer_suggestion_button_row,
     _geo_siguiente_o_gps,
     _handle_text_field_input,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     cancel_conversacion,
     cancel_por_texto,
@@ -563,6 +564,7 @@ def ruta_pickup_geo_callback(update, context):
     query = update.callback_query
     query.answer()
     if query.data == "ruta_pickup_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         formatted = context.user_data.pop("ruta_pickup_geo_formatted", "")
@@ -899,6 +901,7 @@ def ruta_parada_geo_callback(update, context):
     query = update.callback_query
     query.answer()
     if query.data == "ruta_parada_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         formatted = context.user_data.pop("ruta_parada_geo_formatted", "")

@@ -104,6 +104,14 @@ def _offer_alerts_status_text():
 # tarifas_conv handlers
 # ---------------------------------------------------------------------------
 
+def _build_tarifas_keyboard():
+    return [
+        [InlineKeyboardButton("📏 Editar tarifas por distancia", callback_data="pricing_menu_distancia")],
+        [InlineKeyboardButton("🛒 Editar tarifas compras", callback_data="pricing_menu_compras")],
+        [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
+    ]
+
+
 def tarifas_start(update, context):
     """Comando /tarifas - Solo Admin Plataforma."""
     user = update.effective_user
@@ -115,14 +123,7 @@ def tarifas_start(update, context):
     config = get_pricing_config()
     buy_config = get_buy_pricing_config()
     mensaje = _build_tarifas_texto(config, buy_config)
-
-    keyboard = [
-        [InlineKeyboardButton("📏 Editar tarifas por distancia", callback_data="pricing_menu_distancia")],
-        [InlineKeyboardButton("🛒 Editar tarifas compras", callback_data="pricing_menu_compras")],
-        [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
-    ]
-
-    update.effective_message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+    update.effective_message.reply_text(mensaje, reply_markup=InlineKeyboardMarkup(_build_tarifas_keyboard()))
     return ConversationHandler.END
 
 
@@ -145,12 +146,7 @@ def tarifas_edit_callback(update, context):
         config = get_pricing_config()
         buy_config = get_buy_pricing_config()
         mensaje = _build_tarifas_texto(config, buy_config)
-        keyboard = [
-            [InlineKeyboardButton("📏 Editar tarifas por distancia", callback_data="pricing_menu_distancia")],
-            [InlineKeyboardButton("🛒 Editar tarifas compras", callback_data="pricing_menu_compras")],
-            [InlineKeyboardButton("Salir", callback_data="pricing_exit")],
-        ]
-        query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(keyboard))
+        query.edit_message_text(mensaje, reply_markup=InlineKeyboardMarkup(_build_tarifas_keyboard()))
         return ConversationHandler.END
 
     if data == "pricing_menu_distancia":

@@ -37,6 +37,7 @@ from handlers.common import (
     _geo_siguiente_o_gps,
     _handle_phone_input,
     _handle_text_field_input,
+    _maybe_cache_confirmed_geo,
     _mostrar_confirmacion_geocode,
     _schedule_important_alerts,
     _set_flow_step,
@@ -115,7 +116,7 @@ def _registration_no_more_text():
     )
 
 
-def _emit_registration_geo_confirmation(update, context, geo, texto, cb_si, cb_no, log_tag):
+def _emit_registration_geo_confirmation(update, context, geo, texto, cb_si, cb_no, log_tag, city_hint=None):
     logger.info(
         "[%s] status=pending source=%s lat=%s lng=%s",
         log_tag,
@@ -123,6 +124,7 @@ def _emit_registration_geo_confirmation(update, context, geo, texto, cb_si, cb_n
         geo.get("lat"),
         geo.get("lng"),
     )
+    context.user_data["pending_geo_city_hint"] = city_hint
     _mostrar_confirmacion_geocode(
         update.message,
         context,
@@ -359,7 +361,8 @@ def ally_ubicacion_handler(update, context):
         return show_ally_team_selection(update, context, from_callback=False)
 
     # Geocoding: intentar como direccion escrita
-    geo = resolve_location(texto, city_hint=_reg_city_hint(context))
+    _ally_city_hint = _reg_city_hint(context)
+    geo = resolve_location(texto, city_hint=_ally_city_hint)
     if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
         context.user_data["ally_geo_formatted"] = geo.get("formatted_address", "")
         _emit_registration_geo_confirmation(
@@ -370,6 +373,7 @@ def ally_ubicacion_handler(update, context):
             "ally_geo_si",
             "ally_geo_no",
             "ally_registration_location",
+            city_hint=_ally_city_hint,
         )
         return ALLY_UBICACION
 
@@ -408,6 +412,7 @@ def ally_geo_ubicacion_callback(update, context):
     context.user_data["ally_registration_user_id"] = db_user["id"]
 
     if query.data == "ally_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -995,7 +1000,8 @@ def courier_residence_location(update, context):
             context.user_data["residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
-            geo = resolve_location(text, city_hint=_reg_city_hint(context))
+            _courier_city_hint = _reg_city_hint(context)
+            geo = resolve_location(text, city_hint=_courier_city_hint)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 context.user_data["courier_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(
@@ -1006,6 +1012,7 @@ def courier_residence_location(update, context):
                     "courier_geo_si",
                     "courier_geo_no",
                     "courier_registration_location",
+                    city_hint=_courier_city_hint,
                 )
                 return COURIER_RESIDENCE_LOCATION
 
@@ -1025,6 +1032,7 @@ def courier_geo_ubicacion_callback(update, context):
     query.answer()
 
     if query.data == "courier_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
@@ -1986,7 +1994,8 @@ def admin_residence_location(update, context):
             context.user_data["admin_residence_address"] = text
         else:
             # Geocoding: intentar como direccion escrita
-            geo = resolve_location(text, city_hint=_reg_city_hint(context, city_key="admin_city", barrio_key="admin_barrio"))
+            _admin_city_hint = _reg_city_hint(context, city_key="admin_city", barrio_key="admin_barrio")
+            geo = resolve_location(text, city_hint=_admin_city_hint)
             if geo and geo.get("method") == "geocode" and geo.get("formatted_address"):
                 context.user_data["admin_geo_formatted"] = geo.get("formatted_address", "")
                 _emit_registration_geo_confirmation(
@@ -1997,6 +2006,7 @@ def admin_residence_location(update, context):
                     "admin_geo_si",
                     "admin_geo_no",
                     "admin_registration_location",
+                    city_hint=_admin_city_hint,
                 )
                 return LOCAL_ADMIN_RESIDENCE_LOCATION
 
@@ -2025,6 +2035,7 @@ def admin_geo_ubicacion_callback(update, context):
     query.answer()
 
     if query.data == "admin_geo_si":
+        _maybe_cache_confirmed_geo(context)
         lat = context.user_data.pop("pending_geo_lat", None)
         lng = context.user_data.pop("pending_geo_lng", None)
         context.user_data.pop("pending_geo_text", None)
