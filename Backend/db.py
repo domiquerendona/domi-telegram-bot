@@ -2440,12 +2440,12 @@ def force_platform_admin(platform_telegram_id: int):
 
     if user_row and platform_row and user_row["id"] != platform_row["id"]:
         # Dos filas distintas en conflicto: user_id=X en una, team_code=PLATFORM en otra.
-        # Usar la fila con user_id correcto como la PLATFORM y limpiar la otra.
+        # Primero limpiar el team_code de la fila sobrante, LUEGO asignarlo a la correcta.
+        cur.execute(f"UPDATE admins SET team_code = NULL WHERE id = {P}", (platform_row["id"],))
         cur.execute(f"""
             UPDATE admins SET team_code = 'PLATFORM', status = 'APPROVED', is_deleted = 0
             WHERE id = {P}
         """, (user_row["id"],))
-        cur.execute(f"UPDATE admins SET team_code = NULL WHERE id = {P}", (platform_row["id"],))
 
     elif user_row:
         # Solo existe la fila con user_id correcto — asegurar team_code=PLATFORM
