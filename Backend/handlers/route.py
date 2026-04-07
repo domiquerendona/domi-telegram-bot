@@ -729,11 +729,13 @@ def ruta_parada_selector_callback(update, context):
         n = len(paradas) + 1
         if not activas:
             query.edit_message_text(
-                "PARADA {} - {}\n\nNo tiene direcciones guardadas. Escribe la direccion de entrega:".format(
+                "PARADA {} - {}\n\nNo tiene direcciones guardadas.\n\n"
+                "Escribe la direccion de entrega, o envia un PIN de Telegram, "
+                "link de Google Maps o coordenadas.".format(
                     n, customer["name"] or "Cliente"
                 )
             )
-            return RUTA_PARADA_DIRECCION
+            return RUTA_PARADA_UBICACION
         keyboard = []
         for addr in activas[:6]:
             parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
@@ -756,8 +758,11 @@ def ruta_parada_sel_direccion_callback(update, context):
     if data == "ruta_addr_nueva":
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
-        query.edit_message_text("PARADA {}\n\nEscribe la direccion de entrega:".format(n))
-        return RUTA_PARADA_DIRECCION
+        query.edit_message_text(
+            "PARADA {}\n\nEscribe la direccion de entrega, o envia un PIN de Telegram, "
+            "link de Google Maps o coordenadas.".format(n)
+        )
+        return RUTA_PARADA_UBICACION
     if data.startswith("ruta_sel_addr_"):
         try:
             addr_id = int(data.replace("ruta_sel_addr_", ""))
