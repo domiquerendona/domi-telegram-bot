@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.app/railway-schema.json",
   "deploy": {
-    "startCommand": "bash -c \"python main.py\"",
+    "startCommand": "bash -c \"if [ '$RUN_API' = '1' ]; then uvicorn web_app:app --host 0.0.0.0 --port $PORT; else python main.py; fi\"",
     "restartPolicyType": "ON_FAILURE"
   }
 }
