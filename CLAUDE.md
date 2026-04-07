@@ -45,9 +45,11 @@ domi-telegram-bot/
 │   ├── order_delivery.py         # Flujo completo de entrega de pedidos
 │   ├── profile_changes.py        # Flujo de cambios de perfil de usuarios
 │   ├── imghdr.py                 # Utilidad para detección de imágenes
+│   ├── start.py                  # Punto de entrada unificado: con BOT_TOKEN → python main.py; sin BOT_TOKEN → uvicorn web_app:app
 │   ├── requirements.txt          # Dependencias Python
-│   ├── Dockerfile                # Imagen Docker del backend
-│   ├── Procfile                  # Comando de arranque para Railway
+│   ├── Dockerfile                # Imagen Docker del backend (CMD apunta a start.py)
+│   ├── railway.json              # Configuración Railway: startCommand = python start.py
+│   ├── Procfile                  # Comando de arranque legacy (Railway usa railway.json)
 │   ├── .env.example              # Plantilla de variables de entorno
 │   ├── DEPLOY.md                 # Guía de separación DEV/PROD
 │   ├── TESTING.md                # Documento histórico de testing (fase antigua)
@@ -228,6 +230,22 @@ En la práctica, este repositorio resuelve esos casos moviendo la función a `se
 ---
 
 ## Base de Datos
+
+### Arranque concurrente en Railway — Fixes críticos (2026-04-07)
+
+Railway puede arrancar múltiples contenedores simultáneamente al desplegar. Esto causaba dos clases de errores en PostgreSQL que se resolvieron así:
+
+**`force_platform_admin` y `ensure_platform_sociedad` — UniqueViolation:**
+- Causa: dos contenedores ejecutaban `INSERT INTO admins` al mismo tiempo sobre el mismo `user_id`.
+- Fix: reemplazado por `INSERT ... ON CONFLICT (user_id) DO UPDATE SET ...` (UPSERT atómico). Solo aplica en PostgreSQL; SQLite mantiene lógica secuencial.
+
+**`_init_db_postgres` — DeadlockDetected:**
+- Causa: dos contenedores ejecutaban `UPDATE admins SET team_code/team_name` en orden opuesto → deadlock clásico.
+- Fix: primera instrucción de `_init_db_postgres` es `SELECT pg_advisory_lock(42000)`. Serializa el arranque — el segundo contenedor espera hasta que el primero libere el lock.
+
+**PROHIBIDO** eliminar el `pg_advisory_lock(42000)` de `_init_db_postgres` — sin él, despliegues en Railway con múltiples réplicas pueden causar deadlock en la BD.
+
+---
 
 ### Motor Dual (SQLite + PostgreSQL)
 
@@ -431,6 +449,29 @@ En `Backend/main.py:courier_pedidos_en_curso()` existe el botón "Pedidos en cur
   - Al liberar pedido o ruta, el servicio se re-oferta a otros repartidores excluyendo al courier que liberó (no se le vuelve a ofrecer a él).
   - Solo el aliado puede CANCELAR el servicio; el courier solo puede LIBERAR para re-ofertar (con motivo y revisión).
 
+### Link del Panel Web en el Bot (IMPLEMENTADO 2026-04-07)
+
+`main.py` lee `WEB_PANEL_URL` al arrancar y detecta si es `https://` para decidir cómo mostrar el link:
+
+```python
+WEB_PANEL_URL = os.getenv("WEB_PANEL_URL", "").strip().rstrip("/")
+WEB_PANEL_URL_IS_HTTPS = WEB_PANEL_URL.startswith("https://")
+```
+
+**Comportamiento por rol:**
+
+| Rol | Función | Con https:// | Con http:// |
+|---|---|---|---|
+| Admin de Plataforma | `mi_admin` | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
+| Admin Local | `mi_admin` (local) | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
+| Repartidor | `mi_repartidor` | Botón inline "🌐 Mi panel web" → `/courier` | Texto plano con URL |
+
+**Razón del comportamiento dual:** Telegram rechaza URLs `http://` y URLs de `localhost` en `InlineKeyboardButton(url=...)` — solo acepta `https://`. En local (dev) se muestra texto plano; en Railway PROD se muestra el botón clickeable.
+
+**Variable requerida:** `WEB_PANEL_URL` en el servicio `domi-telegram-bot` de Railway. Sin esta variable no aparece el link (silencioso, no rompe nada).
+
+---
+
 ### Helpers de Input Reutilizables (`main.py`)
 
 Cuando 3 o más handlers comparten la misma lógica de validación, se usan helpers:
@@ -506,6 +547,7 @@ Archivo de referencia: `Backend/.env.example`
 | `WEB_SECRET_KEY` | Clave secreta para firma de sesiones web | Opcional (cambiar en PROD) |
 | `PERSISTENCE_PATH` | Ruta del archivo de persistencia del bot (`PicklePersistence`). En Railway con volumen persistente usar `/data/bot_persistence.pkl`. Default: `bot_persistence.pkl`. | Opcional |
 | `PAUSE_BOT_DEV` | Si es `1`, `true` o `yes`: el bot entra en bucle infinito de sleep sin procesar mensajes. Útil para pausar Railway DEV sin detener el servicio (evita cobro de llamadas Google Maps en periodos de no uso). Solo aplica en DEV; PROD nunca debe tener esta variable. | DEV (opcional) |
+| `WEB_PANEL_URL` | URL del panel web Angular. Con `https://` muestra botón inline en Telegram; con `http://` muestra texto plano (Telegram rechaza URLs no-https en botones). Ejemplo PROD: `https://angular-production-44c8.up.railway.app`. | Opcional (bot) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
 
@@ -646,21 +688,49 @@ git grep "nombre_funcion" -- "*.py"
 
 ## Despliegue
 
-### Arquitectura: dos servicios Railway permanentes
+### Arquitectura: tres servicios Railway permanentes (PROD)
 
-| Ambiente | Rama git | Trigger de deploy |
-|----------|----------|-------------------|
-| **DEV** | `staging` | `git push origin staging` |
-| **PROD** | `main` | `git push origin main` (o merge staging→main) |
+| Servicio Railway | Rama git | Qué corre | Trigger de deploy |
+|---|---|---|---|
+| `domi-telegram-bot` | `main` | Bot Telegram (`python main.py`) | `git push origin main` |
+| `Backend` | `main` | API FastAPI (`uvicorn web_app:app`) | `git push origin main` |
+| `Frontend` | `main` | Panel Angular SSR | `git push origin main` |
+
+**Cómo se diferencia bot vs API (mismo repo, mismo Dockerfile):**
+
+`Backend/start.py` es el punto de entrada unificado. Decide qué proceso arrancar según la presencia de `BOT_TOKEN`:
+
+```python
+# Con BOT_TOKEN    → python main.py  (servicio domi-telegram-bot)
+# Sin BOT_TOKEN    → uvicorn web_app:app  (servicio Backend/API)
+```
+
+- El servicio `domi-telegram-bot` tiene `BOT_TOKEN` configurado → corre el bot.
+- El servicio `Backend` NO tiene `BOT_TOKEN` → corre la API.
+- **NUNCA agregar `BOT_TOKEN` al servicio `Backend`** — eso haría que ambos corrieran el bot simultáneamente y generaría conflicto de token en Telegram.
+
+**Variables mínimas por servicio:**
+
+| Variable | `domi-telegram-bot` | `Backend` | `Frontend` |
+|---|:---:|:---:|:---:|
+| `BOT_TOKEN` | ✓ obligatorio | ✗ nunca | — |
+| `DATABASE_URL` | ✓ | ✓ | — |
+| `ENV` | `PROD` | `PROD` | — |
+| `ADMIN_USER_ID` | ✓ | — | — |
+| `WEB_PANEL_URL` | ✓ | — | — |
+| `GOOGLE_MAPS_API_KEY` | ✓ | — | — |
+| `WEB_ADMIN_USER/PASSWORD` | — | ✓ | — |
+| `WEB_SECRET_KEY` | — | ✓ | — |
+| `BACKEND_URL` | — | — | ✓ |
 
 Para reglas obligatorias de ramas y despliegue, ver `AGENTS.md`.
 Este documento solo resume cómo se reflejan los cambios en DEV y remite a `Backend/DEPLOY.md` para el detalle operativo.
 
-### Railway (ambos servicios)
+### Railway (servicios bot y API)
 
-- **Motor**: `worker: python3 main.py` (Procfile)
+- **Motor**: `CMD ["python", "start.py"]` (Dockerfile) — `start.py` decide bot vs API
 - **Variables**: configurar en el dashboard de Railway por servicio (sin `.env`)
-- **Base de datos**: PostgreSQL con `DATABASE_URL` (cada servicio tiene la suya)
+- **Base de datos**: PostgreSQL con `DATABASE_URL` (bot y API comparten la misma BD en PROD)
 - DEV y PROD usan **BOT_TOKEN distintos** — nunca el mismo token en ambos
 
 ### Docker
