@@ -230,8 +230,8 @@ def _ruta_guardar_parada_actual(context):
         "name": context.user_data.get("ruta_temp_name") or "",
         "phone": context.user_data.get("ruta_temp_phone") or "",
         "address": context.user_data.get("ruta_temp_address") or "",
-        "city": "",
-        "barrio": "",
+        "city": context.user_data.get("ruta_temp_city") or "",
+        "barrio": context.user_data.get("ruta_temp_barrio") or "",
         "lat": context.user_data.get("ruta_temp_lat"),
         "lng": context.user_data.get("ruta_temp_lng"),
         "customer_id": context.user_data.get("ruta_temp_customer_id"),
@@ -879,6 +879,8 @@ def ruta_parada_ubicacion_handler(update, context):
     geo = resolve_location(text, city_hint=_hint)
     if geo and geo.get("lat") is not None and geo.get("lng") is not None:
         context.user_data["pending_geo_city_hint"] = _hint
+        context.user_data["ruta_parada_geo_city"] = geo.get("city") or ""
+        context.user_data["ruta_parada_geo_barrio"] = geo.get("barrio") or ""
         _mostrar_confirmacion_geocode(
             update.message,
             context,
@@ -917,6 +919,8 @@ def ruta_parada_geo_callback(update, context):
             return RUTA_PARADA_UBICACION
         context.user_data["ruta_temp_lat"] = lat
         context.user_data["ruta_temp_lng"] = lng
+        context.user_data["ruta_temp_city"] = context.user_data.pop("ruta_parada_geo_city", "")
+        context.user_data["ruta_temp_barrio"] = context.user_data.pop("ruta_parada_geo_barrio", "")
         if formatted:
             context.user_data["ruta_temp_address"] = formatted
             return _ruta_guardar_parada_y_cliente(context, query)
@@ -965,39 +969,6 @@ def ruta_parada_direccion_handler(update, context):
     context.user_data["ruta_temp_address"] = address
     return _ruta_guardar_parada_y_cliente(context, update)
 
-
-def ruta_parada_ciudad_handler(update, context):
-    return _handle_text_field_input(
-        update,
-        context,
-        "Por favor escribe la ciudad de la entrega:",
-        "ruta_temp_city",
-        RUTA_PARADA_CIUDAD,
-        RUTA_PARADA_BARRIO,
-        flow=None,
-        next_prompt="Escribe el barrio o sector de la entrega:",
-        options_hint="",
-        set_back_step=False,
-    )
-
-
-def ruta_parada_barrio_handler(update, context):
-    ok_state = _handle_text_field_input(
-        update,
-        context,
-        "Por favor escribe el barrio o sector de la entrega:",
-        "ruta_temp_barrio",
-        RUTA_PARADA_BARRIO,
-        RUTA_MAS_PARADAS,
-        flow=None,
-        next_prompt=None,
-        options_hint="",
-        set_back_step=False,
-    )
-    if ok_state == RUTA_PARADA_BARRIO:
-        return ok_state
-    _ruta_guardar_parada_actual(context)
-    return _ruta_mostrar_mas_paradas(update, context)
 
 
 def ruta_mas_paradas_callback(update, context):
