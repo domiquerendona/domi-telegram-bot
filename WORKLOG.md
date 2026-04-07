@@ -10,7 +10,7 @@
 
 | Agente | Inicio | Archivos | Tarea |
 |--------|--------|----------|-------|
-| claude | 2026-04-07 | handlers/order.py, handlers/route.py, docs/roadmap_futuro.md, CLAUDE.md | Botones "Editar" en preview de pedido aliado, pedido admin y ruta | COMPLETADO |
+| (ninguna) | — | — | — |
 
 ---
 
@@ -18,6 +18,7 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-04-07 | claude | Backend/handlers/order.py, Backend/handlers/route.py, docs/roadmap_futuro.md, CLAUDE.md | feat: botones Editar en preview de pedido aliado, pedido admin y ruta (opcion C documentada en roadmap) | COMPLETADO |
 | 2026-04-05 | claude | Backend/handlers/registration.py | UX flujos de registro: patron unificado GPS+texto, indicadores Paso X de N (aliado/repartidor/admin), mensajes ciudad/barrio con contexto, guia calidad fotos cedula/selfie, boton inline "Confirmar registro" + fix etiqueta 6 pasos + deshabilitar boton tras confirmar | COMPLETADO |
 | 2026-04-04 | codex | Backend/handlers/common.py, Backend/order_delivery.py, Backend/handlers/order.py, Backend/handlers/route.py, docs/callback_governance_2026-03-12.md, docs/roadmap_futuro.md, CLAUDE.md, WORKLOG.md | UX red pequena: estado simple post-publicacion + boton discreto de aplicar sugerencia + roadmap futuro centralizado | COMPLETADO |
 | 2026-04-04 | codex | Backend/services.py, Backend/handlers/common.py, CLAUDE.md, WORKLOG.md | Ajuste del semaforo de demanda a modo red pequena para no abrumar al aliado + recordatorio de recalibrar cuando crezca la red | COMPLETADO |
