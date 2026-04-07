@@ -157,7 +157,8 @@ def _ruta_limpiar_temp(context):
     """Limpia datos temporales de la parada actual."""
     for k in ["ruta_temp_name", "ruta_temp_phone", "ruta_temp_address",
               "ruta_temp_city", "ruta_temp_barrio", "ruta_temp_lat", "ruta_temp_lng",
-              "ruta_temp_customer_id", "ruta_temp_parking_fee"]:
+              "ruta_temp_customer_id", "ruta_temp_parking_fee",
+              "ruta_parada_geo_city", "ruta_parada_geo_barrio"]:
         context.user_data.pop(k, None)
 
 

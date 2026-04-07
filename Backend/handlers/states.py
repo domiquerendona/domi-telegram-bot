@@ -179,8 +179,6 @@ PEDIDO_PICKUP_NUEVA_BARRIO = 881
 
 RUTA_PICKUP_NUEVA_CIUDAD = 48
 RUTA_PICKUP_NUEVA_BARRIO = 49
-RUTA_PARADA_CIUDAD = 50
-RUTA_PARADA_BARRIO = 51
 RUTA_PARADA_BUSCAR = 52   # Buscar cliente por nombre/telefono en parada de ruta
 RUTA_PARADA_DEDUP  = 53   # Confirmar cliente existente encontrado por telefono en ruta
 
