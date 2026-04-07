@@ -217,6 +217,7 @@ from services import (
     get_all_approved_links_for_courier,
     get_all_approved_links_for_ally,
     get_admin_balance,
+    get_sociedad_balance,
     get_platform_admin,
     ensure_platform_temp_coverage_for_ally,
     create_recharge_request,
@@ -1823,7 +1824,12 @@ def mi_perfil(update, context):
         mensaje += f"   Estado: {get_status_icon(status)}{status}\n"
         mensaje += f"   Equipo: {equipo_admin}\n\n"
         admin_balance = get_admin_balance(admin_id)
-        mensaje += f"   Saldo master: ${admin_balance:,}\n\n"
+        if team_code == "PLATFORM":
+            saldo_sociedad = get_sociedad_balance()
+            mensaje += f"   Saldo personal (ganancias): ${admin_balance:,}\n"
+            mensaje += f"   Saldo Sociedad (fondos operativos): ${saldo_sociedad:,}\n\n"
+        else:
+            mensaje += f"   Saldo personal: ${admin_balance:,}\n\n"
 
     # Aliado
     ally = get_ally_by_user_id(user_db_id)

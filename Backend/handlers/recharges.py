@@ -139,7 +139,10 @@ def cmd_saldo(update, context):
         if team_code:
             admin_label = "{} [{}]".format(admin_label, team_code)
         mensaje += "🔧 Admin ({}):\n".format(admin_label)
-        mensaje += "   Saldo master: ${:,}\n".format(balance)
+        if team_code == "PLATFORM":
+            mensaje += "   Saldo personal (ganancias): ${:,}\n".format(balance)
+        else:
+            mensaje += "   Saldo personal: ${:,}\n".format(balance)
         if team_code == "PLATFORM":
             es_plataforma = True
             bd = get_admin_balance_breakdown(admin_id)
@@ -967,8 +970,7 @@ def plat_recargas_callback(update, context):
 
     # ---- Menú principal ----
     if data == "plat_rec_menu":
-        platform_admin = get_platform_admin()
-        balance_plat = int((platform_admin["balance"] or 0)) if platform_admin else 0
+        balance_sociedad = get_sociedad_balance()
         keyboard = [
             [InlineKeyboardButton("📋 Pendientes de todos los admins", callback_data="plat_rec_pending")],
             [InlineKeyboardButton("📊 Historial contable", callback_data="plat_rec_history")],
@@ -978,7 +980,7 @@ def plat_recargas_callback(update, context):
             [InlineKeyboardButton("⬅ Volver al panel", callback_data="admin_volver_panel")],
         ]
         query.edit_message_text(
-            "Panel de Recargas\n\nTu saldo operativo: ${:,}\n\nSelecciona una vista:".format(balance_plat),
+            "Panel de Recargas\n\nSaldo Sociedad (fondos para recargas): ${:,}\n\nSelecciona una vista:".format(balance_sociedad),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
