@@ -253,6 +253,7 @@ from db import (
     set_route_courier_arrived,
     set_courier_accepted_location,
     get_active_order_for_courier,
+    get_active_orders_for_courier,
     get_active_route_for_courier,
     get_courier_delivery_time_stats,
     get_all_local_admins,

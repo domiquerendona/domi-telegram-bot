@@ -4596,7 +4596,7 @@ def set_courier_accepted_location(order_id: int, lat: float, lng: float):
 
 
 def get_active_order_for_courier(courier_id: int):
-    """Retorna el pedido activo asignado a este courier (ACCEPTED/PICKED_UP), o None."""
+    """Retorna el pedido activo mas reciente asignado a este courier (ACCEPTED/PICKED_UP), o None."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -4619,6 +4619,31 @@ def get_active_order_for_courier(courier_id: int):
     row = cur.fetchone()
     conn.close()
     return row
+
+
+def get_active_orders_for_courier(courier_id: int):
+    """Retorna TODOS los pedidos activos asignados a este courier (ACCEPTED/PICKED_UP)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            o.*,
+            COALESCE(aloc.address, adloc.address) AS pickup_address
+        FROM orders o
+        LEFT JOIN ally_locations aloc
+            ON aloc.id = o.pickup_location_id AND o.ally_id IS NOT NULL
+        LEFT JOIN admin_locations adloc
+            ON adloc.id = o.pickup_location_id AND o.creator_admin_id IS NOT NULL
+        WHERE o.courier_id = {P}
+          AND o.status IN ('ACCEPTED', 'PICKED_UP')
+        ORDER BY o.accepted_at DESC;
+        """,
+        (courier_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_active_route_for_courier(courier_id: int):

@@ -83,6 +83,7 @@ from db import (
     set_route_arrival_wait_override,
     set_courier_accepted_location,
     get_active_order_for_courier,
+    get_active_orders_for_courier,
     get_active_route_for_courier,
     get_courier_delivery_time_stats,
     get_approved_admin_id_for_courier,
@@ -235,6 +236,8 @@ WAITING_OVERRIDE_REMINDER_SECONDS = 10 * 60
 SUPPORT_REQUEST_REMINDER_SECONDS = 3 * 60
 SUPPORT_REQUEST_ESCALATION_SECONDS = 6 * 60
 LOW_BALANCE_ALERT_THRESHOLD = 5000  # Notificar al admin si el saldo del miembro cae por debajo
+MULTI_ORDER_PROXIMITY_KM = 1.5      # Radio maximo al pickup nuevo para aceptar con servicio en curso
+MAX_CONCURRENT_ORDERS = 2           # Maximos pedidos activos simultaneos por courier
 
 
 def _notify_admin_member_low_balance(context, admin_id, member_type, member_name, new_balance):
@@ -3949,23 +3952,50 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
         query.edit_message_text("Esta oferta ya no esta disponible para ti.")
         return
 
-    active_order = get_active_order_for_courier(courier["id"])
-    if active_order and active_order["id"] != order_id:
-        query.edit_message_text(
-            "No puedes aceptar un nuevo pedido porque ya tienes un pedido en curso (#{}).".format(
-                active_order["id"]
-            )
-        )
-        return
-
     active_route = get_active_route_for_courier(courier["id"])
     if active_route:
         query.edit_message_text(
-            "No puedes aceptar un nuevo pedido porque ya tienes una ruta en curso (#{}).".format(
-                active_route["id"]
-            )
+            "No puedes aceptar un nuevo pedido porque ya tienes una ruta en curso (#{}).\n"
+            "Finaliza la ruta primero.".format(active_route["id"])
         )
         return
+
+    active_orders = get_active_orders_for_courier(courier["id"])
+    # Filtrar el propio pedido (ya aceptado previamente)
+    other_active = [o for o in active_orders if _row_value(o, "id") != order_id]
+    if other_active:
+        if len(other_active) >= MAX_CONCURRENT_ORDERS:
+            query.edit_message_text(
+                "Ya tienes {} pedidos activos simultaneamente.\n"
+                "Finaliza uno antes de aceptar otro.".format(len(other_active))
+            )
+            return
+        # Verificar que el nuevo pickup este cerca de la ubicacion actual del courier
+        live_lat = _row_value(courier, "live_lat")
+        live_lng = _row_value(courier, "live_lng")
+        live_active = int(_row_value(courier, "live_location_active", 0) or 0)
+        if not live_active or not live_lat or not live_lng:
+            query.edit_message_text(
+                "No puedes aceptar otro servicio sin GPS activo.\n\n"
+                "Activa tu ubicacion en vivo para que el sistema verifique "
+                "que el nuevo pickup esta cerca de tu posicion actual."
+            )
+            return
+        new_pickup_lat, new_pickup_lng = _get_pickup_coords(order)
+        if new_pickup_lat and new_pickup_lng:
+            dist_to_pickup = haversine_km(
+                float(live_lat), float(live_lng),
+                float(new_pickup_lat), float(new_pickup_lng)
+            )
+            if dist_to_pickup > MULTI_ORDER_PROXIMITY_KM:
+                query.edit_message_text(
+                    "El punto de recogida de este pedido esta a {:.1f} km de tu ubicacion actual.\n\n"
+                    "Solo puedes tomar servicios adicionales cuando el nuevo pickup "
+                    "esta a menos de {:.0f} m de donde estas ahora.".format(
+                        dist_to_pickup, MULTI_ORDER_PROXIMITY_KM * 1000
+                    )
+                )
+                return
 
     # Confirmacion explícita para comisiones altas
     special_commission = int(order["special_commission"] or 0) if order["special_commission"] else 0

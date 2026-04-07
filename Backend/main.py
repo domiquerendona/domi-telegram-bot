@@ -177,6 +177,7 @@ from services import (
     get_orders_by_courier,
     get_courier_active_order_stage_line,
     get_active_order_for_courier,
+    get_active_orders_for_courier,
     get_active_route_for_courier,
     get_pending_route_stops,
     get_route_destinations,
@@ -1071,9 +1072,9 @@ def mi_repartidor(update, context):
         "Selecciona una opcion:"
     )
     reply_markup = get_repartidor_menu_keyboard(courier)
-    active_order = get_active_order_for_courier(courier["id"])
+    active_orders = get_active_orders_for_courier(courier["id"])
     active_route = get_active_route_for_courier(courier["id"])
-    has_active_service = (active_order and active_order["status"] in ("ACCEPTED", "PICKED_UP")) or (active_route and active_route["status"] == "ACCEPTED")
+    has_active_service = bool(active_orders) or (active_route and active_route["status"] == "ACCEPTED")
 
     if has_active_service:
         gps_active = (
@@ -1090,15 +1091,28 @@ def mi_repartidor(update, context):
                 "4. Elige \"Compartir ubicacion en vivo\"."
             )
 
-    if active_order and active_order["status"] in ("ACCEPTED", "PICKED_UP"):
+    if active_orders:
         status_labels = {"ACCEPTED": "asignado", "PICKED_UP": "en camino al cliente"}
-        label = status_labels.get(active_order["status"], active_order["status"])
-        update.message.reply_text(
-            "Tienes un pedido en curso (#{}  {}).\n"
-            "Presiona \"Pedidos en curso\" para finalizarlo.".format(
-                active_order["id"], label
+        if len(active_orders) == 1:
+            ao = active_orders[0]
+            label = status_labels.get(_row_value(ao, "status"), _row_value(ao, "status"))
+            update.message.reply_text(
+                "Tienes un pedido en curso (#{}  {}).\n"
+                "Presiona \"Pedidos en curso\" para gestionarlo.".format(
+                    _row_value(ao, "id"), label
+                )
             )
-        )
+        else:
+            lines = []
+            for ao in active_orders:
+                label = status_labels.get(_row_value(ao, "status"), _row_value(ao, "status"))
+                lines.append("#{} — {}".format(_row_value(ao, "id"), label))
+            update.message.reply_text(
+                "Tienes {} pedidos activos:\n{}\n\n"
+                "Presiona \"Pedidos en curso\" para gestionarlos.".format(
+                    len(active_orders), "\n".join(lines)
+                )
+            )
     update.message.reply_text(msg, reply_markup=reply_markup)
     if WEB_PANEL_URL and WEB_PANEL_URL_IS_HTTPS:
         update.message.reply_text(
@@ -1192,10 +1206,10 @@ def courier_pedidos_en_curso(update, context):
         update.message.reply_text("No tienes perfil de repartidor.")
         return
 
-    active_order = get_active_order_for_courier(courier["id"])
+    active_orders = get_active_orders_for_courier(courier["id"])
     active_route = get_active_route_for_courier(courier["id"])
 
-    if not active_order and not active_route:
+    if not active_orders and not active_route:
         update.message.reply_text("No tienes pedidos en curso.")
         return
 
@@ -1211,9 +1225,15 @@ def courier_pedidos_en_curso(update, context):
         "CANCELLED": "Cancelado",
     }
 
-    update.message.reply_text("Pedidos en curso:")
+    total_activos = len(active_orders) + (1 if active_route else 0)
+    if total_activos > 1:
+        update.message.reply_text(
+            "Tienes {} servicios activos:".format(total_activos)
+        )
+    else:
+        update.message.reply_text("Pedidos en curso:")
 
-    if active_order:
+    for idx, active_order in enumerate(active_orders):
         order_id = _row_value(active_order, "id", "-")
         st = order_status_labels.get(
             _row_value(active_order, "status"),
@@ -1227,13 +1247,14 @@ def courier_pedidos_en_curso(update, context):
         destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
         total_fee = int((_row_value(active_order, "total_fee") or 0) or 0)
 
+        header = "[{}/{}] ".format(idx + 1, len(active_orders)) if len(active_orders) > 1 else ""
         msg = (
-            "Pedido #{}\n"
+            "{}Pedido #{}\n"
             "Estado: {}\n"
             "Recoge en: {}\n"
             "Destino: {}\n"
             "Tarifa: ${:,}"
-        ).format(order_id, st, pickup_address, destino_area, total_fee)
+        ).format(header, order_id, st, pickup_address, destino_area, total_fee)
 
         kb = []
         if order_status == "ACCEPTED":
