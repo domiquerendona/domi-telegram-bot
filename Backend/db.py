@@ -1983,6 +1983,9 @@ def _init_db_postgres():
     conn = get_connection()
     cur = conn.cursor()
 
+    # Advisory lock: evita deadlock si varios contenedores arrancan simultáneamente
+    cur.execute("SELECT pg_advisory_lock(42000)")
+
     # 1) Ejecutar schema completo (CREATE TABLE IF NOT EXISTS + índices)
     schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "migrations", "postgres_schema.sql")
@@ -2759,34 +2762,66 @@ def ensure_platform_sociedad():
         )
 
     # 2) Asegurar admins fila SOCIEDAD
-    cur.execute("SELECT id FROM admins WHERE team_code = 'SOCIEDAD' LIMIT 1")
-    admin_row = cur.fetchone()
-    if admin_row:
-        sociedad_id = _row_value(admin_row, "id", 0)
-    else:
-        sociedad_id = _insert_returning_id(
-            cur,
-            f"INSERT INTO admins"
-            f" (user_id, full_name, phone, city, barrio,"
-            f"  status, created_at, team_name, document_number, team_code)"
-            f" VALUES ({P},{P},{P},{P},{P},'APPROVED',{NOW},{P},{P},'SOCIEDAD')",
-            (
-                system_user_id,
-                "Sociedad Domiquerendona",
-                "+570000000000",
-                "SISTEMA",
-                "SISTEMA",
-                "Domiquerendona Sociedad",
-                "SOCIEDAD",
-            ),
-        )
-        # Guardar en settings para lookup rápido
+    if DB_ENGINE == "postgres":
+        # Limpiar cualquier fila SOCIEDAD huerfana con otro user_id
         cur.execute(
-            f"INSERT INTO settings (key, value) VALUES ({P},{P})"
-            f" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            "UPDATE admins SET team_code = NULL WHERE team_code = 'SOCIEDAD' AND user_id != %s",
+            (system_user_id,),
+        )
+        cur.execute("""
+            INSERT INTO admins
+                (user_id, full_name, phone, city, barrio,
+                 status, created_at, team_name, document_number, team_code)
+            VALUES (%s, %s, %s, %s, %s, 'APPROVED', NOW(), %s, %s, 'SOCIEDAD')
+            ON CONFLICT (user_id) DO UPDATE SET
+                team_code  = 'SOCIEDAD',
+                status     = 'APPROVED',
+                is_deleted = 0
+            RETURNING id
+        """, (
+            system_user_id,
+            "Sociedad Domiquerendona",
+            "+570000000000",
+            "SISTEMA",
+            "SISTEMA",
+            "Domiquerendona Sociedad",
+            "SOCIEDAD",
+        ))
+        row = cur.fetchone()
+        sociedad_id = _row_value(row, "id", 0)
+    else:
+        cur.execute("SELECT id FROM admins WHERE team_code = 'SOCIEDAD' LIMIT 1")
+        admin_row = cur.fetchone()
+        if admin_row:
+            sociedad_id = _row_value(admin_row, "id", 0)
+        else:
+            sociedad_id = _insert_returning_id(
+                cur,
+                f"INSERT INTO admins"
+                f" (user_id, full_name, phone, city, barrio,"
+                f"  status, created_at, team_name, document_number, team_code)"
+                f" VALUES ({P},{P},{P},{P},{P},'APPROVED',{NOW},{P},{P},'SOCIEDAD')",
+                (
+                    system_user_id,
+                    "Sociedad Domiquerendona",
+                    "+570000000000",
+                    "SISTEMA",
+                    "SISTEMA",
+                    "Domiquerendona Sociedad",
+                    "SOCIEDAD",
+                ),
+            )
+
+    # Guardar en settings para lookup rápido
+    if DB_ENGINE == "postgres":
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (%s, %s)"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
             ("platform_sociedad_id", str(sociedad_id)),
-        ) if DB_ENGINE == "postgres" else cur.execute(
-            f"INSERT OR REPLACE INTO settings (key, value) VALUES ({P},{P})",
+        )
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             ("platform_sociedad_id", str(sociedad_id)),
         )
 
