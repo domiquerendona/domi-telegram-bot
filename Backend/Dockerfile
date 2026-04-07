@@ -10,5 +10,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar todo el proyecto
 COPY . .
 
-# Comando para arrancar el bot
-CMD ["python", "main.py"]
+# Comando de arranque (start.py decide entre bot y API según RUN_API)
+CMD ["python", "start.py"]
