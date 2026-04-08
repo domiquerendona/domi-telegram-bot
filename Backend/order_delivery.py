@@ -104,7 +104,7 @@ from db import (
     resolve_pending_fee_collection,
     get_pending_fee_collection,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id, increment_setting_counter
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -1992,6 +1992,16 @@ def _send_next_offer(order_id, context):
         pass
 
     cycle_info = context.bot_data.get("offer_cycles", {}).get(order_id, {}) or {}
+
+    # Cargar servicios activos del courier para mostrar desvio en la oferta
+    _courier_active_services = []
+    try:
+        _c_active_orders = get_active_orders_for_courier(next_offer["courier_id"])
+        _c_active_route = get_active_route_for_courier(next_offer["courier_id"])
+        _courier_active_services = list(_c_active_orders) + ([_c_active_route] if _c_active_route else [])
+    except Exception:
+        pass
+
     offer_text = "SERVICIO DISPONIBLE\n\n" + _build_offer_text(
         order,
         courier_dist_km=courier_dist_km,
@@ -2000,6 +2010,8 @@ def _send_next_offer(order_id, context):
         dropoff_city_override=cycle_info.get("dropoff_city"),
         dropoff_barrio_override=cycle_info.get("dropoff_barrio"),
         courier_id=next_offer["courier_id"],
+        courier=courier_data if courier_data else None,
+        active_services=_courier_active_services if _courier_active_services else None,
     )
     special_commission_offer = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
     reply_markup = _offer_reply_markup(order_id, special_commission=special_commission_offer)
@@ -3969,13 +3981,9 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
     # Si hay servicios activos (pedidos u otra ruta), aplicar filtro de desvio
     if other_active or active_route:
         new_pickup_lat, new_pickup_lng = _get_pickup_coords(order)
-        # Para la ruta activa usamos su pickup como destino de referencia
-        ref_orders = other_active if other_active else []
-        if active_route:
-            # Construir pseudo-orden de referencia desde la ruta (su pickup es el destino inmediato)
-            permitido, error_msg = _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, [active_route] if not ref_orders else ref_orders)
-        else:
-            permitido, error_msg = _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, ref_orders)
+        # Combinar pedidos activos + ruta activa como referencias para el calculo
+        ref_services = list(other_active) + ([active_route] if active_route else [])
+        permitido, error_msg, _ratio = _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, ref_services)
         if not permitido:
             query.edit_message_text(error_msg)
             return
@@ -4956,6 +4964,8 @@ def _build_offer_text(
     dropoff_city_override=None,
     dropoff_barrio_override=None,
     courier_id=None,
+    courier=None,
+    active_services=None,
 ):
     """Construye el texto de oferta para el courier."""
     pickup_city, pickup_barrio = _get_pickup_area(order)
@@ -5052,6 +5062,22 @@ def _build_offer_text(
             "\nFee de servicio: -${:,} (se descuenta de tu saldo al entregar)\n".format(fee_std)
         )
 
+    # Indicador de desvio si el courier ya tiene servicios activos
+    if courier is not None and active_services:
+        try:
+            new_pickup_lat, new_pickup_lng = _get_pickup_coords(order)
+            _ok, _err, ratio = _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_services)
+            if ratio is not None:
+                desvio_pct = max(0.0, (ratio - 1.0) * 100)
+                if desvio_pct <= 5:
+                    text += "\nDesvio de tu ruta actual: minimo ({:.0f}%) — esta en tu camino.\n".format(desvio_pct)
+                elif desvio_pct <= 15:
+                    text += "\nDesvio de tu ruta actual: moderado ({:.0f}%).\n".format(desvio_pct)
+                else:
+                    text += "\nDesvio de tu ruta actual: alto ({:.0f}%) — considera si vale la pena.\n".format(desvio_pct)
+        except Exception:
+            pass
+
     return text
 
 
@@ -5094,29 +5120,55 @@ def _calculate_detour_ratio(c_lat, c_lng, new_pickup_lat, new_pickup_lng, dest_l
     return via / direct
 
 
-def _get_active_order_destination(active_order):
+def _get_service_destination(service):
     """
-    Retorna las coordenadas del proximo destino obligatorio del courier segun el estado del pedido.
-    ACCEPTED → coordenadas del pickup (todavia no ha recogido)
-    PICKED_UP → coordenadas del dropoff (ya tiene el pedido, va a entregar)
+    Retorna las coordenadas del proximo destino obligatorio dado un servicio activo.
+    Funciona tanto para filas de 'orders' como de 'routes'.
+    - orders ACCEPTED  → pickup del pedido
+    - orders PICKED_UP → dropoff del pedido
+    - routes ACCEPTED  → pickup de la ruta (courier_arrived_at indica si ya llego)
     """
-    status = _row_value(active_order, "status")
-    if status == "PICKED_UP":
-        lat = _row_value(active_order, "dropoff_lat")
-        lng = _row_value(active_order, "dropoff_lng")
+    status = _row_value(service, "status")
+
+    # Detectar si es una ruta por presencia de campos exclusivos de routes
+    is_route = _row_value(service, "total_stops") is not None or _row_value(service, "pickup_lat") is not None and _row_value(service, "ally_id") is None and _row_value(service, "customer_name") is None
+
+    if is_route:
+        lat = _row_value(service, "pickup_lat")
+        lng = _row_value(service, "pickup_lng")
         if lat is not None and lng is not None:
             return float(lat), float(lng)
         return None, None
-    # ACCEPTED: destino es el pickup del pedido activo
-    return _get_pickup_coords(active_order)
+
+    # Es un pedido (orders)
+    if status == "PICKED_UP":
+        lat = _row_value(service, "dropoff_lat")
+        lng = _row_value(service, "dropoff_lng")
+        if lat is not None and lng is not None:
+            return float(lat), float(lng)
+        return None, None
+
+    # ACCEPTED: destino es el pickup
+    return _get_pickup_coords(service)
 
 
-def _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_orders):
+def _get_service_id_label(service):
+    """Retorna (id, label_estado) para mostrar en mensajes de error."""
+    sid = _row_value(service, "id")
+    status = _row_value(service, "status")
+    is_route = _row_value(service, "customer_name") is None and _row_value(service, "total_stops") is not None
+    tipo = "ruta" if is_route else "pedido"
+    label = "entregar" if status == "PICKED_UP" else "recoger"
+    return sid, tipo, label
+
+
+def _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_services):
     """
     Verifica si añadir un nuevo servicio implica un desvio aceptable (<=30%) sobre la ruta actual.
-    Usa el pedido mas prioritario (PICKED_UP primero, luego ACCEPTED) como referencia de destino.
+    Funciona con listas mixtas de pedidos y rutas activas.
+    Prioriza siempre el servicio en PICKED_UP (ya comprometido con el cliente).
 
-    Retorna (permitido: bool, mensaje_error: str | None)
+    Retorna (permitido: bool, mensaje_error: str | None, ratio: float | None)
     """
     live_lat = _row_value(courier, "live_lat")
     live_lng = _row_value(courier, "live_lng")
@@ -5127,25 +5179,24 @@ def _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_or
             "No puedes aceptar otro servicio sin GPS activo.\n\n"
             "Activa tu ubicacion en vivo para que el sistema verifique "
             "que el nuevo pickup esta en tu ruta actual."
-        )
+        ), None
 
     if new_pickup_lat is None or new_pickup_lng is None:
-        return False, "No se pudo verificar la ubicacion del pickup de este servicio."
+        return False, "No se pudo verificar la ubicacion del pickup de este servicio.", None
 
-    # Elegir el pedido mas prioritario como referencia
-    # PICKED_UP tiene prioridad (ya comprometido con el cliente)
-    ref_order = None
-    for o in active_orders:
-        if _row_value(o, "status") == "PICKED_UP":
-            ref_order = o
+    # Prioridad: PICKED_UP primero (ya comprometido), luego ACCEPTED
+    ref_service = None
+    for s in active_services:
+        if _row_value(s, "status") == "PICKED_UP":
+            ref_service = s
             break
-    if ref_order is None:
-        ref_order = active_orders[0]
+    if ref_service is None:
+        ref_service = active_services[0]
 
-    dest_lat, dest_lng = _get_active_order_destination(ref_order)
+    dest_lat, dest_lng = _get_service_destination(ref_service)
 
     if dest_lat is None or dest_lng is None:
-        # Sin coords de destino: usar fallback de proximidad al nuevo pickup
+        # Sin coords de destino: fallback de distancia al nuevo pickup
         dist = haversine_km(float(live_lat), float(live_lng), float(new_pickup_lat), float(new_pickup_lng))
         if dist > MULTI_ORDER_PROXIMITY_FALLBACK_KM:
             return False, (
@@ -5154,8 +5205,8 @@ def _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_or
                 "esta a menos de {:.0f} m de donde estas ahora.".format(
                     dist, MULTI_ORDER_PROXIMITY_FALLBACK_KM * 1000
                 )
-            )
-        return True, None
+            ), None
+        return True, None, None
 
     ratio = _calculate_detour_ratio(
         float(live_lat), float(live_lng),
@@ -5165,94 +5216,100 @@ def _check_multi_order_detour(courier, new_pickup_lat, new_pickup_lng, active_or
 
     if ratio > (1.0 + MULTI_ORDER_DETOUR_THRESHOLD):
         desvio_pct = (ratio - 1.0) * 100
-        ref_status_label = "entregar" if _row_value(ref_order, "status") == "PICKED_UP" else "recoger"
+        sid, tipo, label = _get_service_id_label(ref_service)
+        # Registrar bloqueo para calibracion del umbral
+        try:
+            increment_setting_counter("multiorder_detour_blocks_total")
+        except Exception:
+            pass
         return False, (
             "Este pickup esta demasiado fuera de tu ruta actual.\n\n"
-            "Desvio estimado: {:.0f}% extra para llegar a {} el pedido #{} que ya tienes.\n"
+            "Desvio estimado: {:.0f}% extra para {} el {} #{} que ya tienes.\n"
             "Limite permitido: {}%.\n\n"
             "Solo puedes tomar servicios que esten en tu camino.".format(
-                desvio_pct,
-                ref_status_label,
-                _row_value(ref_order, "id"),
+                desvio_pct, label, tipo, sid,
                 int(MULTI_ORDER_DETOUR_THRESHOLD * 100)
             )
-        )
+        ), ratio
 
-    return True, None
+    return True, None, ratio
 
 
 def _build_delivery_order_suggestion(active_orders, new_order):
     """
-    Calcula y retorna el orden optimo de entrega para multiples pedidos activos.
-    Compara la distancia total de todas las permutaciones posibles de dropoffs.
+    Calcula el orden optimo de recogida y entrega para multiples pedidos activos.
+    Regla de prioridad profesional:
+      1. Primero entregar los que ya fueron recogidos (PICKED_UP) — cliente esperando
+      2. Luego recoger los ACCEPTED en orden de proximidad entre si
+      3. Finalmente entregar los recien recogidos en orden nearest-neighbor
+
     Solo muestra barrio/ciudad, nunca la direccion exacta del cliente.
     """
-    # Recopilar todos los pedidos incluyendo el recien aceptado
     all_orders = list(active_orders) + [new_order]
 
-    # Separar los que ya fueron recogidos (PICKED_UP) de los que no (ACCEPTED)
-    to_pickup = [o for o in all_orders if _row_value(o, "status") == "ACCEPTED"]
-    to_deliver = list(all_orders)  # todos eventualmente se entregan
+    # Separar por estado
+    picked_up = [o for o in all_orders if _row_value(o, "status") == "PICKED_UP"]
+    to_accept = [o for o in all_orders if _row_value(o, "status") == "ACCEPTED"]
 
-    # Calcular orden optimo de dropoffs usando distancia acumulada (greedy nearest neighbor)
-    pending_dropoffs = []
-    for o in to_deliver:
-        d_lat = _row_value(o, "dropoff_lat")
-        d_lng = _row_value(o, "dropoff_lng")
-        if d_lat is not None and d_lng is not None:
-            barrio = _row_value(o, "customer_barrio") or ""
-            city = _row_value(o, "customer_city") or ""
-            area = ", ".join(p for p in [barrio, city] if p) or "pedido #{}".format(_row_value(o, "id"))
-            pending_dropoffs.append({
-                "id": _row_value(o, "id"),
-                "lat": float(d_lat),
-                "lng": float(d_lng),
-                "area": area,
-            })
+    def nearest_neighbor_dropoffs(orders_list):
+        """Ordena una lista de pedidos por nearest-neighbor sobre sus dropoffs."""
+        items = []
+        for o in orders_list:
+            d_lat = _row_value(o, "dropoff_lat")
+            d_lng = _row_value(o, "dropoff_lng")
+            if d_lat is not None and d_lng is not None:
+                barrio = _row_value(o, "customer_barrio") or ""
+                city = _row_value(o, "customer_city") or ""
+                area = ", ".join(p for p in [barrio, city] if p) or "#{}".format(_row_value(o, "id"))
+                items.append({"id": _row_value(o, "id"), "lat": float(d_lat), "lng": float(d_lng), "area": area})
+        if not items:
+            return items
+        ordered = []
+        remaining = list(items)
+        cur_lat, cur_lng = remaining[0]["lat"], remaining[0]["lng"]
+        while remaining:
+            nearest = min(remaining, key=lambda d: haversine_km(cur_lat, cur_lng, d["lat"], d["lng"]))
+            ordered.append(nearest)
+            cur_lat, cur_lng = nearest["lat"], nearest["lng"]
+            remaining.remove(nearest)
+        return ordered
 
-    if len(pending_dropoffs) < 2:
-        return None  # sin datos suficientes para sugerir orden
+    if len(all_orders) < 2:
+        return None
 
-    # Greedy nearest neighbor desde el primer dropoff
-    ordered = []
-    remaining = list(pending_dropoffs)
-    current_lat = remaining[0]["lat"]
-    current_lng = remaining[0]["lng"]
-    while remaining:
-        nearest = min(remaining, key=lambda d: haversine_km(current_lat, current_lng, d["lat"], d["lng"]))
-        ordered.append(nearest)
-        current_lat = nearest["lat"]
-        current_lng = nearest["lng"]
-        remaining.remove(nearest)
-
-    # Calcular distancia total del orden optimo vs orden inverso para estimar ahorro
-    def total_dist(seq):
-        total = 0.0
-        for i in range(len(seq) - 1):
-            total += haversine_km(seq[i]["lat"], seq[i]["lng"], seq[i+1]["lat"], seq[i+1]["lng"])
-        return total
-
-    dist_optimo = total_dist(ordered)
-    dist_inverso = total_dist(list(reversed(ordered)))
-    ahorro_km = dist_inverso - dist_optimo
-
-    lines = ["Tienes {} servicios activos. Orden de entrega sugerido:\n".format(len(all_orders))]
-
+    lines = ["Tienes {} servicios activos. Orden sugerido:\n".format(len(all_orders))]
     step = 1
-    if to_pickup:
-        # Mostrar pickups pendientes (solo barrio, no exacto)
-        for o in to_pickup:
+
+    # 1. Primero entregar PICKED_UP (ya comprometidos)
+    if picked_up:
+        picked_ordered = nearest_neighbor_dropoffs(picked_up)
+        for d in picked_ordered:
+            lines.append("{}. Entrega #{} en {} (ya tienes el pedido)".format(step, d["id"], d["area"]))
+            step += 1
+
+    # 2. Luego recoger los ACCEPTED en orden de proximidad entre pickups
+    if to_accept:
+        for o in to_accept:
             pickup_city, pickup_barrio = _get_pickup_area(o)
-            area = ", ".join(p for p in [pickup_barrio or "", pickup_city or ""] if p) or "pickup #{}".format(_row_value(o, "id"))
+            area = ", ".join(p for p in [pickup_barrio or "", pickup_city or ""] if p) or "#{}".format(_row_value(o, "id"))
             lines.append("{}. Recoge #{} en {}".format(step, _row_value(o, "id"), area))
             step += 1
 
-    for d in ordered:
-        lines.append("{}. Entrega #{} en {}".format(step, d["id"], d["area"]))
-        step += 1
+    # 3. Entregar los recien recogidos (ACCEPTED → se convertiran en PICKED_UP)
+    if to_accept:
+        deliver_ordered = nearest_neighbor_dropoffs(to_accept)
+        for d in deliver_ordered:
+            lines.append("{}. Entrega #{} en {}".format(step, d["id"], d["area"]))
+            step += 1
 
-    if ahorro_km > 0.15:
-        lines.append("\nAhorra {:.1f} km vs el orden inverso.".format(ahorro_km))
+    # Calcular ahorro si hay suficientes dropoffs
+    all_dropoffs = nearest_neighbor_dropoffs(all_orders)
+    if len(all_dropoffs) >= 2:
+        def total_dist(seq):
+            return sum(haversine_km(seq[i]["lat"], seq[i]["lng"], seq[i+1]["lat"], seq[i+1]["lng"]) for i in range(len(seq)-1))
+        ahorro = total_dist(list(reversed(all_dropoffs))) - total_dist(all_dropoffs)
+        if ahorro > 0.15:
+            lines.append("\nAhorra ~{:.1f} km vs el orden inverso.".format(ahorro))
 
     lines.append("\nEsta es una sugerencia. El orden final es tu decision.")
     return "\n".join(lines)
@@ -6466,7 +6523,7 @@ def _handle_route_accept(update, context, route_id):
     if active_orders:
         route_pickup_lat = _row_value(route, "pickup_lat")
         route_pickup_lng = _row_value(route, "pickup_lng")
-        permitido, error_msg = _check_multi_order_detour(courier, route_pickup_lat, route_pickup_lng, active_orders)
+        permitido, error_msg, _ratio = _check_multi_order_detour(courier, route_pickup_lat, route_pickup_lng, active_orders)
         if not permitido:
             query.edit_message_text(error_msg)
             return

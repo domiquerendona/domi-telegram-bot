@@ -3357,6 +3357,7 @@ def get_all_online_couriers():
     """
     Retorna todos los repartidores ONLINE (live_location_active=1) de cualquier equipo.
     Incluye datos de ubicación en vivo, residencia y equipo para calcular distancias.
+    Incluye active_order_count: cantidad de pedidos activos (ACCEPTED/PICKED_UP) del courier.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -3374,7 +3375,10 @@ def get_all_online_couriers():
             c.available_cash,
             c.availability_status,
             a.city AS admin_city,
-            ac.admin_id
+            ac.admin_id,
+            (SELECT COUNT(*) FROM orders o
+             WHERE o.courier_id = c.id
+               AND o.status IN ('ACCEPTED', 'PICKED_UP')) AS active_order_count
         FROM couriers c
         JOIN users u ON u.id = c.user_id
         JOIN admin_couriers ac ON ac.courier_id = c.id AND ac.status = 'APPROVED'
@@ -4979,6 +4983,24 @@ def set_setting(key: str, value: str):
     """, (key, value))
     conn.commit()
     conn.close()
+
+
+def increment_setting_counter(key: str) -> int:
+    """Incrementa atomicamente un contador en settings y retorna el nuevo valor."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT value FROM settings WHERE key = {P}", (key,))
+    row = cur.fetchone()
+    current = int(_row_value(row, "value", 0) or 0) if row else 0
+    new_val = current + 1
+    cur.execute(f"""
+        INSERT INTO settings (key, value)
+        VALUES ({P}, {P})
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+    """, (key, str(new_val)))
+    conn.commit()
+    conn.close()
+    return new_val
 
 
 def sync_all_courier_link_statuses():

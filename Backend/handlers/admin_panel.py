@@ -99,6 +99,7 @@ from services import (
     upsert_admin_ally_link,
     user_has_platform_admin,
     _get_reference_reviewer,
+    get_setting,
 )
 from order_delivery import admin_orders_panel
 from profile_changes import admin_change_requests_list
@@ -2662,12 +2663,20 @@ def admin_config_callback(update, context):
 
         import datetime
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-        lineas = ["Repartidores online ahora ({}):\n".format(len(online))]
+        multi_count = sum(1 for c in online if (c.get("active_order_count") or 0) > 1)
+        detour_blocks = int(get_setting("multiorder_detour_blocks_total", "0") or "0")
+        header = "Repartidores online ahora ({})".format(len(online))
+        if multi_count:
+            header += " — {} con 2+ pedidos activos".format(multi_count)
+        lineas = [header + ":\n"]
+        if detour_blocks > 0:
+            lineas.append("Bloqueos por desvio (total historico): {}\n".format(detour_blocks))
         keyboard = []
         for c in online:
             nombre = c["full_name"]
             ciudad = c["admin_city"] or "?"
             updated = c["live_location_updated_at"]
+            active_orders = c.get("active_order_count") or 0
             if updated:
                 try:
                     if isinstance(updated, str):
@@ -2680,7 +2689,12 @@ def admin_config_callback(update, context):
                     hace = "?"
             else:
                 hace = "?"
-            lineas.append("{} | {} | {}".format(nombre, ciudad, hace))
+            carga = ""
+            if active_orders >= 2:
+                carga = " [2 pedidos]"
+            elif active_orders == 1:
+                carga = " [1 pedido]"
+            lineas.append("{}{} | {} | {}".format(nombre, carga, ciudad, hace))
             tg_id = c["telegram_id"]
             keyboard.append([InlineKeyboardButton(
                 "Contactar: {}".format(nombre),

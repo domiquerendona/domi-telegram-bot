@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from db import (
     get_admin_status_by_id, count_admin_couriers, count_admin_couriers_with_min_balance, get_setting,
     set_setting,
+    increment_setting_counter,
     count_admin_allies, count_admin_allies_with_min_balance,
     get_api_usage_today, record_api_usage_event,
     get_api_usage_cost_summary,
