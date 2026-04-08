@@ -1980,6 +1980,7 @@ def _send_next_offer(order_id, context):
 
     # Calcular distancia y ETA del courier al punto de recogida
     courier_dist_km = None
+    courier_data = None
     try:
         courier_data = get_courier_by_id(next_offer["courier_id"])
         if courier_data:
