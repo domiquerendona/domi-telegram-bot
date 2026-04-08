@@ -18,6 +18,7 @@ from db import (
     get_ally_by_id,
     get_ally_by_user_id,
     get_ally_location_by_id,
+    get_admin_location_by_id,
     get_approved_admin_link_for_ally,
     get_approved_admin_link_for_courier,
     get_courier_by_id,
@@ -4985,19 +4986,35 @@ def _build_offer_text(
     total_fee = int(order["total_fee"] or 0)
     additional_incentive = int(order["additional_incentive"] or 0)
 
+    # Construir linea de pickup: barrio + ciudad, o fallback a la direccion de texto
+    if pickup_barrio and pickup_city:
+        pickup_area_line = "{}, {}".format(pickup_barrio, pickup_city)
+    elif pickup_barrio or pickup_city:
+        pickup_area_line = pickup_barrio or pickup_city
+    else:
+        _pickup_addr_fallback = _get_pickup_address(order)
+        pickup_area_line = _pickup_addr_fallback or "sin especificar"
+
+    # Construir linea de dropoff: barrio + ciudad, o fallback a la direccion de texto
+    if dropoff_barrio and dropoff_city:
+        dropoff_area_line = "{}, {}".format(dropoff_barrio, dropoff_city)
+    elif dropoff_barrio or dropoff_city:
+        dropoff_area_line = dropoff_barrio or dropoff_city
+    else:
+        _dropoff_addr_fallback = _row_value(order, "customer_address") or ""
+        dropoff_area_line = _dropoff_addr_fallback or "sin especificar"
+
     text = (
         "OFERTA DISPONIBLE\n\n"
         "Pedido: #{}\n"
-        "Recoges en el barrio o sector {} de la ciudad de {}\n"
-        "Entrega en el barrio o sector {} de la ciudad de {}\n"
+        "Recoges en: {}\n"
+        "Entrega en: {}\n"
         "Distancia de entrega: {:.1f} km\n"
         "Pago total: ${:,}\n"
     ).format(
         order["id"],
-        (pickup_barrio or "No disponible"),
-        (pickup_city or "No disponible"),
-        (dropoff_barrio or "No disponible"),
-        (dropoff_city or "No disponible"),
+        pickup_area_line,
+        dropoff_area_line,
         distance_km,
         total_fee,
     )
@@ -5083,19 +5100,25 @@ def _build_offer_text(
 
 
 def _get_pickup_address(order):
-    """Obtiene direccion de recogida usando pickup_location_id o default del aliado."""
+    """Obtiene direccion de recogida usando pickup_location_id, admin_locations o default del aliado."""
     pickup_location_id = _row_value(order, "pickup_location_id")
     ally_id = _row_value(order, "ally_id")
+    creator_admin_id = _row_value(order, "creator_admin_id")
 
     if pickup_location_id and ally_id:
         location = get_ally_location_by_id(pickup_location_id, ally_id)
         if location:
-            return _row_value(location, "address", "No disponible") or "No disponible"
+            return _row_value(location, "address", "") or ""
 
-    default_loc = get_default_ally_location(ally_id)
+    if pickup_location_id and not ally_id and creator_admin_id:
+        location = get_admin_location_by_id(pickup_location_id, creator_admin_id)
+        if location:
+            return _row_value(location, "address", "") or ""
+
+    default_loc = get_default_ally_location(ally_id) if ally_id else None
     if default_loc:
-        return _row_value(default_loc, "address", "No disponible")
-    return "No disponible"
+        return _row_value(default_loc, "address", "") or ""
+    return ""
 
 
 def _row_value(row, key, default=None):
@@ -5344,9 +5367,16 @@ def _get_pickup_coords(order):
 def _get_pickup_area(order):
     pickup_location_id = _row_value(order, "pickup_location_id")
     ally_id = _row_value(order, "ally_id")
+    creator_admin_id = _row_value(order, "creator_admin_id")
 
     if pickup_location_id and ally_id:
         location = get_ally_location_by_id(pickup_location_id, ally_id)
+        if location:
+            return _row_value(location, "city"), _row_value(location, "barrio")
+
+    # Pedidos especiales de admin: consultar admin_locations
+    if pickup_location_id and not ally_id and creator_admin_id:
+        location = get_admin_location_by_id(pickup_location_id, creator_admin_id)
         if location:
             return _row_value(location, "city"), _row_value(location, "barrio")
 
