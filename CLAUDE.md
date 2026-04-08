@@ -371,7 +371,8 @@ Aqu?? se resume el mapa actual de prefijos usados por los flujos:
 | Registro aliado | `ally_phone`, `ally_name`, `ally_owner`, `ally_document`, `city`, `barrio`, `address`, `ally_lat`, `ally_lng`, `ally_geo_formatted` (temporal geocoding) |
 | Registro repartidor | `phone`, `courier_fullname`, `courier_idnumber`, `city`, `barrio`, `residence_address`, `courier_lat`, `courier_lng`, `courier_geo_formatted` (temporal geocoding) |
 | Registro admin | `phone`, `admin_city`, `admin_barrio`, `admin_residence_address`, `admin_lat`, `admin_lng`, `admin_geo_formatted` (temporal geocoding) |
-| Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount` |
+| Pedido | `pickup_*`, `customer_*`, `instructions`, `requires_cash`, `cash_required_amount`, `pedido_edit_from_preview` (flag temporal de edicion desde preview) |
+| Ruta | `ruta_*` (prefijo general), `ruta_edit_from_preview` (flag temporal: True cuando el aliado edita la recogida desde el preview de confirmacion; interceptado por `ruta_pickup_selector_callback`, `ruta_pickup_lista_callback`, `ruta_pickup_guardar_callback`) |
 | Recarga | `recargar_target_type`, `recargar_target_id`, `recargar_admin_id` |
 | Recarga directa (plataforma) | `recdir_tipo`, `recdir_target_id`, `recdir_target_name`, `recdir_monto`, `recdir_nota` |
 | Ingreso externo (plataforma) | `ingreso_monto`, `ingreso_metodo` |
@@ -1807,6 +1808,7 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | `admin_ped_team_only` | Toggle visibilidad (0 = todos, 1 = solo equipo propio) |
 | `admin_ped_incentivo` | Incentivo adicional (int, COP, default 0) |
 | `admin_ped_instruc` | Instrucciones para el courier |
+| `admin_ped_edit_from_preview` | Flag temporal (bool): True cuando el admin edita un campo desde el preview. Interceptado por `admin_pedido_pickup_callback`, `_admin_pedido_calcular_preview` y `admin_pedido_tarifa_handler` para devolver al preview en vez de avanzar al siguiente paso. |
 
 ### Publicación del pedido admin
 

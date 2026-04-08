@@ -408,6 +408,7 @@ def ruta_edit_pickup_callback(update, context):
     """Desde el preview de ruta: volver a seleccionar punto de recogida."""
     query = update.callback_query
     query.answer()
+    context.user_data["ruta_edit_from_preview"] = True
     return _ruta_mostrar_selector_pickup(query, context)
 
 
@@ -469,6 +470,8 @@ def ruta_pickup_selector_callback(update, context):
             query.edit_message_text("Tu ubicacion base no tiene GPS. Elige otra.")
             return _ruta_mostrar_selector_pickup(query, context)
         _ruta_guardar_pickup(context, default_loc)
+        if context.user_data.pop("ruta_edit_from_preview", False):
+            return _ruta_mostrar_confirmacion(query, context)
         return _ruta_iniciar_parada(query, context)
     if data == "ruta_pickup_lista":
         locations = get_ally_locations(ally_id)
@@ -516,6 +519,8 @@ def ruta_pickup_lista_callback(update, context):
             query.edit_message_text("Esa ubicacion no tiene GPS. Elige otra.")
             return RUTA_PICKUP_LISTA
         _ruta_guardar_pickup(context, location)
+        if context.user_data.pop("ruta_edit_from_preview", False):
+            return _ruta_mostrar_confirmacion(query, context)
         return _ruta_iniciar_parada(query, context)
     return RUTA_PICKUP_LISTA
 
@@ -703,6 +708,8 @@ def ruta_pickup_guardar_callback(update, context):
         query.edit_message_text("Direccion guardada.")
     else:
         query.edit_message_text("OK, usaremos esta direccion solo para esta ruta.")
+    if context.user_data.pop("ruta_edit_from_preview", False):
+        return _ruta_mostrar_confirmacion(query, context)
     return _ruta_iniciar_parada(query, context)
 
 

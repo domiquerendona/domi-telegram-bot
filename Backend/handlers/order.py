@@ -2191,6 +2191,10 @@ def mostrar_preview_pickup(query_or_update, context, edit=False):
 
 def _continuar_flujo_despues_pickup_confirmado(query, context, edit=True):
     """Continua el flujo una vez el aliado confirma el pickup seleccionado."""
+    # Si veníamos de editar desde el preview, volver al preview directamente
+    if context.user_data.pop("pedido_edit_from_preview", False):
+        return mostrar_resumen_confirmacion(query, context, edit=edit)
+
     # Verificar si ya tenemos tipo de servicio
     if not context.user_data.get("service_type"):
         return mostrar_selector_tipo_servicio(query, context, edit=edit)
@@ -2591,6 +2595,7 @@ def pedido_edit_pickup_callback(update, context):
     """Desde el preview: volver a seleccionar punto de recogida."""
     query = update.callback_query
     query.answer()
+    context.user_data["pedido_edit_from_preview"] = True
     return mostrar_selector_pickup(query, context, edit=True)
 
 
@@ -3317,6 +3322,14 @@ def _admin_pedido_calcular_preview(update_or_query, context, edit=False):
     context.user_data.setdefault("admin_ped_team_only", 0)
     context.user_data["admin_ped_distance_km"] = cotizacion["distance_km"]
     context.user_data["admin_ped_quote_source"] = cotizacion.get("quote_source", "text")
+    # Si veníamos de editar cliente/entrega desde el preview, volver al preview directamente
+    if context.user_data.pop("admin_ped_edit_from_preview", False):
+        text, markup = _admin_ped_preview_text(context.user_data)
+        if hasattr(update_or_query, "message") and update_or_query.message:
+            update_or_query.message.reply_text(text, reply_markup=markup)
+        else:
+            update_or_query.edit_message_text(text, reply_markup=markup)
+        return ADMIN_PEDIDO_INSTRUC
     source_label = "Ruta estimada"
     if cotizacion.get("quote_source") == "coords":
         source_label = "Ruta por coordenadas"
@@ -3463,6 +3476,11 @@ def admin_pedido_pickup_callback(update, context):
     context.user_data["admin_ped_pickup_lng"] = loc.get("lng")
     context.user_data["admin_ped_pickup_city"] = loc.get("city", "")
     context.user_data["admin_ped_pickup_barrio"] = loc.get("barrio", "")
+    # Si venimos de editar desde el preview y ya hay datos del cliente, volver al preview
+    if context.user_data.pop("admin_ped_edit_from_preview", False):
+        text, markup = _admin_ped_preview_text(context.user_data)
+        query.edit_message_text(text, reply_markup=markup)
+        return ADMIN_PEDIDO_INSTRUC
     keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
     query.edit_message_text(
         "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(loc["address"]),
@@ -3976,6 +3994,10 @@ def admin_pedido_tarifa_handler(update, context):
     context.user_data["admin_ped_tarifa"] = tarifa
     context.user_data["admin_ped_base_fee"] = tarifa
     context.user_data["admin_ped_buy_surcharge"] = 0
+    if context.user_data.pop("admin_ped_edit_from_preview", False):
+        text, markup = _admin_ped_preview_text(context.user_data)
+        update.message.reply_text(text, reply_markup=markup)
+        return ADMIN_PEDIDO_INSTRUC
     return _admin_pedido_pedir_comision(update, context)
 
 
@@ -4721,6 +4743,7 @@ def admin_pedido_edit_pickup_callback(update, context):
     """Desde el preview admin: volver a seleccionar punto de recogida."""
     query = update.callback_query
     query.answer()
+    context.user_data["admin_ped_edit_from_preview"] = True
     admin_id = context.user_data.get("admin_ped_admin_id")
     locations = get_admin_locations(admin_id)
     keyboard = []
@@ -4742,6 +4765,7 @@ def admin_pedido_edit_cust_callback(update, context):
     """Desde el preview admin: volver a ingresar nombre del cliente."""
     query = update.callback_query
     query.answer()
+    context.user_data["admin_ped_edit_from_preview"] = True
     query.edit_message_text("Nombre del cliente:")
     return ADMIN_PEDIDO_CUST_NAME
 
@@ -4750,6 +4774,7 @@ def admin_pedido_edit_tarifa_callback(update, context):
     """Desde el preview admin: volver a ingresar tarifa al repartidor."""
     query = update.callback_query
     query.answer()
+    context.user_data["admin_ped_edit_from_preview"] = True
     query.edit_message_text("Escribe la nueva tarifa al repartidor (en pesos):")
     return ADMIN_PEDIDO_TARIFA
 
