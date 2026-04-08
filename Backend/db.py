@@ -4711,6 +4711,13 @@ def get_eligible_couriers_for_order(admin_id: int = None, ally_id: int = None,
           AND (c.is_deleted IS NULL OR c.is_deleted = 0)
           AND c.is_active = 1
           AND c.live_location_active = 1
+          AND (SELECT COUNT(*) FROM orders o
+               WHERE o.courier_id = c.id
+                 AND o.status IN ('ACCEPTED', 'PICKED_UP')) < 2
+          AND NOT EXISTS (
+               SELECT 1 FROM routes r
+               WHERE r.courier_id = c.id
+                 AND r.status = 'ACCEPTED')
     """
     params = []
 
