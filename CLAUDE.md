@@ -1750,11 +1750,21 @@ Entry: callback admin_nuevo_pedido
   → Estado ADMIN_PEDIDO_PICKUP (908)
 
 ADMIN_PEDIDO_PICKUP:
-  admin_pedido_pickup_callback  → selecciona ubicación guardada → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_pickup_callback  → selecciona ubicación guardada → selector de cliente
   admin_pedido_nueva_dir_start  → pide texto → ADMIN_PEDIDO_PICKUP
   admin_pedido_pickup_text_handler → geocodifica → muestra confirmación
-  admin_pedido_geo_pickup_callback (si/no) → confirma pickup → ADMIN_PEDIDO_CUST_NAME
-  admin_pedido_pickup_gps_handler → guarda GPS → ADMIN_PEDIDO_CUST_NAME
+  admin_pedido_geo_pickup_callback (si/no) → confirma pickup → selector de cliente
+  admin_pedido_pickup_gps_handler → guarda GPS → pregunta guardar → ADMIN_PEDIDO_SAVE_PICKUP
+  admin_pedido_save_pickup_callback (si/no) → guarda (o no) → selector de cliente
+
+Selector de cliente (_admin_pedido_mostrar_selector_cliente):
+  Si hay clientes → ADMIN_PEDIDO_SEL_CUST (lista + Buscar + Cliente nuevo)
+  Si no hay clientes → ADMIN_PEDIDO_CUST_NAME directamente (campo de texto)
+
+ADMIN_PEDIDO_SEL_CUST (917):
+  acust_pedido_sel_{id} → seleccionar cliente → ADMIN_PEDIDO_SEL_CUST_ADDR
+  admin_pedido_buscar_cust → ADMIN_PEDIDO_SEL_CUST_BUSCAR
+  admin_pedido_cliente_nuevo → ADMIN_PEDIDO_CUST_NAME (campo de texto)
 
 ADMIN_PEDIDO_CUST_NAME (909): admin_pedido_cust_name_handler → ADMIN_PEDIDO_CUST_PHONE
 ADMIN_PEDIDO_CUST_PHONE (910): admin_pedido_cust_phone_handler → ADMIN_PEDIDO_CUST_ADDR
@@ -1780,7 +1790,7 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | Constante | Valor | Descripción |
 |-----------|-------|-------------|
 | `ADMIN_PEDIDO_PICKUP` | 908 | Selección de punto de recogida |
-| `ADMIN_PEDIDO_CUST_NAME` | 909 | Nombre del cliente |
+| `ADMIN_PEDIDO_CUST_NAME` | 909 | Nombre del cliente (campo libre — se llega aquí cuando no hay clientes en agenda o desde "Cliente nuevo") |
 | `ADMIN_PEDIDO_CUST_PHONE` | 910 | Teléfono del cliente |
 | `ADMIN_PEDIDO_CUST_ADDR` | 911 | Dirección de entrega (con geocoding) |
 | `ADMIN_PEDIDO_TARIFA` | 912 | Tarifa manual al courier |
@@ -2173,7 +2183,7 @@ Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar d
 | `ADMIN_PEDIDO_GUARDAR_CUST` | 1001 | Ofrecer guardar cliente/dirección manual en la agenda |
 
 **Callbacks nuevos en `admin_pedido_conv`**:
-- `admin_pedido_sel_cust` → `admin_pedido_sel_cust_handler`
+- `admin_pedido_cliente_nuevo` → `admin_pedido_cliente_nuevo_callback` (desde `ADMIN_PEDIDO_SEL_CUST`)
 - `admin_pedido_buscar_cust` → `admin_pedido_buscar_cust_start`
 - `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
 - `acust_pedido_addr_{id}` → `admin_pedido_addr_selected` (incrementa `use_count`)

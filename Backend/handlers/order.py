@@ -3413,6 +3413,41 @@ def _admin_pedido_pedir_instruc(update_or_query, context):
 MIN_ADMIN_OPERATING_BALANCE = 2000  # Saldo minimo para crear pedidos especiales
 
 
+def _admin_pedido_mostrar_selector_cliente(query_or_update, context, edit=True):
+    """Muestra selector de cliente del admin equivalente al flujo del aliado.
+
+    Si hay clientes guardados: lista + Buscar + Cliente nuevo.
+    Si no hay clientes: va directo al campo de nombre, sin boton intermedio.
+    """
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    customers = list_admin_customers(admin_id, limit=15, include_inactive=False) if admin_id else []
+
+    if not customers:
+        context.user_data["admin_ped_is_new_customer"] = True
+        text = "Escribe el nombre del cliente:"
+        if edit and hasattr(query_or_update, "edit_message_text"):
+            query_or_update.edit_message_text(text)
+        else:
+            query_or_update.message.reply_text(text)
+        return ADMIN_PEDIDO_CUST_NAME
+
+    keyboard = []
+    for c in customers[:8]:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="admin_pedido_buscar_cust")])
+    keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="admin_pedido_cliente_nuevo")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "Selecciona el cliente:"
+    if edit and hasattr(query_or_update, "edit_message_text"):
+        query_or_update.edit_message_text(text, reply_markup=markup)
+    else:
+        query_or_update.message.reply_text(text, reply_markup=markup)
+    return ADMIN_PEDIDO_SEL_CUST
+
+
 def admin_nuevo_pedido_start(update, context):
     """Entrada al flujo de pedido especial del admin. Verifica saldo minimo y muestra puntos de recogida."""
     query = update.callback_query
@@ -3481,12 +3516,7 @@ def admin_pedido_pickup_callback(update, context):
         text, markup = _admin_ped_preview_text(context.user_data)
         query.edit_message_text(text, reply_markup=markup)
         return ADMIN_PEDIDO_INSTRUC
-    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
-    query.edit_message_text(
-        "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(loc["address"]),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return ADMIN_PEDIDO_CUST_NAME
+    return _admin_pedido_mostrar_selector_cliente(query, context, edit=True)
 
 
 def admin_pedido_nueva_dir_start(update, context):
@@ -3624,14 +3654,7 @@ def admin_pedido_save_pickup_callback(update, context):
             context.user_data["admin_ped_pickup_id"] = loc_id
         except Exception as e:
             logger.warning("admin_pedido_save_pickup_callback: %s", e)
-    keyboard = [[InlineKeyboardButton("Seleccionar de mis clientes", callback_data="admin_pedido_sel_cust")]]
-    query.edit_message_text(
-        "Recogida: {}\n\nNombre del cliente (o selecciona de tu agenda):".format(
-            context.user_data.get("admin_ped_pickup_addr", "")
-        ),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return ADMIN_PEDIDO_CUST_NAME
+    return _admin_pedido_mostrar_selector_cliente(query, context, edit=True)
 
 
 def admin_pedido_cust_name_handler(update, context):
@@ -4762,11 +4785,19 @@ def admin_pedido_edit_pickup_callback(update, context):
 
 
 def admin_pedido_edit_cust_callback(update, context):
-    """Desde el preview admin: volver a ingresar nombre del cliente."""
+    """Desde el preview admin: volver a seleccionar o ingresar cliente."""
     query = update.callback_query
     query.answer()
     context.user_data["admin_ped_edit_from_preview"] = True
-    query.edit_message_text("Nombre del cliente:")
+    return _admin_pedido_mostrar_selector_cliente(query, context, edit=True)
+
+
+def admin_pedido_cliente_nuevo_callback(update, context):
+    """Admin elige 'Cliente nuevo' desde el selector de clientes."""
+    query = update.callback_query
+    query.answer()
+    context.user_data["admin_ped_is_new_customer"] = True
+    query.edit_message_text("Escribe el nombre del cliente:")
     return ADMIN_PEDIDO_CUST_NAME
 
 
@@ -6116,12 +6147,13 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_save_pickup_callback, pattern=r"^admin_pedido_save_pickup_(si|no)$"),
         ],
         ADMIN_PEDIDO_CUST_NAME: [
-            CallbackQueryHandler(admin_pedido_sel_cust_handler, pattern=r"^admin_pedido_sel_cust$"),
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_name_handler),
         ],
         ADMIN_PEDIDO_SEL_CUST: [
             CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
             CallbackQueryHandler(admin_pedido_buscar_cust_start, pattern=r"^admin_pedido_buscar_cust$"),
+            CallbackQueryHandler(admin_pedido_cliente_nuevo_callback, pattern=r"^admin_pedido_cliente_nuevo$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_SEL_CUST_ADDR: [
