@@ -467,6 +467,9 @@ WEB_PANEL_URL_IS_HTTPS = WEB_PANEL_URL.startswith("https://")
 | Admin de Plataforma | `mi_admin` | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
 | Admin Local | `mi_admin` (local) | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
 | Repartidor | `mi_repartidor` | Botón inline "🌐 Mi panel web" → `/courier` | Texto plano con URL |
+| Admin Plataforma, Admin Local APPROVED, Repartidor APPROVED | `start` (`/start` y `/menu`) | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
+
+**Condición en `/start`:** solo se muestra si el usuario tiene al menos un rol aprobado (`es_admin_plataforma_flag`, `admin_local.status == APPROVED` o `courier.status == APPROVED`). Los aliados y usuarios sin rol aprobado no ven el link. Aparece como segundo mensaje tras el menú principal.
 
 **Razón del comportamiento dual:** Telegram rechaza URLs `http://` y URLs de `localhost` en `InlineKeyboardButton(url=...)` — solo acepta `https://`. En local (dev) se muestra texto plano; en Railway PROD se muestra el botón clickeable.
 

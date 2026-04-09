@@ -872,6 +872,23 @@ def start(update, context):
         reply_markup = get_main_menu_keyboard(missing_cmds, courier, ally, admin_local, es_admin_plataforma_flag)
         update.message.reply_text(mensaje, reply_markup=reply_markup)
 
+    # Link del panel web para roles aprobados
+    tiene_rol_aprobado = (
+        es_admin_plataforma_flag
+        or (admin_local and admin_local.get("status") == "APPROVED")
+        or (courier and courier.get("status") == "APPROVED")
+    )
+    if WEB_PANEL_URL and tiene_rol_aprobado:
+        if WEB_PANEL_URL_IS_HTTPS:
+            update.message.reply_text(
+                "Accede al panel web:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)
+                ]])
+            )
+        else:
+            update.message.reply_text("Panel web: " + WEB_PANEL_URL)
+
 
 def menu(update, context):
     """Alias de /start para mostrar el menú principal."""
