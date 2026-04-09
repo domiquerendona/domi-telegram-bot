@@ -979,6 +979,13 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 **Bugs corregidos (2026-04-09):**
 - `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
 
+**Mejoras `admin_pedido_conv` (2026-04-09) — cancelación en todos los estados:**
+- Botón "Cancelar pedido" agregado a los teclados de: `ADMIN_PEDIDO_SAVE_PICKUP` (¿guardar dirección?), `ADMIN_PEDIDO_CUST_DEDUP` (cliente duplicado), `ADMIN_PEDIDO_GUARDAR_CUST` (¿guardar cliente/dirección en agenda?).
+- Botón "Omitir" en `ADMIN_PEDIDO_GUARDAR_PARKING` (el pedido ya está creado en este punto; omitir salta la pregunta de parqueo).
+- `CANCELAR_VOLVER_MENU_FILTER` agregado explícitamente en los estados de texto libre que lo faltaban: `ADMIN_PEDIDO_CUST_PHONE`, `ADMIN_PEDIDO_CUST_ADDR`, `ADMIN_PEDIDO_INC_MONTO`, `ADMIN_PEDIDO_SEL_CUST_BUSCAR`.
+- `admin_pedido_cancelar_callback` registrado en `ADMIN_PEDIDO_CUST_ADDR` y `ADMIN_PEDIDO_CUST_DEDUP` como `CallbackQueryHandler`.
+- `_OPTIONS_HINT` agregado a los prompts de teléfono y dirección del cliente para indicar que se puede escribir `/cancel`.
+
 **Bugs corregidos en `db.py` (2026-04-01):**
 - `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
 - `get_admin_recent_activity`: `a.name` → `a.business_name` (tabla `allies`)
