@@ -10,26 +10,20 @@ logger = logging.getLogger(__name__)
 
 from services import (
     count_ally_form_requests_by_status,
-    create_order,
     get_ally_by_id,
     get_ally_by_user_id,
     get_ally_form_request_by_id,
-    get_approved_admin_link_for_ally,
     get_courier_by_id,
-    get_default_ally_location,
     get_or_create_ally_public_token,
     get_order_by_id,
     get_user_db_id_from_update,
     list_ally_form_requests_for_ally,
-    mark_ally_form_request_converted,
     update_ally_form_request_status,
 )
 from handlers.order import _ally_bandeja_guardar_en_agenda
 from order_delivery import (
     _get_order_durations,
     _format_duration,
-    publish_order_to_couriers,
-    build_courier_order_preview_text,
 )
 
 
@@ -636,179 +630,21 @@ def ally_bandeja_callback(update, context):
         )
         return
 
-    # ---- Crear pedido desde solicitud (con o sin guardar en agenda) ----
-    if data.startswith("alybandeja_crear_") or data.startswith("alybandeja_crearyguardar_"):
-        guardar = data.startswith("alybandeja_crearyguardar_")
-        request_id = int(data.split("_")[-1])
-        solicitud = get_ally_form_request_by_id(request_id, ally_id)
-        if not solicitud:
-            query.edit_message_text("Solicitud no encontrada.")
-            return
-        if solicitud["status"] not in ("PENDING_REVIEW", "PENDING_LOCATION"):
-            query.edit_message_text(
-                "Esta solicitud ya fue procesada.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
-            )
-            return
-
-        # Validar que tiene coordenadas de entrega
-        lat = solicitud.get("lat")
-        lng = solicitud.get("lng")
-        if not lat or not lng:
-            query.edit_message_text(
-                "Esta solicitud no tiene ubicacion de entrega confirmada.\n\n"
-                "Contacta al cliente para confirmar la direccion antes de crear el pedido.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
-            )
-            return
-
-        # Validar punto de recogida del aliado
-        pickup = get_default_ally_location(ally_id)
-        if not pickup or not pickup.get("lat") or not pickup.get("lng"):
-            query.edit_message_text(
-                "No tienes una ubicacion de recogida configurada.\n\n"
-                "Agrega una desde 'Mis ubicaciones' antes de crear pedidos.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
-            )
-            return
-
-        total_fee = solicitud.get("quoted_price") or 0
-        nombre = solicitud["customer_name"] or "Sin nombre"
-        telefono = solicitud["customer_phone"] or ""
-        direccion = solicitud["delivery_address"] or ""
-        ciudad_entrega = solicitud.get("delivery_city") or ""
-        barrio_entrega = solicitud.get("delivery_barrio") or ""
-        incentivo = solicitud.get("incentivo_cliente") or 0
-
-        preview_lines = [
-            "Resumen del pedido a crear:\n",
-            "Cliente: {} | {}".format(nombre, telefono),
-            "Entrega: {}{}{}".format(
-                direccion,
-                " - " + barrio_entrega if barrio_entrega else "",
-                ", " + ciudad_entrega if ciudad_entrega else "",
-            ),
-            "Pickup: {} ({})".format(pickup.get("label") or "Principal", pickup.get("address") or ""),
-            "Tarifa al courier: ${:,}".format(int(total_fee)),
-        ]
-        if incentivo:
-            preview_lines.append("Incentivo adicional: +${:,}".format(int(incentivo)))
-        preview_lines.append("")
-        preview_lines.append(
-            build_courier_order_preview_text(
-                {
-                    "id": "preview",
-                    "distance_km": float(solicitud.get("distance_km") or 0),
-                    "total_fee": int(total_fee or 0),
-                    "additional_incentive": int(incentivo or 0),
-                    "payment_method": "UNCONFIRMED",
-                    "cash_required_amount": 0,
-                    "instructions": "",
-                    "pickup_address": pickup.get("address") or "",
-                    "customer_address": direccion,
-                },
-                pickup_city_override=pickup.get("city") or "",
-                pickup_barrio_override=pickup.get("barrio") or "",
-                dropoff_city_override=ciudad_entrega,
-                dropoff_barrio_override=barrio_entrega,
-            )
-        )
-
-        confirm_cb = "alybandeja_confirmargsave_{}".format(request_id) if guardar else "alybandeja_confirmar_{}".format(request_id)
-        buttons = [
-            [InlineKeyboardButton("Confirmar y publicar", callback_data=confirm_cb)],
-            [InlineKeyboardButton("Cancelar", callback_data="alybandeja_ver_{}".format(request_id))],
-        ]
-        query.edit_message_text("\n".join(preview_lines), reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    # ---- Confirmar creacion del pedido ----
     if data.startswith("alybandeja_confirmar_") or data.startswith("alybandeja_confirmargsave_"):
-        guardar = data.startswith("alybandeja_confirmargsave_")
         request_id = int(data.split("_")[-1])
-        solicitud = get_ally_form_request_by_id(request_id, ally_id)
-        if not solicitud:
-            query.edit_message_text("Solicitud no encontrada.")
-            return
-
-        lat = solicitud.get("lat")
-        lng = solicitud.get("lng")
-        pickup = get_default_ally_location(ally_id)
-        if not lat or not lng or not pickup or not pickup.get("lat"):
-            query.edit_message_text(
-                "No se puede crear el pedido: faltan coordenadas.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
-            )
-            return
-
-        admin_link = get_approved_admin_link_for_ally(ally_id)
-        ally_row = get_ally_by_id(ally_id)
-        total_fee = int(solicitud.get("quoted_price") or 0)
-        incentivo = int(solicitud.get("incentivo_cliente") or 0)
-        ciudad_entrega = solicitud.get("delivery_city") or ""
-        barrio_entrega = solicitud.get("delivery_barrio") or ""
-        ciudad_pickup = pickup.get("city") or ""
-        barrio_pickup = pickup.get("barrio") or ""
-
-        try:
-            order_id = create_order(
-                ally_id=ally_id,
-                customer_name=solicitud["customer_name"],
-                customer_phone=solicitud["customer_phone"],
-                customer_address=solicitud.get("delivery_address") or "",
-                customer_city=ciudad_entrega,
-                customer_barrio=barrio_entrega,
-                pickup_location_id=pickup.get("id"),
-                total_fee=total_fee,
-                additional_incentive=incentivo,
-                pickup_lat=float(pickup["lat"]),
-                pickup_lng=float(pickup["lng"]),
-                dropoff_lat=float(lat),
-                dropoff_lng=float(lng),
-                ally_admin_id_snapshot=admin_link["admin_id"] if admin_link else None,
-                quote_source="ALLY_FORM",
-            )
-        except Exception as e:
-            logger.warning("alybandeja_confirmar create_order error: %s", e)
-            query.edit_message_text(
-                "No se pudo crear el pedido: {}".format(str(e)),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver", callback_data="alybandeja_volver")]])
-            )
-            return
-
-        # Marcar solicitud como convertida
-        try:
-            mark_ally_form_request_converted(request_id, ally_id, order_id)
-        except Exception:
-            pass
-
-        # Guardar en agenda si corresponde
-        if guardar:
-            try:
-                _ally_bandeja_guardar_en_agenda(ally_id, solicitud)
-            except Exception:
-                pass
-
-        # Publicar pedido a couriers
-        published_count = 0
-        try:
-            published_count = publish_order_to_couriers(
-                order_id, ally_id, context,
-                pickup_city=ciudad_pickup,
-                pickup_barrio=barrio_pickup,
-                dropoff_city=ciudad_entrega,
-                dropoff_barrio=barrio_entrega,
-            )
-        except Exception as e:
-            logger.warning("alybandeja_confirmar publish error: %s", e)
-
+        logger.info(
+            "[ally_bandeja_base_unified_v2026_04_09] stale_confirm request_id=%s ally_id=%s",
+            request_id,
+            ally_id,
+        )
         query.edit_message_text(
-            (
-                "Pedido #{} creado y publicado.\n\nBuscando repartidor..."
-                if published_count >= 0 else
-                "Pedido #{} creado.\n\nLa publicacion quedo bloqueada hasta corregir la direccion visible."
-            ).format(order_id),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver a solicitudes", callback_data="alybandeja_volver")]])
+            "Ese preview anterior ya no se usa.\n\n"
+            "Vuelve a abrir la solicitud y toca 'Crear pedido' para continuar con el flujo actualizado, "
+            "que ahora tambien pregunta si el courier requiere base antes de publicar.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver a la solicitud", callback_data="alybandeja_ver_{}".format(request_id))],
+                [InlineKeyboardButton("Volver a solicitudes", callback_data="alybandeja_volver")],
+            ])
         )
         return
 

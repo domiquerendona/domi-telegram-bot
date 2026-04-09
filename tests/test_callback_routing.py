@@ -152,6 +152,29 @@ def _extract_order_base_namespace():
     return namespace
 
 
+def _load_conversation_state_names(conversation_name):
+    tree = ast.parse(ORDER_HANDLER_PATH.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        target_names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        if conversation_name not in target_names:
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        if not isinstance(node.value.func, ast.Name) or node.value.func.id != "ConversationHandler":
+            continue
+        for keyword in node.value.keywords:
+            if keyword.arg != "states" or not isinstance(keyword.value, ast.Dict):
+                continue
+            state_names = []
+            for key in keyword.value.keys:
+                if isinstance(key, ast.Name):
+                    state_names.append(key.id)
+            return state_names
+    raise AssertionError(f"No se pudo encontrar la conversacion {conversation_name}.")
+
+
 class CallbackRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -314,6 +337,12 @@ class PedidoBaseFlowTests(unittest.TestCase):
             query.edit_calls,
         )
         self.assertEqual({}, context.user_data)
+
+    def test_admin_pedido_conv_includes_shared_base_states(self):
+        state_names = _load_conversation_state_names("admin_pedido_conv")
+
+        self.assertIn("PEDIDO_REQUIERE_BASE", state_names)
+        self.assertIn("PEDIDO_VALOR_BASE", state_names)
 
 
 if __name__ == "__main__":

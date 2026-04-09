@@ -6990,6 +6990,14 @@ admin_pedido_conv = ConversationHandler(
         ADMIN_PEDIDO_CUST_ADDR_DETALLE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_detalle_handler),
         ],
+        PEDIDO_REQUIERE_BASE: [
+            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$"),
+        ],
+        PEDIDO_VALOR_BASE: [
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=PEDIDO_BASE_CALLBACK_PATTERN),
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto),
+        ],
         ADMIN_PEDIDO_TARIFA: [
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_tarifa_handler),
