@@ -977,6 +977,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - Ruta perfil admin: `/superadmin/perfil`
 
 **Bugs corregidos (2026-04-09):**
+- `order_delivery.py:_admin_order_detail` — `KeyError: 'full_name'`: la tabla `allies` usa `business_name`, no `full_name`. Al tocar cualquier pedido en la lista de pedidos activos del admin, el bot crasheaba silenciosamente y el admin veía que no pasaba nada. Fix: `ally.get("business_name") or ally.get("full_name") or "Aliado"`.
 - `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
 
 **Mejoras `admin_pedido_conv` (2026-04-09) — cancelación en todos los estados:**
