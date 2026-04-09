@@ -43,15 +43,20 @@ template: `
 
   <div class="field">
     <label>Contraseña</label>
-    <input
-      type="password"
-      [(ngModel)]="password"
-      name="password"
-      placeholder="Ingresa tu contraseña"
-      autocomplete="current-password"
-      required
-      [disabled]="cargando()"
-    />
+    <div class="password-wrapper">
+      <input
+        [type]="mostrarPassword() ? 'text' : 'password'"
+        [(ngModel)]="password"
+        name="password"
+        placeholder="Ingresa tu contraseña"
+        autocomplete="current-password"
+        required
+        [disabled]="cargando()"
+      />
+      <button type="button" class="toggle-password" (click)="mostrarPassword.set(!mostrarPassword())">
+        <span class="material-symbols-outlined">{{ mostrarPassword() ? 'visibility_off' : 'visibility' }}</span>
+      </button>
+    </div>
   </div>
 
   <div class="error-msg" *ngIf="error()">
@@ -190,6 +195,40 @@ font-size:13px;
 margin-bottom:10px;
 }
 
+.password-wrapper{
+position:relative;
+display:flex;
+align-items:center;
+}
+
+.password-wrapper input{
+padding-right:44px;
+}
+
+.toggle-password{
+position:absolute;
+right:10px;
+width:auto;
+padding:4px;
+margin-top:0;
+background:none;
+border:none;
+color:#6b7280;
+cursor:pointer;
+display:flex;
+align-items:center;
+}
+
+.toggle-password:hover:not(:disabled){
+transform:none;
+box-shadow:none;
+color:#4338ca;
+}
+
+.toggle-password span{
+font-size:20px;
+}
+
 .forgot{
 display:block;
 margin-top:14px;
@@ -214,6 +253,7 @@ password = '';
 
 cargando = signal(false);
 error = signal('');
+mostrarPassword = signal(false);
 
 constructor(
 private http: HttpClient,
