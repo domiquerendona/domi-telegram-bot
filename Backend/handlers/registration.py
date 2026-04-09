@@ -2077,6 +2077,7 @@ def admin_geo_ubicacion_callback(update, context):
 
 
 def admin_confirm(update, context):
+    answer = ""
     if update.callback_query:
         update.callback_query.answer()
         update.callback_query.edit_message_reply_markup(reply_markup=None)
