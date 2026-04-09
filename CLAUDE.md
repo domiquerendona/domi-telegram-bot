@@ -419,7 +419,7 @@ Separador operativo actual: guion bajo (`_`).
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 | `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point normal), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado en búsqueda), `plat_rdir_presel_{COURIER\|ALLY}_{id}` (entrada directa desde vista saldo bajo), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). `plat_rec_saldo_bajo` (en `plat_recargas_callback`): vista de couriers y aliados con balance < $5.000. Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
-| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido` (entry point), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `admin_pedido_edit_pickup` (re-muestra selector de recogida → `ADMIN_PEDIDO_PICKUP`), `admin_pedido_edit_cust` (re-pide nombre del cliente → `ADMIN_PEDIDO_CUST_NAME`), `admin_pedido_edit_tarifa` (re-pide tarifa → `ADMIN_PEDIDO_TARIFA`). Instrucciones: el admin puede escribir texto directamente en el chat mientras está en el preview (estado `ADMIN_PEDIDO_INSTRUC` ya acepta texto libre vía `admin_pedido_instruc_handler`). |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido_{admin_id}` (entry point actual; legacy `admin_nuevo_pedido` soportado temporalmente), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `admin_pedido_edit_pickup` (re-muestra selector de recogida → `ADMIN_PEDIDO_PICKUP`), `admin_pedido_edit_cust` (re-pide nombre del cliente → `ADMIN_PEDIDO_CUST_NAME`), `admin_pedido_edit_tarifa` (re-pide tarifa → `ADMIN_PEDIDO_TARIFA`). Instrucciones: el admin puede escribir texto directamente en el chat mientras está en el preview (estado `ADMIN_PEDIDO_INSTRUC` ya acepta texto libre vía `admin_pedido_instruc_handler`). |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
 | `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
@@ -1138,7 +1138,7 @@ Retiro personal del admin de plataforma (de Sociedad a saldo personal)
 | Mi Perfil — Admin Plataforma | "Saldo personal (ganancias): $X" + "Saldo Sociedad (fondos operativos): $Y" |
 | Mi Perfil — Admin Local | "Saldo personal: $X" |
 | Panel de Recargas (plat_rec_menu) | "Saldo Sociedad (fondos para recargas): $Y" |
-| Mi saldo (admin_mi_saldo) — Admin Plataforma | Saldo personal + Saldo Sociedad con movimientos del día |
+| Mi saldo (admin_mi_saldo_{admin_id}) — Admin Plataforma | Saldo personal + Saldo Sociedad con movimientos del día; desde aquí sale CTA a `admin_sociedad_retiro_{admin_id}` y a `admin_movimientos_{admin_id}` |
 
 #### Funciones clave en `db.py`
 
@@ -1154,6 +1154,10 @@ Retiro personal del admin de plataforma (de Sociedad a saldo personal)
 Todas re-exportadas en `services.py`.
 
 Las restricciones obligatorias de contabilidad y saldo están en `AGENTS.md`.
+
+Regla operativa vigente del panel admin:
+- Los botones actor-dependientes del menú admin ahora emiten `admin_id` explícito: `admin_mi_saldo_{admin_id}`, `admin_movimientos_{admin_id}`, `admin_mis_clientes_{admin_id}`, `admin_mis_dirs_{admin_id}`, `admin_mis_plantillas_{admin_id}` y `adminhist_periodo_hoy_{admin_id}`.
+- Los handlers mantienen compatibilidad temporal con callbacks legacy sin `admin_id`, pero el menú vigente ya no debe emitirlos.
 
 **Flujo de UI — Registrar ingreso externo** (`ingreso_conv`, `main.py`):
 - Estados: `INGRESO_MONTO=970`, `INGRESO_METODO=971`, `INGRESO_NOTA=972`
@@ -1672,7 +1676,7 @@ Permite a un Admin Local o Admin de Plataforma crear pedidos directamente, con t
 - **Tarifa manual**: el admin ingresa libremente el monto que el courier cobrará al cliente.
 - **Comisión especial opcional** (`special_commission`): el admin puede cobrarle al courier una comisión adicional al entregar. Aplica a couriers de cualquier equipo (cross-team). Mínimo: `fee_platform_share` ($100) si se activa.
 - **Toggle de visibilidad** (`team_only`): el admin puede restringir la oferta solo a su equipo (0 = todos, 1 = solo equipo propio).
-- **Saldo mínimo para crear**: el admin necesita al menos `$2.000` en balance para iniciar el flujo (`MIN_ADMIN_OPERATING_BALANCE = 2000` en `handlers/order.py`).
+- **Saldo mínimo para crear**: el admin necesita al menos `$2.000` en su saldo personal (`admins.balance` del admin actor) para iniciar el flujo (`MIN_ADMIN_OPERATING_BALANCE = 2000` en `handlers/order.py`). `Sociedad` no se descuenta automáticamente; si el actor es `PLATFORM`, el bloqueo ofrece el CTA `admin_sociedad_retiro_{admin_id}`.
 - **Sin fee check del aliado**: no hay aliado, `ally_id=NULL`, `skip_fee_check=True` omite la verificación de saldo.
 - **`creator_admin_id`**: columna en `orders` que identifica al admin creador (NULL = pedido de aliado).
 - **`ally_id = NULL`**: los pedidos especiales de admin no tienen `ally_id`.
@@ -1746,9 +1750,12 @@ Todas re-exportadas en `services.py`.
 ### Flujo de creación (`admin_pedido_conv` en `main.py`)
 
 ```
-Entry: callback admin_nuevo_pedido
+Entry: callback admin_nuevo_pedido_{admin_id}
   → admin_nuevo_pedido_start()
   → Estado ADMIN_PEDIDO_PICKUP (908)
+
+Compatibilidad: el patrón legacy `admin_nuevo_pedido` sigue soportado temporalmente para botones viejos, pero el menú actual siempre emite `admin_nuevo_pedido_{admin_id}` y el flujo valida que el `admin_id` pertenezca al usuario que pulsó el botón.
+Si el bloqueo ocurre por saldo personal bajo y el actor es `PLATFORM`, el CTA de recuperación lleva a `admin_sociedad_retiro_{admin_id}`; al completar el retiro, el bot devuelve botones directos para `admin_nuevo_pedido_{admin_id}` y `admin_mi_saldo_{admin_id}`.
 
 ADMIN_PEDIDO_PICKUP:
   admin_pedido_pickup_callback  → selecciona ubicación guardada → selector de cliente
@@ -2142,7 +2149,7 @@ El Admin Local y el Admin de Plataforma tienen dos agendas propias:
 
 ### Flujo `admin_clientes_conv`
 
-Entry: callback `admin_mis_clientes` (botón en menú admin)
+Entry: callback `admin_mis_clientes_{admin_id}` (botón vigente en menú admin; legacy `admin_mis_clientes` soportado temporalmente)
 
 | Estado | Constante | Descripción |
 |--------|-----------|-------------|
@@ -2172,7 +2179,7 @@ Entry: callback `admin_mis_clientes` (botón en menú admin)
 
 ### Flujo `admin_dirs_conv`
 
-Entry: callback `admin_mis_dirs` (botón en menú admin)
+Entry: callback `admin_mis_dirs_{admin_id}` (botón vigente en menú admin; legacy `admin_mis_dirs` soportado temporalmente)
 
 | Estado | Constante | Descripción |
 |--------|-----------|-------------|

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = REPO_ROOT / "Backend" / "main.py"
 ORDER_HANDLER_PATH = REPO_ROOT / "Backend" / "handlers" / "order.py"
+CUSTOMER_AGENDA_PATH = REPO_ROOT / "Backend" / "handlers" / "customer_agenda.py"
+LOCATION_AGENDA_PATH = REPO_ROOT / "Backend" / "handlers" / "location_agenda.py"
 
 
 class _MainPatternVisitor(ast.NodeVisitor):
@@ -175,6 +177,36 @@ def _load_conversation_state_names(conversation_name):
     raise AssertionError(f"No se pudo encontrar la conversacion {conversation_name}.")
 
 
+def _load_conversation_entry_patterns_from_path(path, conversation_name):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        target_names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        if conversation_name not in target_names:
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        if not isinstance(node.value.func, ast.Name) or node.value.func.id != "ConversationHandler":
+            continue
+        for keyword in node.value.keywords:
+            if keyword.arg != "entry_points" or not isinstance(keyword.value, ast.List):
+                continue
+            patterns = []
+            for item in keyword.value.elts:
+                if not isinstance(item, ast.Call):
+                    continue
+                for call_keyword in item.keywords:
+                    if call_keyword.arg == "pattern" and isinstance(call_keyword.value, ast.Constant):
+                        patterns.append(call_keyword.value.value)
+            return patterns
+    raise AssertionError(f"No se pudo encontrar entry_points para la conversacion {conversation_name}.")
+
+
+def _load_conversation_entry_patterns(conversation_name):
+    return _load_conversation_entry_patterns_from_path(ORDER_HANDLER_PATH, conversation_name)
+
+
 class CallbackRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -225,6 +257,70 @@ class CallbackRoutingTests(unittest.TestCase):
                 "admpedidos_cancel_abort_24_7",
             ],
         )
+
+    def test_admin_pedido_conv_entry_accepts_legacy_and_explicit_admin_id(self):
+        patterns = [re.compile(pattern) for pattern in _load_conversation_entry_patterns("admin_pedido_conv")]
+        self.assertTrue(any(pattern.match("admin_nuevo_pedido") for pattern in patterns))
+        self.assertTrue(any(pattern.match("admin_nuevo_pedido_7") for pattern in patterns))
+
+    def test_admin_panel_callbacks_accept_explicit_admin_id(self):
+        self._assert_matches(
+            "admin_mi_saldo_callback",
+            ["admin_mi_saldo_7"],
+        )
+        self._assert_matches(
+            "admin_movimientos_callback",
+            ["admin_movimientos_7"],
+        )
+        self._assert_matches(
+            "admin_movimientos_periodo_callback",
+            ["admin_movimientos_mes_7", "admin_movimientos_soc_mes_7"],
+        )
+        self._assert_matches(
+            "admin_mis_plantillas_callback",
+            ["admin_mis_plantillas_7"],
+        )
+        self._assert_matches(
+            "admin_ped_tmpl_info_callback",
+            ["admin_ped_tmpl_info_11_7"],
+        )
+        self._assert_matches(
+            "admin_ped_tmpl_menu_del_callback",
+            ["admin_ped_tmpl_menu_del_11_7"],
+        )
+
+    def test_admin_clientes_and_dirs_conversations_accept_explicit_admin_id(self):
+        clientes_patterns = [
+            re.compile(pattern)
+            for pattern in _load_conversation_entry_patterns_from_path(
+                CUSTOMER_AGENDA_PATH,
+                "admin_clientes_conv",
+            )
+        ]
+        dirs_patterns = [
+            re.compile(pattern)
+            for pattern in _load_conversation_entry_patterns_from_path(
+                LOCATION_AGENDA_PATH,
+                "admin_dirs_conv",
+            )
+        ]
+        self.assertTrue(any(pattern.match("admin_mis_clientes_7") for pattern in clientes_patterns))
+        self.assertTrue(any(pattern.match("admin_mis_dirs_7") for pattern in dirs_patterns))
+
+    def test_main_menu_emits_explicit_admin_callbacks_for_admin_panel(self):
+        source = MAIN_PATH.read_text(encoding="utf-8")
+
+        for callback_template in [
+            "admin_nuevo_pedido_{}",
+            "adminhist_periodo_hoy_{}",
+            "admin_mis_clientes_{}",
+            "admin_mis_dirs_{}",
+            "admin_mis_plantillas_{}",
+            "admin_mi_saldo_{}",
+            "admin_movimientos_{}",
+            "admin_sociedad_retiro_{}",
+        ]:
+            self.assertIn(callback_template, source)
 
 
 class PedidoBaseFlowTests(unittest.TestCase):

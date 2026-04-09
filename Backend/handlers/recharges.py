@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import os
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
@@ -110,6 +111,7 @@ from services import (
     get_all_active_couriers,
     get_all_active_allies,
     get_all_local_admins_approved,
+    resolve_owned_admin_actor,
 )
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
@@ -266,7 +268,7 @@ def cmd_saldo(update, context):
 
     if es_plataforma:
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Ver movimientos", callback_data="admin_movimientos")]
+            [InlineKeyboardButton("Ver movimientos", callback_data="admin_movimientos_{}".format(admin_id))]
         ])
         update.message.reply_text(mensaje, reply_markup=markup)
     else:
@@ -1207,9 +1209,18 @@ def local_recargas_pending_callback(update, context):
     admin_id = int(data.split("_")[-1])
 
     # Verificar que el solicitante es el propio admin
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    admin = get_admin_by_user_id(user_row["id"])
+    _, admin = _resolve_admin_panel_actor(
+        update.effective_user.id,
+        query.data,
+        r"admin_movimientos(?:_(\d+))?",
+        area="admin_movimientos_menu",
+    )
+    if not admin:
+        query.edit_message_text(
+            "No se pudo validar este panel de movimientos.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return
     if not admin or admin["id"] != admin_id:
         query.answer("No autorizado.", show_alert=True)
         return
@@ -2296,9 +2307,24 @@ def ingreso_iniciar_callback(update, context):
     """Punto de entrada al flujo de registro de ingreso externo."""
     query = update.callback_query
     query.answer()
-    if not user_has_platform_admin(query.from_user.id):
+    selected_admin_id, admin = _resolve_admin_panel_actor(
+        update.effective_user.id,
+        query.data,
+        r"admin_sociedad_retiro(?:_(\d+))?",
+        prefer_platform=True,
+        area="admin_sociedad_retiro",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar el administrador de este retiro.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return ConversationHandler.END
+    if not admin or (admin.get("team_code") or "").upper() != "PLATFORM":
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         query.edit_message_text("Acceso restringido al Administrador de Plataforma.")
         return ConversationHandler.END
+    context.user_data["recargar_sociedad_admin_id"] = admin["id"]
     query.edit_message_text(
         "Registrar ingreso externo a la Sociedad.\n\n"
         "Este dinero se acredita al fondo de la Sociedad Domiquerendona,\n"
@@ -2998,14 +3024,42 @@ recarga_directa_conv = ConversationHandler(
 MIN_ADMIN_OPERATING_BALANCE_DISPLAY = 2000  # Umbral para alerta visual de saldo bajo
 
 
+def _extract_optional_admin_id(callback_data, pattern):
+    match = re.fullmatch(pattern, callback_data or "")
+    if not match or not match.lastindex:
+        return None
+    raw_admin_id = match.group(match.lastindex)
+    return int(raw_admin_id) if raw_admin_id else None
+
+
+def _resolve_admin_panel_actor(telegram_id, callback_data, pattern, prefer_platform=False, area="admin_panel"):
+    selected_admin_id = _extract_optional_admin_id(callback_data, pattern)
+    admin = resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=prefer_platform,
+        legacy_counter_key="{}_legacy_callback_count".format(area),
+        invalid_counter_key="{}_invalid_selected_count".format(area),
+    )
+    return selected_admin_id, admin
+
+
 def admin_mi_saldo_callback(update, context):
     """Muestra el saldo actual del admin con resumen de movimientos de hoy."""
     query = update.callback_query
     query.answer()
     telegram_id = update.effective_user.id
-    admin = get_admin_by_telegram_id(telegram_id)
+    _, admin = _resolve_admin_panel_actor(
+        telegram_id,
+        query.data,
+        r"admin_mi_saldo(?:_(\d+))?",
+        area="admin_balance_panel",
+    )
     if not admin:
-        query.edit_message_text("No se encontro tu perfil de administrador.")
+        query.edit_message_text(
+            "No se pudo validar este panel de saldo.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
         return
 
     admin_id = admin["id"]
@@ -3086,8 +3140,8 @@ def admin_mi_saldo_callback(update, context):
             soc_balance, resumen_soc,
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Retirar de Sociedad a mi saldo", callback_data="admin_sociedad_retiro")],
-            [InlineKeyboardButton("Ver mis movimientos personales", callback_data="admin_movimientos")],
+            [InlineKeyboardButton("Retirar de Sociedad a mi saldo", callback_data="admin_sociedad_retiro_{}".format(admin_id))],
+            [InlineKeyboardButton("Ver mis movimientos personales", callback_data="admin_movimientos_{}".format(admin_id))],
         ])
     else:
         texto = (
@@ -3097,7 +3151,7 @@ def admin_mi_saldo_callback(update, context):
             team_name, balance, estado_icon, alerta_line, resumen_hoy,
         )
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Ver historial de movimientos", callback_data="admin_movimientos")],
+            [InlineKeyboardButton("Ver historial de movimientos", callback_data="admin_movimientos_{}".format(admin_id))],
         ])
 
     query.edit_message_text(texto, reply_markup=keyboard)
@@ -3112,11 +3166,28 @@ def sociedad_retiro_iniciar_callback(update, context):
     """Punto de entrada: Admin Plataforma retira fondos de Sociedad a su saldo personal."""
     query = update.callback_query
     query.answer()
-    if not user_has_platform_admin(query.from_user.id):
+    context.user_data.pop("recargar_sociedad_admin_id", None)
+    selected_admin_id, admin = _resolve_admin_panel_actor(
+        update.effective_user.id,
+        query.data,
+        r"admin_sociedad_retiro(?:_(\d+))?",
+        prefer_platform=True,
+        area="admin_sociedad_retiro",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar el administrador de este retiro.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return ConversationHandler.END
+    if not admin or (admin.get("team_code") or "").upper() != "PLATFORM":
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         query.edit_message_text("Acceso restringido al Administrador de Plataforma.")
         return ConversationHandler.END
+    context.user_data["recargar_sociedad_admin_id"] = admin["id"]
     soc_balance = get_sociedad_balance()
     if soc_balance <= 0:
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         query.edit_message_text(
             "La Sociedad no tiene saldo disponible para retirar.\n\n"
             "Saldo Sociedad: ${:,}".format(soc_balance)
@@ -3135,6 +3206,7 @@ def sociedad_retiro_monto_handler(update, context):
     """Captura el monto, confirma y ejecuta la transferencia Sociedad → personal."""
     texto = (update.message.text or "").strip()
     if texto.lower() == "cancelar":
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         update.message.reply_text("Retiro cancelado.")
         return ConversationHandler.END
     try:
@@ -3149,35 +3221,54 @@ def sociedad_retiro_monto_handler(update, context):
         update.message.reply_text("El monto maximo por retiro es $500,000,000.")
         return SOCIEDAD_RETIRO_MONTO
 
-    admin = get_admin_by_telegram_id(update.effective_user.id)
+    selected_admin_id = context.user_data.get("recargar_sociedad_admin_id")
+    admin = resolve_owned_admin_actor(
+        update.effective_user.id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=True,
+        legacy_counter_key="admin_sociedad_retiro_missing_context_count",
+        invalid_counter_key="admin_sociedad_retiro_invalid_selected_count",
+    )
     if not admin:
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         update.message.reply_text("No se encontro tu perfil de administrador.")
         return ConversationHandler.END
     admin_id = admin["id"]
+    if (admin.get("team_code") or "").upper() != "PLATFORM":
+        context.user_data.pop("recargar_sociedad_admin_id", None)
+        update.message.reply_text("Acceso restringido al Administrador de Plataforma.")
+        return ConversationHandler.END
     try:
         transfer_sociedad_to_platform(platform_admin_id=admin_id, amount=monto)
     except ValueError as e:
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         update.message.reply_text("No se pudo realizar el retiro: {}".format(e))
         return ConversationHandler.END
     except Exception as e:
         logger.error("sociedad_retiro: %s", e)
+        context.user_data.pop("recargar_sociedad_admin_id", None)
         update.message.reply_text("Error al procesar el retiro. Revisa los logs.")
         return ConversationHandler.END
 
     nuevo_personal = get_admin_balance(admin_id)
     nuevo_soc = get_sociedad_balance()
+    context.user_data.pop("recargar_sociedad_admin_id", None)
     update.message.reply_text(
         "Retiro realizado correctamente.\n\n"
         "Monto retirado:       ${:,}\n"
         "Tu saldo personal:    ${:,}\n"
-        "Saldo Sociedad:       ${:,}".format(monto, nuevo_personal, nuevo_soc)
+        "Saldo Sociedad:       ${:,}".format(monto, nuevo_personal, nuevo_soc),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Crear pedido especial ahora", callback_data="admin_nuevo_pedido_{}".format(admin_id))],
+            [InlineKeyboardButton("Ver mi saldo", callback_data="admin_mi_saldo_{}".format(admin_id))],
+        ]),
     )
     return ConversationHandler.END
 
 
 sociedad_retiro_conv = ConversationHandler(
     entry_points=[
-        CallbackQueryHandler(sociedad_retiro_iniciar_callback, pattern=r"^admin_sociedad_retiro$"),
+        CallbackQueryHandler(sociedad_retiro_iniciar_callback, pattern=r"^admin_sociedad_retiro(?:_\d+)?$"),
     ],
     states={
         SOCIEDAD_RETIRO_MONTO: [
@@ -3212,15 +3303,16 @@ _KIND_LABELS = {
     "SOCIEDAD_ADVANCE": "Retiro de Sociedad a saldo personal",
 }
 
-def _movimientos_keyboard(is_platform=False):
+def _movimientos_keyboard(is_platform=False, admin_id=None):
+    admin_suffix = "_{}".format(admin_id) if admin_id is not None else ""
     rows = [
         [
-            InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy"),
-            InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana"),
+            InlineKeyboardButton("Hoy", callback_data="admin_movimientos_hoy{}".format(admin_suffix)),
+            InlineKeyboardButton("Semana", callback_data="admin_movimientos_semana{}".format(admin_suffix)),
         ],
         [
-            InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes"),
-            InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo"),
+            InlineKeyboardButton("Este mes", callback_data="admin_movimientos_mes{}".format(admin_suffix)),
+            InlineKeyboardButton("Todo", callback_data="admin_movimientos_todo{}".format(admin_suffix)),
         ],
     ]
     if is_platform:
@@ -3232,6 +3324,11 @@ def _movimientos_keyboard(is_platform=False):
             InlineKeyboardButton("Sociedad — Este mes", callback_data="admin_movimientos_soc_mes"),
             InlineKeyboardButton("Sociedad — Todo", callback_data="admin_movimientos_soc_todo"),
         ])
+    if is_platform and admin_id is not None:
+        rows[2][0].callback_data = "admin_movimientos_soc_hoy{}".format(admin_suffix)
+        rows[2][1].callback_data = "admin_movimientos_soc_semana{}".format(admin_suffix)
+        rows[3][0].callback_data = "admin_movimientos_soc_mes{}".format(admin_suffix)
+        rows[3][1].callback_data = "admin_movimientos_soc_todo{}".format(admin_suffix)
     return InlineKeyboardMarkup(rows)
 
 
@@ -3239,13 +3336,22 @@ def admin_movimientos_callback(update, context):
     """Muestra selector de periodo para ver movimientos del saldo master."""
     query = update.callback_query
     query.answer()
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    admin = get_admin_by_user_id(user_row["id"])
+    _, admin = _resolve_admin_panel_actor(
+        update.effective_user.id,
+        query.data,
+        r"admin_movimientos(?:_(\d+))?",
+        area="admin_movimientos_menu",
+    )
+    if not admin:
+        query.edit_message_text(
+            "No se pudo validar este panel de movimientos.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return
     is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
     query.edit_message_text(
         "Movimientos del saldo master — selecciona un periodo:",
-        reply_markup=_movimientos_keyboard(is_platform=is_platform),
+        reply_markup=_movimientos_keyboard(is_platform=is_platform, admin_id=admin["id"]),
     )
 
 
@@ -3255,20 +3361,37 @@ def admin_movimientos_periodo_callback(update, context):
     query = update.callback_query
     query.answer()
 
-    user_tg = update.effective_user
-    user_row = ensure_user(user_tg.id, user_tg.username)
-    admin = get_admin_by_user_id(user_row["id"])
+    data = query.data or ""
+    match = re.fullmatch(r"admin_movimientos(?:_(soc))?_(hoy|semana|mes|todo)(?:_(\d+))?", data)
+    if not match:
+        query.edit_message_text("Periodo invalido.")
+        return
+    selected_admin_id = int(match.group(3)) if match.group(3) else None
+    admin = resolve_owned_admin_actor(
+        update.effective_user.id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=False,
+        legacy_counter_key="admin_movimientos_period_legacy_callback_count",
+        invalid_counter_key="admin_movimientos_period_invalid_selected_count",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar este historial.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return
     if not admin:
-        query.answer("No tienes perfil de administrador.", show_alert=True)
+        query.edit_message_text("No tienes perfil de administrador.")
         return
 
     # Determinar si es cuenta personal o sociedad
-    data = query.data  # admin_movimientos_hoy / admin_movimientos_soc_mes / etc.
-    parts = data.split("_")  # ['admin', 'movimientos', 'soc', 'mes'] o ['admin', 'movimientos', 'mes']
-    es_sociedad = "soc" in parts
-    periodo = parts[-1]  # hoy, semana, mes, todo
+    es_sociedad = match.group(1) == "soc"
+    periodo = match.group(2)
 
     if es_sociedad:
+        if (admin.get("team_code") or "").upper() != "PLATFORM":
+            query.edit_message_text("Solo el Administrador de Plataforma puede ver movimientos de Sociedad.")
+            return
         target_id = get_platform_sociedad_id()
         cuenta_label = "Sociedad"
     else:
@@ -3309,7 +3432,10 @@ def admin_movimientos_periodo_callback(update, context):
             texto += "\n(mostrando ultimos 30)"
 
     is_platform = (admin and (admin.get("team_code") or "").upper() == "PLATFORM")
-    query.edit_message_text(texto, reply_markup=_movimientos_keyboard(is_platform=is_platform))
+    query.edit_message_text(
+        texto,
+        reply_markup=_movimientos_keyboard(is_platform=is_platform, admin_id=admin["id"]),
+    )
 
 
 # ---------------------------------------------------------------------------

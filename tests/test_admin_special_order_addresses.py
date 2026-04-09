@@ -61,6 +61,8 @@ def _extract_namespace():
         "_admin_pedido_render_pickup_save_prompt",
         "_admin_pedido_prompt_pickup_detail",
         "_admin_pedido_prompt_delivery_detail",
+        "_resolve_admin_for_special_order",
+        "admin_nuevo_pedido_start",
         "mostrar_pregunta_base",
         "_admin_pedido_pedir_instruc",
         "admin_pedido_pickup_callback",
@@ -114,8 +116,9 @@ def _extract_namespace():
         "PEDIDO_PICKUP_NUEVA_CIUDAD": 15,
         "PEDIDO_PICKUP_NUEVA_BARRIO": 16,
         "PEDIDO_PICKUP_GUARDAR": 17,
+        "MIN_ADMIN_OPERATING_BALANCE": 2000,
         "PARKING_FEE_AMOUNT": 1200,
-        "logger": SimpleNamespace(info=lambda *args, **kwargs: None),
+        "logger": SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None),
         "_admin_ped_preview_text": lambda user_data: ("PREVIEW", None),
         "_admin_pedido_mostrar_selector_cliente": lambda update, context, edit=False: 917,
         "_admin_pedido_calcular_preview": lambda update, context, edit=False: 912,
@@ -135,6 +138,16 @@ def _extract_namespace():
         "get_default_ally_location": lambda ally_id: None,
         "get_customer_address_by_id": lambda address_id, customer_id=None: None,
         "get_ally_parking_fee_enabled": lambda ally_id: False,
+        "get_admin_by_telegram_id": lambda telegram_id: None,
+        "user_has_platform_admin": lambda telegram_id: False,
+        "get_user_by_telegram_id": lambda telegram_id: None,
+        "get_platform_admin": lambda: None,
+        "get_admin_by_id": lambda admin_id: None,
+        "get_admin_balance": lambda admin_id: 0,
+        "get_sociedad_balance": lambda: 0,
+        "get_admin_locations": lambda admin_id: [],
+        "list_order_templates": lambda admin_id: [],
+        "show_flow_menu": lambda update, context, text: None,
         "has_valid_coords": lambda lat, lng: lat is not None and lng is not None,
         "update_ally_location": lambda location_id, address, city, barrio, phone=None: True,
         "update_admin_location": lambda **kwargs: True,
@@ -142,8 +155,33 @@ def _extract_namespace():
         "update_admin_customer_address": lambda **kwargs: True,
         "increment_customer_address_usage": lambda address_id, customer_id: None,
         "increment_admin_customer_address_usage": lambda address_id, customer_id: None,
+        "increment_setting_counter": lambda *args, **kwargs: None,
         "ConversationHandler": SimpleNamespace(END=-1),
     }
+    def _resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=None,
+        prefer_platform=False,
+        legacy_counter_key=None,
+        invalid_counter_key=None,
+    ):
+        if selected_admin_id is not None:
+            selected_admin = namespace["get_admin_by_id"](selected_admin_id)
+            user = namespace["get_user_by_telegram_id"](telegram_id)
+            if not selected_admin or not user:
+                return None
+            if int(selected_admin.get("user_id") or 0) != int(user.get("id") or 0):
+                return None
+            return selected_admin
+        fallback_admin = namespace["get_admin_by_telegram_id"](telegram_id)
+        if not prefer_platform or not namespace["user_has_platform_admin"](telegram_id):
+            return fallback_admin
+        platform_admin = namespace["get_platform_admin"]()
+        if not platform_admin:
+            return fallback_admin
+        return namespace["get_admin_by_id"](platform_admin["id"]) or fallback_admin
+
+    namespace["resolve_owned_admin_actor"] = _resolve_owned_admin_actor
     compiled = compile(
         ast.Module(body=selected_nodes, type_ignores=[]),
         filename=str(ORDER_HANDLER_PATH),
@@ -154,6 +192,86 @@ def _extract_namespace():
 
 
 class AdminSpecialOrderAddressTests(unittest.TestCase):
+    def test_special_order_prefers_explicit_platform_admin_for_same_user(self):
+        namespace = _extract_namespace()
+        namespace["get_admin_by_telegram_id"] = lambda telegram_id: {
+            "id": 8,
+            "user_id": 55,
+            "status": "APPROVED",
+            "team_code": "LOCAL",
+            "balance": 0,
+        }
+        namespace["user_has_platform_admin"] = lambda telegram_id: True
+        namespace["get_user_by_telegram_id"] = lambda telegram_id: {"id": 55}
+        namespace["get_platform_admin"] = lambda: {"id": 2}
+        namespace["get_admin_by_id"] = lambda admin_id: {
+            "id": admin_id,
+            "user_id": 55,
+            "status": "APPROVED",
+            "team_code": "PLATFORM",
+            "balance": 973800,
+        }
+
+        admin = namespace["_resolve_admin_for_special_order"](573102188155, selected_admin_id=2)
+
+        self.assertEqual(2, admin["id"])
+        self.assertEqual("PLATFORM", admin["team_code"])
+
+    def test_special_order_insufficient_platform_balance_offers_sociedad_with_cta(self):
+        namespace = _extract_namespace()
+        namespace["get_admin_by_telegram_id"] = lambda telegram_id: {
+            "id": 2,
+            "user_id": 55,
+            "status": "APPROVED",
+            "team_code": "PLATFORM",
+        }
+        namespace["get_user_by_telegram_id"] = lambda telegram_id: {"id": 55}
+        namespace["get_admin_by_id"] = lambda admin_id: {
+            "id": admin_id,
+            "user_id": 55,
+            "status": "APPROVED",
+            "team_code": "PLATFORM",
+        }
+        namespace["get_admin_balance"] = lambda admin_id: 0
+        namespace["get_sociedad_balance"] = lambda: 999600
+
+        query = _DummyQuery("admin_nuevo_pedido_2")
+        update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=573102188155))
+        context = SimpleNamespace(user_data={})
+
+        state = namespace["admin_nuevo_pedido_start"](update, context)
+
+        self.assertEqual(-1, state)
+        self.assertIn("Tu saldo personal actual: $0", query.edit_calls[-1]["text"])
+        self.assertIn("Saldo Sociedad disponible: $999,600", query.edit_calls[-1]["text"])
+        buttons = query.edit_calls[-1]["reply_markup"].inline_keyboard
+        self.assertEqual("admin_sociedad_retiro_2", buttons[0][0].callback_data)
+
+    def test_special_order_rejects_selected_admin_from_other_user(self):
+        namespace = _extract_namespace()
+        namespace["get_admin_by_telegram_id"] = lambda telegram_id: {
+            "id": 8,
+            "user_id": 55,
+            "status": "APPROVED",
+            "team_code": "LOCAL",
+        }
+        namespace["get_user_by_telegram_id"] = lambda telegram_id: {"id": 55}
+        namespace["get_admin_by_id"] = lambda admin_id: {
+            "id": admin_id,
+            "user_id": 999,
+            "status": "APPROVED",
+            "team_code": "LOCAL",
+        }
+
+        query = _DummyQuery("admin_nuevo_pedido_77")
+        update = SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=573102188155))
+        context = SimpleNamespace(user_data={})
+
+        state = namespace["admin_nuevo_pedido_start"](update, context)
+
+        self.assertEqual(-1, state)
+        self.assertIn("No se pudo validar el administrador", query.edit_calls[-1]["text"])
+
     def test_system_address_helper_detects_gps_coords_and_urls(self):
         namespace = _extract_namespace()
 

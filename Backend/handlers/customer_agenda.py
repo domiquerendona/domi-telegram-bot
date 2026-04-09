@@ -6,6 +6,7 @@
 
 import logging
 logger = logging.getLogger(__name__)
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -153,6 +154,7 @@ from services import (
     is_system_address_text,
     visible_address_label,
     visible_address_text,
+    resolve_owned_admin_actor,
 )
 
 
@@ -1260,7 +1262,22 @@ def admin_clientes_cmd(update, context):
         query.edit_message_text("Aun no estas registrado. Usa /start primero.")
         return ConversationHandler.END
 
-    admin = get_admin_by_telegram_id(user.id)
+    data = query.data or ""
+    match = re.fullmatch(r"admin_mis_clientes(?:_(\d+))?", data)
+    selected_admin_id = int(match.group(1)) if match and match.group(1) else None
+    admin = resolve_owned_admin_actor(
+        user.id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=False,
+        legacy_counter_key="admin_clientes_legacy_callback_count",
+        invalid_counter_key="admin_clientes_invalid_selected_count",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar este panel de clientes.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return ConversationHandler.END
     if not admin:
         query.edit_message_text("Este menu es solo para administradores.")
         return ConversationHandler.END
@@ -3721,7 +3738,7 @@ def admin_clientes_parking_callback(update, context):
 
 admin_clientes_conv = ConversationHandler(
     entry_points=[
-        CallbackQueryHandler(admin_clientes_cmd, pattern=r"^admin_mis_clientes$"),
+        CallbackQueryHandler(admin_clientes_cmd, pattern=r"^admin_mis_clientes(?:_\d+)?$"),
     ],
     states={
         ADMIN_CUST_MENU: [

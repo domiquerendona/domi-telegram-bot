@@ -106,7 +106,7 @@ from db import (
     resolve_pending_fee_collection,
     get_pending_fee_collection,
 )
-from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id, increment_setting_counter
+from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id, increment_setting_counter, resolve_owned_admin_actor
 
 
 def _schedule_persistent_job(context, callback, when_seconds, name, job_data=None):
@@ -2732,18 +2732,19 @@ def _ally_show_day(query, ally_id, date_key, parent_period):
     query.edit_message_text(text, reply_markup=full_kb)
 
 
-def _admin_history_period_keyboard():
+def _admin_history_period_keyboard(admin_id=None):
+    admin_suffix = "_{}".format(admin_id) if admin_id is not None else ""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Hoy", callback_data="adminhist_periodo_hoy"),
-            InlineKeyboardButton("Ayer", callback_data="adminhist_periodo_ayer"),
+            InlineKeyboardButton("Hoy", callback_data="adminhist_periodo_hoy{}".format(admin_suffix)),
+            InlineKeyboardButton("Ayer", callback_data="adminhist_periodo_ayer{}".format(admin_suffix)),
         ],
         [
-            InlineKeyboardButton("Esta semana", callback_data="adminhist_periodo_semana"),
-            InlineKeyboardButton("Este mes", callback_data="adminhist_periodo_mes"),
+            InlineKeyboardButton("Esta semana", callback_data="adminhist_periodo_semana{}".format(admin_suffix)),
+            InlineKeyboardButton("Este mes", callback_data="adminhist_periodo_mes{}".format(admin_suffix)),
         ],
         [
-            InlineKeyboardButton("Ultimos 15", callback_data="adminhist_periodo_recientes"),
+            InlineKeyboardButton("Ultimos 15", callback_data="adminhist_periodo_recientes{}".format(admin_suffix)),
         ],
     ])
 
@@ -2824,13 +2825,14 @@ def _admin_history_grouped_text(orders, label):
     return "\n".join(lines), sorted_keys
 
 
-def _admin_show_special_recent(query, admin_id):
+def _admin_show_special_recent(query, admin_id, nav_admin_id=None):
     """Muestra los ultimos 15 pedidos especiales del admin (todos los estados)."""
+    nav_admin_id = nav_admin_id or admin_id
     orders = get_admin_special_orders_recent(admin_id, limit=15)
     if not orders:
         query.edit_message_text(
             "Mis pedidos especiales — Ultimos 15\nNo tienes pedidos especiales aun.",
-            reply_markup=_admin_history_period_keyboard(),
+            reply_markup=_admin_history_period_keyboard(nav_admin_id),
         )
         return
     STATUS_LABELS = {
@@ -2862,7 +2864,7 @@ def _admin_show_special_recent(query, admin_id):
             _row_value(o, "id", "?"), day, hour, name,
             _fmt_pesos_ally(fee), commission_str, status_label,
         ))
-    full_kb = InlineKeyboardMarkup(action_rows + _admin_history_period_keyboard().inline_keyboard)
+    full_kb = InlineKeyboardMarkup(action_rows + _admin_history_period_keyboard(nav_admin_id).inline_keyboard)
     query.edit_message_text("\n".join(lines), reply_markup=full_kb)
 
 
@@ -2875,32 +2877,84 @@ def admin_special_orders_history_callback(update, context):
     data = query.data or ""
     telegram_id = update.effective_user.id
 
-    user = get_user_by_telegram_id(telegram_id)
-    if not user:
-        query.edit_message_text("No se encontro tu usuario.")
-        return
-    admin = get_admin_by_telegram_id(telegram_id)
-    if not admin:
-        query.edit_message_text("No tienes perfil de administrador.")
-        return
-
-    if data == "adminhist_periodo_recientes":
-        _admin_show_special_recent(query, admin["id"])
+    if data.startswith("adminhist_periodo_recientes"):
+        match = re.fullmatch(r"adminhist_periodo_recientes(?:_(\d+))?", data)
+        if not match:
+            query.edit_message_text("Periodo invalido.", reply_markup=_admin_history_period_keyboard())
+            return
+        selected_admin_id = int(match.group(1)) if match.group(1) else None
+        admin = resolve_owned_admin_actor(
+            telegram_id,
+            selected_admin_id=selected_admin_id,
+            prefer_platform=False,
+            legacy_counter_key="admin_history_legacy_callback_count",
+            invalid_counter_key="admin_history_invalid_selected_count",
+        )
+        if selected_admin_id is not None and not admin:
+            query.edit_message_text(
+                "No se pudo validar este historial.\n\n"
+                "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+            )
+            return
+        if not admin:
+            query.edit_message_text("No tienes perfil de administrador.")
+            return
+        _admin_show_special_recent(query, admin["id"], nav_admin_id=admin["id"])
         return
 
     if data.startswith("adminhist_periodo_"):
-        period = data[len("adminhist_periodo_"):]
-        _admin_show_special_period(query, admin["id"], period)
+        match = re.fullmatch(r"adminhist_periodo_(hoy|ayer|semana|mes)(?:_(\d+))?", data)
+        if not match:
+            query.edit_message_text("Periodo invalido.", reply_markup=_admin_history_period_keyboard())
+            return
+        period = match.group(1)
+        selected_admin_id = int(match.group(2)) if match.group(2) else None
+        admin = resolve_owned_admin_actor(
+            telegram_id,
+            selected_admin_id=selected_admin_id,
+            prefer_platform=False,
+            legacy_counter_key="admin_history_legacy_callback_count",
+            invalid_counter_key="admin_history_invalid_selected_count",
+        )
+        if selected_admin_id is not None and not admin:
+            query.edit_message_text(
+                "No se pudo validar este historial.\n\n"
+                "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+            )
+            return
+        if not admin:
+            query.edit_message_text("No tienes perfil de administrador.")
+            return
+        _admin_show_special_period(query, admin["id"], period, nav_admin_id=admin["id"])
         return
 
     if data.startswith("adminhist_dia_"):
-        rest = data[len("adminhist_dia_"):]
-        parts = rest.split("_", 1)
-        compact = parts[0]
-        parent = parts[1] if len(parts) > 1 else "semana"
+        match = re.fullmatch(r"adminhist_dia_(\d{8})_(hoy|ayer|semana|mes)(?:_(\d+))?", data)
+        if not match:
+            query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard())
+            return
+        compact = match.group(1)
+        parent = match.group(2)
+        selected_admin_id = int(match.group(3)) if match.group(3) else None
+        admin = resolve_owned_admin_actor(
+            telegram_id,
+            selected_admin_id=selected_admin_id,
+            prefer_platform=False,
+            legacy_counter_key="admin_history_legacy_callback_count",
+            invalid_counter_key="admin_history_invalid_selected_count",
+        )
+        if selected_admin_id is not None and not admin:
+            query.edit_message_text(
+                "No se pudo validar este historial.\n\n"
+                "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+            )
+            return
+        if not admin:
+            query.edit_message_text("No tienes perfil de administrador.")
+            return
         if len(compact) == 8 and compact.isdigit():
             date_key = "{}-{}-{}".format(compact[:4], compact[4:6], compact[6:8])
-            _admin_show_special_day(query, admin["id"], date_key, parent)
+            _admin_show_special_day(query, admin["id"], date_key, parent, nav_admin_id=admin["id"])
         else:
             query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard())
         return
@@ -2911,23 +2965,24 @@ def admin_special_orders_history_callback(update, context):
     )
 
 
-def _admin_show_special_period(query, admin_id, period):
+def _admin_show_special_period(query, admin_id, period, nav_admin_id=None):
+    nav_admin_id = nav_admin_id or admin_id
     start_s, end_s, label = _ally_period_range(period)
     if not start_s:
-        query.edit_message_text("Periodo invalido.", reply_markup=_admin_history_period_keyboard())
+        query.edit_message_text("Periodo invalido.", reply_markup=_admin_history_period_keyboard(nav_admin_id))
         return
 
     orders = get_admin_special_orders_between(admin_id, start_s, end_s)
     if not orders:
         query.edit_message_text(
             "Mis pedidos especiales — {}\nNo hay pedidos en este periodo.".format(label),
-            reply_markup=_admin_history_period_keyboard(),
+            reply_markup=_admin_history_period_keyboard(nav_admin_id),
         )
         return
 
     if period in ("hoy", "ayer"):
         text = _admin_history_flat_text(orders, label)
-        query.edit_message_text(text, reply_markup=_admin_history_period_keyboard())
+        query.edit_message_text(text, reply_markup=_admin_history_period_keyboard(nav_admin_id))
     else:
         text, sorted_keys = _admin_history_grouped_text(orders, label)
         day_buttons = []
@@ -2935,17 +2990,18 @@ def _admin_show_special_period(query, admin_id, period):
             compact = dk.replace("-", "")
             day_buttons.append([InlineKeyboardButton(
                 _fmt_date_es(dk),
-                callback_data="adminhist_dia_{}_{}".format(compact, period),
+                callback_data="adminhist_dia_{}_{}_{}".format(compact, period, nav_admin_id),
             )])
-        full_kb = InlineKeyboardMarkup(day_buttons + _admin_history_period_keyboard().inline_keyboard)
+        full_kb = InlineKeyboardMarkup(day_buttons + _admin_history_period_keyboard(nav_admin_id).inline_keyboard)
         query.edit_message_text(text, reply_markup=full_kb)
 
 
-def _admin_show_special_day(query, admin_id, date_key, parent_period):
+def _admin_show_special_day(query, admin_id, date_key, parent_period, nav_admin_id=None):
+    nav_admin_id = nav_admin_id or admin_id
     try:
         dt = datetime.strptime(date_key, "%Y-%m-%d")
     except ValueError:
-        query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard())
+        query.edit_message_text("Fecha invalida.", reply_markup=_admin_history_period_keyboard(nav_admin_id))
         return
     start_s = dt.strftime("%Y-%m-%d 00:00:00")
     end_s = (dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
@@ -2953,8 +3009,8 @@ def _admin_show_special_day(query, admin_id, date_key, parent_period):
     text = _admin_history_flat_text(orders, _fmt_date_es(date_key))
     back_label = "Volver a semana" if parent_period == "semana" else "Volver a mes"
     full_kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(back_label, callback_data="adminhist_periodo_{}".format(parent_period))]]
-        + _admin_history_period_keyboard().inline_keyboard
+        [[InlineKeyboardButton(back_label, callback_data="adminhist_periodo_{}_{}".format(parent_period, nav_admin_id))]]
+        + _admin_history_period_keyboard(nav_admin_id).inline_keyboard
     )
     query.edit_message_text(text, reply_markup=full_kb)
 

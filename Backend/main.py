@@ -461,7 +461,7 @@ from handlers.order import (
     admin_pedido_conv,
     admin_mis_plantillas_callback,
     admin_ped_tmpl_info_callback,
-    admin_ped_tmpl_menu_del_callback,
+    admin_ped_tmpl_menu_del_callback, MIN_ADMIN_OPERATING_BALANCE,
 )
 from handlers.route import (
     nueva_ruta_desde_cotizador,
@@ -1524,23 +1524,33 @@ def mi_admin(update, context):
             [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
             [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
             [InlineKeyboardButton("📦 Pedidos", callback_data="admin_pedidos_local_{}".format(admin_id))],
-            [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
-            [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
-            [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
-            [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
-            [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
+            [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido_{}".format(admin_id))],
+            [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy_{}".format(admin_id))],
+            [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes_{}".format(admin_id))],
+            [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs_{}".format(admin_id))],
+            [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas_{}".format(admin_id))],
             [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
-            [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
+            [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo_{}".format(admin_id)), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos_{}".format(admin_id))],
             [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
             [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
             [InlineKeyboardButton("📝 Solicitudes de cambio", callback_data="admin_change_requests")],
             [InlineKeyboardButton("🅿️ Puntos difícil parqueo", callback_data="parking_review_list")],
         ]
+        saldo_alerta = ""
+        saldo_sociedad = get_sociedad_balance()
+        if admin_full["balance"] < MIN_ADMIN_OPERATING_BALANCE and saldo_sociedad > 0:
+            saldo_alerta = (
+                "\nATENCION: Tu saldo personal esta por debajo de ${:,}, "
+                "pero Sociedad tiene fondos disponibles.\n"
+                "Si vas a crear un pedido especial, primero retira saldo desde Sociedad.\n"
+            ).format(MIN_ADMIN_OPERATING_BALANCE)
+            keyboard.insert(9, [InlineKeyboardButton("Retirar de Sociedad a mi saldo", callback_data="admin_sociedad_retiro_{}".format(admin_id))])
         if WEB_PANEL_URL and WEB_PANEL_URL_IS_HTTPS:
             keyboard.append([InlineKeyboardButton("🌐 Abrir panel web", url=WEB_PANEL_URL)])
         update.message.reply_text(
             header +
             "Como Administrador de Plataforma, tu operación está habilitada.\n"
+            + saldo_alerta +
             "Selecciona una opción:"
             + ("\n\nPanel web: " + WEB_PANEL_URL if WEB_PANEL_URL and not WEB_PANEL_URL_IS_HTTPS else ""),
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1580,13 +1590,13 @@ def mi_admin(update, context):
         [InlineKeyboardButton("⏳ Aliados pendientes", callback_data=f"local_allies_pending_{admin_id}")],
         [InlineKeyboardButton("👥 Mi equipo", callback_data=f"local_my_team_{admin_id}")],
         [InlineKeyboardButton("📦 Pedidos de mi equipo", callback_data="admin_pedidos_local_{}".format(admin_id))],
-        [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido")],
-        [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy")],
-        [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes")],
-        [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs")],
-        [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas")],
+        [InlineKeyboardButton("📋 Nuevo pedido especial", callback_data="admin_nuevo_pedido_{}".format(admin_id))],
+        [InlineKeyboardButton("📜 Mis pedidos especiales", callback_data="adminhist_periodo_hoy_{}".format(admin_id))],
+        [InlineKeyboardButton("👤 Mis clientes", callback_data="admin_mis_clientes_{}".format(admin_id))],
+        [InlineKeyboardButton("📍 Mis direcciones", callback_data="admin_mis_dirs_{}".format(admin_id))],
+        [InlineKeyboardButton("🗂 Mis plantillas", callback_data="admin_mis_plantillas_{}".format(admin_id))],
         [InlineKeyboardButton("💳 Recargas pendientes", callback_data=f"local_recargas_pending_{admin_id}")],
-        [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo"), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos")],
+        [InlineKeyboardButton("💰 Mi saldo", callback_data="admin_mi_saldo_{}".format(admin_id)), InlineKeyboardButton("📊 Mis movimientos", callback_data="admin_movimientos_{}".format(admin_id))],
         [InlineKeyboardButton("📋 Ver mi estado", callback_data=f"local_status_{admin_id}")],
         [InlineKeyboardButton("🔍 Verificar requisitos", callback_data=f"local_check_{admin_id}")],
         [InlineKeyboardButton("Soportes pendientes", callback_data="admin_support_open")],
@@ -2729,9 +2739,9 @@ def main():
     dp.add_handler(config_subs_conv)              # configurar precio de suscripcion de aliado
     dp.add_handler(ally_suscripcion_conv)         # aliado ve y renueva su suscripcion
     dp.add_handler(sociedad_retiro_conv)          # Admin Plataforma retira de Sociedad a saldo personal
-    dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos$"))
-    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos_(hoy|semana|mes|todo|soc_hoy|soc_semana|soc_mes|soc_todo)$"))
-    dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo$"))
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_callback, pattern=r"^admin_movimientos(?:_\d+)?$"))
+    dp.add_handler(CallbackQueryHandler(admin_movimientos_periodo_callback, pattern=r"^admin_movimientos(?:_soc)?_(hoy|semana|mes|todo)(?:_\d+)?$"))
+    dp.add_handler(CallbackQueryHandler(admin_mi_saldo_callback, pattern=r"^admin_mi_saldo(?:_\d+)?$"))
     dp.add_handler(CallbackQueryHandler(admin_config_callback, pattern=r"^config_(?!pagos$)"))
     dp.add_handler(CallbackQueryHandler(reference_validation_callback, pattern=r"^ref_"))
 
@@ -2801,9 +2811,9 @@ def main():
     dp.add_handler(admin_clientes_conv)    # Agenda de clientes del Admin (entry: admin_mis_clientes)
     dp.add_handler(admin_dirs_conv)        # Gestion ubicaciones de recogida del Admin (entry: admin_mis_dirs)
     dp.add_handler(admin_pedido_conv)      # Pedido especial del Admin (entry: admin_nuevo_pedido)
-    dp.add_handler(CallbackQueryHandler(admin_mis_plantillas_callback, pattern=r"^admin_mis_plantillas$"))
-    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_info_callback, pattern=r"^admin_ped_tmpl_info_\d+$"))
-    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_menu_del_callback, pattern=r"^admin_ped_tmpl_menu_del_\d+$"))
+    dp.add_handler(CallbackQueryHandler(admin_mis_plantillas_callback, pattern=r"^admin_mis_plantillas(?:_\d+)?$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_info_callback, pattern=r"^admin_ped_tmpl_info_\d+(?:_\d+)?$"))
+    dp.add_handler(CallbackQueryHandler(admin_ped_tmpl_menu_del_callback, pattern=r"^admin_ped_tmpl_menu_del_\d+(?:_\d+)?$"))
 
     # Parqueadero: revision de direcciones (admin local y plataforma)
     dp.add_handler(CallbackQueryHandler(

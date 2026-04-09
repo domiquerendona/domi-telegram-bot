@@ -122,7 +122,7 @@ Prefijos establecidos:
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
 - Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, pedido_pending_address_fix, pedido_pending_pickup_fix, pedido_pending_pickup_resolution, etc.
 - Flujo pedido especial admin: admin_ped_* (incluye admin_ped_geo_pickup_pending, admin_ped_geo_cust_pending, admin_ped_addr_notes, admin_ped_edit_from_preview, admin_ped_requires_cash, admin_ped_cash_required_amount, etc.)
-- Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
+- Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, recargar_sociedad_admin_id, etc.
 - Flujo recarga directa (plataforma): recdir_tipo, recdir_target_id, recdir_target_name, recdir_monto, recdir_nota
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
 - Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, ruta_requires_cash, ruta_cash_required_amount, etc.)
@@ -157,6 +157,17 @@ Regla obligatoria de visibilidad pre-recogida para el courier (pedidos + rutas +
 - Las agendas y listados de direcciones DEBEN marcar proactivamente las direcciones rotas (`GPS (...)`, coordenadas, placeholders o links) con texto visible seguro y aviso de corrección.
 - PROHIBIDO mostrar al courier antes de la recogida confirmada: `customer_name`, `customer_phone`, instrucciones sensibles o notas internas.
 
+Regla obligatoria de actor y saldo en pedido especial del admin:
+- El callback de entrada a `Nuevo pedido especial` DEBE incluir el `admin_id` explícito del actor (`admin_nuevo_pedido_{admin_id}`).
+- El flujo DEBE validar que ese `admin_id` pertenece al usuario que pulsó el botón antes de iniciar el pedido.
+- El saldo mínimo del pedido especial SIEMPRE se valida contra el saldo personal (`admins.balance`) del admin actor.
+- PROHIBIDO descontar automáticamente de `Sociedad` para desbloquear pedidos especiales; si el actor es `PLATFORM`, el sistema debe explicarlo y ofrecer CTA directo a `admin_sociedad_retiro_{admin_id}` cuando aplique.
+
+Regla obligatoria de actor explícito en panel admin:
+- Todo callback del panel admin que opere sobre saldo, movimientos, clientes, direcciones, plantillas o historial propio DEBE incluir `admin_id` explícito cuando salga del menú principal o de un CTA de recuperación.
+- El handler DEBE validar ownership de ese `admin_id` antes de mostrar datos o ejecutar la acción.
+- Los callbacks legacy sin `admin_id` solo pueden mantenerse como compatibilidad temporal; el menú vigente SIEMPRE debe emitir la versión explícita.
+
 2D. Estándar obligatorio de callback_data
 
 Formato estándar actual: `{dominio}_{accion}` o `{dominio}_{accion}_{id}`
@@ -165,6 +176,10 @@ También se aceptan formatos compuestos cuando el flujo lo requiere, por ejemplo
 - `pedido_inc_{order_id}x{monto}`
 - `ruta_entregar_{route_id}_{seq}`
 - `pedido_base_{monto}` para montos fijos de base requerida (`20000`, `50000`, `100000`, `200000`)
+- `admin_nuevo_pedido_{admin_id}` para iniciar pedido especial con actor explícito validable
+- `admin_mi_saldo_{admin_id}` y `admin_movimientos_{admin_id}` para panel financiero determinístico
+- `admin_mis_clientes_{admin_id}`, `admin_mis_dirs_{admin_id}`, `admin_mis_plantillas_{admin_id}` para paneles propios del admin
+- `adminhist_periodo_{period}_{admin_id}` y `admin_sociedad_retiro_{admin_id}` para historial/recuperación con actor explícito
 
 Prefijos de dominio existentes y sus dueños:
 - admin_       → panel y acciones de administrador local

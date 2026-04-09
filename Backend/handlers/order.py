@@ -90,7 +90,8 @@ from services import (
     get_fee_config, build_offer_demand_preview,
     save_order_template, list_order_templates, get_order_template_by_id,
     increment_order_template_usage, delete_order_template,
-    get_admin_balance,
+    get_admin_balance, get_sociedad_balance,
+    resolve_owned_admin_actor, increment_setting_counter,
 )
 
 
@@ -3988,24 +3989,73 @@ def _admin_pedido_mostrar_selector_cliente(query_or_update, context, edit=True):
     return ADMIN_PEDIDO_SEL_CUST
 
 
+def _resolve_admin_for_special_order(telegram_id, selected_admin_id=None):
+    """Resuelve el admin actor del pedido especial usando ownership explicito y compatibilidad legacy."""
+    return resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=True,
+        legacy_counter_key="admin_special_order_legacy_callback_count",
+        invalid_counter_key="admin_special_order_invalid_selected_count",
+    )
+
+
 def admin_nuevo_pedido_start(update, context):
     """Entrada al flujo de pedido especial del admin. Verifica saldo minimo y muestra puntos de recogida."""
     query = update.callback_query
     query.answer()
     telegram_id = update.effective_user.id
-    admin = get_admin_by_telegram_id(telegram_id)
+    data = query.data or ""
+    match = re.fullmatch(r"admin_nuevo_pedido(?:_(\d+))?", data)
+    selected_admin_id = int(match.group(1)) if match and match.group(1) else None
+    admin = _resolve_admin_for_special_order(telegram_id, selected_admin_id=selected_admin_id)
+    if selected_admin_id is not None and not admin:
+        logger.warning(
+            "[admin_special_order_actor_v2026_04_09] invalid_selected_admin telegram_id=%s selected_admin_id=%s",
+            telegram_id,
+            selected_admin_id,
+        )
+        query.edit_message_text(
+            "No se pudo validar el administrador de este pedido especial.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return ConversationHandler.END
     if not admin or (admin["status"] or "").upper() != "APPROVED":
         query.edit_message_text("Solo los administradores aprobados pueden crear pedidos especiales.")
         return ConversationHandler.END
+    logger.info(
+        "[admin_special_order_actor_v2026_04_09] telegram_id=%s admin_id=%s team_code=%s",
+        telegram_id,
+        admin["id"],
+        admin.get("team_code"),
+    )
     admin_balance = get_admin_balance(admin["id"])
     if admin_balance < MIN_ADMIN_OPERATING_BALANCE:
-        query.edit_message_text(
+        increment_setting_counter("admin_special_order_low_balance_blocked_count")
+        is_platform_admin = (admin.get("team_code") or "").upper() == "PLATFORM"
+        sociedad_balance = get_sociedad_balance() if is_platform_admin else 0
+        text = (
             "Saldo insuficiente para crear un pedido especial.\n\n"
-            "Tu saldo actual: ${:,}\n"
-            "Saldo minimo requerido: ${:,}\n\n"
-            "Recarga tu saldo para poder crear pedidos especiales.".format(
-                admin_balance, MIN_ADMIN_OPERATING_BALANCE)
-        )
+            "Tu saldo personal actual: ${:,}\n"
+            "Saldo minimo requerido: ${:,}\n"
+        ).format(admin_balance, MIN_ADMIN_OPERATING_BALANCE)
+        reply_markup = None
+        if is_platform_admin:
+            text += (
+                "Saldo Sociedad disponible: ${:,}\n\n"
+                "Los pedidos especiales usan tu saldo personal. "
+                "La Sociedad no se descuenta automaticamente.\n"
+            ).format(sociedad_balance)
+            if sociedad_balance > 0:
+                text += "\nPuedes retirar fondos de Sociedad a tu saldo y volver a intentarlo."
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Retirar de Sociedad a mi saldo", callback_data="admin_sociedad_retiro_{}".format(admin["id"]))],
+                ])
+            else:
+                text += "\nLa Sociedad tampoco tiene saldo disponible para transferirte en este momento."
+        else:
+            text += "\nRecarga tu saldo para poder crear pedidos especiales."
+        query.edit_message_text(text, reply_markup=reply_markup)
         return ConversationHandler.END
     admin_id = admin["id"]
     # Limpiar datos anteriores del flujo
@@ -5184,11 +5234,27 @@ def admin_mis_plantillas_callback(update, context):
     query.answer()
 
     telegram_id = update.effective_user.id
-    admin = get_admin_by_telegram_id(telegram_id)
+    data = query.data or ""
+    match = re.fullmatch(r"admin_mis_plantillas(?:_(\d+))?", data)
+    selected_admin_id = int(match.group(1)) if match and match.group(1) else None
+    admin = resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=False,
+        legacy_counter_key="admin_templates_legacy_callback_count",
+        invalid_counter_key="admin_templates_invalid_selected_count",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar este panel de plantillas.\n\n"
+            "Vuelve a abrir Mi admin y entra de nuevo desde el boton actualizado."
+        )
+        return
     if not admin:
         query.edit_message_text("No tienes perfil de administrador.")
         return
 
+    admin_id = admin["id"]
     templates = list_order_templates(admin["id"])
     if not templates:
         query.edit_message_text(
@@ -5206,8 +5272,8 @@ def admin_mis_plantillas_callback(update, context):
         tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
         label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
         keyboard.append([
-            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
-            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}_{}".format(tid, admin_id)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}_{}".format(tid, admin_id)),
         ])
 
     query.edit_message_text(
@@ -5222,13 +5288,31 @@ def admin_ped_tmpl_info_callback(update, context):
     query = update.callback_query
     query.answer()
 
-    template_id = int(query.data.replace("admin_ped_tmpl_info_", ""))
+    match = re.fullmatch(r"admin_ped_tmpl_info_(\d+)(?:_(\d+))?", query.data or "")
+    if not match:
+        query.answer("Callback invalido.", show_alert=True)
+        return
+    template_id = int(match.group(1))
+    selected_admin_id = int(match.group(2)) if match.group(2) else None
     telegram_id = update.effective_user.id
-    admin = get_admin_by_telegram_id(telegram_id)
+    admin = resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=False,
+        legacy_counter_key="admin_templates_info_legacy_callback_count",
+        invalid_counter_key="admin_templates_info_invalid_selected_count",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar esta plantilla.\n\n"
+            "Vuelve a abrir Mis plantillas desde el menu actualizado."
+        )
+        return
     if not admin:
         query.answer("Error.", show_alert=True)
         return
 
+    admin_id = admin["id"]
     t = get_order_template_by_id(template_id, admin["id"])
     if not t:
         query.edit_message_text("Plantilla no encontrada.")
@@ -5257,8 +5341,8 @@ def admin_ped_tmpl_info_callback(update, context):
     query.edit_message_text(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(template_id)),
-            InlineKeyboardButton("Volver", callback_data="admin_mis_plantillas"),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}_{}".format(template_id, admin_id)),
+            InlineKeyboardButton("Volver", callback_data="admin_mis_plantillas_{}".format(admin_id)),
         ]]),
     )
 
@@ -5268,13 +5352,31 @@ def admin_ped_tmpl_menu_del_callback(update, context):
     query = update.callback_query
     query.answer()
 
-    template_id = int(query.data.replace("admin_ped_tmpl_menu_del_", ""))
+    match = re.fullmatch(r"admin_ped_tmpl_menu_del_(\d+)(?:_(\d+))?", query.data or "")
+    if not match:
+        query.answer("Callback invalido.", show_alert=True)
+        return
+    template_id = int(match.group(1))
+    selected_admin_id = int(match.group(2)) if match.group(2) else None
     telegram_id = update.effective_user.id
-    admin = get_admin_by_telegram_id(telegram_id)
+    admin = resolve_owned_admin_actor(
+        telegram_id,
+        selected_admin_id=selected_admin_id,
+        prefer_platform=False,
+        legacy_counter_key="admin_templates_del_legacy_callback_count",
+        invalid_counter_key="admin_templates_del_invalid_selected_count",
+    )
+    if selected_admin_id is not None and not admin:
+        query.edit_message_text(
+            "No se pudo validar esta plantilla.\n\n"
+            "Vuelve a abrir Mis plantillas desde el menu actualizado."
+        )
+        return
     if not admin:
         query.answer("Error.", show_alert=True)
         return
 
+    admin_id = admin["id"]
     delete_order_template(template_id, admin["id"])
 
     templates = list_order_templates(admin["id"])
@@ -5290,8 +5392,8 @@ def admin_ped_tmpl_menu_del_callback(update, context):
         tarifa = t["tarifa"] if hasattr(t, "__getitem__") else t[9]
         label = "{} — ${:,}{}".format(tname, tarifa, " ({}x)".format(use_count) if use_count else "")
         keyboard.append([
-            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}".format(tid)),
-            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}".format(tid)),
+            InlineKeyboardButton(label, callback_data="admin_ped_tmpl_info_{}_{}".format(tid, admin_id)),
+            InlineKeyboardButton("Eliminar", callback_data="admin_ped_tmpl_menu_del_{}_{}".format(tid, admin_id)),
         ])
 
     query.edit_message_text(
@@ -6941,7 +7043,7 @@ route_suggest_inc_conv = ConversationHandler(
 # Conversación para crear pedido especial del Admin Local/Plataforma
 admin_pedido_conv = ConversationHandler(
     entry_points=[
-        CallbackQueryHandler(admin_nuevo_pedido_start, pattern=r"^admin_nuevo_pedido$"),
+        CallbackQueryHandler(admin_nuevo_pedido_start, pattern=r"^admin_nuevo_pedido(?:_\d+)?$"),
     ],
     states={
         ADMIN_PEDIDO_PICKUP: [

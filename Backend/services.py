@@ -3180,6 +3180,68 @@ def _require_platform_admin_actor(actor_telegram_id: int):
     return actor_admin
 
 
+def resolve_owned_admin_actor(
+    telegram_id: int,
+    selected_admin_id: int = None,
+    prefer_platform: bool = False,
+    legacy_counter_key: str = None,
+    invalid_counter_key: str = None,
+):
+    """Resuelve el admin actor de un callback y valida ownership cuando llega admin_id explicito."""
+    user = get_user_by_telegram_id(telegram_id)
+    fallback_admin = get_admin_by_telegram_id(telegram_id)
+
+    if selected_admin_id is not None:
+        selected_admin = get_admin_by_id(selected_admin_id)
+        if not user or not selected_admin:
+            if invalid_counter_key:
+                increment_setting_counter(invalid_counter_key)
+            logger.warning(
+                "[admin_actor_resolution_v2026_04_09] missing_owner telegram_id=%s selected_admin_id=%s",
+                telegram_id,
+                selected_admin_id,
+            )
+            return None
+        if int(_row_value(selected_admin, "user_id", default=0) or 0) != int(_row_value(user, "id", default=0) or 0):
+            if invalid_counter_key:
+                increment_setting_counter(invalid_counter_key)
+            logger.warning(
+                "[admin_actor_resolution_v2026_04_09] owner_mismatch telegram_id=%s selected_admin_id=%s owner_user_id=%s expected_user_id=%s",
+                telegram_id,
+                selected_admin_id,
+                _row_value(selected_admin, "user_id"),
+                _row_value(user, "id"),
+            )
+            return None
+        return selected_admin
+
+    if legacy_counter_key:
+        increment_setting_counter(legacy_counter_key)
+        logger.info(
+            "[admin_actor_resolution_v2026_04_09] legacy_callback telegram_id=%s prefer_platform=%s",
+            telegram_id,
+            prefer_platform,
+        )
+
+    if not prefer_platform:
+        return fallback_admin
+
+    if not user_has_platform_admin(telegram_id):
+        return fallback_admin
+
+    platform_admin = get_platform_admin()
+    if not user or not platform_admin:
+        return fallback_admin
+
+    platform_admin_full = get_admin_by_id(platform_admin["id"])
+    if not platform_admin_full:
+        return fallback_admin
+
+    if int(_row_value(platform_admin_full, "user_id", default=0) or 0) == int(_row_value(user, "id", default=0) or 0):
+        return platform_admin_full
+    return fallback_admin
+
+
 def platform_enable_admin_registration_reset(actor_telegram_id: int, admin_id: int, note: str = None) -> bool:
     actor_admin = _require_platform_admin_actor(actor_telegram_id)
     target = get_admin_by_id(admin_id)
