@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
@@ -348,6 +349,56 @@ from db import (
     # Re-exports suscripciones
     get_expiring_ally_subscriptions,
 )
+
+
+_SYSTEM_ADDRESS_PLACEHOLDERS = {
+    "no disponible",
+    "sin direccion",
+    "sin dirección",
+    "sin especificar",
+    "ubicacion pendiente de detallar",
+    "ubicación pendiente de detallar",
+    "direccion pendiente de detallar",
+    "dirección pendiente de detallar",
+    "ubicacion enviada desde telegram",
+    "ubicación enviada desde telegram",
+}
+
+
+def is_system_address_text(text: str) -> bool:
+    """Detecta textos de direccion tecnicos o no legibles para humanos."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if lowered in _SYSTEM_ADDRESS_PLACEHOLDERS:
+        return True
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return True
+    if re.match(r"^gps\s*\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)$", cleaned, re.IGNORECASE):
+        return True
+    if re.match(r"^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$", cleaned):
+        return True
+    return False
+
+
+def visible_address_text(text: str, fallback: str = "Direccion pendiente de corregir") -> str:
+    """Normaliza texto de direccion visible para botones, listas y detalles."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if is_system_address_text(cleaned):
+        return fallback
+    return cleaned
+
+
+def visible_address_label(label: str, address_text: str = "", fallback: str = "Sin etiqueta") -> str:
+    """Devuelve una etiqueta humana; si la etiqueta esta rota, cae al texto visible."""
+    cleaned_label = " ".join(str(label or "").strip().split())
+    if cleaned_label and not is_system_address_text(cleaned_label):
+        return cleaned_label
+    visible_address = visible_address_text(address_text, fallback="")
+    if visible_address:
+        return visible_address[:60]
+    return fallback
 import math
 import re
 import os

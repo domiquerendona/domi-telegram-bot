@@ -136,6 +136,8 @@ from services import (
     search_admin_customers,
     search_ally_customers,
     set_default_ally_location,
+    update_ally_location,
+    update_ally_location_coords,
     update_admin_customer,
     update_admin_customer_address,
     update_ally_customer,
@@ -148,6 +150,9 @@ from services import (
     get_ally_telegram_id_by_ally_id,
     delete_distance_cache_for_coord,
     normalize_text_for_cache,
+    is_system_address_text,
+    visible_address_label,
+    visible_address_text,
 )
 
 
@@ -179,6 +184,39 @@ def _agenda_emit_geo_confirmation(update, context, loc, texto, cb_si, cb_no, for
         header_text="Confirma este punto exacto antes de guardar la direccion.",
         question_text="Es esta la ubicacion correcta?",
         formatted_storage_key=formatted_key,
+    )
+
+
+def _agenda_repair_tag(address_text):
+    return " [corregir]" if is_system_address_text(address_text) else ""
+
+
+def _agenda_address_list_text(address, include_parking=False):
+    label = visible_address_label(address.get("label"), address.get("address_text"))
+    visible = visible_address_text(address.get("address_text"))
+    parking_status = address.get("parking_status", "NOT_ASKED")
+    parking_tag = " [parqueo dificil]" if include_parking and parking_status in ("ALLY_YES", "ADMIN_YES") else ""
+    return "{}{}{}: {}".format(label, parking_tag, _agenda_repair_tag(address.get("address_text")), visible[:35])
+
+
+def _agenda_address_button_text(address):
+    label = visible_address_label(address.get("label"), address.get("address_text"))
+    visible = visible_address_text(address.get("address_text"))
+    return "{}{}: {}...".format(label, _agenda_repair_tag(address.get("address_text")), visible[:25])
+
+
+def _agenda_address_detail_text(label, address_text, nota_entrega, coords_text):
+    visible_label = visible_address_label(label, address_text)
+    visible_address = visible_address_text(address_text)
+    repair_note = ""
+    if is_system_address_text(address_text):
+        repair_note = "\n\nATENCION: esta direccion necesita correccion humana. Usa 'Editar' para dejarla legible."
+    return "{}\n{}\n\nNota para entrega:\n{}\n\n{}{}".format(
+        visible_label,
+        visible_address,
+        nota_entrega,
+        coords_text,
+        repair_note,
     )
 
 
@@ -341,10 +379,7 @@ def clientes_ver_cliente(query, context, customer_id):
     addr_text = ""
     if addresses:
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
-            parking_tag = " [parqueo dificil]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
-            addr_text += "- {}{}: {}...\n".format(label, parking_tag, addr["address_text"][:35])
+            addr_text += "- {}\n".format(_agenda_address_list_text(addr, include_parking=True))
     else:
         addr_text = "Sin direcciones guardadas\n"
 
@@ -380,8 +415,7 @@ def clientes_ver_cliente_callback(update, context):
         keyboard = []
 
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            btn_text = f"{label}: {addr['address_text'][:25]}..."
+            btn_text = _agenda_address_button_text(addr)
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_dir_ver_{addr['id']}")])
 
         keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="cust_dir_nueva")])
@@ -467,10 +501,7 @@ def clientes_ver_cliente_callback(update, context):
         ]
 
         query.edit_message_text(
-            f"{label}\n"
-            f"{address['address_text']}\n\n"
-            f"Nota para entrega:\n{nota_entrega}\n\n"
-            f"{coords_text}",
+            _agenda_address_detail_text(label, address["address_text"], nota_entrega, coords_text),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CLIENTES_VER_CLIENTE
@@ -1372,10 +1403,7 @@ def _admin_clientes_ver_cliente(query, context, customer_id):
     addr_text = ""
     if addresses:
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
-            parking_tag = " [parqueo dificil]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
-            addr_text += "- {}{}: {}...\n".format(label, parking_tag, addr["address_text"][:35])
+            addr_text += "- {}\n".format(_agenda_address_list_text(addr, include_parking=True))
     else:
         addr_text = "Sin direcciones guardadas\n"
 
@@ -1413,8 +1441,7 @@ def admin_clientes_ver_callback(update, context):
         keyboard = []
 
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            btn_text = "{}: {}...".format(label, addr["address_text"][:25])
+            btn_text = _agenda_address_button_text(addr)
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_dir_ver_{}".format(addr["id"]))])
 
         keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="acust_dir_nueva")])
@@ -1500,10 +1527,7 @@ def admin_clientes_ver_callback(update, context):
         ]
 
         query.edit_message_text(
-            "{}\n"
-            "{}\n\n"
-            "Nota para entrega:\n{}\n\n"
-            "{}".format(label, address["address_text"], nota_entrega, coords_text),
+            _agenda_address_detail_text(label, address["address_text"], nota_entrega, coords_text),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ADMIN_CUST_VER
@@ -2349,10 +2373,7 @@ def _ally_clientes_ver_cliente(query, context, customer_id):
     addr_text = ""
     if addresses:
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            parking_status = addr["parking_status"] if "parking_status" in addr.keys() else "NOT_ASKED"
-            parking_tag = " [parqueo dificil]" if parking_status in ("ALLY_YES", "ADMIN_YES") else ""
-            addr_text += "- {}{}: {}...\n".format(label, parking_tag, addr["address_text"][:35])
+            addr_text += "- {}\n".format(_agenda_address_list_text(addr, include_parking=True))
     else:
         addr_text = "Sin direcciones guardadas\n"
 
@@ -2386,8 +2407,7 @@ def ally_clientes_ver_callback(update, context):
         addresses = list_customer_addresses(customer_id)
         keyboard = []
         for addr in addresses:
-            label = addr["label"] or "Sin etiqueta"
-            btn_text = "{}: {}...".format(label, addr["address_text"][:25])
+            btn_text = _agenda_address_button_text(addr)
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_dir_ver_{}".format(addr["id"]))])
         keyboard.append([InlineKeyboardButton("Agregar direccion", callback_data="allycust_dir_nueva")])
         keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_ver_{}".format(customer_id))])
@@ -2463,7 +2483,7 @@ def ally_clientes_ver_callback(update, context):
             [InlineKeyboardButton("Volver", callback_data="allycust_dirs")],
         ]
         query.edit_message_text(
-            "{}\n{}\n\nNota para entrega:\n{}\n\n{}".format(label, address["address_text"], nota_entrega, coords_text),
+            _agenda_address_detail_text(label, address["address_text"], nota_entrega, coords_text),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ALLY_CUST_VER
@@ -3176,13 +3196,13 @@ def agenda_pickups_mostrar(query, context):
 
     if locations:
         for loc in locations[:10]:
-            label = (loc["label"] or "Sin nombre")[:25]
+            label = visible_address_label(loc["label"], loc["address"], fallback="Sin nombre")[:25]
             tags = []
             if loc["is_default"]:
                 tags.append("BASE")
             tag_str = " [{}]".format(", ".join(tags)) if tags else ""
             keyboard.append([InlineKeyboardButton(
-                "{}{}".format(label, tag_str),
+                "{}{}{}".format(label, tag_str, _agenda_repair_tag(loc["address"])),
                 callback_data="agenda_pickup_ver_{}".format(loc["id"])
             )])
         keyboard.append([InlineKeyboardButton("+ Agregar nueva", callback_data="agenda_pickups_nueva")])
@@ -3214,6 +3234,7 @@ def agenda_pickups_callback(update, context):
         return agenda_pickups_mostrar(query, context)
 
     elif data == "agenda_pickups_nueva":
+        context.user_data.pop("agenda_pickup_edit_id", None)
         query.edit_message_text(
             "Nueva ubicacion de recogida\n\n"
             "Envia la ubicacion (PIN de Telegram), "
@@ -3231,16 +3252,24 @@ def agenda_pickups_callback(update, context):
         loc = get_ally_location_by_id(loc_id, ally_id)
         if not loc:
             return agenda_pickups_mostrar(query, context)
-        label = loc["label"] or "Sin nombre"
-        address = loc["address"] or "-"
+        label = visible_address_label(loc["label"], loc["address"], fallback="Sin nombre")
+        address = visible_address_text(loc["address"], fallback="Direccion pendiente de corregir")
         gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc["lat"] else "Sin GPS"
         is_base = bool(loc["is_default"])
-        detalle = "{}\n\nDireccion: {}\nGPS: {}".format(label, address, gps)
+        repair_note = ""
+        if is_system_address_text(loc["address"]):
+            repair_note = "\n\nATENCION: este pickup necesita correccion humana. Si no lo corriges al usarlo en un pedido, el flujo pedira detalle."
+        detalle = "{}\n\nDireccion: {}\nGPS: {}{}".format(label, address, gps, repair_note)
         keyboard = []
         if not is_base:
             keyboard.append([InlineKeyboardButton(
                 "Marcar como base",
                 callback_data="agenda_pickup_base_{}".format(loc_id)
+            )])
+        if is_system_address_text(loc["address"]):
+            keyboard.append([InlineKeyboardButton(
+                "Corregir ahora",
+                callback_data="agenda_pickup_fix_{}".format(loc_id)
             )])
         keyboard.append([InlineKeyboardButton(
             "Eliminar",
@@ -3257,6 +3286,24 @@ def agenda_pickups_callback(update, context):
             return agenda_pickups_mostrar(query, context)
         set_default_ally_location(loc_id, ally_id)
         return agenda_pickups_mostrar(query, context)
+
+    elif data.startswith("agenda_pickup_fix_"):
+        try:
+            loc_id = int(data.split("agenda_pickup_fix_")[1])
+        except (ValueError, IndexError):
+            return agenda_pickups_mostrar(query, context)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        if not loc:
+            return agenda_pickups_mostrar(query, context)
+        context.user_data["agenda_pickup_edit_id"] = loc_id
+        logger.info("[address_fix_agenda_v2026_04_09] flow=agenda_pickup action=start location_id=%s", loc_id)
+        query.edit_message_text(
+            "Corregir pickup\n\n"
+            "Envia la ubicacion corregida (PIN de Telegram), "
+            "pega el enlace (Google Maps/WhatsApp) "
+            "o escribe coordenadas (lat,lng)."
+        )
+        return DIRECCIONES_PICKUP_NUEVA_UBICACION
 
     elif data.startswith("agenda_pickup_del_confirm_"):
         try:
@@ -3410,13 +3457,15 @@ def direcciones_pickup_nueva_barrio(update, context):
     address = context.user_data.get("new_pickup_address", "")
     city = context.user_data.get("new_pickup_city", "")
 
+    confirm_label = "Si, actualizar" if context.user_data.get("agenda_pickup_edit_id") else "Si, guardar"
     keyboard = [
-        [InlineKeyboardButton("Si, guardar", callback_data="dir_pickup_guardar_si")],
+        [InlineKeyboardButton(confirm_label, callback_data="dir_pickup_guardar_si")],
         [InlineKeyboardButton("Cancelar", callback_data="dir_pickup_guardar_no")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    action_text = "actualizar este pickup" if context.user_data.get("agenda_pickup_edit_id") else "guardar esta direccion"
     update.message.reply_text(
-        "Direccion: {}\nCiudad: {}\nBarrio o sector: {}\n\nDeseas guardar esta direccion?".format(address, city, barrio),
+        "Direccion: {}\nCiudad: {}\nBarrio o sector: {}\n\nDeseas {}?".format(address, city, barrio, action_text),
         reply_markup=reply_markup
     )
     return DIRECCIONES_PICKUP_GUARDAR
@@ -3438,23 +3487,36 @@ def direcciones_pickup_guardar_callback(update, context):
         city = context.user_data.get("new_pickup_city", "Pereira")
         lat = context.user_data.get("new_pickup_lat")
         lng = context.user_data.get("new_pickup_lng")
+        editing_id = context.user_data.pop("agenda_pickup_edit_id", None)
 
-        new_loc_id = create_ally_location(
-            ally_id=ally_id,
-            label=address[:30],
-            address=address,
-            city=city,
-            barrio=context.user_data.get("new_pickup_barrio", ""),
-            phone="",
-            is_default=False,
-            lat=lat,
-            lng=lng,
-        )
-
-        if new_loc_id:
-            query.edit_message_text("Direccion guardada correctamente.")
+        if editing_id:
+            update_ally_location(
+                editing_id,
+                address=address,
+                city=city,
+                barrio=context.user_data.get("new_pickup_barrio", ""),
+                phone="",
+            )
+            update_ally_location_coords(editing_id, lat, lng)
+            logger.info("[address_fix_agenda_v2026_04_09] flow=agenda_pickup action=save location_id=%s", editing_id)
+            query.edit_message_text("Pickup corregido correctamente.")
         else:
-            query.edit_message_text("Error al guardar la direccion.")
+            new_loc_id = create_ally_location(
+                ally_id=ally_id,
+                label=address[:30],
+                address=address,
+                city=city,
+                barrio=context.user_data.get("new_pickup_barrio", ""),
+                phone="",
+                is_default=False,
+                lat=lat,
+                lng=lng,
+            )
+
+            if new_loc_id:
+                query.edit_message_text("Direccion guardada correctamente.")
+            else:
+                query.edit_message_text("Error al guardar la direccion.")
 
         # Limpiar datos temporales
         context.user_data.pop("new_pickup_address", None)
@@ -3484,7 +3546,7 @@ agenda_conv = ConversationHandler(
         DIRECCIONES_PICKUPS: [
             CallbackQueryHandler(
                 agenda_pickups_callback,
-                pattern=r"^agenda_(volver|pickups_nueva|pickup_lista|pickup_del_cancel|pickup_ver_\d+|pickup_base_\d+|pickup_del_confirm_\d+|pickup_del_\d+)$"
+                pattern=r"^agenda_(volver|pickups_nueva|pickup_lista|pickup_del_cancel|pickup_ver_\d+|pickup_base_\d+|pickup_fix_\d+|pickup_del_confirm_\d+|pickup_del_\d+)$"
             )
         ],
         DIRECCIONES_PICKUP_NUEVA_UBICACION: [
@@ -3956,9 +4018,10 @@ def _plat_corr_render_dirs(query, context, customer_id):
 
     keyboard = []
     for addr in addresses:
-        label = addr.get("label") or addr.get("address_text") or "Sin etiqueta"
+        label = visible_address_label(addr.get("label"), addr.get("address_text"))
         has_coords = addr.get("lat") and addr.get("lng")
         tag = " [coords OK]" if has_coords else " [sin coords]"
+        tag += _agenda_repair_tag(addr.get("address_text"))
         keyboard.append([InlineKeyboardButton(
             "{}{}".format(label, tag),
             callback_data="plat_corr_addr_{}".format(addr["id"])
@@ -4108,8 +4171,8 @@ def plat_corr_callback(update, context):
 
         lat = address.get("lat")
         lng = address.get("lng")
-        addr_text = address.get("address_text") or ""
-        label = address.get("label") or addr_text or "Sin etiqueta"
+        addr_text = visible_address_text(address.get("address_text"))
+        label = visible_address_label(address.get("label"), address.get("address_text"))
 
         if lat and lng:
             coords_actual = "Coords actuales: {:.6f}, {:.6f}\nhttps://maps.google.com/?q={},{}".format(

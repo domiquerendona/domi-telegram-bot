@@ -88,7 +88,11 @@ from services import (
     get_ally_parking_fee_enabled,
     build_offer_demand_preview,
 )
-from order_delivery import publish_route_to_couriers, build_market_launch_status_text
+from order_delivery import (
+    publish_route_to_couriers,
+    build_market_launch_status_text,
+    build_courier_route_preview_text,
+)
 
 
 def _route_city_hint(context):
@@ -382,6 +386,29 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     text += (
         "\n\nSi agregas incentivo, es mas probable que te tomen rapido.\n\n"
         "Confirmas esta ruta?"
+    )
+    text += "\n\n{}".format(
+        build_courier_route_preview_text(
+            {
+                "id": "preview",
+                "pickup_address": pickup_address,
+                "pickup_city": context.user_data.get("ruta_pickup_city") or "",
+                "pickup_barrio": context.user_data.get("ruta_pickup_barrio") or "",
+                "total_distance_km": total_km,
+                "total_fee": total_fee,
+                "additional_incentive": incentivo,
+            },
+            [
+                {
+                    "sequence": i,
+                    "customer_address": p.get("address") or "",
+                    "customer_city": p.get("city") or "",
+                    "customer_barrio": p.get("barrio") or "",
+                    "parking_fee": int(p.get("parking_fee") or 0),
+                }
+                for i, p in enumerate(paradas, 1)
+            ],
+        )
     )
     keyboard = _ruta_incentivo_keyboard()
     suggested_row = build_offer_suggestion_button_row(
@@ -1183,6 +1210,8 @@ def ruta_confirmacion_callback(update, context):
         return ConversationHandler.END
     if count > 0:
         base_msg = "Ruta #{} creada exitosamente.\n{}".format(route_id, build_market_launch_status_text(count))
+    elif count < 0:
+        base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
     else:
         base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
     query.edit_message_text(base_msg)

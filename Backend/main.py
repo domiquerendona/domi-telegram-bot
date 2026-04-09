@@ -280,7 +280,7 @@ from services import (
     get_all_pending_fee_collections,
     get_expiring_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback, _get_order_visible_pickup_line, _get_order_visible_dropoff_line, _get_route_visible_pickup_line, _get_route_stop_visible_line
 from db import (
     init_db,
     force_platform_admin,
@@ -1241,10 +1241,8 @@ def courier_pedidos_en_curso(update, context):
         )
         order_status = _row_value(active_order, "status")
         order_stage_line = get_courier_active_order_stage_line(active_order)
-        pickup_address = _row_value(active_order, "pickup_address") or "No disponible"
-        customer_city = _row_value(active_order, "customer_city") or ""
-        customer_barrio = _row_value(active_order, "customer_barrio") or ""
-        destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
+        pickup_address = _get_order_visible_pickup_line(active_order) or "Ubicacion pendiente de detallar"
+        destino_area = _get_order_visible_dropoff_line(active_order) or "Ubicacion pendiente de detallar"
         total_fee = int((_row_value(active_order, "total_fee") or 0) or 0)
 
         header = "[{}/{}] ".format(idx + 1, len(active_orders)) if len(active_orders) > 1 else ""
@@ -1283,7 +1281,7 @@ def courier_pedidos_en_curso(update, context):
             dropoff_lng = _row_value(active_order, "dropoff_lng")
             customer_name = _row_value(active_order, "customer_name") or "Sin nombre"
             customer_phone = _row_value(active_order, "customer_phone") or "Sin telefono"
-            customer_address = _row_value(active_order, "customer_address") or "Sin direccion"
+            customer_address = _get_order_visible_dropoff_line(active_order) or "Sin direccion legible"
             msg += (
                 "\n\nENTREGA:\n"
                 "Cliente: {}\n"
@@ -1309,7 +1307,7 @@ def courier_pedidos_en_curso(update, context):
             _row_value(active_route, "status", "-"),
         )
         route_status = _row_value(active_route, "status")
-        pickup_address = _row_value(active_route, "pickup_address") or "No disponible"
+        pickup_address = _get_route_visible_pickup_line(active_route) or "Ubicacion pendiente de detallar"
         total_fee = int((_row_value(active_route, "total_fee") or 0) or 0)
 
         pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
@@ -1334,35 +1332,27 @@ def courier_pedidos_en_curso(update, context):
         ).format(route_id, st, pickup_address, total_fee, completed_stops, total_stops)
 
         if next_stop:
-            stop_name = next_stop.get("customer_name") or "Sin nombre"
-            stop_phone = next_stop.get("customer_phone") or "Sin telefono"
-            stop_addr = next_stop.get("customer_address") or "Sin direccion"
-            stop_city = next_stop.get("customer_city") or ""
-            stop_barrio = next_stop.get("customer_barrio") or ""
-            area = ", ".join(p for p in [stop_barrio, stop_city] if p)
+            stop_name = _row_value(next_stop, "customer_name") or "Sin nombre"
+            stop_phone = _row_value(next_stop, "customer_phone") or "Sin telefono"
+            stop_addr = _get_route_stop_visible_line(next_stop) or "Ubicacion pendiente de detallar"
             msg += (
                 "\n\nSIGUIENTE PARADA (#{}):\n"
                 "Cliente: {}\n"
                 "Telefono: {}\n"
                 "Direccion: {}"
             ).format(next_seq, stop_name, stop_phone, stop_addr)
-            if area:
-                msg += "\nZona: {}".format(area)
 
         if len(pending_stops) > 1:
             msg += "\n\nPROXIMAS PARADAS:"
             for s in pending_stops[1:]:
-                s_seq = s.get("sequence", "?")
-                s_addr = s.get("customer_address") or "Sin direccion"
-                s_barrio = s.get("customer_barrio") or ""
-                s_city = s.get("customer_city") or ""
-                s_area = ", ".join(p for p in [s_barrio, s_city] if p)
-                msg += "\n{}. {} ({})".format(s_seq, s_addr, s_area) if s_area else "\n{}. {}".format(s_seq, s_addr)
+                s_seq = _row_value(s, "sequence", "?")
+                s_addr = _get_route_stop_visible_line(s) or "Ubicacion pendiente de detallar"
+                msg += "\n{}. {}".format(s_seq, s_addr)
 
         kb = []
         if next_stop:
-            drop_lat = next_stop.get("dropoff_lat")
-            drop_lng = next_stop.get("dropoff_lng")
+            drop_lat = _row_value(next_stop, "dropoff_lat")
+            drop_lng = _row_value(next_stop, "dropoff_lng")
             if drop_lat and drop_lng:
                 dest = "{},{}".format(float(drop_lat), float(drop_lng))
                 kb.append([InlineKeyboardButton(

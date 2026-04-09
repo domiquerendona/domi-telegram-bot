@@ -120,7 +120,8 @@ Prefijos establecidos:
 - Flujo aliado:    ally_phone, ally_name, ally_owner, ally_document, city, barrio, address, ally_lat, ally_lng, ally_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en ally_geo_ubicacion_callback)
 - Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng, courier_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en courier_geo_ubicacion_callback)
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
-- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, etc.
+- Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, pedido_pending_address_fix, pedido_pending_pickup_fix, pedido_pending_pickup_resolution, etc.
+- Flujo pedido especial admin: admin_ped_* (incluye admin_ped_geo_pickup_pending, admin_ped_geo_cust_pending, admin_ped_addr_notes, admin_ped_edit_from_preview, etc.)
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo recarga directa (plataforma): recdir_tipo, recdir_target_id, recdir_target_name, recdir_monto, recdir_nota
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
@@ -136,6 +137,22 @@ Reglas:
 
 Regla obligatoria de direcciones (ciudad + barrio/sector):
 - Toda creación/registro de una dirección (pickups del aliado, direcciones de clientes, paradas de ruta, etc.) DEBE pedir y guardar siempre ciudad y barrio/sector.
+
+Regla obligatoria de dirección humana visible (nuevo_pedido_conv + admin_pedido_conv):
+- SIEMPRE confirmar primero el punto exacto cuando el flujo pase por geocoding o GPS.
+- Si el texto original ya era una dirección humana legible, el flujo DEBE reutilizar ese mismo texto visible y NO volver a pedirlo.
+- Si el origen fue GPS, pin de Telegram, link, coordenadas o una dirección guardada dañada (`GPS (...)`, `lat,lng`, placeholder o URL), el flujo DEBE pedir detalle humano antes de continuar o guardar.
+- Los selectores y botones NUNCA deben mostrar `GPS (...)`, coordenadas crudas o links como dirección visible.
+- Si una dirección guardada tiene coordenadas válidas pero texto roto, el flujo DEBE repararla inline antes de reutilizarla cuando exista una operación de actualización segura en ese dominio.
+
+Regla obligatoria de visibilidad pre-recogida para el courier (pedidos + rutas + ofertas paralelas):
+- Antes de aceptar un servicio, el courier DEBE ver una dirección visible útil de recogida y de entrega/paradas.
+- La dirección visible DEBE priorizar el texto humano guardado; si ese texto no existe o está roto, DEBE caer a barrio/sector + ciudad.
+- Si ni la dirección humana ni barrio/sector + ciudad pueden resolverse para la recogida o para algún destino/parada, la publicación DEBE bloquearse.
+- Los previews del creador que digan "asi lo vera el repartidor" DEBEN reutilizar el mismo renderer real del courier; PROHIBIDO mantener previews manuales desalineados.
+- Todo bloqueo por falta de dirección visible DEBE registrar evidencia diagnóstica persistente (log verificable o contador en settings) en el mismo punto donde se bloquea.
+- Las agendas y listados de direcciones DEBEN marcar proactivamente las direcciones rotas (`GPS (...)`, coordenadas, placeholders o links) con texto visible seguro y aviso de corrección.
+- PROHIBIDO mostrar al courier antes de la recogida confirmada: `customer_name`, `customer_phone`, instrucciones sensibles o notas internas.
 
 2D. Estándar obligatorio de callback_data
 
@@ -1069,14 +1086,24 @@ Implementado en: order_delivery.py + main.py + db.py
 
 13A. Protección de datos del cliente
 
-PROHIBIDO revelar customer_name, customer_phone ni customer_address al repartidor en _handle_accept o en cualquier momento antes de que el aliado confirme la recogida.
+PROHIBIDO revelar `customer_name`, `customer_phone`, instrucciones sensibles o notas internas al repartidor en `_handle_accept` o en cualquier momento antes de que el aliado confirme la recogida.
 
 Durante la oferta (pedido publicado / aún sin confirmación de recogida) SÍ está permitido mostrar únicamente:
 
 - Mapas (PINs de Telegram) de recogida y entrega usando coordenadas ya guardadas.
-- Ciudad + barrio/sector de recogida y entrega (sin dirección exacta).
+- Dirección visible de recogida y entrega/paradas para decidir el servicio.
+- Si hay texto humano válido: mostrar ese texto.
+- Si no lo hay, mostrar barrio/sector + ciudad.
+- Si tampoco se puede resolver eso: bloquear la publicación.
 
-El único lugar donde se revelan al repartidor la dirección exacta y los detalles del cliente (nombre/teléfono/dirección) es _notify_courier_pickup_approved (order_delivery.py), llamada tras la confirmación del aliado.
+Los detalles personales del cliente y la información operativa sensible solo se revelan después de la recogida:
+- Pedido individual: `_notify_courier_pickup_approved` (`order_delivery.py`)
+- Ruta multi-parada: `_send_route_stop_to_courier` (`order_delivery.py`) después de confirmar la recogida de la ruta
+
+Reglas complementarias obligatorias:
+- Si un preview del creador afirma reflejar la oferta del courier, DEBE usar el mismo texto que generan `_build_offer_text` o `_build_route_offer_text`.
+- Si la publicación se bloquea por dirección visible faltante, DEBE incrementarse un contador persistente de diagnóstico y notificarse al creador con una referencia verificable.
+- Las listas de agenda y "Mis ubicaciones" no deben mostrar coordenadas crudas como dirección; deben mostrar fallback humano y una marca visible de corrección pendiente.
 
 13B. Timers post-aceptación (obligatorios)
 

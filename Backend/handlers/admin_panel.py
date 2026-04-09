@@ -2665,12 +2665,23 @@ def admin_config_callback(update, context):
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         multi_count = sum(1 for c in online if (c.get("active_order_count") or 0) > 1)
         detour_blocks = int(get_setting("multiorder_detour_blocks_total", "0") or "0")
+        visibility_total = int(get_setting("courier_visibility_blocked_total", "0") or "0")
+        visibility_orders = int(get_setting("courier_visibility_blocked_order", "0") or "0")
+        visibility_routes = int(get_setting("courier_visibility_blocked_route", "0") or "0")
         header = "Repartidores online ahora ({})".format(len(online))
         if multi_count:
             header += " — {} con 2+ pedidos activos".format(multi_count)
         lineas = [header + ":\n"]
         if detour_blocks > 0:
             lineas.append("Bloqueos por desvio (total historico): {}\n".format(detour_blocks))
+        if visibility_total > 0:
+            lineas.append(
+                "Publicaciones bloqueadas por direccion visible: total {} | pedidos {} | rutas {}\n".format(
+                    visibility_total,
+                    visibility_orders,
+                    visibility_routes,
+                )
+            )
         keyboard = []
         for c in online:
             nombre = c["full_name"]

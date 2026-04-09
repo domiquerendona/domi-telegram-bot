@@ -219,7 +219,7 @@ Paquete creado en la modularización 2026-03-18/20. Cada módulo agrupa funcione
 
 ### Módulos Especializados
 - **`order_delivery.py`**: flujo completo de publicación, ofertas y entrega de pedidos.
-  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad y ahora agota 3 reintentos automáticos antes de cancelar. Los defaults del ciclo de mercado son configurables por `settings` (`market_retry_limit`, `order_market_cycle_seconds`, `route_market_cycle_seconds`) y el contador de reintentos se reconstruye al recuperar ofertas activas tras reinicio.
+  Comparte el motor de cancelaciones y penalidades entre pedido de aliado, pedido especial de admin y ruta multi-parada cuando la regla de negocio es equivalente; la expiración automática por falta de respuesta del mercado nunca aplica penalidad y ahora agota 3 reintentos automáticos antes de cancelar. Los defaults del ciclo de mercado son configurables por `settings` (`market_retry_limit`, `order_market_cycle_seconds`, `route_market_cycle_seconds`) y el contador de reintentos se reconstruye al recuperar ofertas activas tras reinicio. Desde 2026-04-09 también centraliza la regla de dirección visible para el courier antes del pickup: oferta inicial, pedido aceptado, ruta aceptada, reordenamiento, sugerencias paralelas y previews del creador reutilizan el mismo renderer; si no se puede resolver una dirección visible de recogida o destino/parada, la publicación se bloquea y se incrementan contadores persistentes de diagnóstico.
 - **`profile_changes.py`**: flujo de solicitudes de cambio de perfil de usuarios.
 
 ### Regla Anti-Importación Circular
@@ -1752,9 +1752,17 @@ Entry: callback admin_nuevo_pedido
 ADMIN_PEDIDO_PICKUP:
   admin_pedido_pickup_callback  → selecciona ubicación guardada → selector de cliente
   admin_pedido_nueva_dir_start  → pide texto → ADMIN_PEDIDO_PICKUP
-  admin_pedido_pickup_text_handler → geocodifica → muestra confirmación
-  admin_pedido_geo_pickup_callback (si/no) → confirma pickup → selector de cliente
-  admin_pedido_pickup_gps_handler → guarda GPS → pregunta guardar → ADMIN_PEDIDO_SAVE_PICKUP
+  admin_pedido_pickup_text_handler → resuelve punto → muestra confirmación
+  admin_pedido_pickup_gps_handler → muestra confirmación del pin → ADMIN_PEDIDO_PICKUP
+  admin_pedido_geo_pickup_callback (si/no) → si la entrada original era dirección humana, reutiliza ese texto y sigue; si era GPS/coords/link o pickup roto, pasa a ADMIN_PEDIDO_PICKUP_DETALLE
+
+ADMIN_PEDIDO_PICKUP_DETALLE (1024):
+  admin_pedido_pickup_detalle_handler → captura dirección humana visible
+  solo aplica cuando el punto confirmado venía de GPS/coords/link o de un pickup guardado con GPS(...)
+  si era pickup guardado con GPS(...) → repara admin_locations y continúa
+  si era pickup nuevo sin texto humano → pregunta guardar → ADMIN_PEDIDO_SAVE_PICKUP
+
+ADMIN_PEDIDO_SAVE_PICKUP (919):
   admin_pedido_save_pickup_callback (si/no) → guarda (o no) → selector de cliente
 
 Selector de cliente (_admin_pedido_mostrar_selector_cliente):
@@ -1770,14 +1778,21 @@ ADMIN_PEDIDO_CUST_NAME (909): admin_pedido_cust_name_handler → ADMIN_PEDIDO_CU
 ADMIN_PEDIDO_CUST_PHONE (910): admin_pedido_cust_phone_handler → ADMIN_PEDIDO_CUST_ADDR
 
 ADMIN_PEDIDO_CUST_ADDR (911):
-  admin_pedido_cust_addr_handler → geocodifica → muestra confirmación
-  admin_pedido_geo_callback (si/no) → confirma → ADMIN_PEDIDO_TARIFA
-  admin_pedido_cust_gps_handler → guarda GPS → ADMIN_PEDIDO_TARIFA
+  admin_pedido_cust_addr_handler → resuelve punto → muestra confirmación
+  admin_pedido_cust_gps_handler → muestra confirmación del pin → ADMIN_PEDIDO_CUST_ADDR
+  admin_pedido_geo_callback (si/no) → si la entrada original era dirección humana, reutiliza ese texto y calcula; si era GPS/coords/link o dirección rota, pasa a ADMIN_PEDIDO_CUST_ADDR_DETALLE
+
+ADMIN_PEDIDO_CUST_ADDR_DETALLE (1025):
+  admin_pedido_cust_addr_detalle_handler → captura dirección humana visible
+  solo aplica cuando el punto confirmado venía de GPS/coords/link o de una dirección guardada con GPS(...)
+  si era dirección guardada con GPS(...) → repara admin_customer_addresses
+  luego calcula distancia → ADMIN_PEDIDO_TARIFA
 
 ADMIN_PEDIDO_TARIFA (912): admin_pedido_tarifa_handler → ADMIN_PEDIDO_INSTRUC
 
 ADMIN_PEDIDO_INSTRUC (913):
   admin_pedido_instruc_handler / admin_pedido_sin_instruc_callback → preview
+  si la direccion seleccionada tenia nota guardada, esa nota se usa como base y el admin puede agregar texto extra encima
   admin_pedido_inc_fijo_callback (1000/1500/2000/3000) → actualiza preview
   admin_pedido_inc_otro_callback → ADMIN_PEDIDO_INC_MONTO
   admin_pedido_confirmar_callback → crea pedido → publica → END
@@ -1792,12 +1807,14 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | `ADMIN_PEDIDO_PICKUP` | 908 | Selección de punto de recogida |
 | `ADMIN_PEDIDO_CUST_NAME` | 909 | Nombre del cliente (campo libre — se llega aquí cuando no hay clientes en agenda o desde "Cliente nuevo") |
 | `ADMIN_PEDIDO_CUST_PHONE` | 910 | Teléfono del cliente |
-| `ADMIN_PEDIDO_CUST_ADDR` | 911 | Dirección de entrega (con geocoding) |
+| `ADMIN_PEDIDO_CUST_ADDR` | 911 | Punto de entrega (texto/GPS/geocoding con confirmación) |
 | `ADMIN_PEDIDO_TARIFA` | 912 | Tarifa manual al courier |
 | `ADMIN_PEDIDO_INSTRUC` | 913 | Instrucciones + preview final (con toggle visibilidad) |
 | `OFFER_SUGGEST_INC_MONTO` | 915 | Monto libre en sugerencia T+5 |
 | `ADMIN_PEDIDO_INC_MONTO` | 916 | Monto libre de incentivo en creación admin |
 | `ADMIN_PEDIDO_COMISION` | 1011 | Comisión especial que el admin cobra al courier |
+| `ADMIN_PEDIDO_PICKUP_DETALLE` | 1024 | Captura dirección humana visible de recogida tras confirmar el punto |
+| `ADMIN_PEDIDO_CUST_ADDR_DETALLE` | 1025 | Captura dirección humana visible de entrega tras confirmar el punto |
 
 ### User data keys del flujo (prefijo `admin_ped_`)
 
@@ -1808,17 +1825,17 @@ ADMIN_PEDIDO_INC_MONTO (916): admin_pedido_inc_monto_handler → preview → ADM
 | `admin_ped_pickup_addr` | Dirección de recogida (texto) |
 | `admin_ped_pickup_lat/lng` | Coordenadas de recogida |
 | `admin_ped_pickup_city/barrio` | Ciudad/barrio de recogida |
-| `admin_ped_geo_pickup_pending` | Dict con geo pendiente de confirmar (pickup) |
+| `admin_ped_geo_pickup_pending` | Dict temporal con coords del pickup, más metadata para reparar pickups guardados con `GPS(...)` hasta capturar la dirección visible |
 | `admin_ped_cust_name/phone/addr` | Datos del cliente |
 | `admin_ped_dropoff_lat/lng` | Coordenadas de entrega |
 | `admin_ped_dropoff_city/barrio` | Ciudad/barrio de entrega |
-| `admin_ped_geo_cust_pending` | Dict con geo pendiente de confirmar (entrega) |
+| `admin_ped_geo_cust_pending` | Dict temporal con coords de entrega, más metadata para reparar direcciones guardadas con `GPS(...)` hasta capturar la dirección visible |
 | `admin_ped_tarifa` | Tarifa manual (int, COP) — lo que el courier cobra al cliente |
 | `admin_ped_comision` | Comisión especial (int, COP, default 0) — lo que el admin cobra al courier |
 | `admin_ped_team_only` | Toggle visibilidad (0 = todos, 1 = solo equipo propio) |
 | `admin_ped_incentivo` | Incentivo adicional (int, COP, default 0) |
 | `admin_ped_instruc` | Instrucciones para el courier |
-| `admin_ped_edit_from_preview` | Flag temporal (bool): True cuando el admin edita un campo desde el preview. Interceptado por `admin_pedido_pickup_callback`, `_admin_pedido_calcular_preview` y `admin_pedido_tarifa_handler` para devolver al preview en vez de avanzar al siguiente paso. |
+| `admin_ped_edit_from_preview` | Flag temporal (bool): True cuando el admin edita un campo desde el preview. Se conserva durante los pasos `*_DETALLE` para que pickup/entrega vuelvan al preview al terminar de capturar la dirección humana. |
 
 ### Publicación del pedido admin
 
@@ -2228,6 +2245,34 @@ Mejoras aplicadas a los 3 flujos de pedido (`nuevo_pedido_conv`, `nueva_ruta_con
 | `admin_ped_dedup_si/no` | admin_pedido | Usar cliente existente o continuar como nuevo |
 | `admin_ped_guardar_cust_si/no` | admin_pedido | Guardar cliente manual en agenda |
 | `admin_ped_guardar_dir_si/no` | admin_pedido | Guardar dirección manual en agenda del cliente |
+
+---
+
+## Regla Unificada de Direccion Humana Visible (IMPLEMENTADO 2026-04-08)
+
+Aplica a `nuevo_pedido_conv` y `admin_pedido_conv`.
+
+- Primero se confirma el punto exacto cuando el flujo pasa por geocoding o GPS.
+- Si el input original ya era una direccion humana legible, el flujo reutiliza ese mismo texto y no lo vuelve a pedir.
+- Si el input original venia de GPS, pin de Telegram, link, coordenadas o una direccion guardada rota (`GPS (...)`, `lat,lng`, placeholder o URL), el flujo pide detalle humano antes de continuar.
+- Los botones y selectores nunca muestran coordenadas crudas como direccion visible.
+- Si una direccion guardada tiene coordenadas validas pero texto roto, el flujo la repara inline antes de reutilizarla cuando existe una operacion de actualizacion segura.
+- `nuevo_pedido_conv` ahora aplica esta regla tanto en entrega como en pickups guardados/nuevos; `admin_pedido_conv` la mantiene en pickup y entrega, y ademas reutiliza notas guardadas de direccion como base de instrucciones.
+
+### Regla unificada de visibilidad pre-pickup para courier (IMPLEMENTADO 2026-04-09)
+
+Aplica a pedidos individuales, pedido especial admin, rutas multi-parada y sugerencias paralelas del courier.
+
+- Antes de aceptar, el courier ve una direccion visible util de recogida y destino/paradas.
+- La prioridad es: direccion humana guardada -> barrio/sector + ciudad.
+- Si una direccion guardada esta rota (`GPS (...)`, coordenadas, URL, placeholder), no se muestra tal cual.
+- Si no se puede resolver texto visible ni para recogida ni para algun destino/parada, `publish_order_to_couriers()` o `publish_route_to_couriers()` bloquean la publicacion, dejan marcador de log verificable `"[courier_offer_visibility_v2026_04_09]"` e incrementan `settings` (`courier_visibility_blocked_total`, `courier_visibility_blocked_order`, `courier_visibility_blocked_route`).
+- Los previews del creador que muestran "asi lo vera el repartidor" ahora llaman al mismo renderer real del courier (`build_courier_order_preview_text` / `build_courier_route_preview_text`) para evitar desalineacion.
+- Las agendas de clientes y las listas de ubicaciones muestran fallback humano + marca de correccion pendiente cuando una direccion guardada quedo tecnica o rota.
+- Antes del pickup siguen ocultos: nombre del cliente, telefono, instrucciones sensibles y notas internas.
+- Despues del pickup:
+  - pedido individual revela datos via `_notify_courier_pickup_approved`
+  - ruta multi-parada revela cada parada progresivamente via `_send_route_stop_to_courier`
 
 ---
 
@@ -2888,3 +2933,19 @@ Función que reemplaza el antiguo `_get_route_total_duration` (eliminado 2026-03
 Requiere la columna `routes.courier_arrived_at` (agregada 2026-03-29).
 
 *Última actualización: 2026-03-29*
+### Roadmap activo — PostgreSQL-first
+
+Estado actual:
+- El soporte dual SQLite/PostgreSQL sigue vigente en el codigo y en `AGENTS.md`.
+- En la practica operativa, DEV (`staging`) y PROD ya corren sobre PostgreSQL.
+- SQLite se mantiene hoy por compatibilidad transitoria de pruebas unitarias y herramientas puntuales.
+
+Roadmap:
+- La salida ordenada de SQLite y la migracion a `PostgreSQL-first` se documenta en `docs/postgresql_first_migration_2026-04-09.md`.
+- Hasta completar esa migracion, no se debe asumir que el soporte SQLite ya fue retirado.
+
+### Notas operativas — 2026-04-09
+
+- Los resumenes de pedidos y rutas activas que ve el courier desde `main.py` ahora reutilizan el mismo criterio de direccion visible del flujo de oferta para evitar volver a mostrar `No disponible` o direcciones tecnicas antes del pickup.
+- El panel operativo de admins muestra tambien los contadores persistentes `courier_visibility_blocked_*` junto a los bloqueos por desvio.
+- Las agendas de pickups/ubicaciones ahora ofrecen CTA directo de correccion cuando detectan texto tecnico (`GPS (...)`, coordenadas o placeholders), sin obligar a salir del flujo para arreglarlo.

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -240,6 +241,8 @@ LOW_BALANCE_ALERT_THRESHOLD = 5000  # Notificar al admin si el saldo del miembro
 MULTI_ORDER_DETOUR_THRESHOLD = 0.30  # Max 30% de desvio extra aceptable al tomar un segundo servicio
 MULTI_ORDER_PROXIMITY_FALLBACK_KM = 3.0  # Fallback si no hay coords de destino: max 3 km al nuevo pickup
 MAX_CONCURRENT_ORDERS = 2           # Maximos pedidos activos simultaneos por courier
+MARKET_PUBLISH_BLOCKED = -1
+COURIER_VISIBILITY_RULE_TAG = "[courier_offer_visibility_v2026_04_09]"
 
 
 def _notify_admin_member_low_balance(context, admin_id, member_type, member_name, new_balance):
@@ -584,6 +587,11 @@ def build_market_launch_status_text(published_count, market_retry_count=0):
 
     lines = []
     count = int(published_count or 0)
+    if count == MARKET_PUBLISH_BLOCKED:
+        lines.append("La publicacion al mercado quedo bloqueada.")
+        lines.append("Falta una direccion visible para el repartidor en recogida o destino.")
+        lines.append("Corrige la direccion antes de volver a ofertarlo.")
+        return "\n".join(lines)
     if count > 0:
         lines.append("Estamos buscando repartidor cerca.")
         lines.append(
@@ -600,6 +608,47 @@ def build_market_launch_status_text(published_count, market_retry_count=0):
     lines.append("Ciclo {}/{} del mercado en curso.".format(cycle_number, retry_limit))
     lines.append("Si este ciclo expira, el sistema lo reintenta solo. Si al final no se logra, se cancela sin cargo.")
     return "\n".join(lines)
+
+
+def _record_courier_visibility_blocked_metric(service_kind):
+    """Incrementa contadores persistentes para diagnostico de bloqueos por direccion visible."""
+    total = increment_setting_counter("courier_visibility_blocked_total")
+    specific = increment_setting_counter(
+        "courier_visibility_blocked_{}".format(service_kind)
+    )
+    return total, specific
+
+
+def build_courier_order_preview_text(
+    order,
+    pickup_city_override=None,
+    pickup_barrio_override=None,
+    dropoff_city_override=None,
+    dropoff_barrio_override=None,
+):
+    """Renderiza el mismo bloque que vera el courier antes de aceptar un pedido."""
+    return (
+        "PREVIEW EXACTO DEL COURIER\n"
+        + ("=" * 31)
+        + "\n\n"
+        + _build_offer_text(
+            order,
+            pickup_city_override=pickup_city_override,
+            pickup_barrio_override=pickup_barrio_override,
+            dropoff_city_override=dropoff_city_override,
+            dropoff_barrio_override=dropoff_barrio_override,
+        )
+    )
+
+
+def build_courier_route_preview_text(route, destinations):
+    """Renderiza el mismo bloque que vera el courier antes de aceptar una ruta."""
+    return (
+        "PREVIEW EXACTO DEL COURIER\n"
+        + ("=" * 31)
+        + "\n\n"
+        + _build_route_offer_text(route, destinations)
+    )
 
 
 def _get_order_market_cycle_seconds():
@@ -629,7 +678,7 @@ def _format_cycle_window_text(cycle_seconds):
 
 def _get_order_creator_chat_id(order):
     try:
-        creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+        creator_admin_id = _row_value(order, "creator_admin_id")
         if creator_admin_id:
             admin = get_admin_by_id(int(creator_admin_id))
             if admin:
@@ -637,7 +686,7 @@ def _get_order_creator_chat_id(order):
                 telegram_id = _row_value(user, "telegram_id") if user else None
                 if telegram_id:
                     return int(telegram_id)
-        ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
+        ally_id = _row_value(order, "ally_id")
         if ally_id:
             ally = get_ally_by_id(int(ally_id))
             if ally:
@@ -652,7 +701,7 @@ def _get_order_creator_chat_id(order):
 
 def _get_route_creator_chat_id(route):
     try:
-        ally_id = route.get("ally_id") if hasattr(route, "get") else route["ally_id"]
+        ally_id = _row_value(route, "ally_id")
         if ally_id:
             ally = get_ally_by_id(int(ally_id))
             if ally:
@@ -712,8 +761,8 @@ def _get_pending_market_retry_counts():
         return counts
 
     for row in pending_jobs:
-        job_name = row.get("job_name") or ""
-        job_data_raw = row.get("job_data") or "{}"
+        job_name = _row_value(row, "job_name") or ""
+        job_data_raw = _row_value(row, "job_data") or "{}"
         try:
             job_data = json.loads(job_data_raw)
         except Exception:
@@ -741,8 +790,8 @@ def _get_pending_market_retry_counts():
 
 
 def _build_cycle_info_for_expire(order):
-    ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
-    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    ally_id = _row_value(order, "ally_id")
+    creator_admin_id = _row_value(order, "creator_admin_id")
 
     admin_id = None
     if creator_admin_id:
@@ -787,7 +836,7 @@ def _schedule_order_expire_job(context, order_id, reset_window=False, market_ret
         )
         return
 
-    created_at = _to_naive_utc(_parse_dt(order.get("created_at") if hasattr(order, "get") else order["created_at"]))
+    created_at = _to_naive_utc(_parse_dt(_row_value(order, "created_at")))
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     elapsed = 0
     if created_at:
@@ -1010,7 +1059,7 @@ def repost_order_to_couriers(order_id, context, excluded_courier_ids=None, reset
         pass
 
     ally_id = order["ally_id"]
-    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    creator_admin_id = _row_value(order, "creator_admin_id")
     admin_id_override = None
     if creator_admin_id:
         admin_id_override = int(creator_admin_id)
@@ -1384,6 +1433,11 @@ def _handle_repost_ally(update, context, order_id):
         query.edit_message_text(
             "Pedido #{} re-ofertado. Se notifico a {} repartidor(es).".format(order_id, count)
         )
+    elif count < 0:
+        query.answer(
+            "No se pudo re-ofertar: falta direccion visible de recogida o entrega para el repartidor.",
+            show_alert=True,
+        )
     else:
         query.answer(
             "Por ahora no hay repartidores disponibles. El pedido sigue activo y se reintentara automaticamente.",
@@ -1670,7 +1724,7 @@ def _handle_repost_ally_route(update, context, route_id):
         return
 
     route = get_route_by_id(route_id)
-    if not route or route.get("ally_id") != ally["id"]:
+    if not route or _row_value(route, "ally_id") != ally["id"]:
         query.answer("No tienes permiso para esta accion.", show_alert=True)
         return
 
@@ -1700,6 +1754,11 @@ def _handle_repost_ally_route(update, context, route_id):
     if count > 0:
         query.edit_message_text(
             "Ruta #{} re-ofertada. Se notifico a {} repartidor(es).".format(route_id, count)
+        )
+    elif count < 0:
+        query.answer(
+            "No se pudo re-ofertar la ruta: falta direccion visible para el repartidor.",
+            show_alert=True,
         )
     else:
         query.answer(
@@ -1840,6 +1899,34 @@ def publish_order_to_couriers(
     # Leer campos especiales del pedido para pedidos de admin
     special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
     team_only = int(order["team_only"] or 0) if "team_only" in order.keys() else 0
+
+    missing_visibility = _get_order_missing_courier_visibility_fields(
+        order,
+        pickup_city,
+        pickup_barrio,
+        dropoff_city,
+        dropoff_barrio,
+    )
+    if missing_visibility:
+        creator_chat_id = _get_order_creator_chat_id(order)
+        total_blocked, specific_blocked = _record_courier_visibility_blocked_metric("order")
+        logger.warning(
+            "%s flow=order_publish blocked order_id=%s missing=%s count=%s total=%s",
+            COURIER_VISIBILITY_RULE_TAG,
+            order_id,
+            ",".join(missing_visibility),
+            specific_blocked,
+            total_blocked,
+        )
+        _notify_courier_visibility_blocked(
+            context,
+            creator_chat_id,
+            "Pedido",
+            order_id,
+            missing_visibility,
+            specific_count=specific_blocked,
+        )
+        return MARKET_PUBLISH_BLOCKED
 
     # Red cooperativa: buscar en TODOS los couriers activos, sin filtro de equipo.
     # Cada courier opera bajo su propio admin; el fee se cobra a cada uno por separado.
@@ -2269,7 +2356,7 @@ def _expire_order(order_id, cycle_info, context):
     else:
         # Notificar al admin creador (pedido especial)
         try:
-            creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+            creator_admin_id = _row_value(order, "creator_admin_id")
             if creator_admin_id:
                 admin = get_admin_by_id(int(creator_admin_id))
                 if admin:
@@ -3909,7 +3996,7 @@ def _handle_offer_fee_detail(update, context, order_id):
         return
 
     special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
-    total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+    total_fee_val = int(_row_value(order, "total_fee") or 0)
     fee_cfg = get_fee_config()
     fee_std = fee_cfg["fee_service_total"]
     fee_admin = fee_cfg["fee_admin_share"]
@@ -4048,9 +4135,8 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
     )])
     keyboard.append([InlineKeyboardButton("Liberar pedido", callback_data="order_release_{}".format(order_id))])
 
-    customer_city = _row_value(order, "customer_city") or ""
-    customer_barrio = _row_value(order, "customer_barrio") or ""
-    destino_area = "{}, {}".format(customer_barrio, customer_city).strip(", ") or "No disponible"
+    pickup_line = _get_order_visible_pickup_line(order) or "Ubicacion pendiente de detallar"
+    destino_area = _get_order_visible_dropoff_line(order) or "Ubicacion pendiente de detallar"
 
     query.edit_message_text(
         "Pedido #{} aceptado.\n\n"
@@ -4061,7 +4147,7 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
         "Cuando estes alli, presiona 'Confirmar llegada al punto de recogida'.\n"
         "Si no puedes llegar, presiona 'Liberar pedido'.".format(
             order_id,
-            _get_pickup_address(order),
+            pickup_line,
             destino_area,
             int(order["total_fee"] or 0),
         ),
@@ -4958,6 +5044,161 @@ def _handle_delivered(update, context, order_id):
         _notify_admin_order_delivered(context, order, durations, int(creator_admin_id))
 
 
+def _courier_visible_address_text(text):
+    """Devuelve una direccion humana visible o vacio si el texto es tecnico/inutil."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    if lowered in {
+        "no disponible",
+        "sin direccion",
+        "sin dirección",
+        "sin especificar",
+        "ubicacion pendiente de detallar",
+        "ubicación pendiente de detallar",
+        "direccion pendiente de detallar",
+        "dirección pendiente de detallar",
+        "ubicacion enviada desde telegram",
+        "ubicación enviada desde telegram",
+    }:
+        return ""
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return ""
+    if re.match(r"^gps\s*\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)$", cleaned, re.IGNORECASE):
+        return ""
+    if re.match(r"^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$", cleaned):
+        return ""
+    return cleaned
+
+
+def _courier_area_text(city="", barrio=""):
+    city_text = " ".join(str(city or "").strip().split())
+    barrio_text = " ".join(str(barrio or "").strip().split())
+    if barrio_text and city_text:
+        return "{}, {}".format(barrio_text, city_text)
+    return barrio_text or city_text
+
+
+def _courier_visible_location_line(address_text="", city="", barrio=""):
+    """Prioriza direccion humana; si no existe, cae a barrio/ciudad."""
+    visible_address = _courier_visible_address_text(address_text)
+    area = _courier_area_text(city, barrio)
+    if visible_address and area and area.lower() not in visible_address.lower():
+        return "{} ({})".format(visible_address, area)
+    return visible_address or area
+
+
+def _get_order_visible_pickup_line(order, pickup_city_override=None, pickup_barrio_override=None):
+    pickup_city, pickup_barrio = _get_pickup_area(order)
+    if pickup_city_override is not None:
+        pickup_city = pickup_city_override
+    if pickup_barrio_override is not None:
+        pickup_barrio = pickup_barrio_override
+    return _courier_visible_location_line(
+        _get_pickup_address(order),
+        pickup_city,
+        pickup_barrio,
+    )
+
+
+def _get_order_visible_dropoff_line(order, dropoff_city_override=None, dropoff_barrio_override=None):
+    dropoff_city, dropoff_barrio = _get_dropoff_area(order)
+    if dropoff_city_override is not None:
+        dropoff_city = dropoff_city_override
+    if dropoff_barrio_override is not None:
+        dropoff_barrio = dropoff_barrio_override
+    return _courier_visible_location_line(
+        _row_value(order, "customer_address") or "",
+        dropoff_city,
+        dropoff_barrio,
+    )
+
+
+def _get_route_visible_pickup_line(route):
+    return _courier_visible_location_line(
+        _row_value(route, "pickup_address") or "",
+        _row_value(route, "pickup_city") or "",
+        _row_value(route, "pickup_barrio") or "",
+    )
+
+
+def _get_route_stop_visible_line(stop):
+    return _courier_visible_location_line(
+        _row_value(stop, "customer_address") or "",
+        _row_value(stop, "customer_city") or "",
+        _row_value(stop, "customer_barrio") or "",
+    )
+
+
+def _get_order_missing_courier_visibility_fields(
+    order,
+    pickup_city_override=None,
+    pickup_barrio_override=None,
+    dropoff_city_override=None,
+    dropoff_barrio_override=None,
+):
+    missing = []
+    if not _get_order_visible_pickup_line(order, pickup_city_override, pickup_barrio_override):
+        missing.append("recogida")
+    if not _get_order_visible_dropoff_line(order, dropoff_city_override, dropoff_barrio_override):
+        missing.append("entrega")
+    return missing
+
+
+def _get_route_missing_courier_visibility_fields(route, destinations):
+    missing = []
+    if not _get_route_visible_pickup_line(route):
+        missing.append("recogida")
+    for stop in destinations:
+        if not _get_route_stop_visible_line(stop):
+            missing.append("parada {}".format(_row_value(stop, "sequence", "?")))
+    return missing
+
+
+def _notify_courier_visibility_blocked(
+    context,
+    chat_id,
+    service_label,
+    service_id,
+    missing_fields,
+    specific_count=None,
+):
+    if not chat_id:
+        return
+    details = ", ".join(missing_fields)
+    count_line = ""
+    if specific_count:
+        count_line = "\nIncidencia registrada para seguimiento: {} bloqueo(s) acumulado(s) de este tipo.".format(
+            int(specific_count)
+        )
+    try:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "{} #{} no se pudo publicar al mercado.\n\n"
+                "Falta una direccion visible para el repartidor en: {}.\n"
+                "Corrige esa informacion antes de volver a ofertarlo.{}\n"
+                "{}"
+            ).format(
+                service_label,
+                service_id,
+                details or "direccion pendiente",
+                count_line,
+                COURIER_VISIBILITY_RULE_TAG,
+            ),
+        )
+    except Exception as e:
+        logger.warning(
+            "%s notify_block chat_id=%s %s=%s error=%s",
+            COURIER_VISIBILITY_RULE_TAG,
+            chat_id,
+            service_label.lower(),
+            service_id,
+            e,
+        )
+
+
 def _build_offer_text(
     order,
     courier_dist_km=None,
@@ -4970,39 +5211,19 @@ def _build_offer_text(
     active_services=None,
 ):
     """Construye el texto de oferta para el courier."""
-    pickup_city, pickup_barrio = _get_pickup_area(order)
-    if pickup_city_override is not None:
-        pickup_city = pickup_city_override
-    if pickup_barrio_override is not None:
-        pickup_barrio = pickup_barrio_override
-
-    dropoff_city, dropoff_barrio = _get_dropoff_area(order)
-    if dropoff_city_override is not None:
-        dropoff_city = dropoff_city_override
-    if dropoff_barrio_override is not None:
-        dropoff_barrio = dropoff_barrio_override
-
     distance_km = order["distance_km"] or 0
     total_fee = int(order["total_fee"] or 0)
     additional_incentive = int(order["additional_incentive"] or 0)
-
-    # Construir linea de pickup: barrio + ciudad, o fallback a la direccion de texto
-    if pickup_barrio and pickup_city:
-        pickup_area_line = "{}, {}".format(pickup_barrio, pickup_city)
-    elif pickup_barrio or pickup_city:
-        pickup_area_line = pickup_barrio or pickup_city
-    else:
-        _pickup_addr_fallback = _get_pickup_address(order)
-        pickup_area_line = _pickup_addr_fallback or "sin especificar"
-
-    # Construir linea de dropoff: barrio + ciudad, o fallback a la direccion de texto
-    if dropoff_barrio and dropoff_city:
-        dropoff_area_line = "{}, {}".format(dropoff_barrio, dropoff_city)
-    elif dropoff_barrio or dropoff_city:
-        dropoff_area_line = dropoff_barrio or dropoff_city
-    else:
-        _dropoff_addr_fallback = _row_value(order, "customer_address") or ""
-        dropoff_area_line = _dropoff_addr_fallback or "sin especificar"
+    pickup_area_line = _get_order_visible_pickup_line(
+        order,
+        pickup_city_override,
+        pickup_barrio_override,
+    ) or "Ubicacion pendiente de detallar"
+    dropoff_area_line = _get_order_visible_dropoff_line(
+        order,
+        dropoff_city_override,
+        dropoff_barrio_override,
+    ) or "Ubicacion pendiente de detallar"
 
     text = (
         "OFERTA DISPONIBLE\n\n"
@@ -5061,7 +5282,7 @@ def _build_offer_text(
     special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
     fee_cfg_offer = get_fee_config()
     fee_std = fee_cfg_offer["fee_service_total"]
-    total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+    total_fee_val = int(_row_value(order, "total_fee") or 0)
     if special_commission > 0:
         total_descuento = fee_std + special_commission
         ganancia_neta = total_fee_val - total_descuento
@@ -5267,7 +5488,7 @@ def _build_delivery_order_suggestion(active_orders, new_order):
       2. Luego recoger los ACCEPTED en orden de proximidad entre si
       3. Finalmente entregar los recien recogidos en orden nearest-neighbor
 
-    Solo muestra barrio/ciudad, nunca la direccion exacta del cliente.
+    Muestra una direccion visible util sin revelar nombre, telefono ni instrucciones.
     """
     all_orders = list(active_orders) + [new_order]
 
@@ -5282,9 +5503,7 @@ def _build_delivery_order_suggestion(active_orders, new_order):
             d_lat = _row_value(o, "dropoff_lat")
             d_lng = _row_value(o, "dropoff_lng")
             if d_lat is not None and d_lng is not None:
-                barrio = _row_value(o, "customer_barrio") or ""
-                city = _row_value(o, "customer_city") or ""
-                area = ", ".join(p for p in [barrio, city] if p) or "#{}".format(_row_value(o, "id"))
+                area = _get_order_visible_dropoff_line(o) or "#{}".format(_row_value(o, "id"))
                 items.append({"id": _row_value(o, "id"), "lat": float(d_lat), "lng": float(d_lng), "area": area})
         if not items:
             return items
@@ -5314,8 +5533,7 @@ def _build_delivery_order_suggestion(active_orders, new_order):
     # 2. Luego recoger los ACCEPTED en orden de proximidad entre pickups
     if to_accept:
         for o in to_accept:
-            pickup_city, pickup_barrio = _get_pickup_area(o)
-            area = ", ".join(p for p in [pickup_barrio or "", pickup_city or ""] if p) or "#{}".format(_row_value(o, "id"))
+            area = _get_order_visible_pickup_line(o) or "#{}".format(_row_value(o, "id"))
             lines.append("{}. Recoge #{} en {}".format(step, _row_value(o, "id"), area))
             step += 1
 
@@ -5562,7 +5780,7 @@ def _notify_courier_pickup_approved(context, order):
                 "a menos de 150 metros del lugar de entrega."
             ).format(
                 order["id"],
-                order["customer_address"] or "No disponible",
+                _get_order_visible_dropoff_line(order) or "No disponible",
                 order["customer_name"] or "No disponible",
                 order["customer_phone"] or "No disponible",
                 parking_aviso,
@@ -5643,7 +5861,7 @@ def _notify_ally_delivered(context, order, durations=None):
                     fee_cfg = get_fee_config()
                     fee_servicio = fee_cfg["fee_service_total"]
                     commission_pct = fee_cfg.get("fee_ally_commission_pct", 0)
-                    total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+                    total_fee_val = int(_row_value(order, "total_fee") or 0)
                     commission_amt = round(total_fee_val * commission_pct / 100) if commission_pct and total_fee_val else 0
                     fee_total_cobrado = fee_servicio + commission_amt
                     ally_balance = get_ally_link_balance(ally_id, ally_admin_link["admin_id"])
@@ -5661,7 +5879,7 @@ def _notify_ally_delivered(context, order, durations=None):
             pass
 
         parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
-        total_fee_order = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+        total_fee_order = int(_row_value(order, "total_fee") or 0)
         parking_block = (
             "\n\nTarifa al repartidor: ${:,} (incluye ${:,} por parqueo dificil)".format(total_fee_order, parking_fee)
         ) if parking_fee > 0 else ""
@@ -5723,7 +5941,7 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
             platform_share = fee_cfg_n["fee_platform_share"]
             tech_dev_pct = fee_cfg_n["fee_special_order_tech_dev_pct"]
             special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
-            total_fee_val = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+            total_fee_val = int(_row_value(order, "total_fee") or 0)
 
             lines = ["\n\nResumen financiero:"]
             # Cobros al courier
@@ -5753,7 +5971,7 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
             pass
 
         parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
-        total_fee_order = int(order["total_fee"] or 0) if order.get("total_fee") else 0
+        total_fee_order = int(_row_value(order, "total_fee") or 0)
         parking_block = (
             "\n\nTarifa al repartidor: ${:,} (incluye ${:,} por parqueo dificil)".format(total_fee_order, parking_fee)
         ) if parking_fee > 0 else ""
@@ -5835,8 +6053,8 @@ def _handle_admin_retry_creator_fees(update, context, order_id):
         query.edit_message_text("Pedido #{} no encontrado.".format(order_id))
         return
 
-    ally_id = order.get("ally_id") if hasattr(order, "get") else order["ally_id"]
-    creator_admin_id = order.get("creator_admin_id") if hasattr(order, "get") else order["creator_admin_id"]
+    ally_id = _row_value(order, "ally_id")
+    creator_admin_id = _row_value(order, "creator_admin_id")
     special_commission = int(order["special_commission"] or 0) if order["special_commission"] else 0
 
     if ally_id is not None or not creator_admin_id:
@@ -6061,28 +6279,14 @@ def _build_route_offer_text(route, destinations):
     additional_incentive = int(route["additional_incentive"] or 0)
 
     # Barrio/ciudad de recogida (columnas opcionales — fallback a pickup_address)
-    pickup_city = route.get("pickup_city") or ""
-    pickup_barrio = route.get("pickup_barrio") or ""
-    if not pickup_city and not pickup_barrio:
-        pickup_area = route["pickup_address"] or "No disponible"
-    elif pickup_barrio and pickup_city:
-        pickup_area = "{}, {}".format(pickup_barrio, pickup_city)
-    else:
-        pickup_area = pickup_barrio or pickup_city
+    pickup_area = _get_route_visible_pickup_line(route) or "Ubicacion pendiente de detallar"
 
     text = "RUTA DISPONIBLE\n\nRuta #{}\nRecogida: {}\n\n".format(route["id"], pickup_area)
     text += "{} paradas:\n".format(len(destinations))
 
     paradas_parking = []
     for dest in destinations:
-        barrio = dest["customer_barrio"] or ""
-        city = dest["customer_city"] or ""
-        if barrio and city:
-            area = "{}, {}".format(barrio, city)
-        elif barrio or city:
-            area = barrio or city
-        else:
-            area = dest["customer_address"] or "Sin direccion"
+        area = _get_route_stop_visible_line(dest) or "Ubicacion pendiente de detallar"
         dest_parking = int(dest["parking_fee"] or 0) if "parking_fee" in dest.keys() else 0
         parking_flag = " [parqueo dificil]" if dest_parking > 0 else ""
         text += "  Parada {}: {}{}\n".format(dest["sequence"], area, parking_flag)
@@ -6376,8 +6580,7 @@ def publish_route_to_couriers(
     _route_max_dist_km = None
     try:
         import math as _rmath
-        _rdests = get_route_destinations(route_id)
-        for _d in _rdests:
+        for _d in route_destinations:
             _dlat = _d.get("dropoff_lat") if hasattr(_d, "get") else _d["dropoff_lat"]
             _dlng = _d.get("dropoff_lng") if hasattr(_d, "get") else _d["dropoff_lng"]
             if _dlat is not None and _dlng is not None and pickup_lat is not None and pickup_lng is not None:
@@ -6393,6 +6596,28 @@ def publish_route_to_couriers(
         pass
 
     excluded_courier_ids = {int(cid) for cid in (excluded_courier_ids or []) if cid}
+
+    missing_visibility = _get_route_missing_courier_visibility_fields(route, route_destinations)
+    if missing_visibility:
+        creator_chat_id = _get_route_creator_chat_id(route)
+        total_blocked, specific_blocked = _record_courier_visibility_blocked_metric("route")
+        logger.warning(
+            "%s flow=route_publish blocked route_id=%s missing=%s count=%s total=%s",
+            COURIER_VISIBILITY_RULE_TAG,
+            route_id,
+            ",".join(missing_visibility),
+            specific_blocked,
+            total_blocked,
+        )
+        _notify_courier_visibility_blocked(
+            context,
+            creator_chat_id,
+            "Ruta",
+            route_id,
+            missing_visibility,
+            specific_count=specific_blocked,
+        )
+        return MARKET_PUBLISH_BLOCKED
 
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
@@ -6471,7 +6696,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
     ])
     keyboard.append([InlineKeyboardButton("Liberar ruta", callback_data="ruta_liberar_{}".format(route_id))])
 
-    stop_instructions = stop.get("instructions") or ""
+    stop_instructions = _row_value(stop, "instructions") or ""
     instr_line = "Instrucciones: {}\n".format(stop_instructions.strip()) if stop_instructions.strip() else ""
     stop_parking_fee = int(stop["parking_fee"] or 0) if "parking_fee" in stop.keys() else 0
     parking_aviso = (
@@ -6494,7 +6719,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
             total_stops,
             stop["customer_name"] or "Sin nombre",
             stop["customer_phone"] or "Sin telefono",
-            stop["customer_address"] or "Sin direccion",
+            _get_route_stop_visible_line(stop) or "Sin direccion",
             instr_line,
             parking_aviso,
         ),
@@ -6621,8 +6846,8 @@ def _show_route_reorder(msg_or_query, context, route_id, destinations):
     """Muestra la lista de paradas con botones para reordenar."""
     text = "Ruta #{} aceptada.\n\nOrden actual de paradas:\n".format(route_id)
     for d in destinations:
-        barrio = d["customer_barrio"] or d["customer_address"] or "Sin info"
-        text += "  {}. {}\n".format(d["sequence"], barrio)
+        stop_line = _get_route_stop_visible_line(d) or "Ubicacion pendiente de detallar"
+        text += "  {}. {}\n".format(d["sequence"], stop_line)
     text += "\nPuedes cambiar el orden segun tu conveniencia o confirmar el orden actual."
 
     keyboard = []
@@ -6688,7 +6913,7 @@ def _show_route_pickup_navigation(msg_or_query, context, route_id):
     route = get_route_by_id(route_id)
     if not route:
         return
-    pickup_address = route["pickup_address"] or "No disponible"
+    pickup_address = _get_route_visible_pickup_line(route) or "Ubicacion pendiente de detallar"
     pickup_lat = route["pickup_lat"]
     pickup_lng = route["pickup_lng"]
 

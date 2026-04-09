@@ -358,6 +358,8 @@ CONFIG_ALLY_MIN_PURCHASE_VALOR = 993  # Capturar nuevo mínimo de compra para su
 ADMIN_PEDIDO_SEL_CUST      = 917
 ADMIN_PEDIDO_SEL_CUST_ADDR = 918
 ADMIN_PEDIDO_SAVE_PICKUP   = 919   # Preguntar si guardar nueva direccion de recogida
+ADMIN_PEDIDO_PICKUP_DETALLE = 1024 # Capturar direccion humana visible de recogida tras confirmar el punto
+ADMIN_PEDIDO_CUST_ADDR_DETALLE = 1025 # Capturar direccion humana visible de entrega tras confirmar el punto
 
 # =========================
 # Suscripciones mensuales

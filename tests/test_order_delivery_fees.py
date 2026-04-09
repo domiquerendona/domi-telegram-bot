@@ -312,6 +312,28 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         conn.close()
         self.assertEqual(0, ally_fee_count)
 
+    def test_notify_admin_order_delivered_accepts_sqlite_row_without_get(self):
+        order_id = self._create_order(
+            status="PICKED_UP",
+            ally_id=None,
+            creator_admin_id=self.local_admin_id,
+        )
+        order = db.get_order_by_id(order_id)
+        context = _DummyContext()
+
+        with patch.object(order_delivery.logger, "warning") as warning_mock:
+            order_delivery._notify_admin_order_delivered(
+                context,
+                order,
+                {"tiempo_total": 300},
+                self.local_admin_id,
+            )
+
+        self.assertEqual(1, len(context.bot.messages))
+        self.assertEqual(940002, context.bot.messages[0]["chat_id"])
+        self.assertIn("Pedido #{}".format(order_id), context.bot.messages[0]["text"])
+        warning_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

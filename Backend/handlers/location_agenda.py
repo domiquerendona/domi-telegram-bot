@@ -3,6 +3,10 @@
 # Extraído de main.py (Fase 2d)
 # =============================================================================
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     CallbackQueryHandler,
@@ -50,7 +54,16 @@ from services import (
     resolve_location,
     set_default_ally_location,
     update_admin_location,
+    update_ally_location,
+    update_ally_location_coords,
+    is_system_address_text,
+    visible_address_label,
+    visible_address_text,
 )
+
+
+def _loc_repair_tag(address_text):
+    return " [revisar]" if is_system_address_text(address_text) else ""
 
 def _loc_admin_city_hint(update):
     """Retorna barrio+ciudad del admin para mejorar geocoding de sus ubicaciones."""
@@ -72,7 +85,7 @@ def _ally_locs_mostrar_lista(query_or_update, ally_id, edit=False, aviso=None):
     keyboard = []
     if locations:
         for loc in locations:
-            label = (loc["label"] or "Sin nombre")[:25]
+            label = visible_address_label(loc["label"], loc["address"], fallback="Sin nombre")[:25]
             tags = []
             if loc["is_default"]:
                 tags.append("BASE")
@@ -81,7 +94,7 @@ def _ally_locs_mostrar_lista(query_or_update, ally_id, edit=False, aviso=None):
             tag_str = " [{}]".format(", ".join(tags)) if tags else ""
             sin_gps = " (sin GPS)" if loc["lat"] is None else ""
             keyboard.append([InlineKeyboardButton(
-                "{}{}{}".format(label, tag_str, sin_gps),
+                "{}{}{}{}".format(label, tag_str, _loc_repair_tag(loc["address"]), sin_gps),
                 callback_data="ally_locs_ver_{}".format(loc["id"])
             )])
         keyboard.append([InlineKeyboardButton("+ Agregar nueva", callback_data="ally_locs_add")])
@@ -144,24 +157,32 @@ def ally_locs_menu_callback(update, context):
         if not loc:
             return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Ubicacion no encontrada.")
 
-        label = loc["label"] or "Sin nombre"
-        address = loc["address"] or "-"
+        label = visible_address_label(loc["label"], loc["address"], fallback="Sin nombre")
+        address = visible_address_text(loc["address"], fallback="Direccion pendiente de corregir")
         gps = "{}, {}".format(round(loc["lat"], 5), round(loc["lng"], 5)) if loc["lat"] else "Sin GPS"
         usos = loc["use_count"] or 0
         is_base = bool(loc["is_default"])
+        repair_note = ""
+        if is_system_address_text(loc["address"]):
+            repair_note = "\n\nATENCION: esta ubicacion necesita texto humano. Si no la corriges al reutilizarla en un pedido, volvera a pedir detalle."
 
         detalle = (
             "UBICACION: {}\n\n"
             "Direccion: {}\n"
             "GPS: {}\n"
-            "Usos en pedidos: {}"
-        ).format(label, address, gps, usos)
+            "Usos en pedidos: {}{}"
+        ).format(label, address, gps, usos, repair_note)
 
         keyboard = []
         if not is_base:
             keyboard.append([InlineKeyboardButton(
                 "Marcar como base",
                 callback_data="ally_locs_base_{}".format(loc_id)
+            )])
+        if is_system_address_text(loc["address"]):
+            keyboard.append([InlineKeyboardButton(
+                "Corregir ahora",
+                callback_data="ally_locs_fix_{}".format(loc_id)
             )])
         keyboard.append([InlineKeyboardButton(
             "Eliminar",
@@ -179,6 +200,25 @@ def ally_locs_menu_callback(update, context):
             return _ally_locs_mostrar_lista(query, ally_id, edit=True)
         set_default_ally_location(loc_id, ally_id)
         return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Base actualizada.")
+
+    if data.startswith("ally_locs_fix_"):
+        try:
+            loc_id = int(data.split("ally_locs_fix_")[1])
+        except (ValueError, IndexError):
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True)
+        loc = get_ally_location_by_id(loc_id, ally_id)
+        if not loc:
+            return _ally_locs_mostrar_lista(query, ally_id, edit=True, aviso="Ubicacion no encontrada.")
+        context.user_data["ally_locs_editing_id"] = loc_id
+        logger.info("[address_fix_agenda_v2026_04_09] flow=ally_locs action=start location_id=%s", loc_id)
+        query.edit_message_text(
+            "CORREGIR UBICACION\n\n"
+            "Envia la ubicacion corregida del punto de recogida:\n"
+            "- Comparte tu ubicacion (PIN de Telegram)\n"
+            "- Pega un link de Google Maps\n"
+            "- Escribe coordenadas (ej: 4.81,-75.69)"
+        )
+        return ALLY_LOCS_ADD_COORDS
 
     if data.startswith("ally_locs_del_confirm_"):
         try:
@@ -209,6 +249,7 @@ def ally_locs_menu_callback(update, context):
         return ALLY_LOCS_MENU
 
     if data == "ally_locs_add":
+        context.user_data.pop("ally_locs_editing_id", None)
         query.edit_message_text(
             "AGREGAR UBICACION\n\n"
             "Envia la ubicacion del punto de recogida:\n"
@@ -315,6 +356,28 @@ def ally_locs_add_barrio(update, context):
         update.message.reply_text("Error: datos perdidos. Regresa al menu de ubicaciones.")
         return ConversationHandler.END
 
+    editing_id = context.user_data.pop("ally_locs_editing_id", None)
+    if editing_id:
+        update_ally_location(
+            editing_id,
+            address=label,
+            city=city,
+            barrio=barrio,
+            phone=None,
+        )
+        update_ally_location_coords(editing_id, lat, lng)
+        logger.info("[address_fix_agenda_v2026_04_09] flow=ally_locs action=save location_id=%s", editing_id)
+        for key in [
+            "ally_locs_new_lat",
+            "ally_locs_new_lng",
+            "ally_locs_new_label",
+            "ally_locs_new_city",
+            "ally_locs_new_barrio",
+        ]:
+            context.user_data.pop(key, None)
+        update.message.reply_text("Ubicacion corregida correctamente.")
+        return _ally_locs_mostrar_lista(update, ally_id, edit=False)
+
     new_loc_id = create_ally_location(
         ally_id=ally_id,
         label=label,
@@ -388,8 +451,9 @@ def _admin_dirs_mostrar_menu(update, context, edit_message=False):
     keyboard = []
     if locations:
         for loc in locations:
-            label = loc["label"] or loc["address"]
-            btn_text = "{}: {}".format(label, loc["address"][:25])
+            label = visible_address_label(loc["label"], loc["address"], fallback="Sin etiqueta")
+            visible_address = visible_address_text(loc["address"], fallback="Direccion pendiente de corregir")
+            btn_text = "{}{}: {}".format(label, _loc_repair_tag(loc["address"]), visible_address[:25])
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="adirs_ver_{}".format(loc["id"]))])
 
     keyboard.append([InlineKeyboardButton("Nueva direccion", callback_data="adirs_nueva")])
@@ -462,11 +526,15 @@ def _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id):
         return ADMIN_DIRS_MENU
 
     context.user_data["adirs_current_id"] = loc_id
-    label = loc["label"] or "Sin etiqueta"
+    label = visible_address_label(loc["label"], loc["address"], fallback="Sin etiqueta")
     phone_text = loc["phone"] or "Sin telefono"
     lat = loc["lat"]
     lng = loc["lng"]
     coords_text = "Coordenadas: {:.5f}, {:.5f}".format(float(lat), float(lng)) if lat and lng else "Sin coordenadas"
+    visible_address = visible_address_text(loc["address"], fallback="Direccion pendiente de corregir")
+    repair_note = ""
+    if is_system_address_text(loc["address"]):
+        repair_note = "\n\nATENCION: esta direccion necesita correccion humana. Usa 'Editar' para dejarla legible."
 
     if lat and lng:
         try:
@@ -478,14 +546,15 @@ def _admin_dirs_ver_ubicacion(query, context, loc_id, admin_id):
         except Exception:
             pass
 
+    edit_label = "Corregir ahora" if is_system_address_text(loc["address"]) else "Editar"
     keyboard = [
-        [InlineKeyboardButton("Editar", callback_data="adirs_editar_{}".format(loc_id))],
+        [InlineKeyboardButton(edit_label, callback_data="adirs_editar_{}".format(loc_id))],
         [InlineKeyboardButton("Archivar", callback_data="adirs_archivar_{}".format(loc_id))],
         [InlineKeyboardButton("Volver", callback_data="adirs_volver_menu")],
     ]
 
     query.edit_message_text(
-        "{}\n{}\n\nTelefono: {}\n{}".format(label, loc["address"], phone_text, coords_text),
+        "{}\n{}\n\nTelefono: {}\n{}{}".format(label, visible_address, phone_text, coords_text, repair_note),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ADMIN_DIRS_VER

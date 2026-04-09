@@ -25,7 +25,12 @@ from services import (
     update_ally_form_request_status,
 )
 from handlers.order import _ally_bandeja_guardar_en_agenda
-from order_delivery import _get_order_durations, _format_duration, publish_order_to_couriers
+from order_delivery import (
+    _get_order_durations,
+    _format_duration,
+    publish_order_to_couriers,
+    build_courier_order_preview_text,
+)
 
 
 def ally_bandeja_solicitudes(update, context):
@@ -688,6 +693,26 @@ def ally_bandeja_callback(update, context):
         ]
         if incentivo:
             preview_lines.append("Incentivo adicional: +${:,}".format(int(incentivo)))
+        preview_lines.append("")
+        preview_lines.append(
+            build_courier_order_preview_text(
+                {
+                    "id": "preview",
+                    "distance_km": float(solicitud.get("distance_km") or 0),
+                    "total_fee": int(total_fee or 0),
+                    "additional_incentive": int(incentivo or 0),
+                    "payment_method": "UNCONFIRMED",
+                    "cash_required_amount": 0,
+                    "instructions": "",
+                    "pickup_address": pickup.get("address") or "",
+                    "customer_address": direccion,
+                },
+                pickup_city_override=pickup.get("city") or "",
+                pickup_barrio_override=pickup.get("barrio") or "",
+                dropoff_city_override=ciudad_entrega,
+                dropoff_barrio_override=barrio_entrega,
+            )
+        )
 
         confirm_cb = "alybandeja_confirmargsave_{}".format(request_id) if guardar else "alybandeja_confirmar_{}".format(request_id)
         buttons = [
@@ -765,8 +790,9 @@ def ally_bandeja_callback(update, context):
                 pass
 
         # Publicar pedido a couriers
+        published_count = 0
         try:
-            publish_order_to_couriers(
+            published_count = publish_order_to_couriers(
                 order_id, ally_id, context,
                 pickup_city=ciudad_pickup,
                 pickup_barrio=barrio_pickup,
@@ -777,7 +803,11 @@ def ally_bandeja_callback(update, context):
             logger.warning("alybandeja_confirmar publish error: %s", e)
 
         query.edit_message_text(
-            "Pedido #{} creado y publicado.\n\nBuscando repartidor...".format(order_id),
+            (
+                "Pedido #{} creado y publicado.\n\nBuscando repartidor..."
+                if published_count >= 0 else
+                "Pedido #{} creado.\n\nLa publicacion quedo bloqueada hasta corregir la direccion visible."
+            ).format(order_id),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver a solicitudes", callback_data="alybandeja_volver")]])
         )
         return
