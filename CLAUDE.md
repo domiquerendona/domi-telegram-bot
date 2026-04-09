@@ -964,6 +964,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 
 **Frontend Angular:**
 - `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
+- `LoginComponent` (`features/login/login.ts`) — formulario de autenticación con toggle de visibilidad de contraseña (ícono ojito). Usa `signal(false)` para `mostrarPassword`; botón `.toggle-password` posicionado absolutamente dentro de `.password-wrapper`. Íconos: `visibility` / `visibility_off` de `material-symbols-outlined`.
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
 - Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
@@ -974,6 +975,9 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `FooterComponent` (`layout/components/footer/footer.ts`) — acepta `@Input() base = '/superadmin'`. Usar `base="/courier"` en el courier layout para que los links apunten al prefijo correcto.
 - Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`, `/courier/terminos`, `/courier/datos-personales`, `/courier/politica-uso`, `/courier/centro-ayuda`, `/courier/contacto`, `/courier/preguntas-frecuentes`
 - Ruta perfil admin: `/superadmin/perfil`
+
+**Bugs corregidos (2026-04-09):**
+- `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
 
 **Bugs corregidos en `db.py` (2026-04-01):**
 - `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
