@@ -1017,6 +1017,31 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 3. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
 4. Solo ve sus propios datos; no puede acceder a `/superadmin`.
 
+**Auto-provisión de cuenta al aprobar (IMPLEMENTADO 2026-04-09):**
+
+Cuando un repartidor o admin local es aprobado por **primera vez** (no en reactivaciones), el bot crea automáticamente su cuenta en `web_users` y le envía las credenciales por Telegram como segundo mensaje tras la bienvenida.
+
+Formato del mensaje de credenciales:
+```
+Tu cuenta del panel web fue creada:
+
+Usuario: r_juan_10
+Contrasena: Xk9mP2nQr7
+Accede en: https://angular-production-44c8.up.railway.app
+
+Guarda estas credenciales. Puedes cambiar tu contrasena desde el panel.
+```
+
+**Lógica de username:** prefijo (`r_` = COURIER, `a_` = ADMIN_LOCAL) + primer nombre normalizado (sin tildes, minúsculas, solo alfanumérico) + `_` + id interno. Ejemplo: `r_juan_10`, `a_maria_3`. Garantiza unicidad sin colisiones.
+
+**Condiciones:** solo en primera aprobación (`reactivated=False`), solo para COURIER y ADMIN_LOCAL. Si ya tiene cuenta vinculada por `courier_id`/`admin_id`, no crea otra.
+
+**Funciones nuevas en `db.py`:** `get_web_user_by_courier_id(courier_id)`, `get_web_user_by_admin_id(admin_id)` — re-exportadas en `services.py`.
+
+**Función nueva en `services.py`:** `provision_web_panel_account(role, profile)` — genera username/password, hashea con bcrypt, llama `create_web_user`. Retorna `{"username": ..., "password": ...}` o `None` si ya existe.
+
+**Punto de invocación:** `handlers/common.py:_send_role_welcome_message` — al final del envío del mensaje de bienvenida, llama `provision_web_panel_account` y envía las credenciales si es primera aprobación.
+
 ---
 
 ### Roles y grupos (código existente)
