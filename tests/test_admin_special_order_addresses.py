@@ -61,6 +61,7 @@ def _extract_namespace():
         "_admin_pedido_render_pickup_save_prompt",
         "_admin_pedido_prompt_pickup_detail",
         "_admin_pedido_prompt_delivery_detail",
+        "mostrar_pregunta_base",
         "_admin_pedido_pedir_instruc",
         "admin_pedido_pickup_callback",
         "admin_pedido_geo_pickup_callback",
@@ -106,6 +107,7 @@ def _extract_namespace():
         "PEDIDO_DIRECCION": 9,
         "PEDIDO_SELECCIONAR_DIRECCION": 10,
         "PEDIDO_INSTRUCCIONES_EXTRA": 11,
+        "PEDIDO_REQUIERE_BASE": 12,
         "PEDIDO_PICKUP_SELECTOR": 12,
         "PEDIDO_PICKUP_NUEVA_UBICACION": 13,
         "PEDIDO_PICKUP_NUEVA_DETALLES": 14,
@@ -263,13 +265,10 @@ class AdminSpecialOrderAddressTests(unittest.TestCase):
         namespace["increment_admin_customer_address_usage"] = (
             lambda address_id, customer_id: usage_calls.append((address_id, customer_id))
         )
-        namespace["_admin_pedido_calcular_preview"] = (
-            lambda update, context, edit=False: 912
-        )
-
         update = SimpleNamespace(message=_DummyMessage("Conjunto Los Pinos Torre 2"))
         context = SimpleNamespace(
             user_data={
+                "admin_ped_admin_id": 11,
                 "admin_ped_geo_cust_pending": {
                     "address_id": 9,
                     "customer_id": 44,
@@ -286,12 +285,13 @@ class AdminSpecialOrderAddressTests(unittest.TestCase):
 
         state = namespace["admin_pedido_cust_addr_detalle_handler"](update, context)
 
-        self.assertEqual(912, state)
+        self.assertEqual(12, state)
         self.assertEqual("Conjunto Los Pinos Torre 2", context.user_data["admin_ped_cust_addr"])
         self.assertEqual(1200, context.user_data["admin_ped_parking_fee"])
         self.assertEqual("Conjunto Los Pinos Torre 2", update_calls[0]["address_text"])
         self.assertEqual([(9, 44)], usage_calls)
         self.assertNotIn("admin_ped_geo_cust_pending", context.user_data)
+        self.assertIn("BASE REQUERIDA", update.message.reply_calls[-1]["text"])
 
     def test_pickup_geo_confirmation_requires_human_detail_before_save(self):
         namespace = _extract_namespace()
@@ -403,9 +403,9 @@ class AdminSpecialOrderAddressTests(unittest.TestCase):
 
         state = namespace["admin_pedido_geo_callback"](update, context)
 
-        self.assertEqual(912, state)
+        self.assertEqual(12, state)
         self.assertEqual("Calle 21 # 8-40 apto 301", context.user_data["admin_ped_cust_addr"])
-        self.assertIn("Calculando tarifa", query.edit_calls[-1]["text"])
+        self.assertIn("BASE REQUERIDA", query.edit_calls[-1]["text"])
 
     def test_pickup_detail_from_preview_returns_to_preview(self):
         namespace = _extract_namespace()

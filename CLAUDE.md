@@ -1562,6 +1562,7 @@ Motor usado:
 - `build_offer_demand_preview(...)` en `Backend/services.py`
 - consulta `get_eligible_couriers_for_order(...)`
 - filtra tambien couriers sin saldo operativo para fee
+- desde 2026-04-09 el preview y la publicacion comparten tambien la regla de base requerida: pedido aliado, pedido especial admin y ruta multi-parada preguntan si el courier debe adelantar dinero, guardan el monto y filtran elegibles por base disponible antes de ofertar
 - si el admin limita visibilidad con `team_only`, la recomendacion usa solo su equipo
 
 Modo red pequena vigente:

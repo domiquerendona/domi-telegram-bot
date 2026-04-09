@@ -121,11 +121,11 @@ Prefijos establecidos:
 - Flujo courier:   phone, courier_fullname, courier_idnumber, city, barrio, residence_address, courier_lat, courier_lng, courier_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en courier_geo_ubicacion_callback)
 - Flujo admin:     phone, admin_city, admin_barrio, admin_residence_address, admin_lat, admin_lng, admin_geo_formatted (temporal — formatted_address geocodificado pendiente de confirmar; se hace pop al confirmar o rechazar en admin_geo_ubicacion_callback)
 - Flujo pedido:    pickup_*, pickup_city, pickup_barrio, new_pickup_address, new_pickup_city, new_pickup_barrio, customer_*, customer_city, customer_barrio, instructions, requires_cash, cash_required_amount, pedido_incentivo, pedido_incentivo_edit_order_id, pedido_pending_location_*, pedido_pending_prefill_address, pedido_pending_customer_city, pedido_pending_customer_barrio, pedido_pending_address_fix, pedido_pending_pickup_fix, pedido_pending_pickup_resolution, etc.
-- Flujo pedido especial admin: admin_ped_* (incluye admin_ped_geo_pickup_pending, admin_ped_geo_cust_pending, admin_ped_addr_notes, admin_ped_edit_from_preview, etc.)
+- Flujo pedido especial admin: admin_ped_* (incluye admin_ped_geo_pickup_pending, admin_ped_geo_cust_pending, admin_ped_addr_notes, admin_ped_edit_from_preview, admin_ped_requires_cash, admin_ped_cash_required_amount, etc.)
 - Flujo recarga:   recargar_target_type, recargar_target_id, recargar_admin_id, etc.
 - Flujo recarga directa (plataforma): recdir_tipo, recdir_target_id, recdir_target_name, recdir_monto, recdir_nota
 - Flujo ingreso externo (plataforma): ingreso_monto, ingreso_metodo
-- Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, etc.)
+- Flujo ruta:      ruta_* (incluye ruta_pickup_city, ruta_pickup_barrio, ruta_temp_city, ruta_temp_barrio, ruta_requires_cash, ruta_cash_required_amount, etc.)
 - Flujo agenda clientes: clientes_pending_* (clientes_pending_mode, clientes_pending_address_text, clientes_pending_lat, clientes_pending_lng, clientes_pending_city, clientes_pending_barrio, clientes_pending_notes), clientes_geo_mode (valores: "nuevo_cliente" | "dir_nueva" | "dir_editar" | "corregir_coords"), clientes_geo_address_input, current_customer_id, current_address_id
 - Flujo mis ubicaciones (aliado): ally_locs_* (ally_locs_new_lat, ally_locs_new_lng, ally_locs_new_label, ally_locs_new_city, ally_locs_new_barrio)
 - Flujo invitaciones admin: admin_invite_token (token temporal resuelto desde `/start` para preseleccionar admin en registro nuevo de aliado o repartidor)
@@ -137,6 +137,9 @@ Reglas:
 
 Regla obligatoria de direcciones (ciudad + barrio/sector):
 - Toda creación/registro de una dirección (pickups del aliado, direcciones de clientes, paradas de ruta, etc.) DEBE pedir y guardar siempre ciudad y barrio/sector.
+
+Regla obligatoria de base requerida:
+- Cuando un flujo de creación de servicio permita que el courier deba adelantar dinero al recoger, DEBE preguntar explícitamente si requiere base, guardar `requires_cash`/`cash_required_amount` en el dominio correspondiente y usar ese dato tanto en el preview como en el filtro de elegibilidad del mercado.
 
 Regla obligatoria de dirección humana visible (nuevo_pedido_conv + admin_pedido_conv):
 - SIEMPRE confirmar primero el punto exacto cuando el flujo pase por geocoding o GPS.

@@ -16,6 +16,8 @@ from telegram.ext import (
 )
 
 from handlers.states import (
+    PEDIDO_REQUIERE_BASE,
+    PEDIDO_VALOR_BASE,
     RUTA_PICKUP_SELECTOR,
     RUTA_PICKUP_LISTA,
     RUTA_PICKUP_NUEVA_UBICACION,
@@ -37,6 +39,12 @@ from handlers.states import (
     RUTA_PARADA_BUSCAR,
     RUTA_PARADA_DEDUP,
     RUTA_GUARDAR_CUST_PARKING,
+)
+from handlers.order import (
+    mostrar_pregunta_base,
+    pedido_requiere_base_callback,
+    pedido_valor_base_callback,
+    pedido_valor_base_texto,
 )
 from handlers.common import (
     CANCELAR_VOLVER_MENU_FILTER,
@@ -312,6 +320,40 @@ def _ruta_incentivo_keyboard():
     ]
 
 
+def _ruta_continue_after_base(update_or_query, context, edit=False):
+    """Retoma la ruta una vez se confirmo si requiere base."""
+    paradas = context.user_data.get("ruta_paradas", [])
+    pickup_lat = context.user_data.get("ruta_pickup_lat")
+    pickup_lng = context.user_data.get("ruta_pickup_lng")
+    tiene_gps = (
+        pickup_lat is not None and pickup_lng is not None
+        and all(p.get("lat") is not None and p.get("lng") is not None for p in paradas)
+    )
+    if tiene_gps:
+        if edit and hasattr(update_or_query, "edit_message_text"):
+            update_or_query.edit_message_text("Calculando distancia de la ruta...")
+        elif hasattr(update_or_query, "message") and update_or_query.message:
+            update_or_query.message.reply_text("Calculando distancia de la ruta...")
+        dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
+        if dist_result and dist_result["total_km"] > 0:
+            context.user_data["ruta_distancia_km"] = dist_result["total_km"]
+            context.user_data["ruta_distancia_estimada"] = dist_result.get("estimada", False)
+            return _ruta_mostrar_confirmacion(update_or_query, context)
+    if edit and hasattr(update_or_query, "edit_message_text"):
+        update_or_query.edit_message_text(
+            "DISTANCIA DE LA RUTA\n\n"
+            "No tengo GPS de todas las paradas para calcular automaticamente.\n"
+            "Ingresa la distancia total de la ruta en km.\n\nEjemplo: 10.5"
+        )
+    elif hasattr(update_or_query, "message") and update_or_query.message:
+        update_or_query.message.reply_text(
+            "DISTANCIA DE LA RUTA\n\n"
+            "No tengo GPS de todas las paradas para calcular automaticamente.\n"
+            "Ingresa la distancia total de la ruta en km.\n\nEjemplo: 10.5"
+        )
+    return RUTA_DISTANCIA_KM
+
+
 def _ruta_mostrar_confirmacion(update_or_query, context):
     """Muestra el resumen de la ruta con precio desglosado y orden optimizado."""
     paradas = context.user_data.get("ruta_paradas", [])
@@ -345,6 +387,8 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     context.user_data["ruta_precio"] = precio_info
 
     distancia_estimada = context.user_data.get("ruta_distancia_estimada", False)
+    requires_cash = bool(context.user_data.get("ruta_requires_cash"))
+    cash_required_amount = int(context.user_data.get("ruta_cash_required_amount") or 0)
 
     text = "RUTA DE ENTREGA\n"
     if fue_optimizado:
@@ -373,11 +417,15 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
     incentivo = int(context.user_data.get("ruta_incentivo", 0) or 0)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    if requires_cash and cash_required_amount > 0:
+        text += "\nBase requerida: ${:,}".format(cash_required_amount)
     demand_preview = build_offer_demand_preview(
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
         distance_km=total_km,
         ally_id=context.user_data.get("ruta_ally_id"),
+        requires_cash=requires_cash,
+        cash_required_amount=cash_required_amount,
         current_incentive=incentivo,
     )
     demand_block = build_offer_demand_badge_text(demand_preview)
@@ -397,6 +445,8 @@ def _ruta_mostrar_confirmacion(update_or_query, context):
                 "total_distance_km": total_km,
                 "total_fee": total_fee,
                 "additional_incentive": incentivo,
+                "requires_cash": requires_cash,
+                "cash_required_amount": cash_required_amount,
             },
             [
                 {
@@ -1025,25 +1075,11 @@ def ruta_mas_paradas_callback(update, context):
         if len(paradas) < 2:
             query.edit_message_text("Debes agregar al menos 2 paradas para crear una ruta.")
             return _ruta_iniciar_parada(query, context)
-        pickup_lat = context.user_data.get("ruta_pickup_lat")
-        pickup_lng = context.user_data.get("ruta_pickup_lng")
-        tiene_gps = (
-            pickup_lat is not None and pickup_lng is not None
-            and all(p.get("lat") is not None and p.get("lng") is not None for p in paradas)
+        logger.info(
+            "[requires_cash_unified_v2026_04_09] flow=route action=ask_base stops=%s",
+            len(paradas),
         )
-        if tiene_gps:
-            query.edit_message_text("Calculando distancia de la ruta...")
-            dist_result = calcular_distancia_ruta_smart(pickup_lat, pickup_lng, paradas)
-            if dist_result and dist_result["total_km"] > 0:
-                context.user_data["ruta_distancia_km"] = dist_result["total_km"]
-                context.user_data["ruta_distancia_estimada"] = dist_result.get("estimada", False)
-                return _ruta_mostrar_confirmacion(query, context)
-        query.edit_message_text(
-            "DISTANCIA DE LA RUTA\n\n"
-            "No tengo GPS de todas las paradas para calcular automaticamente.\n"
-            "Ingresa la distancia total de la ruta en km.\n\nEjemplo: 10.5"
-        )
-        return RUTA_DISTANCIA_KM
+        return mostrar_pregunta_base(query, context, edit=True)
     return RUTA_MAS_PARADAS
 
 
@@ -1136,6 +1172,8 @@ def ruta_confirmacion_callback(update, context):
     pickup_lng = context.user_data.get("ruta_pickup_lng")
     pickup_location_id = context.user_data.get("ruta_pickup_location_id")
     total_km = context.user_data.get("ruta_distancia_km", 0)
+    requires_cash = bool(context.user_data.get("ruta_requires_cash"))
+    cash_required_amount = int(context.user_data.get("ruta_cash_required_amount") or 0)
     if not has_valid_coords(pickup_lat, pickup_lng) or any(
         not has_valid_coords(parada.get("lat"), parada.get("lng")) for parada in paradas
     ):
@@ -1174,6 +1212,8 @@ def ruta_confirmacion_callback(update, context):
             total_fee=precio_info.get("total_fee", 0),
             instructions=None,
             ally_admin_id_snapshot=admin_id_snapshot,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_required_amount,
         )
     except Exception as e:
         query.edit_message_text("Error al crear la ruta: {}".format(str(e)))
@@ -1426,6 +1466,14 @@ nueva_ruta_conv = ConversationHandler(
         ],
         RUTA_MAS_PARADAS: [
             CallbackQueryHandler(ruta_mas_paradas_callback, pattern=r"^ruta_mas_(si|no)$"),
+        ],
+        PEDIDO_REQUIERE_BASE: [
+            CallbackQueryHandler(pedido_requiere_base_callback, pattern=r"^pedido_base_(si|no)$"),
+        ],
+        PEDIDO_VALOR_BASE: [
+            CallbackQueryHandler(pedido_valor_base_callback, pattern=r"^pedido_base_(20000|50000|100000|200000|otro)$"),
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
+            MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_valor_base_texto),
         ],
         RUTA_DISTANCIA_KM: [
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),

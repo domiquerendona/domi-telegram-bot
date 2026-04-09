@@ -1609,6 +1609,8 @@ def _get_route_candidate_courier_ids(route_id, ally_id, admin_id, excluded_couri
 
     pickup_lat = route["pickup_lat"]
     pickup_lng = route["pickup_lng"]
+    requires_cash = bool(_row_value(route, "requires_cash", False))
+    cash_amount = int(_row_value(route, "cash_required_amount", 0) or 0)
 
     route_max_dist_km = None
     try:
@@ -1633,8 +1635,8 @@ def _get_route_candidate_courier_ids(route_id, ally_id, admin_id, excluded_couri
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
-        requires_cash=False,
-        cash_required_amount=0,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
         order_distance_km=route_max_dist_km,
@@ -5251,10 +5253,12 @@ def _build_offer_text(
         text += "Pago base: ${:,}\n".format(int(base_fee))
         text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
 
-    cash_amount = order["cash_required_amount"] or 0
-    payment_method = order["payment_method"] or "UNCONFIRMED"
+    cash_amount = int(_row_value(order, "cash_required_amount", 0) or 0)
+    requires_cash = bool(_row_value(order, "requires_cash", False))
+    payment_method = _row_value(order, "payment_method", "UNCONFIRMED") or "UNCONFIRMED"
+    cash_confirmed = payment_method == "CASH_CONFIRMED" or (requires_cash and cash_amount > 0)
 
-    if payment_method == "CASH_CONFIRMED":
+    if cash_confirmed:
         text += "Pago: efectivo confirmado\n"
         if cash_amount > 0:
             text += "Base requerida: ${:,}\n".format(int(cash_amount))
@@ -6277,6 +6281,8 @@ def _build_route_offer_text(route, destinations):
     total_km = float(route["total_distance_km"] or 0)
     total_fee = int(route["total_fee"] or 0)
     additional_incentive = int(route["additional_incentive"] or 0)
+    cash_amount = int(_row_value(route, "cash_required_amount", 0) or 0)
+    requires_cash = bool(_row_value(route, "requires_cash", False))
 
     # Barrio/ciudad de recogida (columnas opcionales — fallback a pickup_address)
     pickup_area = _get_route_visible_pickup_line(route) or "Ubicacion pendiente de detallar"
@@ -6302,6 +6308,10 @@ def _build_route_offer_text(route, destinations):
         text += "Pago total: ${:,}\n".format(total_fee)
     else:
         text += "Pago: ${:,}\n".format(total_fee)
+
+    if requires_cash and cash_amount > 0:
+        text += "Base requerida: ${:,}\n".format(cash_amount)
+        text += "\nADVERTENCIA: Si no tienes base suficiente, NO tomes esta ruta.\n"
 
     if paradas_parking:
         total_parking = sum(p for _, p in paradas_parking)
@@ -6572,9 +6582,12 @@ def publish_route_to_couriers(
     route = get_route_by_id(route_id)
     if not route:
         return 0
+    route_destinations = get_route_destinations(route_id)
 
     pickup_lat = route["pickup_lat"]
     pickup_lng = route["pickup_lng"]
+    requires_cash = bool(_row_value(route, "requires_cash", False))
+    cash_amount = int(_row_value(route, "cash_required_amount", 0) or 0)
 
     # Calcular distancia máxima pickup→parada para filtrar bicicletas >3 km
     _route_max_dist_km = None
@@ -6622,8 +6635,8 @@ def publish_route_to_couriers(
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
-        requires_cash=False,
-        cash_required_amount=0,
+        requires_cash=requires_cash,
+        cash_required_amount=cash_amount,
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
         order_distance_km=_route_max_dist_km,
@@ -8258,8 +8271,8 @@ def _handle_route_release_confirm(update, context, route_id, reason_code):
     eligible = get_eligible_couriers_for_order(
         admin_id=admin_id,
         ally_id=ally_id,
-        requires_cash=False,
-        cash_required_amount=0,
+        requires_cash=bool(_row_value(route, "requires_cash", False)),
+        cash_required_amount=int(_row_value(route, "cash_required_amount", 0) or 0),
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
         order_distance_km=_rrel_max_dist_km,

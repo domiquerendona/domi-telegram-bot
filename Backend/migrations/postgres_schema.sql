@@ -725,6 +725,8 @@ CREATE TABLE IF NOT EXISTS routes (
     additional_stops_fee INTEGER DEFAULT 0,
     total_fee INTEGER DEFAULT 0,
     instructions TEXT,
+    requires_cash INTEGER DEFAULT 0,
+    cash_required_amount INTEGER DEFAULT 0,
     canceled_by TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     published_at TIMESTAMP,

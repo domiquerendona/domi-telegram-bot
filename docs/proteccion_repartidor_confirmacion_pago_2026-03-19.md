@@ -416,3 +416,15 @@ preparado para recibir el cambio.
 ### Pendiente fase 3
 
 Integración con formulario público `/form/:token`: el cliente declara su medio de pago al enviar la solicitud; el aliado confirma o corrige antes de crear el pedido.
+
+### Actualización 2026-04-09
+
+La regla de base requerida quedó extendida y unificada en:
+- pedido individual del aliado
+- pedido especial del admin
+- ruta multi-parada del aliado
+
+En los tres casos la base requerida debe reflejarse en:
+- preview del creador
+- oferta real del courier
+- filtro de elegibilidad por base disponible

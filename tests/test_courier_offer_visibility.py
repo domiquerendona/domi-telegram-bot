@@ -191,6 +191,37 @@ class CourierOfferVisibilityTests(unittest.TestCase):
         self.assertIn("Parada 1: Calle 25 # 8-19 (Cuba, Pereira)", text)
         self.assertIn("Parada 2: La Pradera, Dosquebradas [parqueo dificil]", text)
 
+    def test_build_route_offer_text_warns_when_base_is_required(self):
+        namespace = _extract_namespace()
+        build_route_offer = namespace["_build_route_offer_text"]
+        route = {
+            "id": 15,
+            "pickup_address": "Cra 8 # 10-12",
+            "pickup_city": "Pereira",
+            "pickup_barrio": "Centro",
+            "total_distance_km": 6.4,
+            "total_fee": 18000,
+            "additional_incentive": 0,
+            "requires_cash": True,
+            "cash_required_amount": 40000,
+        }
+
+        text = build_route_offer(
+            route,
+            [
+                {
+                    "sequence": 1,
+                    "customer_address": "Calle 25 # 8-19",
+                    "customer_city": "Pereira",
+                    "customer_barrio": "Cuba",
+                    "parking_fee": 0,
+                }
+            ],
+        )
+
+        self.assertIn("Base requerida: $40,000", text)
+        self.assertIn("NO tomes esta ruta", text)
+
     def test_public_preview_helpers_wrap_real_offer_text(self):
         namespace = _extract_namespace()
         build_order_preview = namespace["build_courier_order_preview_text"]

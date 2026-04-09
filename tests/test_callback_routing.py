@@ -100,7 +100,16 @@ class _DummyQuery:
 def _extract_order_base_namespace():
     tree = ast.parse(ORDER_HANDLER_PATH.read_text(encoding="utf-8"))
     target_assignments = {"PEDIDO_BASE_PRESET_AMOUNTS", "PEDIDO_BASE_CALLBACK_PATTERN"}
-    target_functions = {"_pedido_base_keyboard", "pedido_valor_base_callback"}
+    target_functions = {
+        "_pedido_base_keyboard",
+        "_pedido_base_flow_kind",
+        "_pedido_base_storage_keys",
+        "_pedido_set_base_requirement",
+        "_pedido_payment_method_from_base",
+        "_pedido_continue_after_base",
+        "pedido_requiere_base_callback",
+        "pedido_valor_base_callback",
+    }
     selected_nodes = []
     found_assignments = set()
     found_functions = set()
@@ -128,7 +137,11 @@ def _extract_order_base_namespace():
         "InlineKeyboardButton": _InlineKeyboardButton,
         "InlineKeyboardMarkup": _InlineKeyboardMarkup,
         "_fmt_pesos": lambda amount: f"${int(amount):,}".replace(",", "."),
+        "_admin_pedido_calcular_preview": lambda query, context, edit=False: "admin_preview_ok",
+        "_ruta_continue_after_base": lambda query, context, edit=False: "ruta_continue_ok",
+        "calcular_cotizacion_y_confirmar": lambda query, context, edit=False: "cotizacion_ok",
         "PEDIDO_VALOR_BASE": 970,
+        "PEDIDO_REQUIERE_BASE": 969,
     }
     compiled = compile(
         ast.Module(body=selected_nodes, type_ignores=[]),
@@ -254,6 +267,32 @@ class PedidoBaseFlowTests(unittest.TestCase):
         self.assertEqual("cotizacion_ok", result)
         self.assertEqual([(query, context, True)], calls)
         self.assertEqual([], query.edit_calls)
+
+    def test_pedido_base_no_in_admin_flow_uses_admin_keys_and_preview_dispatch(self):
+        namespace = self._load_namespace()
+        query = _DummyQuery("pedido_base_no")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(user_data={"admin_ped_admin_id": 11})
+
+        result = namespace["pedido_requiere_base_callback"](update, context)
+
+        self.assertEqual(1, query.answer_calls)
+        self.assertFalse(context.user_data["admin_ped_requires_cash"])
+        self.assertEqual(0, context.user_data["admin_ped_cash_required_amount"])
+        self.assertEqual("admin_preview_ok", result)
+
+    def test_pedido_base_preset_in_route_flow_uses_route_keys_and_dispatch(self):
+        namespace = self._load_namespace()
+        query = _DummyQuery("pedido_base_50000")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(user_data={"ruta_ally_id": 44})
+
+        result = namespace["pedido_valor_base_callback"](update, context)
+
+        self.assertEqual(1, query.answer_calls)
+        self.assertTrue(context.user_data["ruta_requires_cash"])
+        self.assertEqual(50000, context.user_data["ruta_cash_required_amount"])
+        self.assertEqual("ruta_continue_ok", result)
 
     def test_pedido_valor_base_callback_otro_requests_manual_amount(self):
         namespace = self._load_namespace()

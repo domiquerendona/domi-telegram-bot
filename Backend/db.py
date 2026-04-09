@@ -1453,6 +1453,10 @@ def init_db():
     try:
         cur.execute("PRAGMA table_info(routes)")
         route_cols = [col[1] for col in cur.fetchall()]
+        if 'requires_cash' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN requires_cash INTEGER DEFAULT 0")
+        if 'cash_required_amount' not in route_cols:
+            cur.execute("ALTER TABLE routes ADD COLUMN cash_required_amount INTEGER DEFAULT 0")
         if 'courier_arrived_at' not in route_cols:
             cur.execute("ALTER TABLE routes ADD COLUMN courier_arrived_at TEXT")
         if 'arrival_wait_override' not in route_cols:
@@ -1850,6 +1854,8 @@ def init_db():
             additional_incentive INTEGER DEFAULT 0,
             total_fee INTEGER DEFAULT 0,
             instructions TEXT,
+            requires_cash INTEGER DEFAULT 0,
+            cash_required_amount INTEGER DEFAULT 0,
             canceled_by TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             published_at TEXT,
@@ -2217,6 +2223,8 @@ def _init_db_postgres():
     _pg_add_col("orders", "special_commission", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "team_only", "INTEGER DEFAULT 0")
     _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
+    _pg_add_col("routes", "requires_cash", "INTEGER DEFAULT 0")
+    _pg_add_col("routes", "cash_required_amount", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "arrival_wait_override", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
@@ -12180,7 +12188,8 @@ def apply_profile_change_request_data(target_role, target_role_id, field_name, n
 
 def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
                  total_distance_km, distance_fee, additional_stops_fee, total_fee,
-                 instructions, ally_admin_id_snapshot):
+                 instructions, ally_admin_id_snapshot,
+                 requires_cash: bool = False, cash_required_amount: int = 0):
     """Crea una ruta. Retorna el route_id."""
     if not has_valid_coords(pickup_lat, pickup_lng):
         raise ValueError("La recogida de la ruta requiere ubicacion confirmada.")
@@ -12192,12 +12201,12 @@ def create_route(ally_id, pickup_location_id, pickup_address, pickup_lat, pickup
         INSERT INTO routes (
             ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
             total_distance_km, distance_fee, additional_stops_fee, total_fee,
-            instructions, ally_admin_id_snapshot, status
-        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
+            instructions, ally_admin_id_snapshot, requires_cash, cash_required_amount, status
+        ) VALUES ({P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, {P}, 'PENDING')
         """,
         (ally_id, pickup_location_id, pickup_address, pickup_lat, pickup_lng,
          total_distance_km, distance_fee, additional_stops_fee, total_fee,
-         instructions, ally_admin_id_snapshot),
+         instructions, ally_admin_id_snapshot, 1 if requires_cash else 0, int(cash_required_amount or 0)),
     )
     conn.commit()
     conn.close()

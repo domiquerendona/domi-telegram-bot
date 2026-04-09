@@ -189,6 +189,35 @@ class OrderDeliveryFeeTests(unittest.TestCase):
             db.set_order_status(order_id, status)
         return order_id
 
+    def _create_route(self, requires_cash=False, cash_required_amount=0):
+        route_id = db.create_route(
+            ally_id=self.ally_id,
+            pickup_location_id=None,
+            pickup_address="Cra 1 # 2-3",
+            pickup_lat=4.81333,
+            pickup_lng=-75.69611,
+            total_distance_km=4.2,
+            distance_fee=4800,
+            additional_stops_fee=0,
+            total_fee=4800,
+            instructions=None,
+            ally_admin_id_snapshot=self.local_admin_id,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_required_amount,
+        )
+        db.create_route_destination(
+            route_id=route_id,
+            sequence=1,
+            customer_name="Cliente Ruta",
+            customer_phone="3000000000",
+            customer_address="Calle 2 # 3-4",
+            customer_city="Pereira",
+            customer_barrio="Centro",
+            dropoff_lat=4.82,
+            dropoff_lng=-75.70,
+        )
+        return route_id
+
     def _count_courier_fee_ledger(self, order_id):
         conn = db.get_connection()
         cur = conn.cursor()
@@ -333,6 +362,32 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         self.assertEqual(940002, context.bot.messages[0]["chat_id"])
         self.assertIn("Pedido #{}".format(order_id), context.bot.messages[0]["text"])
         warning_mock.assert_not_called()
+
+    def test_publish_route_uses_cash_requirement_filter_when_route_requires_base(self):
+        route_id = self._create_route(requires_cash=True, cash_required_amount=40000)
+        context = _DummyContext()
+        captured = {}
+
+        def _fake_get_eligible(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        with patch.object(order_delivery, "get_eligible_couriers_for_order", side_effect=_fake_get_eligible), \
+             patch.object(order_delivery, "_activate_route_offer_dispatch", return_value=None), \
+             patch.object(order_delivery, "_cancel_route_no_response_job", return_value=None), \
+             patch.object(order_delivery, "_schedule_persistent_job", return_value=None), \
+             patch.object(order_delivery, "_schedule_route_expire_job", return_value=None):
+            count = order_delivery.publish_route_to_couriers(
+                route_id,
+                self.ally_id,
+                context,
+                admin_id_override=self.local_admin_id,
+                schedule_no_response=False,
+            )
+
+        self.assertEqual(0, count)
+        self.assertTrue(captured["requires_cash"])
+        self.assertEqual(40000, captured["cash_required_amount"])
 
 
 if __name__ == "__main__":

@@ -339,6 +339,53 @@ def _pedido_base_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
+def _pedido_base_flow_kind(context):
+    """Detecta que flujo esta usando el sub-paso compartido de base requerida."""
+    if context.user_data.get("admin_ped_admin_id"):
+        return "admin_pedido"
+    if context.user_data.get("ruta_ally_id"):
+        return "ruta"
+    return "pedido"
+
+
+def _pedido_base_storage_keys(context):
+    """Retorna las claves de user_data segun el flujo activo."""
+    flow_kind = _pedido_base_flow_kind(context)
+    if flow_kind == "admin_pedido":
+        return "admin_ped_requires_cash", "admin_ped_cash_required_amount"
+    if flow_kind == "ruta":
+        return "ruta_requires_cash", "ruta_cash_required_amount"
+    return "requires_cash", "cash_required_amount"
+
+
+def _pedido_set_base_requirement(context, requires_cash, cash_amount):
+    """Guarda la decision de base requerida en las claves del flujo activo."""
+    requires_key, amount_key = _pedido_base_storage_keys(context)
+    context.user_data[requires_key] = bool(requires_cash)
+    context.user_data[amount_key] = int(cash_amount or 0)
+
+
+def _pedido_payment_method_from_base(requires_cash, cash_amount):
+    """Mapea base requerida a un payment_method compatible con la oferta actual."""
+    if requires_cash and int(cash_amount or 0) > 0:
+        return "CASH_CONFIRMED"
+    return "UNCONFIRMED"
+
+
+def _pedido_continue_after_base(query_or_update, context, edit=False):
+    """Retoma el flujo correcto despues de confirmar la base requerida."""
+    flow_kind = _pedido_base_flow_kind(context)
+    if flow_kind == "admin_pedido":
+        return _admin_pedido_calcular_preview(query_or_update, context, edit=edit)
+    if flow_kind == "ruta":
+        route_continue = globals().get("_ruta_continue_after_base")
+        if route_continue is None:
+            # Lazy import para evitar dependencia circular: route.py reutiliza estos callbacks.
+            from handlers.route import _ruta_continue_after_base as route_continue
+        return route_continue(query_or_update, context, edit=edit)
+    return calcular_cotizacion_y_confirmar(query_or_update, context, edit=edit)
+
+
 def nuevo_pedido_desde_cotizador(update, context):
     """Entry point de nuevo_pedido_conv cuando el aliado confirma pedido desde el cotizador."""
     query = update.callback_query
@@ -1075,13 +1122,11 @@ def pedido_requiere_base_callback(update, context):
     data = query.data
 
     if data == "pedido_base_no":
-        context.user_data["requires_cash"] = False
-        context.user_data["cash_required_amount"] = 0
-        # Calcular cotizacion y mostrar confirmacion
-        return calcular_cotizacion_y_confirmar(query, context, edit=True)
+        _pedido_set_base_requirement(context, False, 0)
+        return _pedido_continue_after_base(query, context, edit=True)
 
     elif data == "pedido_base_si":
-        context.user_data["requires_cash"] = True
+        _pedido_set_base_requirement(context, True, 0)
         reply_markup = _pedido_base_keyboard()
         query.edit_message_text(
             "VALOR DE BASE\n\n"
@@ -1112,8 +1157,8 @@ def pedido_valor_base_callback(update, context):
         except ValueError:
             return PEDIDO_VALOR_BASE
         if amount in PEDIDO_BASE_PRESET_AMOUNTS:
-            context.user_data["cash_required_amount"] = amount
-            return calcular_cotizacion_y_confirmar(query, context, edit=True)
+            _pedido_set_base_requirement(context, True, amount)
+            return _pedido_continue_after_base(query, context, edit=True)
 
     return PEDIDO_VALOR_BASE
 
@@ -1125,8 +1170,8 @@ def pedido_valor_base_texto(update, context):
         valor = int(texto)
         if valor <= 0:
             raise ValueError("Valor debe ser mayor a 0")
-        context.user_data["cash_required_amount"] = valor
-        return calcular_cotizacion_y_confirmar(update, context, edit=False)
+        _pedido_set_base_requirement(context, True, valor)
+        return _pedido_continue_after_base(update, context, edit=False)
     except ValueError:
         update.message.reply_text(
             "Valor invalido. Escribe solo numeros (ej: 15000):"
@@ -2721,6 +2766,8 @@ def _pedido_confirmacion_keyboard(context):
             pickup_lng=context.user_data.get("pickup_lng"),
             distance_km=context.user_data.get("ruta_distancia_desde_pedido", 0),
             ally_id=context.user_data.get("ally_id"),
+            requires_cash=context.user_data.get("requires_cash", False),
+            cash_required_amount=context.user_data.get("cash_required_amount", 0),
             current_incentive=int(context.user_data.get("pedido_incentivo", 0) or 0),
         )
     else:
@@ -2812,6 +2859,8 @@ def _construir_resumen_ruta_desde_pedido(context):
     stop_fee = precio_info.get("tarifa_parada_adicional", 0)
     mensaje_ahorro = precio_info.get("mensaje_ahorro", "")
     incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    requires_cash = bool(context.user_data.get("requires_cash"))
+    cash_required_amount = int(context.user_data.get("cash_required_amount") or 0)
 
     text = "RUTA DE ENTREGA\n"
     if fue_optimizado:
@@ -2831,11 +2880,15 @@ def _construir_resumen_ruta_desde_pedido(context):
         text += "\n{}".format(mensaje_ahorro)
     if incentivo > 0:
         text += "\nIncentivo adicional: +${:,}".format(incentivo)
+    if requires_cash and cash_required_amount > 0:
+        text += "\nBase requerida: ${:,}".format(cash_required_amount)
     demand_preview = build_offer_demand_preview(
         pickup_lat=pickup_lat,
         pickup_lng=pickup_lng,
         distance_km=total_km,
         ally_id=context.user_data.get("ally_id"),
+        requires_cash=requires_cash,
+        cash_required_amount=cash_required_amount,
         current_incentive=incentivo,
     )
     demand_block = build_offer_demand_badge_text(demand_preview)
@@ -3612,13 +3665,16 @@ def route_suggest_inc_monto_handler(update, context):
 # ─────────────────────────────────────────────────────────────────────────
 def _admin_ped_courier_preview_block(ctx):
     """Bloque espejo del mensaje real que recibira el courier antes de aceptar."""
+    requires_cash = bool(ctx.get("admin_ped_requires_cash"))
+    cash_required_amount = int(ctx.get("admin_ped_cash_required_amount") or 0)
     draft_order = {
         "id": ctx.get("admin_ped_order_id") or "preview",
         "distance_km": float(ctx.get("admin_ped_distance_km") or 0),
         "total_fee": int(ctx.get("admin_ped_tarifa") or 0) + int(ctx.get("admin_ped_incentivo") or 0),
         "additional_incentive": int(ctx.get("admin_ped_incentivo") or 0),
-        "payment_method": "UNCONFIRMED",
-        "cash_required_amount": 0,
+        "payment_method": _pedido_payment_method_from_base(requires_cash, cash_required_amount),
+        "requires_cash": requires_cash,
+        "cash_required_amount": cash_required_amount,
         "instructions": ctx.get("admin_ped_instruc") or "",
         "parking_fee": int(ctx.get("admin_ped_parking_fee") or 0),
         "special_commission": int(ctx.get("admin_ped_comision") or 0),
@@ -3639,6 +3695,8 @@ def _admin_ped_preview_text(ctx):
     tarifa = int(ctx.get("admin_ped_tarifa") or 0)
     incentivo = int(ctx.get("admin_ped_incentivo") or 0)
     parking_fee = int(ctx.get("admin_ped_parking_fee") or 0)
+    requires_cash = bool(ctx.get("admin_ped_requires_cash"))
+    cash_required_amount = int(ctx.get("admin_ped_cash_required_amount") or 0)
     comision = int(ctx.get("admin_ped_comision") or 0)
     team_only = int(ctx.get("admin_ped_team_only") or 0)
     total = tarifa + incentivo
@@ -3690,6 +3748,8 @@ def _admin_ped_preview_text(ctx):
         distance_km=distancia_km,
         admin_id=ctx.get("admin_ped_admin_id"),
         team_only=bool(team_only),
+        requires_cash=requires_cash,
+        cash_required_amount=cash_required_amount,
         current_incentive=incentivo,
     )
     demand_block = build_offer_demand_badge_text(demand_preview)
@@ -3701,6 +3761,7 @@ def _admin_ped_preview_text(ctx):
         "Entrega: {}\n"
         "Distancia: {:.1f} km ({})\n"
         "Tarifa al repartidor: ${:,}\n"
+        "{}"
         "{}"
         "{}"
         "Comision al repartidor: {}\n"
@@ -3722,6 +3783,7 @@ def _admin_ped_preview_text(ctx):
         tarifa,
         "Incentivo: +${:,}\n".format(incentivo) if incentivo else "",
         "Punto con parqueo dificil: +${:,}\n".format(parking_fee) if parking_fee else "",
+        "Base requerida: ${:,}\n".format(cash_required_amount) if requires_cash and cash_required_amount > 0 else "",
         "${:,}".format(comision) if comision > 0 else "Fee estandar al repartidor ($300)",
         admin_fee_line,
         visibilidad_label,
@@ -4431,12 +4493,11 @@ def admin_pedido_addr_selected(update, context):
         except Exception:
             pass
 
-    query.edit_message_text(
-        "Cliente: {}\nEntrega: {}\n\nCalculando distancia...".format(
-            cust_name, address["address_text"]
-        )
+    logger.info(
+        "[requires_cash_unified_v2026_04_09] flow=admin_special action=ask_base source=saved_address address_id=%s",
+        address_id,
     )
-    return _admin_pedido_calcular_preview(query, context, edit=False)
+    return mostrar_pregunta_base(query, context, edit=True)
 
 
 def admin_pedido_addr_nueva(update, context):
@@ -4599,12 +4660,11 @@ def admin_pedido_geo_callback(update, context):
         context.user_data["admin_ped_dropoff_barrio"] = pending.get("barrio", "")
         context.user_data["admin_ped_parking_fee"] = 0
         context.user_data.pop("admin_ped_geo_cust_pending", None)
-        query.edit_message_text(
-            "Entrega: {}\n\nCalculando tarifa...".format(
-                context.user_data["admin_ped_cust_addr"]
-            )
+        logger.info(
+            "[requires_cash_unified_v2026_04_09] flow=admin_special action=ask_base source=%s",
+            pending.get("source", "geocode"),
         )
-        return _admin_pedido_calcular_preview(query, context, edit=False)
+        return mostrar_pregunta_base(query, context, edit=True)
     else:
         if pending.get("source") == "gps":
             context.user_data.pop("admin_ped_geo_cust_pending", None)
@@ -4736,10 +4796,10 @@ def admin_pedido_cust_addr_detalle_handler(update, context):
             pass
 
     context.user_data.pop("admin_ped_geo_cust_pending", None)
-
-    if not context.user_data.get("admin_ped_edit_from_preview"):
-        update.message.reply_text("Entrega: {}\n\nCalculando tarifa...".format(detail))
-    return _admin_pedido_calcular_preview(update, context, edit=False)
+    logger.info(
+        "[requires_cash_unified_v2026_04_09] flow=admin_special action=ask_base source=manual_detail"
+    )
+    return mostrar_pregunta_base(update, context, edit=False)
 
 
 def admin_pedido_tarifa_handler(update, context):
@@ -4898,6 +4958,8 @@ def admin_pedido_confirmar_callback(update, context):
     distance_km = float(context.user_data.get("admin_ped_distance_km") or 0)
     quote_source = context.user_data.get("admin_ped_quote_source", "admin")
     instruc = context.user_data.get("admin_ped_instruc", "")
+    requires_cash = bool(context.user_data.get("admin_ped_requires_cash"))
+    cash_required_amount = int(context.user_data.get("admin_ped_cash_required_amount") or 0)
     if not has_valid_coords(pickup_lat, pickup_lng) or not has_valid_coords(dropoff_lat, dropoff_lng):
         query.edit_message_text(
             "El pedido requiere ubicacion confirmada en recogida y entrega antes de crearse."
@@ -4924,14 +4986,15 @@ def admin_pedido_confirmar_callback(update, context):
             additional_incentive=incentivo,
             total_fee=total_fee,
             instructions=instruc,
-            requires_cash=False,
-            cash_required_amount=0,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_required_amount,
             pickup_lat=pickup_lat,
             pickup_lng=pickup_lng,
             dropoff_lat=dropoff_lat,
             dropoff_lng=dropoff_lng,
             quote_source=quote_source,
             ally_admin_id_snapshot=admin_id,
+            payment_method=_pedido_payment_method_from_base(requires_cash, cash_required_amount),
             parking_fee=parking_fee,
             special_commission=comision,
             team_only=team_only,
@@ -5747,6 +5810,8 @@ def _pedido_confirmar_como_ruta(query, context):
 
     base_instructions = context.user_data.get("instructions", "")
     incentivo = int(context.user_data.get("pedido_incentivo", 0) or 0)
+    requires_cash = bool(context.user_data.get("requires_cash"))
+    cash_required_amount = int(context.user_data.get("cash_required_amount") or 0)
 
     try:
         route_id = create_route(
@@ -5761,6 +5826,8 @@ def _pedido_confirmar_como_ruta(query, context):
             total_fee=precio_info.get("total_fee", 0),
             instructions=base_instructions or None,
             ally_admin_id_snapshot=admin_id_snapshot,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_required_amount,
         )
     except Exception as e:
         query.edit_message_text("Error al crear la ruta: {}".format(str(e)))
@@ -5987,6 +6054,7 @@ def _create_and_publish_order(ally_id, admin_id, context):
         purchase_amount=context.user_data.get("pedido_purchase_amount"),
         delivery_subsidy_applied=int(context.user_data.get("pedido_subsidio_efectivo") or 0),
         customer_delivery_fee=context.user_data.get("pedido_customer_delivery_fee"),
+        payment_method=_pedido_payment_method_from_base(requires_cash, cash_required_amount),
         parking_fee=parking_fee_val,
     )
     context.user_data["order_id"] = order_id
