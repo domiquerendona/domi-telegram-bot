@@ -4,6 +4,8 @@ logger = logging.getLogger(__name__)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Filters, ConversationHandler
 
+import os
+
 from services import (
     get_user_db_id_from_update,
     get_ally_by_user_id,
@@ -20,6 +22,7 @@ from services import (
     save_terms_session_ack,
     upsert_geocoding_text_cache,
     normalize_text_for_cache,
+    provision_web_panel_account,
 )
 
 from handlers.states import (
@@ -689,6 +692,24 @@ def _send_role_welcome_message(context, role: str, chat_id: int, profile=None, b
             reactivated=reactivated,
         ),
     )
+    # Auto-crear cuenta del panel web para COURIER y ADMIN_LOCAL en primera aprobacion
+    if not reactivated and role in ("COURIER", "ADMIN_LOCAL") and profile:
+        try:
+            creds = provision_web_panel_account(role, profile)
+            if creds:
+                web_url = os.getenv("WEB_PANEL_URL", "").strip().rstrip("/")
+                url_line = ("\nAccede en: " + web_url) if web_url else ""
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "Tu cuenta del panel web fue creada:\n\n"
+                        "Usuario: {}\n"
+                        "Contrasena: {}{}\n\n"
+                        "Guarda estas credenciales. Puedes cambiar tu contrasena desde el panel."
+                    ).format(creds["username"], creds["password"], url_line)
+                )
+        except Exception as e:
+            logger.warning("No se pudo crear cuenta web para %s id=%s: %s", role, profile.get("id"), e)
 
 
 # ---------- UTILIDADES MONETARIAS ----------
