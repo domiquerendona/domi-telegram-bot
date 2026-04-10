@@ -2225,6 +2225,7 @@ def _init_db_postgres():
     _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
     _pg_add_col("routes", "requires_cash", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "cash_required_amount", "INTEGER DEFAULT 0")
+    _pg_add_col("routes", "courier_arrived_at", "TIMESTAMP")
     _pg_add_col("routes", "arrival_wait_override", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
