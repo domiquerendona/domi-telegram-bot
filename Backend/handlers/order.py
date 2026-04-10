@@ -4415,7 +4415,7 @@ def admin_pedido_cust_name_handler(update, context):
         update.message.reply_text("El nombre no puede estar vacio.")
         return ADMIN_PEDIDO_CUST_NAME
     context.user_data["admin_ped_cust_name"] = nombre
-    update.message.reply_text("Telefono del cliente (minimo 7 digitos):")
+    update.message.reply_text("Telefono del cliente (minimo 7 digitos):" + _OPTIONS_HINT)
     return ADMIN_PEDIDO_CUST_PHONE
 
 
@@ -4576,6 +4576,7 @@ def admin_pedido_cust_phone_handler(update, context):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Si, usar este cliente", callback_data="admin_ped_dedup_si")],
             [InlineKeyboardButton("No, es otro cliente", callback_data="admin_ped_dedup_no")],
+            [InlineKeyboardButton("Cancelar pedido", callback_data="admin_pedido_cancelar")],
         ])
         update.message.reply_text(
             "Este numero ya esta en tu agenda: {}\n\n"
@@ -4583,7 +4584,7 @@ def admin_pedido_cust_phone_handler(update, context):
             reply_markup=keyboard,
         )
         return ADMIN_PEDIDO_CUST_DEDUP
-    update.message.reply_text("Direccion de entrega del cliente (escribe o envia GPS):")
+    update.message.reply_text("Direccion de entrega del cliente (escribe o envia GPS):" + _OPTIONS_HINT)
     return ADMIN_PEDIDO_CUST_ADDR
 
 
@@ -5105,6 +5106,7 @@ def admin_pedido_confirmar_callback(update, context):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Si, agregar", callback_data="admin_ped_guardar_dir_si")],
                     [InlineKeyboardButton("No", callback_data="admin_ped_guardar_dir_no")],
+                    [InlineKeyboardButton("Cancelar pedido", callback_data="admin_pedido_cancelar")],
                 ]),
             )
             return ADMIN_PEDIDO_GUARDAR_CUST
@@ -5114,6 +5116,7 @@ def admin_pedido_confirmar_callback(update, context):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Si, guardar", callback_data="admin_ped_guardar_cust_si")],
                     [InlineKeyboardButton("No", callback_data="admin_ped_guardar_cust_no")],
+                    [InlineKeyboardButton("Cancelar pedido", callback_data="admin_pedido_cancelar")],
                 ]),
             )
             return ADMIN_PEDIDO_GUARDAR_CUST
@@ -5600,6 +5603,7 @@ def admin_pedido_guardar_cust_callback(update, context):
     keyboard = [
         [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="admin_ped_guardar_parking_si")],
         [InlineKeyboardButton("No / No lo se", callback_data="admin_ped_guardar_parking_no")],
+        [InlineKeyboardButton("Omitir", callback_data="admin_ped_guardar_parking_no")],
     ]
     query.edit_message_text(
         "Guardado.\n\n"
@@ -7065,6 +7069,7 @@ admin_pedido_conv = ConversationHandler(
         ],
         ADMIN_PEDIDO_SAVE_PICKUP: [
             CallbackQueryHandler(admin_pedido_save_pickup_callback, pattern=r"^admin_pedido_save_pickup_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_CUST_NAME: [
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
@@ -7082,11 +7087,14 @@ admin_pedido_conv = ConversationHandler(
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_CUST_PHONE: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_phone_handler),
         ],
         ADMIN_PEDIDO_CUST_ADDR: [
             CallbackQueryHandler(admin_pedido_geo_callback, pattern=r"^admin_pedido_geo_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
             MessageHandler(Filters.location, admin_pedido_cust_gps_handler),
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_cust_addr_handler),
         ],
         ADMIN_PEDIDO_CUST_ADDR_DETALLE: [
@@ -7127,16 +7135,20 @@ admin_pedido_conv = ConversationHandler(
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_template_name_handler),
         ],
         ADMIN_PEDIDO_INC_MONTO: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_inc_monto_handler),
         ],
         ADMIN_PEDIDO_SEL_CUST_BUSCAR: [
+            MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_pedido_buscar_cust_handler),
         ],
         ADMIN_PEDIDO_CUST_DEDUP: [
             CallbackQueryHandler(admin_pedido_cust_dedup_callback, pattern=r"^admin_ped_dedup_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_GUARDAR_CUST: [
             CallbackQueryHandler(admin_pedido_guardar_cust_callback, pattern=r"^admin_ped_guardar_(cust|dir)_(si|no)$"),
+            CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
         ADMIN_PEDIDO_GUARDAR_PARKING: [
             CallbackQueryHandler(admin_pedido_guardar_parking_callback, pattern=r"^admin_ped_guardar_parking_(si|no)$"),

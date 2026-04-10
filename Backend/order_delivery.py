@@ -3173,7 +3173,7 @@ def _admin_order_detail(update, context, data):
     ally = get_ally_by_id(order["ally_id"]) if order["ally_id"] else None
     creator_admin_id = order["creator_admin_id"] if "creator_admin_id" in order.keys() else None
     creator_admin = get_admin_by_id(int(creator_admin_id)) if creator_admin_id else None
-    ally_name = ally["full_name"] if ally else ("Pedido especial de admin" if creator_admin_id else "N/A")
+    ally_name = (ally.get("business_name") or ally.get("full_name") or "Aliado") if ally else ("Pedido especial de admin" if creator_admin_id else "N/A")
 
     courier_name = "Sin asignar"
     if order["courier_id"]:

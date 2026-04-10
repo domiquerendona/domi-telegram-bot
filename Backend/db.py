@@ -5137,6 +5137,34 @@ def get_web_user_by_id(user_id: int):
         conn.close()
 
 
+def get_web_user_by_courier_id(courier_id: int):
+    """Retorna el web_user vinculado a este courier_id o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT id, username, role, status, admin_id, courier_id FROM web_users WHERE courier_id = {P}",
+            (courier_id,),
+        )
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_web_user_by_admin_id(admin_id: int):
+    """Retorna el web_user vinculado a este admin_id o None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT id, username, role, status, admin_id, courier_id FROM web_users WHERE admin_id = {P} AND role = 'ADMIN_LOCAL'",
+            (admin_id,),
+        )
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def get_courier_web_dashboard(courier_id: int) -> dict:
     """Dashboard del repartidor para el panel web."""
     conn = get_connection()

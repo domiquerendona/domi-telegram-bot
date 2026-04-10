@@ -327,6 +327,8 @@ from db import (
     create_web_user,
     get_web_user_by_username,
     get_web_user_by_id,
+    get_web_user_by_courier_id,
+    get_web_user_by_admin_id,
     list_web_users,
     update_web_user_status,
     update_web_user_password,
@@ -4325,3 +4327,56 @@ def get_subscription_summary_for_ally(ally_id: int, admin_id: int) -> dict:
         "balance": balance,
         "can_renew": price is not None and balance >= price,
     }
+
+
+# ---------- PROVISION DE CUENTA DEL PANEL WEB ----------
+
+def provision_web_panel_account(role: str, profile: dict):
+    """
+    Crea cuenta en web_users para COURIER o ADMIN_LOCAL si no existe ya.
+    Retorna {"username": ..., "password": ...} o None si ya tiene cuenta.
+    Solo se llama en primera aprobacion (no en reactivaciones).
+    """
+    import secrets
+    import string
+    import bcrypt
+
+    if role == "COURIER":
+        profile_id = profile.get("id")
+        if not profile_id:
+            return None
+        existing = get_web_user_by_courier_id(profile_id)
+        web_role = "COURIER"
+        admin_id = None
+        courier_id = profile_id
+    elif role == "ADMIN_LOCAL":
+        profile_id = profile.get("id")
+        if not profile_id:
+            return None
+        existing = get_web_user_by_admin_id(profile_id)
+        web_role = "ADMIN_LOCAL"
+        admin_id = profile_id
+        courier_id = None
+    else:
+        return None
+
+    if existing:
+        return None  # ya tiene cuenta, no crear otra
+
+    # Generar username: prefijo + primer nombre normalizado + id
+    full_name = (profile.get("full_name") or "").strip()
+    first_word = full_name.split()[0] if full_name else "usuario"
+    normalized = unicodedata.normalize("NFD", first_word.lower())
+    normalized = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    normalized = "".join(c for c in normalized if c.isalnum())[:10] or "usuario"
+    prefix = "r_" if role == "COURIER" else "a_"
+    username = "{}{}_{}".format(prefix, normalized, profile_id)
+
+    # Generar contrasena temporal de 10 caracteres
+    alphabet = string.ascii_letters + string.digits
+    password = "".join(secrets.choice(alphabet) for _ in range(10))
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    create_web_user(username, password_hash, web_role, admin_id=admin_id, courier_id=courier_id)
+
+    return {"username": username, "password": password}

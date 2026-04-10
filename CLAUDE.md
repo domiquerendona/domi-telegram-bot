@@ -467,6 +467,9 @@ WEB_PANEL_URL_IS_HTTPS = WEB_PANEL_URL.startswith("https://")
 | Admin de Plataforma | `mi_admin` | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
 | Admin Local | `mi_admin` (local) | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
 | Repartidor | `mi_repartidor` | Botón inline "🌐 Mi panel web" → `/courier` | Texto plano con URL |
+| Admin Plataforma, Admin Local APPROVED, Repartidor APPROVED | `start` (`/start` y `/menu`) | Botón inline "🌐 Abrir panel web" | Texto plano con URL |
+
+**Condición en `/start`:** solo se muestra si el usuario tiene al menos un rol aprobado (`es_admin_plataforma_flag`, `admin_local.status == APPROVED` o `courier.status == APPROVED`). Los aliados y usuarios sin rol aprobado no ven el link. Aparece como segundo mensaje tras el menú principal.
 
 **Razón del comportamiento dual:** Telegram rechaza URLs `http://` y URLs de `localhost` en `InlineKeyboardButton(url=...)` — solo acepta `https://`. En local (dev) se muestra texto plano; en Railway PROD se muestra el botón clickeable.
 
@@ -961,6 +964,7 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 
 **Frontend Angular:**
 - `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
+- `LoginComponent` (`features/login/login.ts`) — formulario de autenticación con toggle de visibilidad de contraseña (ícono ojito). Usa `signal(false)` para `mostrarPassword`; botón `.toggle-password` posicionado absolutamente dentro de `.password-wrapper`. Íconos: `visibility` / `visibility_off` de `material-symbols-outlined`.
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
 - Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
@@ -971,6 +975,17 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `FooterComponent` (`layout/components/footer/footer.ts`) — acepta `@Input() base = '/superadmin'`. Usar `base="/courier"` en el courier layout para que los links apunten al prefijo correcto.
 - Rutas courier: `/courier` (dashboard), `/courier/ganancias`, `/courier/perfil`, `/courier/terminos`, `/courier/datos-personales`, `/courier/politica-uso`, `/courier/centro-ayuda`, `/courier/contacto`, `/courier/preguntas-frecuentes`
 - Ruta perfil admin: `/superadmin/perfil`
+
+**Bugs corregidos (2026-04-09):**
+- `order_delivery.py:_admin_order_detail` — `KeyError: 'full_name'`: la tabla `allies` usa `business_name`, no `full_name`. Al tocar cualquier pedido en la lista de pedidos activos del admin, el bot crasheaba silenciosamente y el admin veía que no pasaba nada. Fix: `ally.get("business_name") or ally.get("full_name") or "Aliado"`.
+- `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
+
+**Mejoras `admin_pedido_conv` (2026-04-09) — cancelación en todos los estados:**
+- Botón "Cancelar pedido" agregado a los teclados de: `ADMIN_PEDIDO_SAVE_PICKUP` (¿guardar dirección?), `ADMIN_PEDIDO_CUST_DEDUP` (cliente duplicado), `ADMIN_PEDIDO_GUARDAR_CUST` (¿guardar cliente/dirección en agenda?).
+- Botón "Omitir" en `ADMIN_PEDIDO_GUARDAR_PARKING` (el pedido ya está creado en este punto; omitir salta la pregunta de parqueo).
+- `CANCELAR_VOLVER_MENU_FILTER` agregado explícitamente en los estados de texto libre que lo faltaban: `ADMIN_PEDIDO_CUST_PHONE`, `ADMIN_PEDIDO_CUST_ADDR`, `ADMIN_PEDIDO_INC_MONTO`, `ADMIN_PEDIDO_SEL_CUST_BUSCAR`.
+- `admin_pedido_cancelar_callback` registrado en `ADMIN_PEDIDO_CUST_ADDR` y `ADMIN_PEDIDO_CUST_DEDUP` como `CallbackQueryHandler`.
+- `_OPTIONS_HINT` agregado a los prompts de teléfono y dirección del cliente para indicar que se puede escribir `/cancel`.
 
 **Bugs corregidos en `db.py` (2026-04-01):**
 - `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
@@ -1013,6 +1028,31 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 2. Equivalente API: `POST /admin/web-users` con `role: "COURIER"` y `courier_id: <id del courier en BD>`.
 3. El repartidor ingresa con su usuario/contraseña → es redirigido a `/courier`.
 4. Solo ve sus propios datos; no puede acceder a `/superadmin`.
+
+**Auto-provisión de cuenta al aprobar (IMPLEMENTADO 2026-04-09):**
+
+Cuando un repartidor o admin local es aprobado por **primera vez** (no en reactivaciones), el bot crea automáticamente su cuenta en `web_users` y le envía las credenciales por Telegram como segundo mensaje tras la bienvenida.
+
+Formato del mensaje de credenciales:
+```
+Tu cuenta del panel web fue creada:
+
+Usuario: r_juan_10
+Contrasena: Xk9mP2nQr7
+Accede en: https://angular-production-44c8.up.railway.app
+
+Guarda estas credenciales. Puedes cambiar tu contrasena desde el panel.
+```
+
+**Lógica de username:** prefijo (`r_` = COURIER, `a_` = ADMIN_LOCAL) + primer nombre normalizado (sin tildes, minúsculas, solo alfanumérico) + `_` + id interno. Ejemplo: `r_juan_10`, `a_maria_3`. Garantiza unicidad sin colisiones.
+
+**Condiciones:** solo en primera aprobación (`reactivated=False`), solo para COURIER y ADMIN_LOCAL. Si ya tiene cuenta vinculada por `courier_id`/`admin_id`, no crea otra.
+
+**Funciones nuevas en `db.py`:** `get_web_user_by_courier_id(courier_id)`, `get_web_user_by_admin_id(admin_id)` — re-exportadas en `services.py`.
+
+**Función nueva en `services.py`:** `provision_web_panel_account(role, profile)` — genera username/password, hashea con bcrypt, llama `create_web_user`. Retorna `{"username": ..., "password": ...}` o `None` si ya existe.
+
+**Punto de invocación:** `handlers/common.py:_send_role_welcome_message` — al final del envío del mensaje de bienvenida, llama `provision_web_panel_account` y envía las credenciales si es primera aprobación.
 
 ---
 
