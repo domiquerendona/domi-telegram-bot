@@ -3448,6 +3448,34 @@ def get_active_orders_by_ally(ally_id: int):
     return rows
 
 
+def republish_cancelled_order(order_id: int):
+    """Resetea un pedido CANCELLED a PUBLISHED para volver a ofertarlo.
+    Limpia courier_id, accepted_at, canceled_at, canceled_by y actualiza published_at.
+    Solo actúa si el pedido está en estado CANCELLED.
+    Retorna True si se actualizó, False si no estaba cancelado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE orders
+        SET status = 'PUBLISHED',
+            courier_id = NULL,
+            accepted_at = NULL,
+            courier_arrived_at = NULL,
+            pickup_confirmed_at = NULL,
+            delivered_at = NULL,
+            canceled_at = NULL,
+            canceled_by = NULL,
+            published_at = {now_sql}
+        WHERE id = {P} AND status = 'CANCELLED';
+    """, (order_id,))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def cancel_order(order_id: int, canceled_by: str, reason: str = None):
     """Cancela un pedido. canceled_by: 'ALLY', 'COURIER', 'ADMIN', 'SYSTEM'."""
     conn = get_connection()

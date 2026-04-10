@@ -52,6 +52,7 @@ from db import (
     get_order_penalty_config,
     cancel_order,
     cancel_order_by_actor,
+    republish_cancelled_order,
     cancel_route_by_actor,
     penalize_courier_for_delay_and_release,
     penalize_route_courier_for_delay_and_release,

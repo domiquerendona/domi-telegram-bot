@@ -105,6 +105,7 @@ from db import (
     create_pending_fee_collection,
     resolve_pending_fee_collection,
     get_pending_fee_collection,
+    republish_cancelled_order,
 )
 from services import apply_service_fee, check_service_fee_available, haversine_km, liquidate_route_additional_stops_fee, add_route_incentive, check_ally_active_subscription, get_fee_config, get_order_penalty_config, cancel_order_by_actor, cancel_route_by_actor, penalize_courier_for_delay_and_release, penalize_route_courier_for_delay_and_release, apply_special_order_commission, apply_special_order_creator_fees, check_special_commission_available, es_admin_plataforma, get_admin_telegram_id, increment_setting_counter, resolve_owned_admin_actor
 
@@ -3046,6 +3047,9 @@ def admin_orders_callback(update, context):
       admpedidos_cancel_{order_id}_{admin_id}
       admpedidos_cancel_confirm_{order_id}_{admin_id}
       admpedidos_cancel_abort_{order_id}_{admin_id}
+      admpedidos_republish_{order_id}_{admin_id}
+      admpedidos_republish_confirm_{order_id}_{admin_id}
+      admpedidos_republish_abort_{order_id}_{admin_id}
     """
     query = update.callback_query
     data = query.data or ""
@@ -3057,6 +3061,8 @@ def admin_orders_callback(update, context):
         return _admin_order_detail(update, context, data)
     if data.startswith("admpedidos_cancel_"):
         return _admin_order_cancel(update, context, data)
+    if data.startswith("admpedidos_republish_"):
+        return _admin_order_republish(update, context, data)
     if data.startswith("admpedidos_statsdetail_"):
         return _admin_courier_delivery_stats(update, context, data)
     if data.startswith("admpedidos_stats_"):
@@ -3296,9 +3302,15 @@ def _admin_order_detail(update, context, data):
             "Cancelar pedido",
             callback_data="admpedidos_cancel_{}_{}".format(order_id, admin_id),
         )])
+    if order["status"] == "CANCELLED":
+        keyboard.append([InlineKeyboardButton(
+            "Volver a publicar",
+            callback_data="admpedidos_republish_{}_{}".format(order_id, admin_id),
+        )])
+    back_filter = "CANCELLED" if order["status"] == "CANCELLED" else "ACTIVE"
     keyboard.append([InlineKeyboardButton(
         "Volver a la lista",
-        callback_data="admpedidos_list_ACTIVE_{}".format(admin_id),
+        callback_data="admpedidos_list_{}_{}".format(back_filter, admin_id),
     )])
 
     query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -3422,6 +3434,87 @@ def _admin_order_cancel(update, context, data):
     )]]
     query.edit_message_text(
         _build_order_cancel_result_text(order_id, "admin", outcome),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+def _admin_order_republish(update, context, data):
+    """Admin vuelve a publicar un pedido cancelado."""
+    query = update.callback_query
+    payload = data.replace("admpedidos_republish_", "")
+    action = "warn"
+    if payload.startswith("confirm_"):
+        action = "confirm"
+        payload = payload.replace("confirm_", "", 1)
+    elif payload.startswith("abort_"):
+        action = "abort"
+        payload = payload.replace("abort_", "", 1)
+
+    parts = payload.rsplit("_", 1)
+    if len(parts) != 2:
+        query.edit_message_text("Error de formato.")
+        return
+
+    try:
+        order_id = int(parts[0])
+        admin_id = int(parts[1])
+    except ValueError:
+        query.edit_message_text("Error de formato.")
+        return
+
+    if action == "abort":
+        return _admin_order_detail(update, context, "admpedidos_detail_{}_{}".format(order_id, admin_id))
+
+    order = get_order_by_id(order_id)
+    if not order:
+        query.edit_message_text("Pedido no encontrado.")
+        return
+
+    if order["status"] != "CANCELLED":
+        query.edit_message_text("Solo se pueden volver a publicar pedidos cancelados.")
+        return
+
+    if action == "warn":
+        keyboard = [[
+            InlineKeyboardButton(
+                "Republica el pedido",
+                callback_data="admpedidos_republish_confirm_{}_{}".format(order_id, admin_id),
+            ),
+            InlineKeyboardButton(
+                "Volver",
+                callback_data="admpedidos_republish_abort_{}_{}".format(order_id, admin_id),
+            ),
+        ]]
+        query.edit_message_text(
+            "Pedido #{}\nVolver a publicar este pedido lo ofrecera de nuevo a los repartidores disponibles.\n\nConfirmar?".format(order_id),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    ok = republish_cancelled_order(order_id)
+    if not ok:
+        query.edit_message_text("No se pudo republicar el pedido. Puede que ya no este cancelado.")
+        return
+
+    order = get_order_by_id(order_id)
+    ally_id = order["ally_id"] if order else None
+    try:
+        publish_order_to_couriers(
+            order_id,
+            ally_id,
+            context,
+            admin_id_override=admin_id,
+            skip_fee_check=True,
+        )
+    except Exception as e:
+        logger.warning("Error al republicar pedido %s: %s", order_id, e)
+
+    keyboard = [[InlineKeyboardButton(
+        "Ver pedidos activos",
+        callback_data="admpedidos_list_ACTIVE_{}".format(admin_id),
+    )]]
+    query.edit_message_text(
+        "Pedido #{} publicado nuevamente. Los repartidores disponibles recibiran la oferta.".format(order_id),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
