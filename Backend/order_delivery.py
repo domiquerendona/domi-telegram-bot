@@ -6914,8 +6914,28 @@ def _handle_route_accept(update, context, route_id):
 
     current = get_current_route_offer(route_id)
     if not current or current["courier_id"] != courier["id"]:
-        query.edit_message_text("Esta oferta ya no esta disponible para ti.")
-        return
+        if current and current["courier_id"] != courier["id"]:
+            # Otro courier tiene la oferta activa en este momento
+            query.answer("Otro repartidor esta evaluando esta oferta. Espera un momento.", show_alert=True)
+            return
+        # No hay OFFERED activo — la oferta expiró (timeout 30s o reinicio del bot).
+        # Si la ruta sigue PUBLISHED, re-crear la entrada en la cola para este courier
+        # para que pueda aceptar directamente (evita que quede bloqueado con mensaje viejo).
+        logger.info(
+            "_handle_route_accept: ruta %s PUBLISHED sin OFFERED activo; re-encolando courier %s",
+            route_id, courier["id"],
+        )
+        delete_route_offer_queue(route_id)
+        create_route_offer_queue(route_id, [courier["id"]])
+        next_offer = get_next_pending_route_offer(route_id)
+        if not next_offer:
+            query.edit_message_text("No se pudo re-activar la oferta. Intenta de nuevo.")
+            return
+        mark_route_offer_as_offered(next_offer["queue_id"])
+        current = get_current_route_offer(route_id)
+        if not current:
+            query.edit_message_text("No se pudo re-activar la oferta. Intenta de nuevo.")
+            return
 
     active_route = get_active_route_for_courier(courier["id"])
     active_orders = get_active_orders_for_courier(courier["id"])
