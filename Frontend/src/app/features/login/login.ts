@@ -339,7 +339,18 @@ irLogin() {
 }
 
 login() {
-if (!this.username || !this.password) return;
+if (!this.username && !this.password) {
+  this.error.set('El usuario y la contraseña son obligatorios.');
+  return;
+}
+if (!this.username) {
+  this.error.set('El usuario es obligatorio.');
+  return;
+}
+if (!this.password) {
+  this.error.set('La contraseña es obligatoria.');
+  return;
+}
 
 this.cargando.set(true);
 this.error.set('');
