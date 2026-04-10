@@ -2826,7 +2826,7 @@ def main():
     ))
 
     dp.add_handler(rechazar_conv)  # debe ir ANTES de admin_menu_callback
-    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|ruta_pinissue_|ruta_pickup_)"))
+    dp.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^admin_(?!geo_|pedido_|ruta_pinissue_|ruta_pickup_)"))
 
     # Configuracion de tarifas (botones pricing_*)
     dp.add_handler(CallbackQueryHandler(tarifas_edit_callback, pattern=r"^pricing_"))

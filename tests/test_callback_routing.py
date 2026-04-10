@@ -322,6 +322,21 @@ class CallbackRoutingTests(unittest.TestCase):
         ]:
             self.assertIn(callback_template, source)
 
+    def test_admin_menu_callback_does_not_match_special_order_internal_callbacks(self):
+        regexes = [re.compile(pattern) for pattern in self.patterns.get("admin_menu_callback", [])]
+        self.assertTrue(regexes, "No se encontraron patrones para admin_menu_callback.")
+
+        for sample in [
+            "admin_pedido_pickup_7",
+            "admin_pedido_nueva_dir",
+            "admin_pedido_geo_pickup_si",
+            "admin_pedido_confirmar",
+        ]:
+            self.assertFalse(
+                any(regex.match(sample) for regex in regexes),
+                f"{sample} no deberia hacer match en admin_menu_callback.",
+            )
+
 
 class PedidoBaseFlowTests(unittest.TestCase):
     def _load_namespace(self):
