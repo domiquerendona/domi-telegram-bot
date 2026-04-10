@@ -980,6 +980,13 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `order_delivery.py:_admin_order_detail` — `KeyError: 'full_name'`: la tabla `allies` usa `business_name`, no `full_name`. Al tocar cualquier pedido en la lista de pedidos activos del admin, el bot crasheaba silenciosamente y el admin veía que no pasaba nada. Fix: `ally.get("business_name") or ally.get("full_name") or "Aliado"`.
 - `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
 
+**Mejoras panel de pedidos admin — volver a publicar (2026-04-10):**
+- Panel "Pedidos cancelados": el detalle de un pedido cancelado muestra botón "Volver a publicar" y el botón "Volver a la lista" regresa a la lista de cancelados.
+- Callback `admpedidos_republish_{order_id}_{admin_id}` → pantalla de confirmación → `admpedidos_republish_confirm_` ejecuta `republish_cancelled_order` + `repost_order_to_couriers`.
+- `republish_cancelled_order(order_id)` en `db.py`: actualiza `status='PUBLISHED'`, limpia `courier_id`, `accepted_at`, `courier_arrived_at`, `pickup_confirmed_at`, `delivered_at`, `canceled_at`, `canceled_by` y restablece `published_at=NOW()`. Re-exportada en `services.py`.
+- Re-oferta usa `skip_fee_check=True` (saldo ya fue verificado al crear el pedido original).
+- Handler `_admin_order_republish` y routing en `admin_orders_callback` en `order_delivery.py`.
+
 **Mejoras `admin_pedido_conv` (2026-04-09) — cancelación en todos los estados:**
 - Botón "Cancelar pedido" agregado a los teclados de: `ADMIN_PEDIDO_SAVE_PICKUP` (¿guardar dirección?), `ADMIN_PEDIDO_CUST_DEDUP` (cliente duplicado), `ADMIN_PEDIDO_GUARDAR_CUST` (¿guardar cliente/dirección en agenda?).
 - Botón "Omitir" en `ADMIN_PEDIDO_GUARDAR_PARKING` (el pedido ya está creado en este punto; omitir salta la pregunta de parqueo).
