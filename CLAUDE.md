@@ -553,6 +553,7 @@ Archivo de referencia: `Backend/.env.example`
 | `PERSISTENCE_PATH` | Ruta del archivo de persistencia del bot (`PicklePersistence`). En Railway con volumen persistente usar `/data/bot_persistence.pkl`. Default: `bot_persistence.pkl`. | Opcional |
 | `PAUSE_BOT_DEV` | Si es `1`, `true` o `yes`: el bot entra en bucle infinito de sleep sin procesar mensajes. Útil para pausar Railway DEV sin detener el servicio (evita cobro de llamadas Google Maps en periodos de no uso). Solo aplica en DEV; PROD nunca debe tener esta variable. | DEV (opcional) |
 | `WEB_PANEL_URL` | URL del panel web Angular. Con `https://` muestra botón inline en Telegram; con `http://` muestra texto plano (Telegram rechaza URLs no-https en botones). Ejemplo PROD: `https://angular-production-44c8.up.railway.app`. | Opcional (bot) |
+| `TELEGRAM_BOT_TOKEN` | Token del bot de Telegram para enviar mensajes desde la API FastAPI (ej. contraseña temporal en `POST /auth/forgot-password`). **Solo en el servicio `Backend`** — mismo valor que `BOT_TOKEN` del bot pero en el servicio API. Si no está configurado, `POST /auth/forgot-password` retorna HTTP 503. | Opcional (API) |
 
 **Regla de oro:** NUNCA usar el mismo `BOT_TOKEN` en DEV y PROD simultáneamente.
 
@@ -726,6 +727,7 @@ git grep "nombre_funcion" -- "*.py"
 | `GOOGLE_MAPS_API_KEY` | ✓ | — | — |
 | `WEB_ADMIN_USER/PASSWORD` | — | ✓ | — |
 | `WEB_SECRET_KEY` | — | ✓ | — |
+| `TELEGRAM_BOT_TOKEN` | — | ✓ (forgot-password) | — |
 | `BACKEND_URL` | — | — | ✓ |
 
 Para reglas obligatorias de ramas y despliegue, ver `AGENTS.md`.
@@ -928,6 +930,15 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 5. `AuthGuard` verifica presencia del token; si no existe, llama `authService.clear()` y redirige a login
 6. Post-login: `authService.homeRoute()` redirige a `/courier` para COURIER, `/superadmin` para el resto
 
+**Recuperación de contraseña vía Telegram (IMPLEMENTADO 2026-04-10):**
+- `POST /auth/forgot-password` — endpoint en `web/api/auth.py`. Body: `{ username }`.
+- Genera contraseña temporal de 10 caracteres, la hashea con bcrypt, la persiste con `update_web_user_password`, y la envía al chat de Telegram del usuario vía `requests.post` a la Bot API.
+- Usa la variable de entorno `TELEGRAM_BOT_TOKEN` en el servicio `Backend` de Railway (distinta de `BOT_TOKEN` del bot — mismo valor pero en otro servicio para evitar confusión).
+- Si `TELEGRAM_BOT_TOKEN` no está configurado, retorna HTTP 503.
+- Siempre devuelve el mismo mensaje genérico (`"Si el usuario existe, recibirás una contraseña temporal en Telegram."`) para evitar enumeración de usuarios.
+- Función de DB usada: `get_telegram_id_for_web_user(username)` en `db.py` — busca `telegram_id` por rol (`ADMIN_PLATFORM`: vía `team_code='PLATFORM'`; `ADMIN_LOCAL`: vía `admin_id`; `COURIER`: vía `courier_id`). Re-exportada en `services.py`.
+- **Variable requerida en el servicio Backend de Railway:** `TELEGRAM_BOT_TOKEN` (mismo valor que `BOT_TOKEN` del bot).
+
 **Seeding del admin inicial:**
 - `ensure_web_admin()` en `db.py` crea el usuario `ADMIN_PLATFORM` al arrancar la app si no existe.
 - Credenciales desde variables de entorno `WEB_ADMIN_USER` / `WEB_ADMIN_PASSWORD`.
@@ -964,7 +975,8 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 
 **Frontend Angular:**
 - `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
-- `LoginComponent` (`features/login/login.ts`) — formulario de autenticación con toggle de visibilidad de contraseña (ícono ojito). Usa `signal(false)` para `mostrarPassword`; botón `.toggle-password` posicionado absolutamente dentro de `.password-wrapper`. Íconos: `visibility` / `visibility_off` de `material-symbols-outlined`.
+- `LoginComponent` (`features/login/login.ts`) — dos vistas: `'login'` y `'forgot'`, controladas por `signal<Vista>('login')`. Vista login: validación de campos vacíos con mensajes específicos antes de llamar a la API; toggle de visibilidad de contraseña (ícono ojito) con `signal(false)` para `mostrarPassword`; botón `.toggle-password` posicionado absolutamente dentro de `.password-wrapper`; íconos `visibility` / `visibility_off` de `material-symbols-outlined`. Vista forgot: formulario de un campo (usuario) que llama `POST /auth/forgot-password`; muestra mensaje de éxito genérico (sin revelar si el usuario existe); botón "← Volver al inicio de sesión".
+- `AdministradoresComponent` (`features/superadmin/administradores/administradores.ts`) — formulario "Nuevo usuario del panel" incluye toggle ojito para el campo contraseña (`mostrarPassword = signal(false)`); se resetea a `false` al abrir/cerrar el formulario vía `toggleCrear()`.
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
 - Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
@@ -979,6 +991,10 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 **Bugs corregidos (2026-04-09):**
 - `order_delivery.py:_admin_order_detail` — `KeyError: 'full_name'`: la tabla `allies` usa `business_name`, no `full_name`. Al tocar cualquier pedido en la lista de pedidos activos del admin, el bot crasheaba silenciosamente y el admin veía que no pasaba nada. Fix: `ally.get("business_name") or ally.get("full_name") or "Aliado"`.
 - `handlers/registration.py:admin_confirm` — `UnboundLocalError: cannot access local variable 'answer'`: la variable `answer` solo se asignaba en el branch `else` (input de texto) pero se leía en `_debug_admin_registration_state` incluso cuando el usuario confirmó con botón (callback_query). Fix: inicializar `answer = ""` al inicio de la función. Síntoma visible: el admin de plataforma no veía los registros pendientes de admin local porque el handler crasheaba silenciosamente antes de crear el registro y enviar la notificación.
+
+**Bugs corregidos (2026-04-10):**
+- `order_delivery.py:_handle_route_accept` — courier presionaba "Aceptar" en una oferta de ruta cuyo timeout de 30 s ya había disparado (o el bot se había reiniciado). Síntoma 1: popup "Esta oferta ya no está disponible para ti." aunque la ruta seguía PUBLISHED. Síntoma 2: "no pasa nada" (mensaje sin cambios, botones activos). Causa: el job `_route_offer_timeout_job` no es persistido; tras expirar o reiniciar, la entrada `route_offer_queue` quedaba en EXPIRED/sin OFFERED y `get_current_route_offer` retornaba None. Fix: cuando `current is None` y `route.status == PUBLISHED`, se re-encola el courier (`delete_route_offer_queue` + `create_route_offer_queue` + `mark_route_offer_as_offered`) antes de continuar con la aceptación normal.
+- `main.py:global_error_handler` — cuando una excepción ocurría en un handler de callback después de `query.answer()` pero antes de cualquier `query.edit_message_text()`, el mensaje se quedaba sin cambios y el usuario no recibía feedback alguno ("no pasa nada"). Fix: el error handler ahora intenta editar el mensaje con "Ocurrió un error al procesar tu solicitud. Intenta de nuevo."; si no puede editar, muestra popup `show_alert=True`; si tampoco puede, hace `reply_text`. El error sigue loggándose con traceback completo para Railway.
 
 **Mejoras panel de pedidos admin — volver a publicar (2026-04-10):**
 - Panel "Pedidos cancelados": el detalle de un pedido cancelado muestra botón "Volver a publicar" y el botón "Volver a la lista" regresa a la lista de cancelados.
