@@ -2456,7 +2456,7 @@ def courier_base_amount_handler(update, context):
 
 
 def global_error_handler(update, context):
-    """Registra errores no capturados para diagnostico en Railway."""
+    """Registra errores no capturados para diagnostico en Railway y notifica al usuario."""
     try:
         if update and getattr(update, "effective_user", None):
             logger.error(
@@ -2471,6 +2471,26 @@ def global_error_handler(update, context):
     except Exception as meta_err:
         logger.error("meta_log_failed=%s", meta_err)
     logger.error(traceback.format_exc())
+
+    # Intentar notificar al usuario para que no se quede viendo un boton sin respuesta
+    try:
+        if update:
+            cq = getattr(update, "callback_query", None)
+            if cq:
+                try:
+                    cq.edit_message_text("Ocurrio un error al procesar tu solicitud. Intenta de nuevo.")
+                except Exception:
+                    try:
+                        cq.answer("Ocurrio un error. Intenta de nuevo.", show_alert=True)
+                    except Exception:
+                        pass
+            elif getattr(update, "effective_message", None):
+                try:
+                    update.effective_message.reply_text("Ocurrio un error al procesar tu solicitud. Intenta de nuevo.")
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def solequipo_start_callback(update, context):
