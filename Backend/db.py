@@ -5364,6 +5364,53 @@ def update_web_user_password(user_id: int, password_hash: str):
         conn.close()
 
 
+def get_telegram_id_for_web_user(username: str):
+    """
+    Retorna el telegram_id del usuario del panel, buscando por rol:
+    - ADMIN_PLATFORM: admin con team_code='PLATFORM'
+    - ADMIN_LOCAL: admins.id = web_users.admin_id
+    - COURIER: couriers.id = web_users.courier_id
+    Retorna None si no se encuentra.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT id, role, admin_id, courier_id FROM web_users WHERE username = {P}",
+            (username,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        role = row["role"] if isinstance(row, dict) else row[1]
+        admin_id = row["admin_id"] if isinstance(row, dict) else row[2]
+        courier_id = row["courier_id"] if isinstance(row, dict) else row[3]
+
+        if role == "ADMIN_PLATFORM":
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN admins a ON a.user_id = u.id WHERE a.team_code = 'PLATFORM' LIMIT 1"
+            )
+        elif role == "ADMIN_LOCAL" and admin_id:
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN admins a ON a.user_id = u.id WHERE a.id = {P} LIMIT 1",
+                (admin_id,),
+            )
+        elif role == "COURIER" and courier_id:
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN couriers c ON c.user_id = u.id WHERE c.id = {P} LIMIT 1",
+                (courier_id,),
+            )
+        else:
+            return None
+
+        tg_row = cur.fetchone()
+        if tg_row is None:
+            return None
+        return tg_row["telegram_id"] if isinstance(tg_row, dict) else tg_row[0]
+    finally:
+        conn.close()
+
+
 def update_admin_name_phone(admin_id: int, full_name: str, phone: str):
     """Actualiza nombre y teléfono del admin en la tabla admins."""
     conn = get_connection()

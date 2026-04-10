@@ -333,6 +333,7 @@ from db import (
     list_web_users,
     update_web_user_status,
     update_web_user_password,
+    get_telegram_id_for_web_user,
     ensure_web_admin,
     # Re-exports ally_form_requests (enlace público del aliado)
     get_or_create_ally_public_token,
