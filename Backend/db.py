@@ -2225,6 +2225,7 @@ def _init_db_postgres():
     _pg_add_col("orders", "excluded_courier_ids", "TEXT DEFAULT '[]'")
     _pg_add_col("routes", "requires_cash", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "cash_required_amount", "INTEGER DEFAULT 0")
+    _pg_add_col("routes", "courier_arrived_at", "TIMESTAMP")
     _pg_add_col("routes", "arrival_wait_override", "INTEGER DEFAULT 0")
     _pg_add_col("routes", "arrival_wait_override_at", "TIMESTAMP")
     _pg_add_col("route_destinations", "parking_fee", "INTEGER DEFAULT 0")
@@ -3446,6 +3447,34 @@ def get_active_orders_by_ally(ally_id: int):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def republish_cancelled_order(order_id: int):
+    """Resetea un pedido CANCELLED a PUBLISHED para volver a ofertarlo.
+    Limpia courier_id, accepted_at, canceled_at, canceled_by y actualiza published_at.
+    Solo actúa si el pedido está en estado CANCELLED.
+    Retorna True si se actualizó, False si no estaba cancelado.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE orders
+        SET status = 'PUBLISHED',
+            courier_id = NULL,
+            accepted_at = NULL,
+            courier_arrived_at = NULL,
+            pickup_confirmed_at = NULL,
+            delivered_at = NULL,
+            canceled_at = NULL,
+            canceled_by = NULL,
+            published_at = {now_sql}
+        WHERE id = {P} AND status = 'CANCELLED';
+    """, (order_id,))
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def cancel_order(order_id: int, canceled_by: str, reason: str = None):
@@ -5332,6 +5361,53 @@ def update_web_user_password(user_id: int, password_hash: str):
             (password_hash, user_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_telegram_id_for_web_user(username: str):
+    """
+    Retorna el telegram_id del usuario del panel, buscando por rol:
+    - ADMIN_PLATFORM: admin con team_code='PLATFORM'
+    - ADMIN_LOCAL: admins.id = web_users.admin_id
+    - COURIER: couriers.id = web_users.courier_id
+    Retorna None si no se encuentra.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT id, role, admin_id, courier_id FROM web_users WHERE username = {P}",
+            (username,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        role = row["role"] if isinstance(row, dict) else row[1]
+        admin_id = row["admin_id"] if isinstance(row, dict) else row[2]
+        courier_id = row["courier_id"] if isinstance(row, dict) else row[3]
+
+        if role == "ADMIN_PLATFORM":
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN admins a ON a.user_id = u.id WHERE a.team_code = 'PLATFORM' LIMIT 1"
+            )
+        elif role == "ADMIN_LOCAL" and admin_id:
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN admins a ON a.user_id = u.id WHERE a.id = {P} LIMIT 1",
+                (admin_id,),
+            )
+        elif role == "COURIER" and courier_id:
+            cur.execute(
+                f"SELECT u.telegram_id FROM users u JOIN couriers c ON c.user_id = u.id WHERE c.id = {P} LIMIT 1",
+                (courier_id,),
+            )
+        else:
+            return None
+
+        tg_row = cur.fetchone()
+        if tg_row is None:
+            return None
+        return tg_row["telegram_id"] if isinstance(tg_row, dict) else tg_row[0]
     finally:
         conn.close()
 

@@ -2,9 +2,11 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 import re
 import unicodedata
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ from db import (
     get_order_penalty_config,
     cancel_order,
     cancel_order_by_actor,
+    republish_cancelled_order,
     cancel_route_by_actor,
     penalize_courier_for_delay_and_release,
     penalize_route_courier_for_delay_and_release,
@@ -332,6 +335,7 @@ from db import (
     list_web_users,
     update_web_user_status,
     update_web_user_password,
+    get_telegram_id_for_web_user,
     ensure_web_admin,
     # Re-exports ally_form_requests (enlace público del aliado)
     get_or_create_ally_public_token,
@@ -548,10 +552,6 @@ def upsert_admin_customer_address_for_agenda(
         lng=lng,
     )
     return {"action": "created", "address_id": address_id, "address": None}
-import math
-import re
-import os
-import urllib.request
 
 # Límite diario de llamadas a Google (configurable)
 GOOGLE_LOOKUP_DAILY_LIMIT = int(os.getenv("GOOGLE_LOOKUP_DAILY_LIMIT", "150"))

@@ -130,7 +130,12 @@ interface Courier {
           </div>
           <div class="form-fila">
             <label>Contraseña</label>
-            <input type="password" [(ngModel)]="nuevoPassword" placeholder="••••••••" autocomplete="new-password" />
+            <div class="password-wrapper">
+              <input [type]="mostrarPassword() ? 'text' : 'password'" [(ngModel)]="nuevoPassword" placeholder="••••••••" autocomplete="new-password" />
+              <button type="button" class="toggle-password" (click)="mostrarPassword.set(!mostrarPassword())">
+                <span class="material-symbols-outlined">{{ mostrarPassword() ? 'visibility_off' : 'visibility' }}</span>
+              </button>
+            </div>
           </div>
           <div class="form-fila">
             <label>Rol</label>
@@ -344,6 +349,17 @@ interface Courier {
 
     .form-fila small { font-size: 11px; color: #9ca3af; }
 
+    .password-wrapper { position: relative; display: flex; align-items: center; max-width: 380px; }
+    .password-wrapper input { width: 100%; max-width: 100%; padding-right: 44px; }
+    .toggle-password {
+      position: absolute; right: 10px;
+      background: none; border: none; padding: 4px; margin: 0;
+      cursor: pointer; color: #6b7280; display: flex; align-items: center;
+      width: auto;
+    }
+    .toggle-password:hover { color: #4338ca; }
+    .toggle-password span { font-size: 20px; }
+
     .form-error {
       background: #fef2f2;
       border: 1px solid #fca5a5;
@@ -463,6 +479,7 @@ export class AdministradoresComponent implements OnInit {
   creandoVisible = signal(false);
   creando = signal(false);
   errorCrear = signal('');
+  mostrarPassword = signal(false);
   nuevoUsername = '';
   nuevoPassword = '';
   nuevoRole = 'ADMIN_LOCAL';
@@ -557,6 +574,7 @@ export class AdministradoresComponent implements OnInit {
   toggleCrear() {
     this.creandoVisible.update(v => !v);
     this.errorCrear.set('');
+    this.mostrarPassword.set(false);
     this.nuevoUsername = '';
     this.nuevoPassword = '';
     this.nuevoRole = 'ADMIN_LOCAL';
