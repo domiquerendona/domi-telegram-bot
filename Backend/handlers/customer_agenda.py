@@ -114,7 +114,8 @@ from services import (
     set_address_parking_status,
     get_ally_parking_fee_enabled,
     ensure_user,
-    find_matching_customer_address,
+    upsert_customer_address_for_agenda,
+    upsert_admin_customer_address_for_agenda,
     get_admin_by_telegram_id,
     get_admin_customer_address_by_id,
     get_admin_customer_by_id,
@@ -167,6 +168,14 @@ def _agenda_geo_no_more_text():
         "- Coordenadas (ej: 4.81,-75.69)\n"
         "- Una direccion con ciudad"
     )
+
+
+def _agenda_address_upsert_feedback(action, label, address_text):
+    if action == "created":
+        return "Direccion guardada: {} - {}".format(label, address_text)
+    if action == "coords_updated":
+        return "La direccion ya existia y se completo su geolocalizacion."
+    return "La direccion ya estaba guardada en la agenda."
 
 
 def _agenda_emit_geo_confirmation(update, context, loc, texto, cb_si, cb_no, formatted_key, log_tag):
@@ -958,8 +967,19 @@ def clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("current_customer_id")
         label = context.user_data.get("new_address_label")
         try:
-            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
-            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+            save_result = upsert_customer_address_for_agenda(
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                lat=lat,
+                lng=lng,
+                notes=notes,
+            )
+            update.message.reply_text(
+                _agenda_address_upsert_feedback(save_result["action"], label, address_text)
+            )
         except Exception as e:
             update.message.reply_text("Error: {}".format(str(e)))
 
@@ -2002,8 +2022,19 @@ def admin_clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("acust_current_customer_id")
         label = context.user_data.get("acust_new_address_label")
         try:
-            create_admin_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
-            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+            save_result = upsert_admin_customer_address_for_agenda(
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                lat=lat,
+                lng=lng,
+                notes=notes,
+            )
+            update.message.reply_text(
+                _agenda_address_upsert_feedback(save_result["action"], label, address_text)
+            )
         except Exception as e:
             update.message.reply_text("Error: {}".format(str(e)))
 
@@ -2941,8 +2972,19 @@ def ally_clientes_dir_barrio_handler(update, context):
         customer_id = context.user_data.get("allycust_current_customer_id")
         label = context.user_data.get("allycust_new_address_label")
         try:
-            create_customer_address(customer_id, label, address_text, city=city, barrio=barrio, lat=lat, lng=lng)
-            update.message.reply_text("Direccion agregada: {} - {}".format(label, address_text))
+            save_result = upsert_customer_address_for_agenda(
+                customer_id=customer_id,
+                label=label,
+                address_text=address_text,
+                city=city,
+                barrio=barrio,
+                lat=lat,
+                lng=lng,
+                notes=notes,
+            )
+            update.message.reply_text(
+                _agenda_address_upsert_feedback(save_result["action"], label, address_text)
+            )
         except Exception as e:
             update.message.reply_text("Error: {}".format(str(e)))
         for key in _ALLYCUST_PENDING_KEYS + ["allycust_new_address_label"]:

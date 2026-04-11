@@ -76,7 +76,8 @@ from services import (
     get_customer_address_by_id,
     get_ally_customer_by_phone,
     create_ally_customer,
-    create_customer_address,
+    find_matching_customer_address,
+    upsert_customer_address_for_agenda,
     increment_customer_address_usage,
     has_valid_coords,
     resolve_location,
@@ -261,6 +262,11 @@ def _ruta_guardar_parada_y_cliente(context, msg_or_query):
     customer_id = context.user_data.get("ruta_temp_customer_id")
     name = context.user_data.get("ruta_temp_name") or ""
     phone = context.user_data.get("ruta_temp_phone") or ""
+    address = context.user_data.get("ruta_temp_address") or ""
+    city = context.user_data.get("ruta_temp_city") or ""
+    barrio = context.user_data.get("ruta_temp_barrio") or ""
+    lat = context.user_data.get("ruta_temp_lat")
+    lng = context.user_data.get("ruta_temp_lng")
 
     _ruta_guardar_parada_actual(context)
 
@@ -271,6 +277,38 @@ def _ruta_guardar_parada_y_cliente(context, msg_or_query):
             [InlineKeyboardButton("No", callback_data="ruta_guardar_cust_no")],
         ])
         text = "Deseas guardar a {} ({}) en tu agenda de clientes?".format(name, phone)
+        if hasattr(msg_or_query, "edit_message_text"):
+            msg_or_query.edit_message_text(text, reply_markup=keyboard)
+        else:
+            msg_or_query.message.reply_text(text, reply_markup=keyboard)
+        return RUTA_GUARDAR_CLIENTES
+
+    if customer_id and address:
+        existing_address = find_matching_customer_address(
+            customer_id,
+            address,
+            city=city,
+            barrio=barrio,
+        )
+        if existing_address:
+            if has_valid_coords(lat, lng) and not has_valid_coords(existing_address.get("lat"), existing_address.get("lng")):
+                upsert_customer_address_for_agenda(
+                    customer_id=customer_id,
+                    label=existing_address.get("label") or barrio or city or "Principal",
+                    address_text=address,
+                    city=city,
+                    barrio=barrio,
+                    notes=existing_address.get("notes"),
+                    lat=lat,
+                    lng=lng,
+                )
+            return _ruta_mostrar_mas_paradas(msg_or_query, context)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Si, guardar", callback_data="ruta_guardar_cust_si")],
+            [InlineKeyboardButton("No", callback_data="ruta_guardar_cust_no")],
+        ])
+        text = "Deseas guardar esta direccion para futuros pedidos de {}?".format(name or "este cliente")
         if hasattr(msg_or_query, "edit_message_text"):
             msg_or_query.edit_message_text(text, reply_markup=keyboard)
         else:
@@ -1273,18 +1311,55 @@ def ruta_guardar_cust_callback(update, context):
         name = ultima.get("name") or ""
         phone = ultima.get("phone") or ""
         address = ultima.get("address") or ""
+        city = ultima.get("city") or ""
+        barrio = ultima.get("barrio") or ""
         lat = ultima.get("lat")
         lng = ultima.get("lng")
+        customer_id = ultima.get("customer_id")
         try:
-            existing = get_ally_customer_by_phone(ally_id, phone)
-            if existing:
-                customer_id = existing["id"]
-            else:
-                customer_id = create_ally_customer(ally_id, name, phone)
             address_id = None
-            if address:
-                address_id = create_customer_address(customer_id, "Principal", address,
-                                                     city="", barrio="", lat=lat, lng=lng)
+            message_text = ""
+            if customer_id:
+                if address:
+                    save_result = upsert_customer_address_for_agenda(
+                        customer_id=customer_id,
+                        label=barrio or city or "Nueva direccion",
+                        address_text=address,
+                        city=city,
+                        barrio=barrio,
+                        lat=lat,
+                        lng=lng,
+                    )
+                    if save_result["action"] == "created":
+                        address_id = save_result["address_id"]
+                        message_text = "Direccion guardada para {}.".format(name or "este cliente")
+                    elif save_result["action"] == "coords_updated":
+                        message_text = "La direccion ya existia y se completo su geolocalizacion."
+                    else:
+                        message_text = "La direccion ya estaba guardada en la agenda."
+            else:
+                existing = get_ally_customer_by_phone(ally_id, phone)
+                if existing:
+                    customer_id = existing["id"]
+                else:
+                    customer_id = create_ally_customer(ally_id, name, phone)
+                if address:
+                    save_result = upsert_customer_address_for_agenda(
+                        customer_id=customer_id,
+                        label="Principal",
+                        address_text=address,
+                        city=city,
+                        barrio=barrio,
+                        lat=lat,
+                        lng=lng,
+                    )
+                    if save_result["action"] == "created":
+                        address_id = save_result["address_id"]
+                        message_text = "Cliente {} guardado en tu agenda.".format(name)
+                    elif save_result["action"] == "coords_updated":
+                        message_text = "Cliente {} guardado. La direccion ya existia y se completo su geolocalizacion.".format(name)
+                    else:
+                        message_text = "Cliente {} guardado. La direccion ya estaba en la agenda.".format(name)
             parking_enabled_ruta = get_ally_parking_fee_enabled(ally_id) if ally_id else False
             if address_id and parking_enabled_ruta:
                 context.user_data["ruta_parking_address_id"] = address_id
@@ -1293,19 +1368,24 @@ def ruta_guardar_cust_callback(update, context):
                     [InlineKeyboardButton("No / No lo se", callback_data="ruta_guardar_cust_parking_no")],
                 ]
                 query.edit_message_text(
-                    "Cliente {} guardado.\n\n"
+                    "{}\n\n"
                     "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(name),
+                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(
+                        message_text or "Guardado correctamente."
+                    ),
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
                 return RUTA_GUARDAR_CUST_PARKING
             else:
-                query.edit_message_text("Cliente {} guardado en tu agenda.".format(name))
+                query.edit_message_text(message_text or "Guardado correctamente.")
         except Exception as e:
             logger.warning("Error guardando cliente de ruta: %s", e)
-            query.edit_message_text("No se pudo guardar el cliente.")
+            query.edit_message_text("No se pudo guardar la informacion en agenda.")
     else:
-        query.edit_message_text("OK, no se guardo el cliente.")
+        if (ultima.get("customer_id") or 0) > 0:
+            query.edit_message_text("OK, no se guardo la direccion.")
+        else:
+            query.edit_message_text("OK, no se guardo el cliente.")
 
     return _ruta_mostrar_mas_paradas(query, context)
 

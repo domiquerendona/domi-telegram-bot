@@ -79,7 +79,8 @@ from services import (
     list_admin_customers, search_admin_customers, get_admin_customer_by_id,
     get_admin_customer_address_by_id, list_admin_customer_addresses,
     get_admin_customer_by_phone, create_admin_customer, create_admin_customer_address,
-    update_admin_customer_address,
+    update_admin_customer_address, find_matching_admin_customer_address,
+    upsert_customer_address_for_agenda, upsert_admin_customer_address_for_agenda,
     increment_customer_address_usage, increment_admin_customer_address_usage,
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
@@ -736,18 +737,19 @@ def pedido_seleccionar_direccion_callback(update, context):
             )
             return PEDIDO_UBICACION
         if customer_id and address_text:
-            address_id = create_customer_address(
+            save_result = upsert_customer_address_for_agenda(
                 customer_id=customer_id,
                 label=address_text[:30],
                 address_text=address_text,
                 city=context.user_data.get("customer_city", ""),
                 barrio=context.user_data.get("customer_barrio", ""),
                 lat=lat,
-                lng=lng
+                lng=lng,
             )
             ally_id_ctx = context.user_data.get("ally_id")
             parking_enabled = get_ally_parking_fee_enabled(ally_id_ctx) if ally_id_ctx else False
-            if parking_enabled:
+            if save_result["action"] == "created" and parking_enabled:
+                address_id = save_result["address_id"]
                 context.user_data["pedido_parking_address_id"] = address_id
                 keyboard = [
                     [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="pedido_dir_parking_si")],
@@ -760,6 +762,10 @@ def pedido_seleccionar_direccion_callback(update, context):
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
                 return PEDIDO_GUARDAR_DIR_PARKING
+            if save_result["action"] == "coords_updated":
+                query.edit_message_text("La direccion ya existia y se completo su geolocalizacion. Continuamos.")
+            elif save_result["action"] == "existing":
+                query.edit_message_text("La direccion ya estaba guardada. Continuamos.")
             else:
                 query.edit_message_text("Direccion guardada. Continuamos.")
         else:
@@ -5090,26 +5096,55 @@ def admin_pedido_confirmar_callback(update, context):
             build_market_launch_status_text(published_count),
         )
     )
-    # Ofrecer guardar cliente si fue ingreso manual (no seleccionado de agenda) y tiene coords
+    # Ofrecer guardar cliente/direccion cuando aplique y completar GPS si la direccion ya existia.
     cust_name = context.user_data.get("admin_ped_cust_name", "")
     cust_phone = context.user_data.get("admin_ped_cust_phone", "")
-    is_from_agenda = bool(context.user_data.get("admin_ped_selected_cust_id"))
-    if not is_from_agenda and cust_phone and has_valid_coords(dropoff_lat, dropoff_lng):
-        existing = get_admin_customer_by_phone(admin_id, cust_phone)
-        if existing:
-            # Ya existe: ofrecer agregar direccion
-            context.user_data["admin_ped_guardar_existing_id"] = existing["id"]
-            query.edit_message_text(
-                success_msg + "\n\n"
-                "Este cliente ya esta en tu agenda ({}).\n"
-                "Deseas agregar esta direccion a su perfil?".format(existing["name"] or cust_name),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Si, agregar", callback_data="admin_ped_guardar_dir_si")],
-                    [InlineKeyboardButton("No", callback_data="admin_ped_guardar_dir_no")],
-                    [InlineKeyboardButton("Cancelar pedido", callback_data="admin_pedido_cancelar")],
-                ]),
+    if cust_phone and has_valid_coords(dropoff_lat, dropoff_lng):
+        existing_customer_id = context.user_data.get("admin_ped_selected_cust_id")
+        existing_customer_name = cust_name
+        if existing_customer_id:
+            selected_customer = get_admin_customer_by_id(existing_customer_id, admin_id)
+            if selected_customer:
+                existing_customer_name = selected_customer["name"] or existing_customer_name
+        else:
+            existing = get_admin_customer_by_phone(admin_id, cust_phone)
+            if existing:
+                existing_customer_id = existing["id"]
+                existing_customer_name = existing["name"] or existing_customer_name
+
+        if existing_customer_id:
+            existing_addr = find_matching_admin_customer_address(
+                existing_customer_id,
+                cust_addr,
+                city=dropoff_city,
+                barrio=dropoff_barrio,
             )
-            return ADMIN_PEDIDO_GUARDAR_CUST
+            if existing_addr:
+                save_result = upsert_admin_customer_address_for_agenda(
+                    customer_id=existing_customer_id,
+                    label=existing_addr.get("label") or dropoff_barrio or dropoff_city or "Principal",
+                    address_text=cust_addr,
+                    city=dropoff_city,
+                    barrio=dropoff_barrio,
+                    notes=existing_addr.get("notes"),
+                    lat=dropoff_lat,
+                    lng=dropoff_lng,
+                )
+                if save_result["action"] == "coords_updated":
+                    success_msg += "\n\nLa direccion ya existia en tu agenda y se completo su geolocalizacion."
+            else:
+                context.user_data["admin_ped_guardar_existing_id"] = existing_customer_id
+                query.edit_message_text(
+                    success_msg + "\n\n"
+                    "Este cliente ya esta en tu agenda ({}).\n"
+                    "Deseas agregar esta direccion a su perfil?".format(existing_customer_name or cust_name),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Si, agregar", callback_data="admin_ped_guardar_dir_si")],
+                        [InlineKeyboardButton("No", callback_data="admin_ped_guardar_dir_no")],
+                        [InlineKeyboardButton("Cancelar pedido", callback_data="admin_pedido_cancelar")],
+                    ]),
+                )
+                return ADMIN_PEDIDO_GUARDAR_CUST
         else:
             query.edit_message_text(
                 success_msg + "\n\nDeseas guardar a {} en tu agenda?".format(cust_name),
@@ -5572,6 +5607,7 @@ def admin_pedido_guardar_cust_callback(update, context):
     label = barrio or city or "Principal"
     data = query.data
     parking_address_id = None
+    saved_message = "Guardado."
     if data == "admin_ped_guardar_cust_si":
         try:
             new_id = create_admin_customer(admin_id, cust_name, cust_phone)
@@ -5585,7 +5621,21 @@ def admin_pedido_guardar_cust_callback(update, context):
     elif data == "admin_ped_guardar_dir_si":
         existing_id = context.user_data.get("admin_ped_guardar_existing_id")
         try:
-            parking_address_id = create_admin_customer_address(existing_id, label, addr, city=city, barrio=barrio, lat=lat, lng=lng)
+            save_result = upsert_admin_customer_address_for_agenda(
+                customer_id=existing_id,
+                label=label,
+                address_text=addr,
+                city=city,
+                barrio=barrio,
+                lat=lat,
+                lng=lng,
+            )
+            if save_result["action"] == "created":
+                parking_address_id = save_result["address_id"]
+            elif save_result["action"] == "coords_updated":
+                saved_message = "La direccion ya existia y se completo su geolocalizacion."
+            else:
+                saved_message = "La direccion ya estaba guardada en la agenda."
         except Exception as e:
             query.edit_message_text("No se pudo agregar la direccion: {}".format(e))
             for key in list(context.user_data.keys()):
@@ -5599,6 +5649,14 @@ def admin_pedido_guardar_cust_callback(update, context):
                 del context.user_data[key]
         return ConversationHandler.END
 
+    if parking_address_id is None:
+        query.edit_message_text(saved_message)
+        for key in list(context.user_data.keys()):
+            if key.startswith("admin_ped_"):
+                del context.user_data[key]
+        show_main_menu(update, context)
+        return ConversationHandler.END
+
     context.user_data["admin_ped_parking_address_id"] = parking_address_id
     keyboard = [
         [InlineKeyboardButton("Si, hay dificultad para parquear", callback_data="admin_ped_guardar_parking_si")],
@@ -5606,9 +5664,9 @@ def admin_pedido_guardar_cust_callback(update, context):
         [InlineKeyboardButton("Omitir", callback_data="admin_ped_guardar_parking_no")],
     ]
     query.edit_message_text(
-        "Guardado.\n\n"
+        "{}\n\n"
         "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-        "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)",
+        "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(saved_message),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return ADMIN_PEDIDO_GUARDAR_PARKING
@@ -6520,8 +6578,21 @@ def pedido_guardar_dir_existente_callback(update, context):
         lng = context.user_data.get("dropoff_lng")
         label = barrio or city or "Nueva direccion"
         try:
-            create_customer_address(cust_id, label, address, city=city, barrio=barrio, lat=lat, lng=lng)
-            query.edit_message_text("Direccion guardada en la agenda del cliente.")
+            save_result = upsert_customer_address_for_agenda(
+                customer_id=cust_id,
+                label=label,
+                address_text=address,
+                city=city,
+                barrio=barrio,
+                lat=lat,
+                lng=lng,
+            )
+            if save_result["action"] == "created":
+                query.edit_message_text("Direccion guardada en la agenda del cliente.")
+            elif save_result["action"] == "coords_updated":
+                query.edit_message_text("La direccion ya existia y se completo su geolocalizacion.")
+            else:
+                query.edit_message_text("La direccion ya estaba guardada en la agenda del cliente.")
         except Exception as e:
             query.edit_message_text("No se pudo guardar la direccion: {}".format(e))
     else:

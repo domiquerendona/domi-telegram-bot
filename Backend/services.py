@@ -401,6 +401,153 @@ def visible_address_label(label: str, address_text: str = "", fallback: str = "S
     if visible_address:
         return visible_address[:60]
     return fallback
+
+
+def _normalize_address_match_value(value: str) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _default_customer_address_label(
+    label: str = None,
+    city: str = None,
+    barrio: str = None,
+    fallback: str = "Principal",
+) -> str:
+    for candidate in (label, barrio, city):
+        cleaned = " ".join(str(candidate or "").strip().split())
+        if cleaned:
+            return cleaned
+    return fallback
+
+
+def find_matching_admin_customer_address(
+    customer_id: int,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+):
+    """Busca una direccion activa del cliente admin con coincidencia normalizada."""
+    needle_addr = _normalize_address_match_value(address_text)
+    needle_city = _normalize_address_match_value(city)
+    needle_barrio = _normalize_address_match_value(barrio)
+
+    rows = list_admin_customer_addresses(customer_id)
+    for row in rows:
+        if (
+            _normalize_address_match_value(row["address_text"]) == needle_addr
+            and _normalize_address_match_value(row["city"]) == needle_city
+            and _normalize_address_match_value(row["barrio"]) == needle_barrio
+        ):
+            return dict(row)
+    return None
+
+
+def upsert_customer_address_for_agenda(
+    customer_id: int,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    lat: float = None,
+    lng: float = None,
+    label: str = None,
+    notes: str = None,
+) -> Dict[str, Any]:
+    """Crea la direccion o completa sus coords si ya existia en agenda del aliado."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
+
+    clean_address = " ".join(str(address_text or "").strip().split())
+    clean_city = " ".join(str(city or "").strip().split())
+    clean_barrio = " ".join(str(barrio or "").strip().split())
+    clean_label = _default_customer_address_label(label, clean_city, clean_barrio)
+    match = find_matching_customer_address(
+        customer_id,
+        clean_address,
+        city=clean_city,
+        barrio=clean_barrio,
+    )
+    if match:
+        if not has_valid_coords(match.get("lat"), match.get("lng")):
+            update_customer_address(
+                address_id=match["id"],
+                customer_id=customer_id,
+                label=match.get("label") or clean_label,
+                address_text=match.get("address_text") or clean_address,
+                city=match.get("city") or clean_city,
+                barrio=match.get("barrio") or clean_barrio,
+                notes=match.get("notes"),
+                lat=lat,
+                lng=lng,
+            )
+            return {"action": "coords_updated", "address_id": match["id"], "address": match}
+        return {"action": "existing", "address_id": match["id"], "address": match}
+
+    address_id = create_customer_address(
+        customer_id=customer_id,
+        label=clean_label,
+        address_text=clean_address,
+        city=clean_city,
+        barrio=clean_barrio,
+        notes=notes,
+        lat=lat,
+        lng=lng,
+    )
+    return {"action": "created", "address_id": address_id, "address": None}
+
+
+def upsert_admin_customer_address_for_agenda(
+    customer_id: int,
+    address_text: str,
+    city: str = None,
+    barrio: str = None,
+    lat: float = None,
+    lng: float = None,
+    label: str = None,
+    notes: str = None,
+) -> Dict[str, Any]:
+    """Crea la direccion o completa sus coords si ya existia en agenda del admin."""
+    if not has_valid_coords(lat, lng):
+        raise ValueError("La direccion del cliente requiere ubicacion confirmada.")
+
+    clean_address = " ".join(str(address_text or "").strip().split())
+    clean_city = " ".join(str(city or "").strip().split())
+    clean_barrio = " ".join(str(barrio or "").strip().split())
+    clean_label = _default_customer_address_label(label, clean_city, clean_barrio)
+    match = find_matching_admin_customer_address(
+        customer_id,
+        clean_address,
+        city=clean_city,
+        barrio=clean_barrio,
+    )
+    if match:
+        if not has_valid_coords(match.get("lat"), match.get("lng")):
+            update_admin_customer_address(
+                address_id=match["id"],
+                customer_id=customer_id,
+                label=match.get("label") or clean_label,
+                address_text=match.get("address_text") or clean_address,
+                city=match.get("city") or clean_city,
+                barrio=match.get("barrio") or clean_barrio,
+                notes=match.get("notes"),
+                lat=lat,
+                lng=lng,
+            )
+            return {"action": "coords_updated", "address_id": match["id"], "address": match}
+        return {"action": "existing", "address_id": match["id"], "address": match}
+
+    address_id = create_admin_customer_address(
+        customer_id=customer_id,
+        label=clean_label,
+        address_text=clean_address,
+        city=clean_city,
+        barrio=clean_barrio,
+        notes=notes,
+        lat=lat,
+        lng=lng,
+    )
+    return {"action": "created", "address_id": address_id, "address": None}
 import math
 import re
 import os

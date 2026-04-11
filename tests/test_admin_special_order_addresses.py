@@ -71,6 +71,7 @@ def _extract_namespace():
         "admin_pedido_addr_selected",
         "admin_pedido_geo_callback",
         "admin_pedido_cust_addr_detalle_handler",
+        "admin_pedido_confirmar_callback",
         "admin_pedido_instruc_handler",
         "pedido_geo_ubicacion_callback",
         "pedido_direccion_cliente",
@@ -105,6 +106,7 @@ def _extract_namespace():
         "ADMIN_PEDIDO_PICKUP_DETALLE": 1024,
         "ADMIN_PEDIDO_CUST_ADDR_DETALLE": 1025,
         "ADMIN_PEDIDO_COMISION": 1011,
+        "ADMIN_PEDIDO_GUARDAR_CUST": 1031,
         "PEDIDO_UBICACION": 8,
         "PEDIDO_DIRECCION": 9,
         "PEDIDO_SELECCIONAR_DIRECCION": 10,
@@ -118,7 +120,11 @@ def _extract_namespace():
         "PEDIDO_PICKUP_GUARDAR": 17,
         "MIN_ADMIN_OPERATING_BALANCE": 2000,
         "PARKING_FEE_AMOUNT": 1200,
-        "logger": SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None),
+        "logger": SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
         "_admin_ped_preview_text": lambda user_data: ("PREVIEW", None),
         "_admin_pedido_mostrar_selector_cliente": lambda update, context, edit=False: 917,
         "_admin_pedido_calcular_preview": lambda update, context, edit=False: 912,
@@ -126,6 +132,7 @@ def _extract_namespace():
         "mostrar_resumen_confirmacion": lambda update, context, edit=False: 18,
         "mostrar_resumen_confirmacion_msg": lambda update, context: 18,
         "continuar_despues_pickup": lambda update, context, edit=False: 19,
+        "_pedido_payment_method_from_base": lambda requires_cash, cash_required_amount: "CASH_CONFIRMED" if requires_cash else "CASH_NOT_REQUIRED",
         "_maybe_cache_confirmed_geo": lambda context: None,
         "_geo_siguiente_o_gps": lambda query, context, yes, no, state: state,
         "save_confirmed_geocoding": lambda text, lat, lng: None,
@@ -133,7 +140,15 @@ def _extract_namespace():
         "_order_city_hint": lambda context: None,
         "_mostrar_confirmacion_geocode": lambda *args, **kwargs: None,
         "get_fee_config": lambda: {"fee_service_total": 2500, "fee_platform_share": 2500},
+        "create_order": lambda **kwargs: 901,
+        "publish_order_to_couriers": lambda *args, **kwargs: 4,
+        "build_market_launch_status_text": lambda count: "Mercado: {}".format(count),
         "get_admin_location_by_id": lambda loc_id, admin_id: None,
+        "get_admin_customer_by_id": lambda customer_id, admin_id: {
+            "id": customer_id,
+            "name": "Cliente",
+            "phone": "3000000000",
+        },
         "get_admin_customer_address_by_id": lambda address_id, customer_id=None: None,
         "get_default_ally_location": lambda ally_id: None,
         "get_customer_address_by_id": lambda address_id, customer_id=None: None,
@@ -153,6 +168,17 @@ def _extract_namespace():
         "update_admin_location": lambda **kwargs: True,
         "update_customer_address": lambda **kwargs: True,
         "update_admin_customer_address": lambda **kwargs: True,
+        "upsert_customer_address_for_agenda": lambda **kwargs: {
+            "action": "created",
+            "address_id": 1,
+            "address": None,
+        },
+        "find_matching_admin_customer_address": lambda *args, **kwargs: None,
+        "upsert_admin_customer_address_for_agenda": lambda **kwargs: {
+            "action": "existing",
+            "address_id": 1,
+            "address": None,
+        },
         "increment_customer_address_usage": lambda address_id, customer_id: None,
         "increment_admin_customer_address_usage": lambda address_id, customer_id: None,
         "increment_setting_counter": lambda *args, **kwargs: None,
@@ -525,6 +551,99 @@ class AdminSpecialOrderAddressTests(unittest.TestCase):
         self.assertEqual("Calle 21 # 8-40 apto 301", context.user_data["admin_ped_cust_addr"])
         self.assertIn("BASE REQUERIDA", query.edit_calls[-1]["text"])
 
+    def test_admin_confirm_prompts_save_for_new_address_on_existing_customer(self):
+        namespace = _extract_namespace()
+        query = _DummyQuery("admin_pedido_confirmar")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(
+            user_data={
+                "admin_ped_admin_id": 11,
+                "admin_ped_selected_cust_id": 44,
+                "admin_ped_cust_name": "Daniela",
+                "admin_ped_cust_phone": "3137481811",
+                "admin_ped_cust_addr": "Calle 25 # 8-19 apto 302",
+                "admin_ped_dropoff_lat": 4.80692,
+                "admin_ped_dropoff_lng": -75.68057,
+                "admin_ped_dropoff_city": "Pereira",
+                "admin_ped_dropoff_barrio": "Cuba",
+                "admin_ped_pickup_addr": "Cra 10 # 20-30",
+                "admin_ped_pickup_lat": 4.81,
+                "admin_ped_pickup_lng": -75.67,
+                "admin_ped_pickup_city": "Pereira",
+                "admin_ped_pickup_barrio": "Centro",
+                "admin_ped_tarifa": 8000,
+                "admin_ped_incentivo": 0,
+                "admin_ped_parking_fee": 0,
+                "admin_ped_comision": 0,
+                "admin_ped_team_only": 0,
+                "admin_ped_distance_km": 2.5,
+                "admin_ped_quote_source": "admin",
+                "admin_ped_instruc": "",
+            }
+        )
+
+        state = namespace["admin_pedido_confirmar_callback"](update, context)
+
+        self.assertEqual(1031, state)
+        self.assertEqual(44, context.user_data["admin_ped_guardar_existing_id"])
+        self.assertIn("Deseas agregar esta direccion a su perfil?", query.edit_calls[-1]["text"])
+        buttons = query.edit_calls[-1]["reply_markup"].inline_keyboard
+        self.assertEqual("admin_ped_guardar_dir_si", buttons[0][0].callback_data)
+
+    def test_admin_confirm_backfills_coords_when_address_already_exists(self):
+        namespace = _extract_namespace()
+        upsert_calls = []
+        namespace["find_matching_admin_customer_address"] = lambda *args, **kwargs: {
+            "id": 77,
+            "label": "Casa",
+            "notes": "Porteria azul",
+            "lat": None,
+            "lng": None,
+        }
+        namespace["upsert_admin_customer_address_for_agenda"] = (
+            lambda **kwargs: upsert_calls.append(kwargs) or {
+                "action": "coords_updated",
+                "address_id": 77,
+                "address": None,
+            }
+        )
+
+        query = _DummyQuery("admin_pedido_confirmar")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(
+            user_data={
+                "admin_ped_admin_id": 11,
+                "admin_ped_selected_cust_id": 44,
+                "admin_ped_cust_name": "Daniela",
+                "admin_ped_cust_phone": "3137481811",
+                "admin_ped_cust_addr": "Calle 25 # 8-19 apto 302",
+                "admin_ped_dropoff_lat": 4.80692,
+                "admin_ped_dropoff_lng": -75.68057,
+                "admin_ped_dropoff_city": "Pereira",
+                "admin_ped_dropoff_barrio": "Cuba",
+                "admin_ped_pickup_addr": "Cra 10 # 20-30",
+                "admin_ped_pickup_lat": 4.81,
+                "admin_ped_pickup_lng": -75.67,
+                "admin_ped_pickup_city": "Pereira",
+                "admin_ped_pickup_barrio": "Centro",
+                "admin_ped_tarifa": 8000,
+                "admin_ped_incentivo": 0,
+                "admin_ped_parking_fee": 0,
+                "admin_ped_comision": 0,
+                "admin_ped_team_only": 0,
+                "admin_ped_distance_km": 2.5,
+                "admin_ped_quote_source": "admin",
+                "admin_ped_instruc": "",
+            }
+        )
+
+        state = namespace["admin_pedido_confirmar_callback"](update, context)
+
+        self.assertEqual(-1, state)
+        self.assertEqual(44, upsert_calls[0]["customer_id"])
+        self.assertEqual(4.80692, upsert_calls[0]["lat"])
+        self.assertIn("se completo su geolocalizacion", query.edit_calls[-1]["text"])
+
     def test_pickup_detail_from_preview_returns_to_preview(self):
         namespace = _extract_namespace()
         namespace["_admin_ped_preview_text"] = lambda user_data: ("PREVIEW FINAL", None)
@@ -635,6 +754,40 @@ class AllyOrderAddressUnificationTests(unittest.TestCase):
         self.assertEqual(9, state)
         self.assertEqual(5, context.user_data["pedido_pending_address_fix"]["address_id"])
         self.assertIn("solo con coordenadas", query.edit_calls[-1]["text"])
+
+    def test_ally_existing_customer_new_address_save_uses_upsert(self):
+        namespace = _extract_namespace()
+        upsert_calls = []
+        namespace["upsert_customer_address_for_agenda"] = (
+            lambda **kwargs: upsert_calls.append(kwargs) or {
+                "action": "coords_updated",
+                "address_id": 7,
+                "address": None,
+            }
+        )
+
+        query = _DummyQuery("guardar_dir_cliente_si")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(
+            user_data={
+                "customer_id": 44,
+                "customer_address": "Calle 25 # 8-19 apto 302",
+                "customer_city": "Pereira",
+                "customer_barrio": "Cuba",
+                "dropoff_lat": 4.80692,
+                "dropoff_lng": -75.68057,
+                "ally_id": 77,
+            }
+        )
+
+        state = namespace["pedido_seleccionar_direccion_callback"](update, context)
+
+        self.assertEqual(12, state)
+        self.assertEqual(44, upsert_calls[0]["customer_id"])
+        self.assertEqual("Pereira", upsert_calls[0]["city"])
+        self.assertEqual("Cuba", upsert_calls[0]["barrio"])
+        self.assertEqual(4.80692, upsert_calls[0]["lat"])
+        self.assertIn("se completo su geolocalizacion", query.edit_calls[-1]["text"])
 
     def test_ally_customer_detail_repair_updates_saved_address(self):
         namespace = _extract_namespace()
