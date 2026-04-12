@@ -556,3 +556,5 @@ def upsert_admin_customer_address_for_agenda(
     return {"action": "created", "address_id": address_id, "address": None}
 
 # ... (el resto del archivo services.py sin cambios) ...
+ADMIN_INVITE_START_PREFIX = "inv_"
+ADMIN_INVITE_USER_DATA_KEY = "admin_invite_token"
