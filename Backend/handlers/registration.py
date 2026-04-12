@@ -44,6 +44,7 @@ from handlers.common import (
     cancel_conversacion,
     cancel_por_texto,
     volver_paso_anterior,
+    clear_registration_flow_data,
 )
 from services import (
     ADMIN_INVITE_USER_DATA_KEY,
@@ -141,11 +142,7 @@ def _log_registration_location_saved(log_tag, source, lat, lng):
     logger.info("[%s] status=saved source=%s lat=%s lng=%s", log_tag, source, lat, lng)
 
 
-def _preserve_invite_token(context):
-    invite_token = (context.user_data.get(ADMIN_INVITE_USER_DATA_KEY) or "").strip()
-    context.user_data.clear()
-    if invite_token:
-        context.user_data[ADMIN_INVITE_USER_DATA_KEY] = invite_token
+
 
 
 def _clear_invite_token(context):
@@ -181,7 +178,7 @@ def soy_aliado(update, context):
         except Exception:
             pass
     user_db_id = get_user_db_id_from_update(update)
-    _preserve_invite_token(context)
+    clear_registration_flow_data(context)
 
     # Validación anti-duplicados
     existing = get_ally_by_user_id(user_db_id)
@@ -581,7 +578,7 @@ def ally_confirm(update, context):
             "Registro cancelado.\n\n"
             "Si deseas intentarlo de nuevo, usa /soy_aliado."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     user_db_id = context.user_data.get("ally_registration_user_id")
@@ -595,7 +592,7 @@ def ally_confirm(update, context):
             "Primero debes elegir un equipo para continuar.\n\n"
             "Usa /soy_aliado para iniciar de nuevo."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     ally_lat = context.user_data.get("ally_lat")
@@ -647,7 +644,7 @@ def ally_confirm(update, context):
     except Exception as e:
         logger.error("ally_confirm: no se pudo crear el registro: %s", e)
         reply_message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     admin_telegram_id = context.user_data.get("ally_selected_admin_telegram_id")
@@ -717,7 +714,7 @@ def ally_confirm(update, context):
         f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
         "Quedas en estado PENDING hasta aprobación."
     )
-    context.user_data.clear()
+    clear_registration_flow_data(context)
     return ConversationHandler.END
 
 
@@ -730,7 +727,7 @@ def show_ally_team_selection(update_or_query, context, from_callback=False):
     if not context.user_data.get("ally_registration_user_id"):
         if message:
             message.reply_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_aliado de nuevo.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     invite = _resolve_registration_invite(context, "ALLY")
@@ -796,7 +793,7 @@ def ally_team_callback(update, context):
     user_db_id = context.user_data.get("ally_registration_user_id")
     if not user_db_id:
         query.edit_message_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_aliado de nuevo.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     if selected.upper() == "NONE":
@@ -806,7 +803,7 @@ def ally_team_callback(update, context):
                 "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
                 "Crea/asegura ese admin en la tabla admins con team_code='PLATFORM' y status='APPROVED', luego intenta de nuevo."
             )
-            context.user_data.clear()
+            clear_registration_flow_data(context)
             return ConversationHandler.END
 
         context.user_data["ally_selected_admin_id"] = platform_admin["id"]
@@ -823,7 +820,7 @@ def ally_team_callback(update, context):
             "Ese TEAM_CODE no existe o no está disponible.\n"
             "Vuelve a intentar /soy_aliado."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     context.user_data["ally_selected_admin_id"] = admin_row["id"]
@@ -848,7 +845,7 @@ def soy_repartidor(update, context):
         except Exception:
             pass
     user_db_id = get_user_db_id_from_update(update)
-    _preserve_invite_token(context)
+    clear_registration_flow_data(context)
 
     existing = get_courier_by_user_id(user_db_id)
     if existing:
@@ -1416,7 +1413,7 @@ def courier_confirm(update, context):
             "Registro cancelado.\n\n"
             "Si deseas intentarlo de nuevo, usa /soy_repartidor."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     user_db_id = context.user_data.get("courier_registration_user_id")
@@ -1430,7 +1427,7 @@ def courier_confirm(update, context):
             "Primero debes elegir un equipo para continuar.\n\n"
             "Usa /soy_repartidor para iniciar de nuevo."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     if invite_token:
@@ -1471,7 +1468,7 @@ def courier_confirm(update, context):
     except Exception as e:
         logger.error("courier_confirm: no se pudo crear el registro: %s", e)
         reply_message.reply_text("Error técnico al guardar tu solicitud. Intenta más tarde.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     admin_telegram_id = context.user_data.get("courier_selected_admin_telegram_id")
@@ -1552,7 +1549,7 @@ def courier_confirm(update, context):
         f"Equipo elegido: {selected_team_name}{f' ({selected_team_code})' if selected_team_code else ''}\n"
         "Quedas en estado PENDING hasta aprobación."
     )
-    context.user_data.clear()
+    clear_registration_flow_data(context)
     return ConversationHandler.END
 
 
@@ -1560,7 +1557,7 @@ def show_courier_team_selection(update, context):
     """Muestra lista de equipos (admins) con botones para el repartidor."""
     if not context.user_data.get("courier_registration_user_id"):
         update.message.reply_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_repartidor de nuevo.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     invite = _resolve_registration_invite(context, "COURIER")
@@ -1621,7 +1618,7 @@ def courier_team_callback(update, context):
     user_db_id = context.user_data.get("courier_registration_user_id")
     if not user_db_id:
         query.edit_message_text("Error técnico: no encuentro tus datos del registro. Intenta /soy_repartidor de nuevo.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     if selected.upper() == "NONE":
@@ -1631,7 +1628,7 @@ def courier_team_callback(update, context):
                 "En este momento no existe el equipo del Admin de Plataforma (TEAM_CODE: PLATFORM).\n"
                 "Contacta al administrador."
             )
-            context.user_data.clear()
+            clear_registration_flow_data(context)
             return ConversationHandler.END
 
         context.user_data["courier_selected_admin_id"] = platform_admin["id"]
@@ -1647,7 +1644,7 @@ def courier_team_callback(update, context):
             "Ese código de equipo no existe o no está disponible.\n"
             "Vuelve a intentar /soy_repartidor."
         )
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     context.user_data["courier_selected_admin_id"] = admin_row["id"]
@@ -1771,7 +1768,7 @@ courier_conv = ConversationHandler(
         
 def soy_admin(update, context):
     user_db_id = get_user_db_id_from_update(update)
-    context.user_data.clear()
+    clear_registration_flow_data(context)
 
     existing = get_admin_by_user_id(user_db_id)
     if existing:
@@ -1861,7 +1858,7 @@ def admin_name(update, context):
             _set_flow_step(context, "admin", LOCAL_ADMIN_NAME)
             return LOCAL_ADMIN_NAME
         update.message.reply_text("Entendido. No se modificó tu registro.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     if not text:
@@ -2091,7 +2088,7 @@ def admin_confirm(update, context):
 
     if not is_confirmed:
         reply_message.reply_text("Registro cancelado. Si deseas intentarlo de nuevo usa /soy_admin.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
 
     full_name = (context.user_data.get("admin_name") or "").strip()
@@ -2147,13 +2144,13 @@ def admin_confirm(update, context):
     except ValueError as e:
         _debug_admin_registration_state(context, "admin_confirm_value_error", error=str(e))
         reply_message.reply_text(str(e))
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
     except Exception as e:
         logger.error("admin_confirm: %s", e)
         _debug_admin_registration_state(context, "admin_confirm_exception", error=str(e))
         reply_message.reply_text("Error técnico al finalizar tu registro. Intenta más tarde.")
-        context.user_data.clear()
+        clear_registration_flow_data(context)
         return ConversationHandler.END
     _debug_admin_registration_state(context, "admin_confirm_success", admin_id=admin_id)
 
@@ -2195,7 +2192,7 @@ def admin_confirm(update, context):
         "Recuerda: para operar necesitas 5 aliados con saldo >= 5000, 10 repartidores con saldo >= 5000 y saldo master >= 60000."
     )
 
-    context.user_data.clear()
+    clear_registration_flow_data(context)
     return ConversationHandler.END
 
 

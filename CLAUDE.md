@@ -408,7 +408,7 @@ Separador operativo actual: guion bajo (`_`).
 | `admin_ruta_pinissue_` | Panel de soporte de pin mal ubicado — rutas (entrega). Incluye: `admin_ruta_pinissue_fin_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_courier_{route_id}_{seq}`, `admin_ruta_pinissue_cancel_ally_{route_id}_{seq}` |
 | `admin_ruta_pickup_` | Panel de soporte de pin mal ubicado — rutas (recogida). Incluye: `admin_ruta_pickup_confirm_{route_id}_{support_id}` (admin confirma llegada del courier), `admin_ruta_pickup_release_{route_id}_{support_id}` (admin libera la ruta para re-oferta) |
 | `pagos_` | Sistema de pagos |
-| `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `pedido_edit_pickup` (vuelve al selector de recogida → `PEDIDO_PICKUP_SELECTOR`), `pedido_edit_instruc` (re-pide instrucciones → `PEDIDO_INSTRUCCIONES_EXTRA`), `pedido_edit_dir` (re-pide dirección de entrega → `PEDIDO_UBICACION`). Los tres usan la flag `pedido_edit_from_preview` en `user_data` para volver al preview tras editar en lugar de seguir el flujo normal. |
+| `pedido_` | Flujo de creación de pedidos. Incluye: `pedido_nueva_dir` (nueva dirección para cliente recurrente → va a `PEDIDO_UBICACION` con geocoding completo, igual que cotización), `pedido_geo_si` / `pedido_geo_no` (confirmar geocoding de dirección de entrega), `pedido_sel_addr_{id}` (seleccionar dirección guardada del cliente). **Selector de cliente:** `pedido_cliente_recurrente` (abre lista de 10 recientes), `pedido_ver_todos` (muestra hasta 50 clientes ordenados A→Z — aparece si hay más de 10), `pedido_buscar_cliente` (activa búsqueda por texto → `PEDIDO_BUSCAR_CLIENTE`), `pedido_sel_cust_{id}` (selecciona cliente de la lista o resultados de búsqueda). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `pedido_edit_pickup` (vuelve al selector de recogida → `PEDIDO_PICKUP_SELECTOR`), `pedido_edit_instruc` (re-pide instrucciones → `PEDIDO_INSTRUCCIONES_EXTRA`), `pedido_edit_dir` (re-pide dirección de entrega → `PEDIDO_UBICACION`). Los tres usan la flag `pedido_edit_from_preview` en `user_data` para volver al preview tras editar en lugar de seguir el flujo normal. |
 | `perfil_` | Cambios de perfil |
 | `pickup_` | Selección de punto de recogida |
 | `preview_` | Previsualización de pedido |
@@ -419,7 +419,7 @@ Separador operativo actual: guion bajo (`_`).
 | `ubicacion_` | Selección de ubicación GPS |
 | `ingreso_` | Registro de ingreso externo del Admin de Plataforma |
 | `plat_rdir_` | Recarga directa del Admin de Plataforma a cualquier usuario. Incluye: `plat_rdir_inicio` (entry point normal), `plat_rdir_tipo_{COURIER\|ALLY\|ADMIN}` (selección de tipo), `plat_rdir_usr_{id}` (usuario seleccionado en búsqueda), `plat_rdir_presel_{COURIER\|ALLY}_{id}` (entrada directa desde vista saldo bajo), `plat_rdir_sin_nota` (skip nota), `plat_rdir_confirmar` (ejecutar recarga), `plat_rdir_cancel` (cancelar). `plat_rec_saldo_bajo` (en `plat_recargas_callback`): vista de couriers y aliados con balance < $5.000. Handler: `recarga_directa_conv` en `handlers/recharges.py`. |
-| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido_{admin_id}` (entry point actual; legacy `admin_nuevo_pedido` soportado temporalmente), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `admin_pedido_edit_pickup` (re-muestra selector de recogida → `ADMIN_PEDIDO_PICKUP`), `admin_pedido_edit_cust` (re-pide nombre del cliente → `ADMIN_PEDIDO_CUST_NAME`), `admin_pedido_edit_tarifa` (re-pide tarifa → `ADMIN_PEDIDO_TARIFA`). Instrucciones: el admin puede escribir texto directamente en el chat mientras está en el preview (estado `ADMIN_PEDIDO_INSTRUC` ya acepta texto libre vía `admin_pedido_instruc_handler`). |
+| `admin_pedido_` | Flujo de creación de pedido especial del admin. Incluye: `admin_nuevo_pedido_{admin_id}` (entry point actual; legacy `admin_nuevo_pedido` soportado temporalmente), `admin_pedido_pickup_{id}` (seleccionar pickup guardado), `admin_pedido_nueva_dir` (nueva dirección pickup), `admin_pedido_geo_pickup_si/no` (confirmar geo pickup), `admin_pedido_geo_si/no` (confirmar geo entrega), `admin_pedido_sin_instruc` (sin instrucciones), `admin_pedido_inc_{1000|1500|2000|3000}` (incentivos fijos en preview), `admin_pedido_inc_otro` (incentivo libre), `admin_pedido_confirmar` (publicar), `admin_pedido_cancelar` (cancelar). **Selector de cliente:** `admin_pedido_buscar_cust` (activa búsqueda → `ADMIN_PEDIDO_SEL_CUST_BUSCAR`), `admin_pedido_ver_todos` (muestra hasta 50 clientes ordenados A→Z — aparece si hay más de 8), `admin_pedido_cliente_nuevo` (cliente nuevo). **Editar desde preview (IMPLEMENTADO 2026-04-07):** `admin_pedido_edit_pickup` (re-muestra selector de recogida → `ADMIN_PEDIDO_PICKUP`), `admin_pedido_edit_cust` (re-pide nombre del cliente → `ADMIN_PEDIDO_CUST_NAME`), `admin_pedido_edit_tarifa` (re-pide tarifa → `ADMIN_PEDIDO_TARIFA`). Instrucciones: el admin puede escribir texto directamente en el chat mientras está en el preview (estado `ADMIN_PEDIDO_INSTRUC` ya acepta texto libre vía `admin_pedido_instruc_handler`). |
 | `offer_inc_` | Sugerencia T+5 de incentivo (aliado y admin). Incluye: `offer_inc_{order_id}x{1500|2000|3000}` (incentivos fijos), `offer_inc_otro_{order_id}` (incentivo libre) |
 | `ruta_orden_` | Reordenamiento de paradas por el courier al aceptar ruta. Incluye: `ruta_orden_{route_id}_{dest_id}` (courier selecciona parada para reposicionar) |
 | `ruta_pickup_confirm_` | Courier confirma llegada al punto de recogida de una ruta (GPS validado ≤100m). Incluye: `ruta_pickup_confirm_{route_id}` |
@@ -1838,12 +1838,13 @@ ADMIN_PEDIDO_SAVE_PICKUP (919):
   admin_pedido_save_pickup_callback (si/no) → guarda (o no) → selector de cliente
 
 Selector de cliente (_admin_pedido_mostrar_selector_cliente):
-  Si hay clientes → ADMIN_PEDIDO_SEL_CUST (lista + Buscar + Cliente nuevo)
+  Si hay clientes → ADMIN_PEDIDO_SEL_CUST (lista 8 recientes + Buscar + Ver todos si >8 + Cliente nuevo)
   Si no hay clientes → ADMIN_PEDIDO_CUST_NAME directamente (campo de texto)
 
 ADMIN_PEDIDO_SEL_CUST (917):
   acust_pedido_sel_{id} → seleccionar cliente → ADMIN_PEDIDO_SEL_CUST_ADDR
   admin_pedido_buscar_cust → ADMIN_PEDIDO_SEL_CUST_BUSCAR
+  admin_pedido_ver_todos → muestra hasta 50 clientes A→Z → ADMIN_PEDIDO_SEL_CUST
   admin_pedido_cliente_nuevo → ADMIN_PEDIDO_CUST_NAME (campo de texto)
 
 ADMIN_PEDIDO_CUST_NAME (909): admin_pedido_cust_name_handler → ADMIN_PEDIDO_CUST_PHONE
@@ -2274,6 +2275,7 @@ Al avanzar al paso `ADMIN_PEDIDO_CUST_NAME`, se muestra un botón "Seleccionar d
 **Callbacks nuevos en `admin_pedido_conv`**:
 - `admin_pedido_cliente_nuevo` → `admin_pedido_cliente_nuevo_callback` (desde `ADMIN_PEDIDO_SEL_CUST`)
 - `admin_pedido_buscar_cust` → `admin_pedido_buscar_cust_start`
+- `admin_pedido_ver_todos` → `admin_pedido_ver_todos_callback` (muestra hasta 50 clientes A→Z desde `ADMIN_PEDIDO_SEL_CUST`)
 - `acust_pedido_sel_{id}` → `admin_pedido_cust_selected`
 - `acust_pedido_addr_{id}` → `admin_pedido_addr_selected` (incrementa `use_count`)
 - `acust_pedido_addr_nueva` → `admin_pedido_addr_nueva`
@@ -2311,9 +2313,13 @@ Mejoras aplicadas a los 3 flujos de pedido (`nuevo_pedido_conv`, `nueva_ruta_con
 |----------|-------|-------------|
 | `pedido_dedup_si/no` | nuevo_pedido | Usar cliente existente o continuar como nuevo |
 | `pedido_guardar_dir_si/no` | nuevo_pedido | Agregar dirección nueva a cliente recurrente |
-| `ruta_buscar_cliente` | nueva_ruta | Activar búsqueda en lista de clientes de parada |
+| `pedido_buscar_cliente` | nuevo_pedido | Activar búsqueda por texto → `PEDIDO_BUSCAR_CLIENTE`; también aparece en resultados como "Buscar de nuevo" |
+| `pedido_ver_todos` | nuevo_pedido | Mostrar hasta 50 clientes A→Z (aparece en lista inicial si hay más de 10) |
+| `ruta_buscar_cliente` | nueva_ruta | Activar búsqueda en lista de clientes de parada; también aparece en fallback como "Buscar de nuevo" |
+| `ruta_ver_todos` | nueva_ruta | Mostrar hasta 50 clientes A→Z (aparece si hay más de 8 en la lista de parada) |
 | `ruta_dedup_si/no` | nueva_ruta | Usar cliente existente o continuar como nuevo |
-| `admin_pedido_buscar_cust` | admin_pedido | Activar búsqueda en lista de clientes |
+| `admin_pedido_buscar_cust` | admin_pedido | Activar búsqueda en lista de clientes; también aparece en fallback como "Buscar de nuevo" |
+| `admin_pedido_ver_todos` | admin_pedido | Mostrar hasta 50 clientes A→Z (aparece si hay más de 8 en la lista) |
 | `admin_ped_dedup_si/no` | admin_pedido | Usar cliente existente o continuar como nuevo |
 | `admin_ped_guardar_cust_si/no` | admin_pedido | Guardar cliente manual en agenda |
 | `admin_ped_guardar_dir_si/no` | admin_pedido | Guardar dirección manual en agenda del cliente |
