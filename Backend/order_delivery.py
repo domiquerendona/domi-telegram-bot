@@ -9273,17 +9273,22 @@ def _notify_courier_support_resolved(context, courier_id, order_id, resolution):
             except Exception:
                 pass
 
-        desglose = "\n\nComision cobrada: ${:,}\n".format(fee)
+        fee_block = "\n\nComision cobrada: ${:,}\n".format(fee)
         if balance_actual is not None:
-            desglose += "Saldo actual: ${:,}".format(balance_actual)
+            fee_block += "Saldo actual: ${:,}".format(balance_actual)
 
         # Calcular tiempos del servicio (solo para "fin" — pedido entregado)
         time_block = ""
+        earnings_block = ""
         if resolution == "fin":
             try:
                 fresh_order = get_order_by_id(order_id)
                 if fresh_order:
                     durations = _get_order_durations(fresh_order)
+                    earnings_block = build_courier_order_earnings_text(
+                        fresh_order,
+                        net_label="Neto del servicio",
+                    )
                     time_lines = []
                     if "llegada_aliado" in durations:
                         time_lines.append("  Llegada al pickup: {}".format(_format_duration(durations["llegada_aliado"])))
@@ -9301,17 +9306,22 @@ def _notify_courier_support_resolved(context, courier_id, order_id, resolution):
         messages = {
             "fin": (
                 "Tu administrador finalizo el servicio #{} en tu nombre. "
-                "Los cargos normales fueron aplicados.{}{}".format(order_id, time_block, desglose)
+                "Los cargos normales fueron aplicados.{}\n\n{}{}".format(
+                    order_id,
+                    time_block,
+                    earnings_block,
+                    fee_block,
+                )
             ),
             "cancel_courier": (
                 "El pedido #{} fue cancelado por tu administrador. "
                 "La falla fue atribuida a ti. Se cobro la comision.\n"
-                "Debes devolver el producto al punto de recogida.{}".format(order_id, desglose)
+                "Debes devolver el producto al punto de recogida.{}".format(order_id, fee_block)
             ),
             "cancel_ally": (
                 "El pedido #{} fue cancelado por tu administrador. "
                 "La falla fue atribuida al aliado. Se cobro comision a ambas partes.\n"
-                "Debes devolver el producto al punto de recogida.{}".format(order_id, desglose)
+                "Debes devolver el producto al punto de recogida.{}".format(order_id, fee_block)
             ),
         }
         context.bot.send_message(
@@ -9660,19 +9670,40 @@ def _notify_courier_route_stop_resolved(context, courier_id, route_id, seq, reso
             except Exception:
                 pass
 
-        desglose = "\n\nComision cobrada: ${:,}\n".format(fee)
+        fee_block = "\n\nComision cobrada: ${:,}\n".format(fee)
         if balance_actual is not None:
-            desglose += "Saldo actual: ${:,}".format(balance_actual)
+            fee_block += "Saldo actual: ${:,}".format(balance_actual)
+
+        earnings_block = ""
+        if resolution == "fin":
+            try:
+                route = get_route_by_id(route_id)
+                if route:
+                    earnings_block = build_courier_route_earnings_text(route)
+            except Exception as e:
+                logger.warning(
+                    "No se pudo construir bloque financiero de ruta %s para courier %s: %s",
+                    route_id,
+                    courier_id,
+                    e,
+                )
 
         messages = {
-            "fin": "Tu administrador finalizo la parada {} de la ruta #{}.{}".format(seq, route_id, desglose),
+            "fin": (
+                "Tu administrador finalizo la parada {} de la ruta #{}.\n\n{}{}".format(
+                    seq,
+                    route_id,
+                    earnings_block,
+                    fee_block,
+                )
+            ),
             "cancel_courier": (
                 "La parada {} de la ruta #{} fue cancelada. Falla atribuida a ti. "
-                "Continua con las demas paradas.{}".format(seq, route_id, desglose)
+                "Continua con las demas paradas.{}".format(seq, route_id, fee_block)
             ),
             "cancel_ally": (
                 "La parada {} de la ruta #{} fue cancelada. Falla atribuida al aliado. "
-                "Continua con las demas paradas.{}".format(seq, route_id, desglose)
+                "Continua con las demas paradas.{}".format(seq, route_id, fee_block)
             ),
         }
         context.bot.send_message(

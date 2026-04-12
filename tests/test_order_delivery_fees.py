@@ -478,6 +478,54 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         self.assertEqual(940003, context.bot.messages[0]["chat_id"])
         self.assertIn("Valor de la ruta: $4,800", context.bot.messages[0]["text"])
 
+    def test_notify_courier_support_resolved_fin_keeps_order_total_visible(self):
+        order_id = self._create_order(
+            status="PICKED_UP",
+            ally_id=self.ally_id,
+            total_fee=7300,
+            additional_incentive=1200,
+            parking_fee=600,
+        )
+        context = _DummyContext()
+
+        with patch.object(order_delivery, "_get_order_durations", return_value={"tiempo_total": 60}):
+            order_delivery._notify_courier_support_resolved(
+                context,
+                self.courier_id,
+                order_id,
+                "fin",
+            )
+
+        self.assertEqual(1, len(context.bot.messages))
+        text = context.bot.messages[0]["text"]
+        self.assertIn("Tu administrador finalizo el servicio #{}".format(order_id), text)
+        self.assertIn("Pago total del pedido: $7,300", text)
+        self.assertIn("Incluye incentivo: +$1,200", text)
+        self.assertIn("Incluye parqueo dificil: +$600", text)
+        self.assertIn("Neto del servicio: $7,000", text)
+        self.assertIn("Comision cobrada: $300", text)
+
+    def test_notify_courier_route_stop_resolved_fin_keeps_route_total_visible(self):
+        route_id = self._create_route()
+        db.add_route_incentive(route_id, 1700)
+        context = _DummyContext()
+
+        order_delivery._notify_courier_route_stop_resolved(
+            context,
+            self.courier_id,
+            route_id,
+            1,
+            "fin",
+        )
+
+        self.assertEqual(1, len(context.bot.messages))
+        text = context.bot.messages[0]["text"]
+        self.assertIn("Tu administrador finalizo la parada 1 de la ruta #{}".format(route_id), text)
+        self.assertIn("Pago total de la ruta: $6,500", text)
+        self.assertIn("Incluye incentivo: +$1,700", text)
+        self.assertIn("Neto esperado: $6,200", text)
+        self.assertIn("Comision cobrada: $300", text)
+
     def test_publish_route_uses_cash_requirement_filter_when_route_requires_base(self):
         route_id = self._create_route(requires_cash=True, cash_required_amount=40000)
         context = _DummyContext()
