@@ -23,7 +23,6 @@ from services import (
     upsert_geocoding_text_cache,
     normalize_text_for_cache,
     provision_web_panel_account,
-    clear_registration_flow_data,
 )
 
 from handlers.states import (
@@ -95,14 +94,22 @@ _OPTIONS_HINT = (
     "\n\nOpciones:\n- Escribe /menu para ver opciones\n- Escribe /cancel para cancelar el registro"
 )
 
+# Regex y filtro compartido para todos los botones de navegación del menú.
+# Nota: cualquier texto que coincida NO será consumido como input en estados de conversación.
+# Al llegar al fallback de una conversación, cancela la conversación limpiamente.
 CANCELAR_VOLVER_MENU_REGEX = (
     r'(?i)^\s*[\W_]*\s*('
+    # Cancelación explícita
     r'cancelar|volver al men[uú]|men[uú]'
+    # Saldos
     r'|mi saldo repartidor|mi saldo aliado'
+    # Menú principal
     r'|mi aliado|mi repartidor(?:\s*[·\u00b7]\s*(?:online|offline))?|mi admin|admin plataforma'
     r'|mi perfil|ayuda|actualizar men[uú]'
+    # Submenú aliado (no entry-points de conversación)
     r'|mis pedidos|mis repartidores|mis solicitudes'
     r'|mi enlace de pedidos|mi suscripci[oó]n'
+    # Submenú repartidor
     r'|activar repartidor|desactivarme|actualizar'
     r'|pedidos en curso|mis pedidos repartidor|mis ganancias'
     r'|recargar repartidor'
@@ -827,10 +834,3 @@ def ensure_terms(update, context, telegram_id: int, role: str) -> bool:
         context.bot.send_message(chat_id=telegram_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return False
-
-def clear_registration_flow_data(context):
-    """Limpia selectivamente los datos de user_data para todos los flujos de registro."""
-    keys_to_preserve = {"admin_invite_token"}
-    keys_to_remove = [k for k in context.user_data.keys() if k not in keys_to_preserve]
-    for key in keys_to_remove:
-        context.user_data.pop(key, None)
