@@ -361,4 +361,127 @@ from db import (
 ADMIN_INVITE_START_PREFIX = "inv_"
 ADMIN_INVITE_USER_DATA_KEY = "admin_invite_token"
 
+_SYSTEM_ADDRESS_PLACEHOLDERS = {
+    "no disponible",
+    "sin direccion",
+    "sin dirección",
+    "sin especificar",
+    "ubicacion pendiente de detallar",
+    "ubicación pendiente de detallar",
+    "direccion pendiente de detallar",
+    "dirección pendiente de detallar",
+    "ubicacion enviada desde telegram",
+    "ubicación enviada desde telegram",
+}
+
+def is_system_address_text(text: str) -> bool:
+    """Detecta textos de direccion tecnicos o no legibles para humanos."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if lowered in _SYSTEM_ADDRESS_PLACEHOLDERS:
+        return True
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return True
+    if re.match(r"^gps\s*\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)$", cleaned, re.IGNORECASE):
+        return True
+    if re.match(r"^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$", cleaned):
+        return True
+    return False
+
+
+def approve_role_registration(actor_telegram_id: int, role: str, target_id: int) -> dict:
+    try:
+        role = (role or "").strip().upper()
+        if role not in ("COURIER", "ALLY", "ADMIN"):
+            return {"ok": False, "message": "Rol no valido."}
+
+        actor_admin = get_admin_by_telegram_id(actor_telegram_id)
+        if not actor_admin:
+            return {"ok": False, "message": "No tienes perfil de administrador."}
+
+        actor_admin_id = _row_value(actor_admin, "id")
+        is_platform_actor = actor_admin.get("team_code") == "PLATFORM"
+
+        if role == "COURIER":
+            target = get_courier_by_id(target_id)
+            if not target:
+                return {"ok": False, "message": "Repartidor no encontrado."}
+            selected_admin_id = get_approved_admin_id_for_courier(target_id)
+            update_status_func = update_courier_status_by_id
+        elif role == "ALLY":
+            target = get_ally_by_id(target_id)
+            if not target:
+                return {"ok": False, "message": "Aliado no encontrado."}
+            link = get_admin_link_for_ally(target_id)
+            selected_admin_id = _row_value(link, "admin_id")
+            update_status_func = update_ally_status_by_id
+        else:  # ADMIN
+            target = get_admin_by_id(target_id)
+            if not target:
+                return {"ok": False, "message": "Administrador no encontrado."}
+            selected_admin_id = target_id
+            update_status_func = update_admin_status_by_id
+
+        if not is_platform_actor and selected_admin_id != actor_admin_id:
+            return {"ok": False, "message": "La aprobacion operativa debe hacerla ese admin."}
+
+        status_before = (target.get("status") or "").strip().upper()
+        if status_before not in ("PENDING", "INACTIVE"):
+            return {"ok": False, "message": f"No se puede aprobar un registro en estado {status_before}."}
+
+        reactivated = status_before == "INACTIVE"
+        update_status_func(target_id, "APPROVED")
+
+        bonus_granted = False
+        if not reactivated and role in ("COURIER", "ALLY"):
+            bonus_granted = credit_welcome_balance(role, target_id, actor_admin_id, from_where="REGISTRATION")
+
+        profile_after_update = get_courier_by_id(target_id) if role == "COURIER" else get_ally_by_id(target_id)
+
+        return {
+            "ok": True,
+            "message": "Registro aprobado con éxito.",
+            "profile": profile_after_update,
+            "bonus_granted": bonus_granted,
+            "reactivated": reactivated,
+        }
+    except Exception as e:
+        logger.exception(
+            "[approve_role_registration] Excepcion no esperada: role=%s target_id=%s actor_telegram_id=%s",
+            role,
+            target_id,
+            actor_telegram_id,
+        )
+        return {"ok": False, "message": "Ocurrió un error inesperado al aprobar el registro."}
+
+def audit_admin_invite_event(
+    raw_token: str,
+    telegram_id: int,
+    user_id: int,
+    outcome: str,
+    target_role_id: int = None,
+    note: str = None,
+    increment_counter: bool = False,
+) -> bool:
+    token = (raw_token or "").strip()
+    if not token:
+        return False
+    try:
+        return bool(
+            record_admin_invite_token_use(
+                token,
+                telegram_id=telegram_id,
+                user_id=user_id,
+                outcome=outcome,
+                target_role_id=target_role_id,
+                note=note,
+                increment_counter=increment_counter,
+            )
+        )
+    except Exception:
+        logger.exception("No se pudo auditar uso de invitacion admin. outcome=%s", outcome)
+        return False
+
 # ... (el resto del archivo services.py sin cambios) ...
