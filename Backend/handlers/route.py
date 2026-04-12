@@ -78,7 +78,7 @@ from services import (
     create_ally_customer,
     find_matching_customer_address,
     upsert_customer_address_for_agenda,
-    increment_customer_address_usage,
+    increment_ally_customer_usage, increment_customer_address_usage,
     has_valid_coords,
     resolve_location,
     extract_lat_lng_from_text,
@@ -218,8 +218,8 @@ def _ruta_iniciar_parada(update_or_query, context):
     paradas = context.user_data.get("ruta_paradas", [])
     n = len(paradas) + 1
     ally_id = context.user_data.get("ruta_ally_id")
-    clientes = list_ally_customers(ally_id) if ally_id else []
-    activos = [c for c in clientes if c["status"] == "ACTIVE"]
+    all_clientes = list_ally_customers(ally_id, limit=50) if ally_id else []
+    activos = [c for c in all_clientes if c["status"] == "ACTIVE"]
     keyboard = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]
     for c in activos[:8]:
         nombre = (c["name"] or "Sin nombre")[:25]
@@ -230,6 +230,10 @@ def _ruta_iniciar_parada(update_or_query, context):
         )])
     if activos:
         keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="ruta_buscar_cliente")])
+        if len(activos) > 8:
+            keyboard.append([InlineKeyboardButton(
+                "Ver todos ({})".format(len(activos)), callback_data="ruta_ver_todos"
+            )])
     markup = InlineKeyboardMarkup(keyboard)
     text = "PARADA {} DE LA RUTA\n\nSelecciona el cliente:".format(n)
     _ruta_limpiar_temp(context)
@@ -842,8 +846,30 @@ def ruta_parada_selector_callback(update, context):
         query.edit_message_text("PARADA {} - CLIENTE NUEVO\n\nEscribe el nombre del cliente:".format(n))
         return RUTA_PARADA_NOMBRE
     if data == "ruta_buscar_cliente":
-        query.edit_message_text("Escribe el nombre o telefono del cliente:")
+        query.edit_message_text(
+            "Escribe el nombre o telefono del cliente.\nEscribe '.' para ver todos:"
+        )
         return RUTA_PARADA_BUSCAR
+    if data == "ruta_ver_todos":
+        all_clientes = list_ally_customers(ally_id, limit=50) if ally_id else []
+        activos = [c for c in all_clientes if c["status"] == "ACTIVE"]
+        sorted_clientes = sorted(activos, key=lambda c: (c["name"] or "").lower())
+        paradas = context.user_data.get("ruta_paradas", [])
+        n = len(paradas) + 1
+        kb = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]
+        for c in sorted_clientes:
+            nombre = (c["name"] or "Sin nombre")[:25]
+            phone = c["phone"] or ""
+            kb.append([InlineKeyboardButton(
+                "{} - {}".format(nombre, phone),
+                callback_data="ruta_sel_cust_{}".format(c["id"])
+            )])
+        kb.append([InlineKeyboardButton("Buscar cliente", callback_data="ruta_buscar_cliente")])
+        query.edit_message_text(
+            "PARADA {} - TODOS LOS CLIENTES ({})\n\nSelecciona el cliente:".format(n, len(sorted_clientes)),
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return RUTA_PARADA_SELECTOR
     if data.startswith("ruta_sel_cust_"):
         try:
             cust_id = int(data.replace("ruta_sel_cust_", ""))
@@ -929,6 +955,7 @@ def ruta_parada_sel_direccion_callback(update, context):
             context.user_data["ruta_temp_parking_fee"] = 0
         try:
             increment_customer_address_usage(addr_id, cust_id)
+            increment_ally_customer_usage(cust_id)
         except Exception:
             pass
         _ruta_guardar_parada_actual(context)
@@ -1408,9 +1435,28 @@ def ruta_parada_buscar_handler(update, context):
     if not ally_id or not texto:
         update.message.reply_text("Escribe un nombre o telefono para buscar.")
         return RUTA_PARADA_BUSCAR
-    resultados = search_ally_customers(ally_id, texto) if ally_id else []
-    activos = [c for c in resultados if c["status"] == "ACTIVE"]
+    if len(texto) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return RUTA_PARADA_BUSCAR
+    activos = search_ally_customers(ally_id, texto) if ally_id else []
     if not activos:
+        recientes = list_ally_customers(ally_id, limit=5) if ally_id else []
+        if recientes:
+            keyboard = []
+            keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")])
+            for c in recientes:
+                nombre = (c["name"] or "Sin nombre")[:25]
+                phone = c["phone"] or ""
+                keyboard.append([InlineKeyboardButton(
+                    "{} - {}".format(nombre, phone),
+                    callback_data="ruta_sel_cust_{}".format(c["id"])
+                )])
+            keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="ruta_buscar_cliente")])
+            update.message.reply_text(
+                "No encontre clientes con '{}'.\n\nTus clientes recientes:".format(texto),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return RUTA_PARADA_SELECTOR
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         update.message.reply_text(
@@ -1418,19 +1464,21 @@ def ruta_parada_buscar_handler(update, context):
             "Escribe el nombre del cliente para la parada {}:".format(texto, n)
         )
         return RUTA_PARADA_NOMBRE
+    mostrados = activos[:10]
+    encabezado = "Resultados para '{}'{}:\n\nSelecciona el cliente:".format(
+        texto, " (mostrando 10)" if len(activos) >= 10 else ""
+    )
     keyboard = []
-    for c in activos[:10]:
+    for c in mostrados:
         nombre = (c["name"] or "Sin nombre")[:25]
         phone = c["phone"] or ""
         keyboard.append([InlineKeyboardButton(
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
         )])
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="ruta_buscar_cliente")])
     keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")])
-    update.message.reply_text(
-        "Resultados para '{}':\n\nSelecciona el cliente:".format(texto),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+    update.message.reply_text(encabezado, reply_markup=InlineKeyboardMarkup(keyboard))
     return RUTA_PARADA_SELECTOR
 
 
@@ -1519,7 +1567,7 @@ nueva_ruta_conv = ConversationHandler(
             CallbackQueryHandler(ruta_pickup_guardar_callback, pattern=r"^ruta_pickup_guardar_(si|no)$"),
         ],
         RUTA_PARADA_SELECTOR: [
-            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+|buscar_cliente)$"),
+            CallbackQueryHandler(ruta_parada_selector_callback, pattern=r"^ruta_(cliente_nuevo|sel_cust_\d+|buscar_cliente|ver_todos)$"),
         ],
         RUTA_PARADA_SEL_DIRECCION: [
             CallbackQueryHandler(ruta_parada_sel_direccion_callback, pattern=r"^ruta_(sel_addr_\d+|addr_nueva)$"),

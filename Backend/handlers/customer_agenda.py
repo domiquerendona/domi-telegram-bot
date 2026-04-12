@@ -302,12 +302,12 @@ def clientes_menu_callback(update, context):
         return CLIENTES_NUEVO_NOMBRE
 
     elif data == "cust_buscar":
-        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar.\nEscribe '.' para ver todos:")
         return CLIENTES_BUSCAR
 
     elif data == "cust_lista":
-        customers = list_ally_customers(ally_id, limit=10, include_inactive=False)
-        if not customers:
+        all_customers = list_ally_customers(ally_id, limit=50, include_inactive=False)
+        if not all_customers:
             keyboard = [[InlineKeyboardButton("Volver", callback_data="cust_volver_menu")]]
             query.edit_message_text(
                 "No tienes clientes guardados.\n\n"
@@ -316,14 +316,37 @@ def clientes_menu_callback(update, context):
             )
             return CLIENTES_MENU
 
+        recent = all_customers[:10]
         keyboard = []
-        for c in customers:
+        for c in recent:
             btn_text = f"{c['name']} - {c['phone']}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_ver_{c['id']}")])
+        if len(all_customers) > 10:
+            keyboard.append([InlineKeyboardButton(
+                f"Ver todos ({len(all_customers)})", callback_data="cust_ver_todos"
+            )])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="cust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="cust_nuevo")])
         keyboard.append([InlineKeyboardButton("Volver", callback_data="cust_volver_menu")])
 
         query.edit_message_text(
-            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            "MIS CLIENTES\n\nRecientes (por uso):",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CLIENTES_MENU
+
+    elif data == "cust_ver_todos":
+        all_customers = list_ally_customers(ally_id, limit=50, include_inactive=False)
+        sorted_customers = sorted(all_customers, key=lambda c: (c["name"] or "").lower())
+        keyboard = []
+        for c in sorted_customers:
+            btn_text = f"{c['name']} - {c['phone']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_ver_{c['id']}")])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="cust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="cust_nuevo")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="cust_volver_menu")])
+        query.edit_message_text(
+            f"TODOS LOS CLIENTES ({len(sorted_customers)}) A-Z:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return CLIENTES_MENU
@@ -695,9 +718,17 @@ def clientes_buscar(update, context):
     query_text = update.message.text.strip()
     ally_id = context.user_data.get("active_ally_id")
 
+    if not query_text:
+        update.message.reply_text("Escribe al menos un caracter para buscar.")
+        return CLIENTES_BUSCAR
+    if len(query_text) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return CLIENTES_BUSCAR
+
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
         keyboard = [
+            [InlineKeyboardButton("Buscar de nuevo", callback_data="cust_buscar")],
             [InlineKeyboardButton("Agregar nuevo cliente", callback_data="cust_nuevo")],
             [InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")],
         ]
@@ -707,14 +738,16 @@ def clientes_buscar(update, context):
         )
         return CLIENTES_MENU
 
+    truncado = " (mostrando 10)" if len(results) >= 10 else ""
     keyboard = []
     for c in results:
         btn_text = f"{c['name']} - {c['phone']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"cust_ver_{c['id']}")])
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="cust_buscar")])
     keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="cust_volver_menu")])
 
     update.message.reply_text(
-        f"Resultados para '{query_text}':",
+        f"Resultados para '{query_text}'{truncado}:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CLIENTES_MENU
@@ -1350,12 +1383,12 @@ def admin_clientes_menu_callback(update, context):
         return ADMIN_CUST_NUEVO_NOMBRE
 
     elif data == "acust_buscar":
-        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar.\nEscribe '.' para ver todos:")
         return ADMIN_CUST_BUSCAR
 
     elif data == "acust_lista":
-        customers = list_admin_customers(admin_id, limit=10, include_inactive=False)
-        if not customers:
+        all_customers = list_admin_customers(admin_id, limit=50, include_inactive=False)
+        if not all_customers:
             keyboard = [[InlineKeyboardButton("Volver", callback_data="acust_volver_menu")]]
             query.edit_message_text(
                 "No tienes clientes guardados.\n\n"
@@ -1364,14 +1397,37 @@ def admin_clientes_menu_callback(update, context):
             )
             return ADMIN_CUST_MENU
 
+        recent = all_customers[:10]
         keyboard = []
-        for c in customers:
+        for c in recent:
             btn_text = "{} - {}".format(c["name"], c["phone"])
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+        if len(all_customers) > 10:
+            keyboard.append([InlineKeyboardButton(
+                "Ver todos ({})".format(len(all_customers)), callback_data="acust_ver_todos"
+            )])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="acust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="acust_nuevo")])
         keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
 
         query.edit_message_text(
-            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            "MIS CLIENTES\n\nRecientes (por uso):",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ADMIN_CUST_MENU
+
+    elif data == "acust_ver_todos":
+        all_customers = list_admin_customers(admin_id, limit=50, include_inactive=False)
+        sorted_customers = sorted(all_customers, key=lambda c: (c["name"] or "").lower())
+        keyboard = []
+        for c in sorted_customers:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="acust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="acust_nuevo")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="acust_volver_menu")])
+        query.edit_message_text(
+            "MIS CLIENTES — Todos ({}) A-Z:".format(len(sorted_customers)),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ADMIN_CUST_MENU
@@ -1747,9 +1803,17 @@ def admin_clientes_buscar(update, context):
     query_text = update.message.text.strip()
     admin_id = context.user_data.get("acust_admin_id")
 
+    if not query_text:
+        update.message.reply_text("Escribe al menos un caracter para buscar.")
+        return ADMIN_CUST_BUSCAR
+    if len(query_text) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return ADMIN_CUST_BUSCAR
+
     results = search_admin_customers(admin_id, query_text, limit=10)
     if not results:
         keyboard = [
+            [InlineKeyboardButton("Buscar de nuevo", callback_data="acust_buscar")],
             [InlineKeyboardButton("Agregar nuevo cliente", callback_data="acust_nuevo")],
             [InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")],
         ]
@@ -1759,14 +1823,16 @@ def admin_clientes_buscar(update, context):
         )
         return ADMIN_CUST_MENU
 
+    truncado = " (mostrando 10)" if len(results) >= 10 else ""
     keyboard = []
     for c in results:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_ver_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="acust_buscar")])
     keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="acust_volver_menu")])
 
     update.message.reply_text(
-        "Resultados para '{}':".format(query_text),
+        "Resultados para '{}{}':".format(query_text, truncado),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ADMIN_CUST_MENU
@@ -2337,12 +2403,12 @@ def ally_clientes_menu_callback(update, context):
         return ALLY_CUST_NUEVO_NOMBRE
 
     elif data == "allycust_buscar":
-        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar:")
+        query.edit_message_text("BUSCAR CLIENTE\n\nEscribe el nombre o telefono a buscar.\nEscribe '.' para ver todos:")
         return ALLY_CUST_BUSCAR
 
     elif data == "allycust_lista":
-        customers = list_ally_customers(ally_id, limit=10, include_inactive=False)
-        if not customers:
+        all_customers = list_ally_customers(ally_id, limit=50, include_inactive=False)
+        if not all_customers:
             keyboard = [[InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")]]
             query.edit_message_text(
                 "No tienes clientes guardados.\n\n"
@@ -2351,13 +2417,36 @@ def ally_clientes_menu_callback(update, context):
             )
             return ALLY_CUST_MENU
 
+        recent = all_customers[:10]
         keyboard = []
-        for c in customers:
+        for c in recent:
             btn_text = "{} - {}".format(c["name"], c["phone"])
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_ver_{}".format(c["id"]))])
+        if len(all_customers) > 10:
+            keyboard.append([InlineKeyboardButton(
+                "Ver todos ({})".format(len(all_customers)), callback_data="allycust_ver_todos"
+            )])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="allycust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="allycust_nuevo")])
         keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")])
         query.edit_message_text(
-            "MIS CLIENTES\n\nSelecciona un cliente para ver detalles:",
+            "MIS CLIENTES\n\nRecientes (por uso):",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ALLY_CUST_MENU
+
+    elif data == "allycust_ver_todos":
+        all_customers = list_ally_customers(ally_id, limit=50, include_inactive=False)
+        sorted_customers = sorted(all_customers, key=lambda c: (c["name"] or "").lower())
+        keyboard = []
+        for c in sorted_customers:
+            btn_text = "{} - {}".format(c["name"], c["phone"])
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_ver_{}".format(c["id"]))])
+        keyboard.append([InlineKeyboardButton("Buscar", callback_data="allycust_buscar")])
+        keyboard.append([InlineKeyboardButton("Nuevo cliente", callback_data="allycust_nuevo")])
+        keyboard.append([InlineKeyboardButton("Volver", callback_data="allycust_volver_menu")])
+        query.edit_message_text(
+            "MIS CLIENTES — Todos ({}) A-Z:".format(len(sorted_customers)),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ALLY_CUST_MENU
@@ -2718,9 +2807,18 @@ def ally_clientes_nuevo_dir_text(update, context):
 def ally_clientes_buscar(update, context):
     query_text = update.message.text.strip()
     ally_id = context.user_data.get("allycust_ally_id")
+
+    if not query_text:
+        update.message.reply_text("Escribe al menos un caracter para buscar.")
+        return ALLY_CUST_BUSCAR
+    if len(query_text) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return ALLY_CUST_BUSCAR
+
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
         keyboard = [
+            [InlineKeyboardButton("Buscar de nuevo", callback_data="allycust_buscar")],
             [InlineKeyboardButton("Agregar nuevo cliente", callback_data="allycust_nuevo")],
             [InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")],
         ]
@@ -2730,13 +2828,15 @@ def ally_clientes_buscar(update, context):
         )
         return ALLY_CUST_MENU
 
+    truncado = " (mostrando 10)" if len(results) >= 10 else ""
     keyboard = []
     for c in results:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="allycust_ver_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="allycust_buscar")])
     keyboard.append([InlineKeyboardButton("Volver al menu", callback_data="allycust_volver_menu")])
     update.message.reply_text(
-        "Resultados para '{}':".format(query_text),
+        "Resultados para '{}{}':".format(query_text, truncado),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return ALLY_CUST_MENU
@@ -3625,7 +3725,7 @@ agenda_conv = ConversationHandler(
             CallbackQueryHandler(direcciones_pickup_guardar_callback, pattern=r"^dir_pickup_guardar_")
         ],
         CLIENTES_MENU: [
-            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|ver_todos|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
@@ -3697,7 +3797,7 @@ clientes_conv = ConversationHandler(
     ],
     states={
         CLIENTES_MENU: [
-            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+            CallbackQueryHandler(clientes_menu_callback, pattern=r"^cust_(nuevo|buscar|lista|ver_todos|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         CLIENTES_NUEVO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, clientes_nuevo_nombre)
@@ -3784,7 +3884,7 @@ admin_clientes_conv = ConversationHandler(
     ],
     states={
         ADMIN_CUST_MENU: [
-            CallbackQueryHandler(admin_clientes_menu_callback, pattern=r"^acust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+            CallbackQueryHandler(admin_clientes_menu_callback, pattern=r"^acust_(nuevo|buscar|lista|ver_todos|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         ADMIN_CUST_NUEVO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, admin_clientes_nuevo_nombre)
@@ -3890,7 +3990,7 @@ ally_clientes_conv = ConversationHandler(
     ],
     states={
         ALLY_CUST_MENU: [
-            CallbackQueryHandler(ally_clientes_menu_callback, pattern=r"^allycust_(nuevo|buscar|lista|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
+            CallbackQueryHandler(ally_clientes_menu_callback, pattern=r"^allycust_(nuevo|buscar|lista|ver_todos|archivados|cerrar|volver_menu|ver_\d+|restaurar_\d+)$")
         ],
         ALLY_CUST_NUEVO_NOMBRE: [
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, ally_clientes_nuevo_nombre)

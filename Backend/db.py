@@ -8,6 +8,7 @@ import uuid
 import base64
 import hashlib
 import hmac
+import unicodedata
 from typing import Tuple
 from datetime import datetime, timedelta, timezone
 
@@ -1564,6 +1565,16 @@ def init_db():
     if 'purchase_amount_declared' not in afr_cols:
         cur.execute("ALTER TABLE ally_form_requests ADD COLUMN purchase_amount_declared INTEGER DEFAULT NULL")
 
+    # Migración: agregar use_count a ally_customers y admin_customers (orden por frecuencia)
+    cur.execute("PRAGMA table_info(ally_customers)")
+    ac_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in ac_cols:
+        cur.execute("ALTER TABLE ally_customers ADD COLUMN use_count INTEGER DEFAULT 0")
+    cur.execute("PRAGMA table_info(admin_customers)")
+    admc_cols = [col[1] for col in cur.fetchall()]
+    if 'use_count' not in admc_cols:
+        cur.execute("ALTER TABLE admin_customers ADD COLUMN use_count INTEGER DEFAULT 0")
+
     # Migración: agregar use_count a ally_customer_addresses (orden por uso)
     cur.execute("PRAGMA table_info(ally_customer_addresses)")
     aca_cols = [col[1] for col in cur.fetchall()]
@@ -1992,6 +2003,9 @@ def _init_db_postgres():
     # Advisory lock: evita deadlock si varios contenedores arrancan simultáneamente
     cur.execute("SELECT pg_advisory_lock(42000)")
 
+    # 0) Extensión unaccent para búsquedas insensibles a tildes
+    cur.execute("CREATE EXTENSION IF NOT EXISTS unaccent")
+
     # 1) Ejecutar schema completo (CREATE TABLE IF NOT EXISTS + índices)
     schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "migrations", "postgres_schema.sql")
@@ -2207,6 +2221,10 @@ def _init_db_postgres():
 
     # admin_locations: agregar status para soft delete
     _pg_add_col("admin_locations", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
+
+    # ally_customers / admin_customers: use_count para orden por frecuencia de uso
+    _pg_add_col("ally_customers", "use_count", "INTEGER DEFAULT 0")
+    _pg_add_col("admin_customers", "use_count", "INTEGER DEFAULT 0")
 
     # ally_customer_addresses / admin_customer_addresses: use_count para orden por uso
     _pg_add_col("ally_customer_addresses", "use_count", "INTEGER DEFAULT 0")
@@ -9181,18 +9199,18 @@ def list_ally_customers(ally_id: int, limit: int = 10, include_inactive: bool = 
     cur = conn.cursor()
     if include_inactive:
         cur.execute(f"""
-            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            SELECT id, ally_id, name, phone, notes, status, use_count, created_at, updated_at
             FROM ally_customers
             WHERE ally_id = {P}
-            ORDER BY updated_at DESC
+            ORDER BY use_count DESC, updated_at DESC
             LIMIT {P}
         """, (ally_id, limit))
     else:
         cur.execute(f"""
-            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            SELECT id, ally_id, name, phone, notes, status, use_count, created_at, updated_at
             FROM ally_customers
             WHERE ally_id = {P} AND status = 'ACTIVE'
-            ORDER BY updated_at DESC
+            ORDER BY use_count DESC, updated_at DESC
             LIMIT {P}
         """, (ally_id, limit))
     rows = cur.fetchall()
@@ -9200,21 +9218,53 @@ def list_ally_customers(ally_id: int, limit: int = 10, include_inactive: bool = 
     return rows
 
 
+def _normalize_search_term(text: str) -> str:
+    """Quita tildes y pasa a minúsculas para búsquedas insensibles a acentos."""
+    return ''.join(
+        c for c in unicodedata.normalize('NFKD', text.lower())
+        if not unicodedata.combining(c)
+    )
+
+
+def _normalize_phone_query(text: str) -> str:
+    """Elimina separadores comunes de telefono (espacios, guiones, parentesis, puntos, +)
+    para que '310-555 1234' coincida con '3105551234' en BD."""
+    import re as _re
+    return _re.sub(r'[\s\-\(\)\.\+]', '', text)
+
+
 def search_ally_customers(ally_id: int, query: str, limit: int = 10):
     """
     Busca clientes por nombre o teléfono (solo activos).
+    La búsqueda es insensible a mayúsculas y tildes.
+    El campo phone usa la query sin separadores (310-555 1234 → 3105551234).
+    Si query == '.', retorna todos los clientes ordenados por uso (atajo "ver todos").
     """
+    if query.strip() == ".":
+        return list_ally_customers(ally_id, limit=limit, include_inactive=False)
     conn = get_connection()
     cur = conn.cursor()
-    search_term = f"%{query.strip()}%"
-    cur.execute(f"""
-        SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
-        FROM ally_customers
-        WHERE ally_id = {P} AND status = 'ACTIVE'
-          AND (name LIKE {P} OR phone LIKE {P})
-        ORDER BY updated_at DESC
-        LIMIT {P}
-    """, (ally_id, search_term, search_term, limit))
+    normalized = _normalize_search_term(query.strip())
+    search_term = f"%{normalized}%"
+    phone_term = f"%{_normalize_phone_query(query.strip())}%"
+    if DB_ENGINE == "postgres":
+        cur.execute(f"""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE ally_id = {P} AND status = 'ACTIVE'
+              AND (unaccent(name) ILIKE unaccent({P}) OR phone ILIKE {P})
+            ORDER BY use_count DESC, updated_at DESC
+            LIMIT {P}
+        """, (ally_id, search_term, phone_term, limit))
+    else:
+        cur.execute(f"""
+            SELECT id, ally_id, name, phone, notes, status, created_at, updated_at
+            FROM ally_customers
+            WHERE ally_id = {P} AND status = 'ACTIVE'
+              AND (name LIKE {P} OR phone LIKE {P})
+            ORDER BY use_count DESC, updated_at DESC
+            LIMIT {P}
+        """, (ally_id, search_term, phone_term, limit))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -9391,6 +9441,34 @@ def list_customer_addresses(customer_id: int, include_inactive: bool = False):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def increment_ally_customer_usage(customer_id: int):
+    """Incrementa use_count en ally_customers al crear un pedido con ese cliente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE ally_customers
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND status = 'ACTIVE'
+    """, (customer_id,))
+    conn.commit()
+    conn.close()
+
+
+def increment_admin_customer_usage(customer_id: int):
+    """Incrementa use_count en admin_customers al crear un pedido con ese cliente."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now_sql = "NOW()" if DB_ENGINE == "postgres" else "datetime('now')"
+    cur.execute(f"""
+        UPDATE admin_customers
+        SET use_count = COALESCE(use_count, 0) + 1, updated_at = {now_sql}
+        WHERE id = {P} AND status = 'ACTIVE'
+    """, (customer_id,))
+    conn.commit()
+    conn.close()
 
 
 def increment_customer_address_usage(address_id: int, customer_id: int):
@@ -9769,23 +9847,23 @@ def get_admin_customer_by_id(customer_id: int, admin_id: int = None):
 
 
 def list_admin_customers(admin_id: int, limit: int = 20, include_inactive: bool = False):
-    """Lista los clientes recurrentes de un admin (últimos primero)."""
+    """Lista los clientes recurrentes de un admin (más usados primero)."""
     conn = get_connection()
     cur = conn.cursor()
     if include_inactive:
         cur.execute(f"""
-            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            SELECT id, admin_id, name, phone, notes, status, use_count, created_at, updated_at
             FROM admin_customers
             WHERE admin_id = {P}
-            ORDER BY updated_at DESC
+            ORDER BY use_count DESC, updated_at DESC
             LIMIT {P}
         """, (admin_id, limit))
     else:
         cur.execute(f"""
-            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            SELECT id, admin_id, name, phone, notes, status, use_count, created_at, updated_at
             FROM admin_customers
             WHERE admin_id = {P} AND status = 'ACTIVE'
-            ORDER BY updated_at DESC
+            ORDER BY use_count DESC, updated_at DESC
             LIMIT {P}
         """, (admin_id, limit))
     rows = cur.fetchall()
@@ -9794,18 +9872,35 @@ def list_admin_customers(admin_id: int, limit: int = 20, include_inactive: bool 
 
 
 def search_admin_customers(admin_id: int, query: str, limit: int = 10):
-    """Busca clientes del admin por nombre o teléfono (solo activos)."""
+    """Busca clientes del admin por nombre o teléfono (solo activos).
+    La búsqueda es insensible a mayúsculas y tildes.
+    El campo phone usa la query sin separadores (310-555 1234 → 3105551234).
+    Si query == '.', retorna todos los clientes ordenados por uso (atajo "ver todos")."""
+    if query.strip() == ".":
+        return list_admin_customers(admin_id, limit=limit, include_inactive=False)
     conn = get_connection()
     cur = conn.cursor()
-    search_term = f"%{query.strip()}%"
-    cur.execute(f"""
-        SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
-        FROM admin_customers
-        WHERE admin_id = {P} AND status = 'ACTIVE'
-          AND (name LIKE {P} OR phone LIKE {P})
-        ORDER BY updated_at DESC
-        LIMIT {P}
-    """, (admin_id, search_term, search_term, limit))
+    normalized = _normalize_search_term(query.strip())
+    search_term = f"%{normalized}%"
+    phone_term = f"%{_normalize_phone_query(query.strip())}%"
+    if DB_ENGINE == "postgres":
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P} AND status = 'ACTIVE'
+              AND (unaccent(name) ILIKE unaccent({P}) OR phone ILIKE {P})
+            ORDER BY use_count DESC, updated_at DESC
+            LIMIT {P}
+        """, (admin_id, search_term, phone_term, limit))
+    else:
+        cur.execute(f"""
+            SELECT id, admin_id, name, phone, notes, status, created_at, updated_at
+            FROM admin_customers
+            WHERE admin_id = {P} AND status = 'ACTIVE'
+              AND (name LIKE {P} OR phone LIKE {P})
+            ORDER BY use_count DESC, updated_at DESC
+            LIMIT {P}
+        """, (admin_id, search_term, phone_term, limit))
     rows = cur.fetchall()
     conn.close()
     return rows

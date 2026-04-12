@@ -3,6 +3,9 @@
 -- Completo: todas las tablas, columnas e índices de init_db()
 -- ============================================================
 
+-- Extensión para búsquedas insensibles a tildes (unaccent)
+CREATE EXTENSION IF NOT EXISTS unaccent;
+
 -- ============================================================
 -- A) TABLAS BASE
 -- ============================================================
@@ -374,6 +377,7 @@ CREATE TABLE IF NOT EXISTS admin_customers (
     phone TEXT NOT NULL,
     notes TEXT,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    use_count INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -529,6 +533,7 @@ CREATE TABLE IF NOT EXISTS ally_customers (
     phone TEXT NOT NULL,
     notes TEXT,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    use_count INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );

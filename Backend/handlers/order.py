@@ -84,7 +84,8 @@ from services import (
     get_admin_customer_by_phone, create_admin_customer, create_admin_customer_address,
     update_admin_customer_address, find_matching_admin_customer_address,
     upsert_customer_address_for_agenda, upsert_admin_customer_address_for_agenda,
-    increment_customer_address_usage, increment_admin_customer_address_usage,
+    increment_ally_customer_usage, increment_customer_address_usage,
+    increment_admin_customer_usage, increment_admin_customer_address_usage,
     get_ally_form_request_by_id, update_ally_form_request_status,
     mark_ally_form_request_converted,
     get_ally_by_id, compute_ally_subsidy, PARKING_FEE_AMOUNT, set_address_parking_status,
@@ -429,18 +430,23 @@ def nuevo_pedido_desde_cotizador(update, context):
     context.user_data["cotizador_prefill_dropoff"] = True
 
     if query.data == "cotizar_cust_recurrente":
-        customers = list_ally_customers(ally["id"], limit=10)
-        if not customers:
+        all_customers = list_ally_customers(ally["id"], limit=50)
+        if not all_customers:
             query.edit_message_text("No tienes clientes guardados.\n\nEscribe el nombre del cliente:")
             context.user_data["is_new_customer"] = True
             return PEDIDO_NOMBRE
+        recent = all_customers[:10]
         keyboard = []
-        for c in customers:
+        for c in recent:
             keyboard.append([InlineKeyboardButton(
                 f"{c['name']} - {c['phone']}",
                 callback_data=f"pedido_sel_cust_{c['id']}"
             )])
         keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        if len(all_customers) > 10:
+            keyboard.append([InlineKeyboardButton(
+                f"Ver todos ({len(all_customers)})", callback_data="pedido_ver_todos"
+            )])
         keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
         query.edit_message_text(
             "CLIENTES RECURRENTES\n\nSelecciona un cliente:",
@@ -565,8 +571,8 @@ def pedido_selector_cliente_callback(update, context):
 
     if data == "pedido_cliente_recurrente":
         # Mostrar lista de clientes recurrentes
-        customers = list_ally_customers(ally_id, limit=10)
-        if not customers:
+        all_customers = list_ally_customers(ally_id, limit=50)
+        if not all_customers:
             query.edit_message_text(
                 "No tienes clientes guardados.\n\n"
                 "Escribe el nombre del cliente para crear el pedido:"
@@ -574,12 +580,17 @@ def pedido_selector_cliente_callback(update, context):
             context.user_data["is_new_customer"] = True
             return PEDIDO_NOMBRE
 
+        recent = all_customers[:10]
         keyboard = []
-        for c in customers:
+        for c in recent:
             btn_text = f"{c['name']} - {c['phone']}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
 
         keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        if len(all_customers) > 10:
+            keyboard.append([InlineKeyboardButton(
+                f"Ver todos ({len(all_customers)})", callback_data="pedido_ver_todos"
+            )])
         keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -587,6 +598,22 @@ def pedido_selector_cliente_callback(update, context):
             "CLIENTES RECURRENTES\n\n"
             "Selecciona un cliente:",
             reply_markup=reply_markup
+        )
+        return PEDIDO_SELECTOR_CLIENTE
+
+    elif data == "pedido_ver_todos":
+        all_customers = list_ally_customers(ally_id, limit=50)
+        sorted_customers = sorted(all_customers, key=lambda c: (c["name"] or "").lower())
+        keyboard = []
+        for c in sorted_customers:
+            btn_text = f"{c['name']} - {c['phone']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
+        keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="pedido_buscar_cliente")])
+        keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+        query.edit_message_text(
+            f"TODOS LOS CLIENTES ({len(sorted_customers)})\n\n"
+            "Selecciona un cliente:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return PEDIDO_SELECTOR_CLIENTE
 
@@ -637,7 +664,13 @@ def pedido_selector_cliente_callback(update, context):
             return PEDIDO_NOMBRE
 
     elif data == "pedido_buscar_cliente":
-        query.edit_message_text("Escribe el nombre o telefono del cliente a buscar:")
+        query.edit_message_text(
+            "Escribe el nombre o telefono del cliente a buscar.\n"
+            "Escribe '.' para ver todos:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Volver", callback_data="pedido_cliente_recurrente")]
+            ])
+        )
         return PEDIDO_BUSCAR_CLIENTE
 
     elif data.startswith("pedido_sel_cust_"):
@@ -693,8 +726,29 @@ def pedido_buscar_cliente(update, context):
         update.message.reply_text("No hay un aliado activo. Regresa al menu e inicia el pedido nuevamente.")
         return ConversationHandler.END
 
+    if not query_text:
+        update.message.reply_text("Escribe al menos un caracter para buscar.")
+        return PEDIDO_BUSCAR_CLIENTE
+    if len(query_text) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return PEDIDO_BUSCAR_CLIENTE
+
     results = search_ally_customers(ally_id, query_text, limit=10)
     if not results:
+        recientes = list_ally_customers(ally_id, limit=5)
+        if recientes:
+            keyboard = []
+            for c in recientes:
+                btn_text = f"{c['name']} - {c['phone']}"
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
+            keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="pedido_buscar_cliente")])
+            keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
+            update.message.reply_text(
+                f"No encontre clientes con '{query_text}'.\n\n"
+                "Tus clientes recientes:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return PEDIDO_SELECTOR_CLIENTE
         update.message.reply_text(
             f"No se encontraron clientes con '{query_text}'.\n\n"
             "Escribe el nombre del cliente para crear el pedido:"
@@ -707,12 +761,13 @@ def pedido_buscar_cliente(update, context):
         btn_text = f"{c['name']} - {c['phone']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pedido_sel_cust_{c['id']}")])
 
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="pedido_buscar_cliente")])
     keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="pedido_cliente_nuevo")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
+    truncado = " (mostrando 10)" if len(results) >= 10 else ""
     update.message.reply_text(
-        f"Resultados para '{query_text}':\n\n"
-        "Selecciona un cliente:",
+        f"Resultados para '{query_text}'{truncado}:\n\nSelecciona un cliente:",
         reply_markup=reply_markup
     )
     return PEDIDO_SELECTOR_CLIENTE
@@ -806,6 +861,7 @@ def pedido_seleccionar_direccion_callback(update, context):
         context.user_data["dropoff_lng"] = address["lng"]
         try:
             increment_customer_address_usage(address_id, customer_id)
+            increment_ally_customer_usage(customer_id)
         except Exception:
             pass
 
@@ -1896,6 +1952,7 @@ def pedido_direccion_cliente(update, context):
         )
         try:
             increment_customer_address_usage(address_id, customer_id)
+            increment_ally_customer_usage(customer_id)
         except Exception:
             pass
         logger.info(
@@ -3977,9 +4034,9 @@ def _admin_pedido_mostrar_selector_cliente(query_or_update, context, edit=True):
     Si no hay clientes: va directo al campo de nombre, sin boton intermedio.
     """
     admin_id = context.user_data.get("admin_ped_admin_id")
-    customers = list_admin_customers(admin_id, limit=15, include_inactive=False) if admin_id else []
+    all_customers = list_admin_customers(admin_id, limit=50, include_inactive=False) if admin_id else []
 
-    if not customers:
+    if not all_customers:
         context.user_data["admin_ped_is_new_customer"] = True
         text = "Escribe el nombre del cliente:"
         if edit and hasattr(query_or_update, "edit_message_text"):
@@ -3989,10 +4046,14 @@ def _admin_pedido_mostrar_selector_cliente(query_or_update, context, edit=True):
         return ADMIN_PEDIDO_CUST_NAME
 
     keyboard = []
-    for c in customers[:8]:
+    for c in all_customers[:8]:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
     keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="admin_pedido_buscar_cust")])
+    if len(all_customers) > 8:
+        keyboard.append([InlineKeyboardButton(
+            "Ver todos ({})".format(len(all_customers)), callback_data="admin_pedido_ver_todos"
+        )])
     keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="admin_pedido_cliente_nuevo")])
     keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
 
@@ -4556,6 +4617,7 @@ def admin_pedido_addr_selected(update, context):
     if cust_id_for_inc:
         try:
             increment_admin_customer_address_usage(address_id, cust_id_for_inc)
+            increment_admin_customer_usage(cust_id_for_inc)
         except Exception:
             pass
 
@@ -4859,6 +4921,7 @@ def admin_pedido_cust_addr_detalle_handler(update, context):
             return ADMIN_PEDIDO_CUST_ADDR_DETALLE
         try:
             increment_admin_customer_address_usage(address_id, customer_id)
+            increment_admin_customer_usage(customer_id)
         except Exception:
             pass
 
@@ -5539,11 +5602,34 @@ def admin_pedido_tmpl_sel_callback(update, context):
     return ADMIN_PEDIDO_CUST_NAME
 
 
+def admin_pedido_ver_todos_callback(update, context):
+    """Admin toca 'Ver todos' en el selector de clientes del pedido especial."""
+    query = update.callback_query
+    query.answer()
+    admin_id = context.user_data.get("admin_ped_admin_id")
+    all_customers = list_admin_customers(admin_id, limit=50, include_inactive=False) if admin_id else []
+    sorted_customers = sorted(all_customers, key=lambda c: (c["name"] or "").lower())
+    keyboard = []
+    for c in sorted_customers:
+        btn_text = "{} - {}".format(c["name"], c["phone"])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="admin_pedido_buscar_cust")])
+    keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="admin_pedido_cliente_nuevo")])
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+    query.edit_message_text(
+        "TODOS LOS CLIENTES ({})\n\nSelecciona el cliente:".format(len(sorted_customers)),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ADMIN_PEDIDO_SEL_CUST
+
+
 def admin_pedido_buscar_cust_start(update, context):
     """Admin toca 'Buscar cliente' en la lista de su agenda durante pedido especial."""
     query = update.callback_query
     query.answer()
-    query.edit_message_text("Escribe el nombre o telefono del cliente:")
+    query.edit_message_text(
+        "Escribe el nombre o telefono del cliente.\nEscribe '.' para ver todos:"
+    )
     return ADMIN_PEDIDO_SEL_CUST_BUSCAR
 
 
@@ -5551,22 +5637,45 @@ def admin_pedido_buscar_cust_handler(update, context):
     """Busca clientes del admin por nombre o telefono durante pedido especial."""
     texto = update.message.text.strip()
     admin_id = context.user_data.get("admin_ped_admin_id")
-    resultados = search_admin_customers(admin_id, texto) if admin_id and texto else []
-    activos = [c for c in resultados if c["status"] == "ACTIVE"]
+
+    if not texto:
+        update.message.reply_text("Escribe al menos un caracter para buscar.")
+        return ADMIN_PEDIDO_SEL_CUST_BUSCAR
+    if len(texto) > 60:
+        update.message.reply_text("El texto es muy largo. Intenta con menos caracteres.")
+        return ADMIN_PEDIDO_SEL_CUST_BUSCAR
+
+    activos = search_admin_customers(admin_id, texto) if admin_id else []
     if not activos:
+        recientes = list_admin_customers(admin_id, limit=5, include_inactive=False) if admin_id else []
+        if recientes:
+            keyboard = []
+            for c in recientes:
+                btn_text = "{} - {}".format(c["name"], c["phone"])
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+            keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="admin_pedido_buscar_cust")])
+            keyboard.append([InlineKeyboardButton("Cliente nuevo", callback_data="admin_pedido_cliente_nuevo")])
+            keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
+            update.message.reply_text(
+                "No encontre clientes con '{}'.\n\nTus clientes recientes:".format(texto),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return ADMIN_PEDIDO_SEL_CUST
         update.message.reply_text(
             "No se encontro ningun cliente con '{}'.\n\nEscribe el nombre del cliente:".format(texto)
         )
         return ADMIN_PEDIDO_CUST_NAME
+    mostrados = activos[:10]
+    encabezado = "Resultados para '{}'{}:\n\nSelecciona el cliente:".format(
+        texto, " (mostrando 10)" if len(activos) >= 10 else ""
+    )
     keyboard = []
-    for c in activos[:10]:
+    for c in mostrados:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
+    keyboard.append([InlineKeyboardButton("Buscar de nuevo", callback_data="admin_pedido_buscar_cust")])
     keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_pedido_cancelar")])
-    update.message.reply_text(
-        "Resultados para '{}':\n\nSelecciona el cliente:".format(texto),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+    update.message.reply_text(encabezado, reply_markup=InlineKeyboardMarkup(keyboard))
     return ADMIN_PEDIDO_SEL_CUST
 
 
@@ -6966,9 +7075,10 @@ nuevo_pedido_conv = ConversationHandler(
     ],
     states={
         PEDIDO_SELECTOR_CLIENTE: [
-            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_(cliente_recurrente|cliente_nuevo|repetir_ultimo|buscar_cliente|sel_cust_\d+)$")
+            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_(cliente_recurrente|cliente_nuevo|repetir_ultimo|buscar_cliente|ver_todos|sel_cust_\d+)$")
         ],
         PEDIDO_BUSCAR_CLIENTE: [
+            CallbackQueryHandler(pedido_selector_cliente_callback, pattern=r"^pedido_cliente_recurrente$"),
             MessageHandler(CANCELAR_VOLVER_MENU_FILTER, cancel_por_texto),
             MessageHandler(Filters.text & ~Filters.command & ~CANCELAR_VOLVER_MENU_FILTER, pedido_buscar_cliente)
         ],
@@ -7195,6 +7305,7 @@ admin_pedido_conv = ConversationHandler(
         ADMIN_PEDIDO_SEL_CUST: [
             CallbackQueryHandler(admin_pedido_cust_selected, pattern=r"^acust_pedido_sel_\d+$"),
             CallbackQueryHandler(admin_pedido_buscar_cust_start, pattern=r"^admin_pedido_buscar_cust$"),
+            CallbackQueryHandler(admin_pedido_ver_todos_callback, pattern=r"^admin_pedido_ver_todos$"),
             CallbackQueryHandler(admin_pedido_cliente_nuevo_callback, pattern=r"^admin_pedido_cliente_nuevo$"),
             CallbackQueryHandler(admin_pedido_cancelar_callback, pattern=r"^admin_pedido_cancelar$"),
         ],
