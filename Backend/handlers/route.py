@@ -219,20 +219,19 @@ def _ruta_iniciar_parada(update_or_query, context):
     n = len(paradas) + 1
     ally_id = context.user_data.get("ruta_ally_id")
     all_clientes = list_ally_customers(ally_id, limit=50) if ally_id else []
-    activos = [c for c in all_clientes if c["status"] == "ACTIVE"]
     keyboard = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]
-    for c in activos[:8]:
+    for c in all_clientes[:10]:
         nombre = (c["name"] or "Sin nombre")[:25]
         phone = c["phone"] or ""
         keyboard.append([InlineKeyboardButton(
             "{} - {}".format(nombre, phone),
             callback_data="ruta_sel_cust_{}".format(c["id"])
         )])
-    if activos:
+    if all_clientes:
         keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="ruta_buscar_cliente")])
-        if len(activos) > 8:
+        if len(all_clientes) > 10:
             keyboard.append([InlineKeyboardButton(
-                "Ver todos ({})".format(len(activos)), callback_data="ruta_ver_todos"
+                "Ver todos ({})".format(len(all_clientes)), callback_data="ruta_ver_todos"
             )])
     markup = InlineKeyboardMarkup(keyboard)
     text = "PARADA {} DE LA RUTA\n\nSelecciona el cliente:".format(n)
@@ -852,8 +851,7 @@ def ruta_parada_selector_callback(update, context):
         return RUTA_PARADA_BUSCAR
     if data == "ruta_ver_todos":
         all_clientes = list_ally_customers(ally_id, limit=50) if ally_id else []
-        activos = [c for c in all_clientes if c["status"] == "ACTIVE"]
-        sorted_clientes = sorted(activos, key=lambda c: (c["name"] or "").lower())
+        sorted_clientes = sorted(all_clientes, key=lambda c: (c["name"] or "").lower())
         paradas = context.user_data.get("ruta_paradas", [])
         n = len(paradas) + 1
         kb = [[InlineKeyboardButton("Cliente nuevo", callback_data="ruta_cliente_nuevo")]]

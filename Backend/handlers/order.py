@@ -4046,11 +4046,11 @@ def _admin_pedido_mostrar_selector_cliente(query_or_update, context, edit=True):
         return ADMIN_PEDIDO_CUST_NAME
 
     keyboard = []
-    for c in all_customers[:8]:
+    for c in all_customers[:10]:
         btn_text = "{} - {}".format(c["name"], c["phone"])
         keyboard.append([InlineKeyboardButton(btn_text, callback_data="acust_pedido_sel_{}".format(c["id"]))])
     keyboard.append([InlineKeyboardButton("Buscar cliente", callback_data="admin_pedido_buscar_cust")])
-    if len(all_customers) > 8:
+    if len(all_customers) > 10:
         keyboard.append([InlineKeyboardButton(
             "Ver todos ({})".format(len(all_customers)), callback_data="admin_pedido_ver_todos"
         )])
