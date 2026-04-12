@@ -359,6 +359,54 @@ from db import (
 )
 
 
+BOT_POLLING_LOCK_ID = 42010
+
+
+def bot_polling_lock_supported() -> bool:
+    """Indica si el entorno actual soporta lock distribuido para el polling del bot."""
+    return DB_ENGINE == "postgres"
+
+
+def try_acquire_bot_polling_lock(lock_id: int = BOT_POLLING_LOCK_ID):
+    """Intenta adquirir un lock de sesion en Postgres para que solo una instancia haga polling."""
+    if not bot_polling_lock_supported():
+        return None
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s) AS locked", (lock_id,))
+        row = cur.fetchone()
+        locked = bool(_row_value(row, "locked", 0, False))
+        if not locked:
+            conn.close()
+            return None
+        return conn
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
+
+
+def release_bot_polling_lock(lock_conn, lock_id: int = BOT_POLLING_LOCK_ID):
+    """Libera el lock de polling del bot si la instancia lo tenia tomado."""
+    if not lock_conn or not bot_polling_lock_supported():
+        return
+
+    try:
+        cur = lock_conn.cursor()
+        cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+    except Exception as e:
+        logger.warning("No se pudo liberar polling lock de Telegram: %s", e)
+    finally:
+        try:
+            lock_conn.close()
+        except Exception:
+            pass
+
+
 _SYSTEM_ADDRESS_PLACEHOLDERS = {
     "no disponible",
     "sin direccion",

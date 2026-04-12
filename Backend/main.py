@@ -279,6 +279,9 @@ from services import (
     expire_old_ally_subscriptions,
     get_all_pending_fee_collections,
     get_expiring_ally_subscriptions,
+    bot_polling_lock_supported,
+    try_acquire_bot_polling_lock,
+    release_bot_polling_lock,
 )
 from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback, _get_order_visible_pickup_line, _get_order_visible_dropoff_line, _get_route_visible_pickup_line, _get_route_stop_visible_line, build_courier_order_earnings_text, build_courier_route_earnings_text
 from db import (
@@ -2727,6 +2730,19 @@ def main():
     logger.info("TOKEN fingerprint: hash=%s suffix=...%s", token_hash, token_suffix)
     logger.info("Ambiente: %s", ENV)
 
+    polling_lock_conn = None
+    if bot_polling_lock_supported():
+        logger.info("Polling lock distribuido activo para Telegram (PostgreSQL).")
+        while polling_lock_conn is None:
+            polling_lock_conn = try_acquire_bot_polling_lock()
+            if polling_lock_conn is None:
+                logger.warning(
+                    "Otra instancia ya tiene el polling activo para este BOT_TOKEN. "
+                    "Esperando 15 segundos antes de reintentar para evitar conflictos de getUpdates."
+                )
+                time.sleep(15)
+        logger.info("Polling lock adquirido. Esta instancia queda activa para Telegram.")
+
     persistence_path = os.getenv("PERSISTENCE_PATH", "bot_persistence.pkl")
     persistence = PicklePersistence(filename=persistence_path)
     logger.info("Persistencia: %s", persistence_path)
@@ -2989,9 +3005,12 @@ def main():
     _recover_pending_fee_collections(updater.bot)
 
     # Iniciar el bot
-    updater.start_polling(drop_pending_updates=True)
-    logger.info("Polling iniciado. Bot activo.")
-    updater.idle()
+    try:
+        updater.start_polling(drop_pending_updates=True)
+        logger.info("Polling iniciado. Bot activo.")
+        updater.idle()
+    finally:
+        release_bot_polling_lock(polling_lock_conn)
 
 
 if __name__ == "__main__":
