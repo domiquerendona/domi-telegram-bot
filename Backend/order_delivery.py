@@ -620,6 +620,185 @@ def _record_courier_visibility_blocked_metric(service_kind):
     return total, specific
 
 
+def build_order_price_summary_text(order, label="Tarifa al repartidor", include_base_required=True):
+    """Resume el valor visible del pedido para creador y courier."""
+    if not order:
+        return ""
+
+    order_id = _row_value(order, "id", "?")
+    total_fee = int(_row_value(order, "total_fee") or 0)
+    additional_incentive = int(_row_value(order, "additional_incentive") or 0)
+    parking_fee = int(_row_value(order, "parking_fee") or 0)
+    cash_amount = int(_row_value(order, "cash_required_amount", 0) or 0)
+    requires_cash = bool(_row_value(order, "requires_cash", False))
+
+    if total_fee <= 0:
+        logger.warning(
+            "build_order_price_summary_text: total_fee no visible order_id=%s label=%s total_fee=%s",
+            order_id,
+            label,
+            total_fee,
+        )
+
+    lines = ["{}: ${:,}".format(label, total_fee)]
+    if additional_incentive > 0:
+        lines.append("Incluye incentivo: +${:,}".format(additional_incentive))
+    if parking_fee > 0:
+        lines.append("Incluye parqueo dificil: +${:,}".format(parking_fee))
+    if include_base_required and requires_cash and cash_amount > 0:
+        lines.append("Base requerida: ${:,}".format(cash_amount))
+    return "\n".join(lines)
+
+
+def build_route_price_summary_text(route, label="Pago total de la ruta", include_base_required=True):
+    """Resume el valor visible de la ruta para creador y courier."""
+    if not route:
+        return ""
+
+    route_id = _row_value(route, "id", "?")
+    total_fee = int(_row_value(route, "total_fee") or 0)
+    additional_incentive = int(_row_value(route, "additional_incentive") or 0)
+    cash_amount = int(_row_value(route, "cash_required_amount", 0) or 0)
+    requires_cash = bool(_row_value(route, "requires_cash", False))
+
+    if total_fee <= 0:
+        logger.warning(
+            "build_route_price_summary_text: total_fee no visible route_id=%s label=%s total_fee=%s",
+            route_id,
+            label,
+            total_fee,
+        )
+
+    lines = ["{}: ${:,}".format(label, total_fee)]
+    if additional_incentive > 0:
+        lines.append("Incluye incentivo: +${:,}".format(additional_incentive))
+    if include_base_required and requires_cash and cash_amount > 0:
+        lines.append("Base requerida: ${:,}".format(cash_amount))
+    return "\n".join(lines)
+
+
+def build_order_creation_summary_text(order, market_status_text):
+    """Arma el mensaje de exito del pedido conservando el valor visible."""
+    if not order:
+        fallback = "Pedido creado exitosamente."
+        return "{}\n\n{}".format(fallback, market_status_text) if market_status_text else fallback
+
+    lines = [
+        "Pedido #{} creado exitosamente.".format(_row_value(order, "id", "?")),
+        build_order_price_summary_text(order, label="Valor del servicio"),
+    ]
+    if market_status_text:
+        lines.append(market_status_text)
+    return "\n\n".join(line for line in lines if line)
+
+
+def build_route_creation_summary_text(route, market_status_text):
+    """Arma el mensaje de exito de la ruta conservando el valor visible."""
+    if not route:
+        fallback = "Ruta creada."
+        return "{}\n\n{}".format(fallback, market_status_text) if market_status_text else fallback
+
+    lines = [
+        "Ruta #{} creada.".format(_row_value(route, "id", "?")),
+        build_route_price_summary_text(route, label="Valor de la ruta"),
+    ]
+    if market_status_text:
+        lines.append(market_status_text)
+    return "\n\n".join(line for line in lines if line)
+
+
+def _get_order_courier_financials(order):
+    """Calcula descuento y neto esperado del courier para un pedido."""
+    fee_cfg = get_fee_config()
+    fee_std = int(fee_cfg["fee_service_total"] or 0)
+    special_commission = int(_row_value(order, "special_commission") or 0)
+    total_fee = int(_row_value(order, "total_fee") or 0)
+    total_discount = fee_std + special_commission
+    net_total = total_fee - total_discount
+    return {
+        "fee_std": fee_std,
+        "special_commission": special_commission,
+        "total_discount": total_discount,
+        "net_total": net_total,
+        "fee_admin_share": int(fee_cfg["fee_admin_share"] or 0),
+        "fee_platform_share": int(fee_cfg["fee_platform_share"] or 0),
+    }
+
+
+def _get_route_courier_financials(route):
+    """Calcula descuento y neto esperado del courier para una ruta."""
+    fee_cfg = get_fee_config()
+    fee_std = int(fee_cfg["fee_service_total"] or 0)
+    total_fee = int(_row_value(route, "total_fee") or 0)
+    total_discount = fee_std
+    net_total = total_fee - total_discount
+    return {
+        "fee_std": fee_std,
+        "total_discount": total_discount,
+        "net_total": net_total,
+        "fee_admin_share": int(fee_cfg["fee_admin_share"] or 0),
+        "fee_platform_share": int(fee_cfg["fee_platform_share"] or 0),
+    }
+
+
+def build_courier_order_earnings_text(order, net_label="Neto esperado", include_base_required=True):
+    """Resume pago bruto y neto esperado del courier para un pedido."""
+    if not order:
+        return ""
+
+    finance = _get_order_courier_financials(order)
+    if finance["net_total"] < 0:
+        logger.warning(
+            "build_courier_order_earnings_text: neto negativo order_id=%s total_fee=%s total_discount=%s",
+            _row_value(order, "id", "?"),
+            _row_value(order, "total_fee", 0),
+            finance["total_discount"],
+        )
+    lines = [
+        build_order_price_summary_text(
+            order,
+            label="Pago total del pedido",
+            include_base_required=include_base_required,
+        )
+    ]
+    if finance["special_commission"] > 0:
+        lines.extend([
+            "Descuentos al entregar:",
+            "  Fee de servicio: -${:,}".format(finance["fee_std"]),
+            "  Comision especial: -${:,}".format(finance["special_commission"]),
+            "  Total descuento: -${:,}".format(finance["total_discount"]),
+        ])
+    else:
+        lines.append("Descuento al entregar: -${:,} (fee de servicio)".format(finance["fee_std"]))
+    lines.append("{}: ${:,}".format(net_label, finance["net_total"]))
+    return "\n".join(lines)
+
+
+def build_courier_route_earnings_text(route, net_label="Neto esperado", include_base_required=True):
+    """Resume pago bruto y neto esperado del courier para una ruta."""
+    if not route:
+        return ""
+
+    finance = _get_route_courier_financials(route)
+    if finance["net_total"] < 0:
+        logger.warning(
+            "build_courier_route_earnings_text: neto negativo route_id=%s total_fee=%s total_discount=%s",
+            _row_value(route, "id", "?"),
+            _row_value(route, "total_fee", 0),
+            finance["total_discount"],
+        )
+    lines = [
+        build_route_price_summary_text(
+            route,
+            label="Pago total de la ruta",
+            include_base_required=include_base_required,
+        ),
+        "Descuento al entregar: -${:,} (fee de servicio)".format(finance["fee_std"]),
+        "{}: ${:,}".format(net_label, finance["net_total"]),
+    ]
+    return "\n".join(lines)
+
+
 def build_courier_order_preview_text(
     order,
     pickup_city_override=None,
@@ -4288,19 +4467,20 @@ def _handle_accept(update, context, order_id, commission_confirmed=False):
 
     pickup_line = _get_order_visible_pickup_line(order) or "Ubicacion pendiente de detallar"
     destino_area = _get_order_visible_dropoff_line(order) or "Ubicacion pendiente de detallar"
+    earnings_block = build_courier_order_earnings_text(order)
 
     query.edit_message_text(
         "Pedido #{} aceptado.\n\n"
         "Recoge en: {}\n"
         "Destino: {}\n"
-        "Tarifa: ${:,}\n\n"
+        "{}\n\n"
         "Dirigete al punto de recogida. Tienes 15 minutos.\n"
         "Cuando estes alli, presiona 'Confirmar llegada al punto de recogida'.\n"
         "Si no puedes llegar, presiona 'Liberar pedido'.".format(
             order_id,
             pickup_line,
             destino_area,
-            int(order["total_fee"] or 0),
+            earnings_block,
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -5166,6 +5346,7 @@ def _handle_delivered(update, context, order_id):
         time_lines.append("  Tiempo total: {}".format(_format_duration(durations["tiempo_total"])))
 
     time_block = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines)) if time_lines else ""
+    earnings_block = build_courier_order_earnings_text(order, net_label="Neto del servicio")
 
 
     if fee_courier_ok:
@@ -5181,10 +5362,11 @@ def _handle_delivered(update, context, order_id):
         saldo_str = "\nSaldo actual: ${:,}".format(balance_courier) if balance_courier is not None else ""
         courier_msg = (
             "Pedido #{} entregado exitosamente.{}\n\n"
+            "{}\n\n"
             "Se descontaron ${:,} de tu saldo por este servicio.{}"
-        ).format(order_id, time_block, fee_cobrado_courier, saldo_str)
+        ).format(order_id, time_block, earnings_block, fee_cobrado_courier, saldo_str)
     else:
-        courier_msg = "Pedido #{} entregado exitosamente.{}".format(order_id, time_block)
+        courier_msg = "Pedido #{} entregado exitosamente.{}\n\n{}".format(order_id, time_block, earnings_block)
 
     query.edit_message_text(courier_msg)
 
@@ -5363,8 +5545,6 @@ def _build_offer_text(
 ):
     """Construye el texto de oferta para el courier."""
     distance_km = order["distance_km"] or 0
-    total_fee = int(order["total_fee"] or 0)
-    additional_incentive = int(order["additional_incentive"] or 0)
     pickup_area_line = _get_order_visible_pickup_line(
         order,
         pickup_city_override,
@@ -5375,6 +5555,10 @@ def _build_offer_text(
         dropoff_city_override,
         dropoff_barrio_override,
     ) or "Ubicacion pendiente de detallar"
+    earnings_block = build_courier_order_earnings_text(
+        order,
+        include_base_required=False,
+    )
 
     text = (
         "OFERTA DISPONIBLE\n\n"
@@ -5382,13 +5566,13 @@ def _build_offer_text(
         "Recoges en: {}\n"
         "Entrega en: {}\n"
         "Distancia de entrega: {:.1f} km\n"
-        "Pago total: ${:,}\n"
+        "{}\n"
     ).format(
         order["id"],
         pickup_area_line,
         dropoff_area_line,
         distance_km,
-        total_fee,
+        earnings_block,
     )
 
     if courier_dist_km is not None:
@@ -5397,25 +5581,20 @@ def _build_offer_text(
             courier_dist_km, eta_min
         )
 
-    if additional_incentive > 0:
-        base_fee = max(0, total_fee - additional_incentive)
-        text += "Pago base: ${:,}\n".format(int(base_fee))
-        text += "Incentivo adicional: ${:,}\n".format(int(additional_incentive))
-
     cash_amount = int(_row_value(order, "cash_required_amount", 0) or 0)
     requires_cash = bool(_row_value(order, "requires_cash", False))
     payment_method = _row_value(order, "payment_method", "UNCONFIRMED") or "UNCONFIRMED"
     cash_confirmed = payment_method == "CASH_CONFIRMED" or (requires_cash and cash_amount > 0)
 
     if cash_confirmed:
-        text += "Pago: efectivo confirmado\n"
+        text += "Metodo de pago: efectivo confirmado\n"
         if cash_amount > 0:
             text += "Base requerida: ${:,}\n".format(int(cash_amount))
             text += "\nADVERTENCIA: Si no tienes base suficiente, NO tomes este servicio.\n"
     elif payment_method == "TRANSFER_CONFIRMED":
-        text += "Pago: transferencia confirmada\n"
+        text += "Metodo de pago: transferencia confirmada\n"
     else:
-        text += "Pago: no confirmado (no debes adelantar dinero)\n"
+        text += "Metodo de pago: no confirmado (no debes adelantar dinero)\n"
 
     instructions = order["instructions"] or ""
     if instructions.strip():
@@ -5430,28 +5609,6 @@ def _build_offer_text(
             "Se incluyen ${:,} para que cubras el parqueo o cualquier imprevisto con tu vehiculo. "
             "No dejes tu moto o bici en lugar prohibido — comparendos o inmovilizaciones "
             "son tu responsabilidad.\n".format(parking_fee)
-        )
-
-    special_commission = int(order["special_commission"] or 0) if "special_commission" in order.keys() else 0
-    fee_cfg_offer = get_fee_config()
-    fee_std = fee_cfg_offer["fee_service_total"]
-    total_fee_val = int(_row_value(order, "total_fee") or 0)
-    if special_commission > 0:
-        total_descuento = fee_std + special_commission
-        ganancia_neta = total_fee_val - total_descuento
-        text += (
-            "\nDESCUENTOS AL ACEPTAR:"
-            "\n  Fee estandar: -${:,} (admin ${:,} + plataforma ${:,})".format(
-                fee_std, fee_cfg_offer["fee_admin_share"], fee_cfg_offer["fee_platform_share"])
-            + "\n  Comision del admin: -${:,}".format(special_commission)
-            + "\n  Total descuentos: -${:,}".format(total_descuento)
-        )
-        if total_fee_val > 0:
-            text += "\n  Ganancia neta: ${:,}".format(ganancia_neta)
-        text += "\n"
-    else:
-        text += (
-            "\nFee de servicio: -${:,} (se descuenta de tu saldo al entregar)\n".format(fee_std)
         )
 
     # Indicador de desvio si el courier ya tiene servicios activos
@@ -5784,20 +5941,30 @@ def _build_navigation_rows(lat, lng):
 
 def _notify_ally_order_accepted(context, order, courier_name):
     try:
-        ally = get_ally_by_id(order["ally_id"])
-        if not ally:
+        recipient_chat_id = None
+        ally = get_ally_by_id(order["ally_id"]) if _row_value(order, "ally_id") else None
+        if ally:
+            ally_user = get_user_by_id(ally["user_id"])
+            if ally_user and ally_user["telegram_id"]:
+                recipient_chat_id = ally_user["telegram_id"]
+        else:
+            creator_admin_id = _row_value(order, "creator_admin_id")
+            admin = get_admin_by_id(int(creator_admin_id)) if creator_admin_id else None
+            admin_user = get_user_by_id(admin["user_id"]) if admin else None
+            if admin_user and admin_user["telegram_id"]:
+                recipient_chat_id = admin_user["telegram_id"]
+
+        if not recipient_chat_id:
             return
 
-        ally_user = get_user_by_id(ally["user_id"])
-        if not ally_user or not ally_user["telegram_id"]:
-            return
-
+        price_block = build_order_price_summary_text(order, label="Valor del servicio")
         context.bot.send_message(
-            chat_id=ally_user["telegram_id"],
+            chat_id=recipient_chat_id,
             text=(
-                "Tu pedido #{} fue aceptado por el repartidor {}.\n"
+                "Tu pedido #{} fue aceptado por el repartidor {}.\n\n"
+                "{}\n\n"
                 "El repartidor se dirige al punto de recogida."
-            ).format(order["id"], courier_name),
+            ).format(order["id"], courier_name, price_block),
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     "Llamar al repartidor",
@@ -5916,6 +6083,7 @@ def _notify_courier_pickup_approved(context, order):
         keyboard.extend(_build_navigation_rows(dropoff_lat, dropoff_lng))
         keyboard.append([InlineKeyboardButton("Finalizar servicio", callback_data="order_delivered_confirm_{}".format(order["id"]))])
         parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
+        earnings_block = build_courier_order_earnings_text(order)
         parking_aviso = ""
         if parking_fee > 0:
             parking_aviso = (
@@ -5928,7 +6096,8 @@ def _notify_courier_pickup_approved(context, order):
                 "Datos de entrega - Pedido #{}\n\n"
                 "Entrega en: {}\n"
                 "Cliente: {}\n"
-                "Telefono: {}{}\n\n"
+                "Telefono: {}\n"
+                "{}{}\n\n"
                 "Dirigete al punto de entrega. Solo podras finalizar el servicio cuando estes "
                 "a menos de 150 metros del lugar de entrega."
             ).format(
@@ -5936,6 +6105,7 @@ def _notify_courier_pickup_approved(context, order):
                 _get_order_visible_dropoff_line(order) or "No disponible",
                 order["customer_name"] or "No disponible",
                 order["customer_phone"] or "No disponible",
+                earnings_block,
                 parking_aviso,
             ),
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -6031,11 +6201,7 @@ def _notify_ally_delivered(context, order, durations=None):
         except Exception:
             pass
 
-        parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
-        total_fee_order = int(_row_value(order, "total_fee") or 0)
-        parking_block = (
-            "\n\nTarifa al repartidor: ${:,} (incluye ${:,} por parqueo dificil)".format(total_fee_order, parking_fee)
-        ) if parking_fee > 0 else ""
+        price_block = build_order_price_summary_text(order, label="Valor del servicio")
 
         keyboard = [[
             InlineKeyboardButton("1", callback_data="rating_star_{}_1".format(order_id)),
@@ -6047,10 +6213,10 @@ def _notify_ally_delivered(context, order, durations=None):
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
             text=(
-                "Pedido #{} entregado exitosamente por {}.{}{}{}\n\n"
+                "Pedido #{} entregado exitosamente por {}.{}\n\n{}{}\n\n"
                 "Como calificarias el servicio?\n"
                 "1 = Muy malo  |  5 = Excelente"
-            ).format(order_id, courier_name, time_block, fee_block, parking_block),
+            ).format(order_id, courier_name, time_block, price_block, fee_block),
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
@@ -6123,17 +6289,13 @@ def _notify_admin_order_delivered(context, order, durations, creator_admin_id):
         except Exception:
             pass
 
-        parking_fee = int(order["parking_fee"] or 0) if "parking_fee" in order.keys() else 0
-        total_fee_order = int(_row_value(order, "total_fee") or 0)
-        parking_block = (
-            "\n\nTarifa al repartidor: ${:,} (incluye ${:,} por parqueo dificil)".format(total_fee_order, parking_fee)
-        ) if parking_fee > 0 else ""
+        price_block = build_order_price_summary_text(order, label="Valor del servicio")
 
         context.bot.send_message(
             chat_id=admin_user["telegram_id"],
             text=(
-                "Pedido #{} entregado por {}.{}{}{}"
-            ).format(order_id, courier_name, time_block, fee_block, parking_block),
+                "Pedido #{} entregado por {}.{}\n\n{}{}"
+            ).format(order_id, courier_name, time_block, price_block, fee_block),
         )
     except Exception as e:
         logger.warning("No se pudo notificar entrega de pedido especial al admin %s: %s", creator_admin_id, e)
@@ -6428,10 +6590,12 @@ def _route_offer_reply_markup(route_id):
 def _build_route_offer_text(route, destinations):
     """Construye el texto de oferta de ruta para el courier."""
     total_km = float(route["total_distance_km"] or 0)
-    total_fee = int(route["total_fee"] or 0)
-    additional_incentive = int(route["additional_incentive"] or 0)
     cash_amount = int(_row_value(route, "cash_required_amount", 0) or 0)
     requires_cash = bool(_row_value(route, "requires_cash", False))
+    earnings_block = build_courier_route_earnings_text(
+        route,
+        include_base_required=False,
+    )
 
     # Barrio/ciudad de recogida (columnas opcionales — fallback a pickup_address)
     pickup_area = _get_route_visible_pickup_line(route) or "Ubicacion pendiente de detallar"
@@ -6448,15 +6612,7 @@ def _build_route_offer_text(route, destinations):
         if dest_parking > 0:
             paradas_parking.append((dest["sequence"], dest_parking))
 
-    text += "\nDistancia total: {:.1f} km\n".format(total_km)
-
-    if additional_incentive > 0:
-        base_fee = max(0, total_fee - additional_incentive)
-        text += "Pago base: ${:,}\n".format(base_fee)
-        text += "Incentivo adicional: ${:,}\n".format(additional_incentive)
-        text += "Pago total: ${:,}\n".format(total_fee)
-    else:
-        text += "Pago: ${:,}\n".format(total_fee)
+    text += "\nDistancia total: {:.1f} km\n{}\n".format(total_km, earnings_block)
 
     if requires_cash and cash_amount > 0:
         text += "Base requerida: ${:,}\n".format(cash_amount)
@@ -6847,6 +7003,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
     lat = stop["dropoff_lat"]
     lng = stop["dropoff_lng"]
     total_stops = len(get_route_destinations(route_id))
+    earnings_block = build_courier_route_earnings_text(route)
 
     keyboard = []
     keyboard.extend(_build_navigation_rows(lat, lng))
@@ -6870,6 +7027,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
         chat_id=chat_id,
         text=(
             "Parada {} de {}:\n\n"
+            "{}\n"
             "Cliente: {}\n"
             "Telefono: {}\n"
             "Direccion: {}\n"
@@ -6879,6 +7037,7 @@ def _send_route_stop_to_courier(context, chat_id, route, stop):
         ).format(
             seq,
             total_stops,
+            earnings_block,
             stop["customer_name"] or "Sin nombre",
             stop["customer_phone"] or "Sin telefono",
             _get_route_stop_visible_line(stop) or "Sin direccion",
@@ -7026,7 +7185,12 @@ def _handle_route_accept(update, context, route_id):
 
 def _show_route_reorder(msg_or_query, context, route_id, destinations):
     """Muestra la lista de paradas con botones para reordenar."""
-    text = "Ruta #{} aceptada.\n\nOrden actual de paradas:\n".format(route_id)
+    route = get_route_by_id(route_id)
+    earnings_block = build_courier_route_earnings_text(route) if route else ""
+    text = "Ruta #{} aceptada.".format(route_id)
+    if earnings_block:
+        text += "\n\n{}".format(earnings_block)
+    text += "\n\nOrden actual de paradas:\n"
     for d in destinations:
         stop_line = _get_route_stop_visible_line(d) or "Ubicacion pendiente de detallar"
         text += "  {}. {}\n".format(d["sequence"], stop_line)
@@ -7977,9 +8141,10 @@ def _handle_route_deliver_stop(update, context, route_id, seq):
         if "tiempo_total" in route_dur:
             time_lines_c.append("  Tiempo total: {}".format(_format_duration(route_dur["tiempo_total"])))
         time_str = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines_c)) if time_lines_c else ""
+        earnings_block = build_courier_route_earnings_text(route, net_label="Neto de la ruta")
         context.bot.send_message(
             chat_id=query.message.chat_id,
-            text="Ruta #{} completada. Todas las paradas fueron entregadas.{}".format(route_id, time_str),
+            text="Ruta #{} completada. Todas las paradas fueron entregadas.{}\n\n{}".format(route_id, time_str, earnings_block),
         )
         _notify_ally_route_delivered(context, route)
 
@@ -7994,10 +8159,11 @@ def _notify_ally_route_accepted(context, route, courier_name):
             return
         context.bot.send_message(
             chat_id=ally_user["telegram_id"],
-            text="Tu ruta #{} fue aceptada por {}. Tiene {} paradas de entrega.".format(
+            text="Tu ruta #{} fue aceptada por {}. Tiene {} paradas de entrega.\n\n{}".format(
                 route["id"],
                 courier_name,
                 len(get_route_destinations(route["id"])),
+                build_route_price_summary_text(route, label="Valor de la ruta"),
             ),
         )
     except Exception as e:
@@ -8013,6 +8179,7 @@ def _notify_ally_route_delivered(context, route):
         if not ally_user or not ally_user["telegram_id"]:
             return
         route_id = route["id"]
+        price_block = build_route_price_summary_text(route, label="Valor de la ruta")
         # Calcular desglose de fees cobrados
         stops = get_route_destinations(route_id)
         n_delivered = sum(1 for s in stops if str(s["status"] or "") == "DELIVERED")
@@ -8026,6 +8193,8 @@ def _notify_ally_route_delivered(context, route):
         fee_total = fee_base + fee_adicional
         lines = [
             "Ruta #{} completada.".format(route_id),
+            "",
+            price_block,
             "",
             "Cobros aplicados a tu saldo:",
             "  Servicio base:        -${}".format(format(fee_base, ",")),
@@ -9452,18 +9621,20 @@ def _handle_admin_route_pinissue_action(update, context, route_id, seq, action):
                 if "tiempo_total" in route_dur:
                     time_lines_c.append("  Tiempo total: {}".format(_format_duration(route_dur["tiempo_total"])))
                 time_str = ("\n\nTiempos del servicio:\n" + "\n".join(time_lines_c)) if time_lines_c else ""
+                earnings_block = build_courier_route_earnings_text(route, net_label="Neto de la ruta")
                 cancelled = [s for s in get_route_destinations(route_id)
                              if str(s["status"] or "").startswith("CANCELLED")]
                 if cancelled:
                     names = [s["customer_name"] or "Parada {}".format(s["sequence"]) for s in cancelled]
                     msg = (
                         "Ruta #{} completada.{}\n\n"
+                        "{}\n\n"
                         "Tienes {} parada(s) cancelada(s) que requieren devolucion:\n"
                         "{}\n\n"
                         "Dirgete al punto de recogida para devolver los productos."
-                    ).format(route_id, time_str, len(cancelled), "\n".join("- " + n for n in names))
+                    ).format(route_id, time_str, earnings_block, len(cancelled), "\n".join("- " + n for n in names))
                 else:
-                    msg = "Ruta #{} completada.{}".format(route_id, time_str)
+                    msg = "Ruta #{} completada.{}\n\n{}".format(route_id, time_str, earnings_block)
                 context.bot.send_message(chat_id=courier_user["telegram_id"], text=msg)
         except Exception as e:
             logger.warning("No se pudo notificar completion al courier en ruta %s: %s", route_id, e)

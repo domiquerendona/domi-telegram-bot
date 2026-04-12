@@ -280,7 +280,7 @@ from services import (
     get_all_pending_fee_collections,
     get_expiring_ally_subscriptions,
 )
-from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback, _get_order_visible_pickup_line, _get_order_visible_dropoff_line, _get_route_visible_pickup_line, _get_route_stop_visible_line
+from order_delivery import publish_order_to_couriers, order_courier_callback, ally_active_orders, ally_orders_history_callback, admin_orders_panel, admin_orders_callback, publish_route_to_couriers, handle_route_callback, handle_rating_callback, check_courier_arrival_at_pickup, repost_order_to_couriers, recover_scheduled_jobs, recover_active_offer_dispatches, admin_special_orders_history_callback, _get_order_visible_pickup_line, _get_order_visible_dropoff_line, _get_route_visible_pickup_line, _get_route_stop_visible_line, build_courier_order_earnings_text, build_courier_route_earnings_text
 from db import (
     init_db,
     force_platform_admin,
@@ -1260,7 +1260,6 @@ def courier_pedidos_en_curso(update, context):
         order_stage_line = get_courier_active_order_stage_line(active_order)
         pickup_address = _get_order_visible_pickup_line(active_order) or "Ubicacion pendiente de detallar"
         destino_area = _get_order_visible_dropoff_line(active_order) or "Ubicacion pendiente de detallar"
-        total_fee = int((_row_value(active_order, "total_fee") or 0) or 0)
 
         header = "[{}/{}] ".format(idx + 1, len(active_orders)) if len(active_orders) > 1 else ""
         msg = (
@@ -1268,8 +1267,15 @@ def courier_pedidos_en_curso(update, context):
             "Estado: {}\n"
             "Recoge en: {}\n"
             "Destino: {}\n"
-            "Tarifa: ${:,}"
-        ).format(header, order_id, st, pickup_address, destino_area, total_fee)
+            "{}"
+        ).format(
+            header,
+            order_id,
+            st,
+            pickup_address,
+            destino_area,
+            build_courier_order_earnings_text(active_order),
+        )
 
         kb = []
         if order_status == "ACCEPTED":
@@ -1325,7 +1331,6 @@ def courier_pedidos_en_curso(update, context):
         )
         route_status = _row_value(active_route, "status")
         pickup_address = _get_route_visible_pickup_line(active_route) or "Ubicacion pendiente de detallar"
-        total_fee = int((_row_value(active_route, "total_fee") or 0) or 0)
 
         pending_stops = get_pending_route_stops(int(route_id)) if route_id != "-" else []
         next_seq = None
@@ -1344,9 +1349,16 @@ def courier_pedidos_en_curso(update, context):
             "Ruta #{}\n"
             "Estado: {}\n"
             "Recoge en: {}\n"
-            "Pago: ${:,}\n"
+            "{}\n"
             "Paradas: {}/{} completadas"
-        ).format(route_id, st, pickup_address, total_fee, completed_stops, total_stops)
+        ).format(
+            route_id,
+            st,
+            pickup_address,
+            build_courier_route_earnings_text(active_route),
+            completed_stops,
+            total_stops,
+        )
 
         if next_stop:
             stop_name = _row_value(next_stop, "customer_name") or "Sin nombre"

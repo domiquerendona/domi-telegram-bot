@@ -4,6 +4,12 @@ import tempfile
 import types
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = REPO_ROOT / "Backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 telegram_stub = types.ModuleType("telegram")
 
@@ -31,16 +37,24 @@ class _DummyQuery:
     def __init__(self):
         self.messages = []
 
-    def edit_message_text(self, text):
+    def edit_message_text(self, text, reply_markup=None):
         self.messages.append(text)
 
 
 class _DummyBot:
     def __init__(self):
         self.messages = []
+        self.locations = []
 
-    def send_message(self, chat_id, text):
-        self.messages.append({"chat_id": chat_id, "text": text})
+    def send_message(self, chat_id, text, **kwargs):
+        payload = {"chat_id": chat_id, "text": text}
+        payload.update(kwargs)
+        self.messages.append(payload)
+
+    def send_location(self, chat_id, latitude, longitude, **kwargs):
+        payload = {"chat_id": chat_id, "latitude": latitude, "longitude": longitude}
+        payload.update(kwargs)
+        self.locations.append(payload)
 
 
 class _DummyUpdate:
@@ -162,7 +176,17 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def _create_order(self, status="PICKED_UP", ally_id=None, creator_admin_id=None):
+    def _create_order(
+        self,
+        status="PICKED_UP",
+        ally_id=None,
+        creator_admin_id=None,
+        total_fee=5000,
+        additional_incentive=0,
+        parking_fee=0,
+        requires_cash=False,
+        cash_required_amount=0,
+    ):
         order_id = db.create_order(
             ally_id=ally_id,
             creator_admin_id=creator_admin_id,
@@ -171,7 +195,11 @@ class OrderDeliveryFeeTests(unittest.TestCase):
             customer_address="Calle 1",
             customer_city="Pereira",
             customer_barrio="Centro",
-            total_fee=5000,
+            total_fee=total_fee,
+            additional_incentive=additional_incentive,
+            parking_fee=parking_fee,
+            requires_cash=requires_cash,
+            cash_required_amount=cash_required_amount,
             pickup_lat=4.81333,
             pickup_lng=-75.69611,
             dropoff_lat=4.82000,
@@ -272,6 +300,8 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         self.assertIsNotNone(settlement)
         self.assertEqual(self.local_admin_id, settlement["admin_id"])
         self.assertEqual(300, settlement["courier_fee_charged"])
+        self.assertIn("Pago total del pedido: $5,000", update.callback_query.messages[-1])
+        self.assertIn("Neto del servicio: $4,700", update.callback_query.messages[-1])
         self.assertIn("Se descontaron $300", update.callback_query.messages[-1])
 
     def test_delivery_retry_does_not_duplicate_courier_charge(self):
@@ -361,7 +391,92 @@ class OrderDeliveryFeeTests(unittest.TestCase):
         self.assertEqual(1, len(context.bot.messages))
         self.assertEqual(940002, context.bot.messages[0]["chat_id"])
         self.assertIn("Pedido #{}".format(order_id), context.bot.messages[0]["text"])
+        self.assertIn("Valor del servicio: $5,000", context.bot.messages[0]["text"])
         warning_mock.assert_not_called()
+
+    def test_notify_courier_pickup_approved_keeps_order_total_visible(self):
+        order_id = self._create_order(
+            status="PICKED_UP",
+            ally_id=self.ally_id,
+            total_fee=7300,
+            additional_incentive=1200,
+            parking_fee=600,
+        )
+        order = db.get_order_by_id(order_id)
+        context = _DummyContext()
+
+        order_delivery._notify_courier_pickup_approved(context, order)
+
+        self.assertEqual(1, len(context.bot.messages))
+        text = context.bot.messages[0]["text"]
+        self.assertIn("Pago total del pedido: $7,300", text)
+        self.assertIn("Incluye incentivo: +$1,200", text)
+        self.assertIn("Incluye parqueo dificil: +$600", text)
+        self.assertIn("Neto esperado: $7,000", text)
+        self.assertEqual(1, len(context.bot.locations))
+
+    def test_notify_ally_delivered_keeps_order_total_visible_without_parking(self):
+        order_id = self._create_order(status="PICKED_UP", ally_id=self.ally_id, total_fee=5400)
+        order = db.get_order_by_id(order_id)
+        context = _DummyContext()
+
+        order_delivery._notify_ally_delivered(context, order, {"tiempo_total": 600})
+
+        self.assertEqual(1, len(context.bot.messages))
+        self.assertIn("Valor del servicio: $5,400", context.bot.messages[0]["text"])
+
+    def test_route_notifications_keep_total_visible_during_delivery(self):
+        route_id = self._create_route()
+        db.add_route_incentive(route_id, 1700)
+        route = db.get_route_by_id(route_id)
+        stop = db.get_route_destinations(route_id)[0]
+        context = _DummyContext()
+
+        order_delivery._send_route_stop_to_courier(context, self.courier_telegram_id, route, stop)
+        order_delivery._notify_ally_route_delivered(context, route)
+
+        self.assertEqual(2, len(context.bot.messages))
+        self.assertIn("Pago total de la ruta: $6,500", context.bot.messages[0]["text"])
+        self.assertIn("Incluye incentivo: +$1,700", context.bot.messages[0]["text"])
+        self.assertIn("Neto esperado: $6,200", context.bot.messages[0]["text"])
+        self.assertIn("Valor de la ruta: $6,500", context.bot.messages[1]["text"])
+
+    def test_notify_order_creator_accepted_keeps_visible_value_for_ally_and_admin(self):
+        ally_order_id = self._create_order(status="ACCEPTED", ally_id=self.ally_id, total_fee=6800)
+        ally_order = db.get_order_by_id(ally_order_id)
+        context = _DummyContext()
+
+        order_delivery._notify_ally_order_accepted(context, ally_order, "Courier Fee")
+
+        self.assertEqual(1, len(context.bot.messages))
+        self.assertEqual(940003, context.bot.messages[0]["chat_id"])
+        self.assertIn("Valor del servicio: $6,800", context.bot.messages[0]["text"])
+
+        admin_order_id = self._create_order(
+            status="ACCEPTED",
+            ally_id=None,
+            creator_admin_id=self.local_admin_id,
+            total_fee=9100,
+        )
+        admin_order = db.get_order_by_id(admin_order_id)
+        context_admin = _DummyContext()
+
+        order_delivery._notify_ally_order_accepted(context_admin, admin_order, "Courier Fee")
+
+        self.assertEqual(1, len(context_admin.bot.messages))
+        self.assertEqual(940002, context_admin.bot.messages[0]["chat_id"])
+        self.assertIn("Valor del servicio: $9,100", context_admin.bot.messages[0]["text"])
+
+    def test_notify_route_creator_accepted_keeps_visible_value(self):
+        route_id = self._create_route()
+        route = db.get_route_by_id(route_id)
+        context = _DummyContext()
+
+        order_delivery._notify_ally_route_accepted(context, route, "Courier Fee")
+
+        self.assertEqual(1, len(context.bot.messages))
+        self.assertEqual(940003, context.bot.messages[0]["chat_id"])
+        self.assertIn("Valor de la ruta: $4,800", context.bot.messages[0]["text"])
 
     def test_publish_route_uses_cash_requirement_filter_when_route_requires_base(self):
         route_id = self._create_route(requires_cash=True, cash_required_amount=40000)

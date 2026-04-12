@@ -141,8 +141,19 @@ def _extract_namespace():
         "_mostrar_confirmacion_geocode": lambda *args, **kwargs: None,
         "get_fee_config": lambda: {"fee_service_total": 2500, "fee_platform_share": 2500},
         "create_order": lambda **kwargs: 901,
+        "get_order_by_id": lambda order_id: {
+            "id": order_id,
+            "total_fee": 8000,
+            "additional_incentive": 0,
+            "parking_fee": 0,
+            "requires_cash": False,
+            "cash_required_amount": 0,
+        },
         "publish_order_to_couriers": lambda *args, **kwargs: 4,
         "build_market_launch_status_text": lambda count: "Mercado: {}".format(count),
+        "build_order_price_summary_text": lambda order, label="Valor del servicio", include_base_required=True: (
+            "{}: ${:,}".format(label, int((order or {}).get("total_fee") or 0))
+        ),
         "get_admin_location_by_id": lambda loc_id, admin_id: None,
         "get_admin_customer_by_id": lambda customer_id, admin_id: {
             "id": customer_id,
@@ -643,6 +654,44 @@ class AdminSpecialOrderAddressTests(unittest.TestCase):
         self.assertEqual(44, upsert_calls[0]["customer_id"])
         self.assertEqual(4.80692, upsert_calls[0]["lat"])
         self.assertIn("se completo su geolocalizacion", query.edit_calls[-1]["text"])
+
+    def test_admin_confirm_success_message_keeps_visible_value_and_market_status(self):
+        namespace = _extract_namespace()
+        query = _DummyQuery("admin_pedido_confirmar")
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(
+            user_data={
+                "admin_ped_admin_id": 11,
+                "admin_ped_cust_name": "Daniela",
+                "admin_ped_cust_phone": "",
+                "admin_ped_cust_addr": "Calle 25 # 8-19 apto 302",
+                "admin_ped_dropoff_lat": 4.80692,
+                "admin_ped_dropoff_lng": -75.68057,
+                "admin_ped_dropoff_city": "Pereira",
+                "admin_ped_dropoff_barrio": "Cuba",
+                "admin_ped_pickup_addr": "Cra 10 # 20-30",
+                "admin_ped_pickup_lat": 4.81,
+                "admin_ped_pickup_lng": -75.67,
+                "admin_ped_pickup_city": "Pereira",
+                "admin_ped_pickup_barrio": "Centro",
+                "admin_ped_tarifa": 8000,
+                "admin_ped_incentivo": 0,
+                "admin_ped_parking_fee": 0,
+                "admin_ped_comision": 0,
+                "admin_ped_team_only": 0,
+                "admin_ped_distance_km": 2.5,
+                "admin_ped_quote_source": "admin",
+                "admin_ped_instruc": "",
+            }
+        )
+
+        state = namespace["admin_pedido_confirmar_callback"](update, context)
+
+        self.assertEqual(-1, state)
+        self.assertIn("Pedido especial publicado.", query.edit_calls[-1]["text"])
+        self.assertIn("Valor del servicio: $8,000", query.edit_calls[-1]["text"])
+        self.assertIn("Comision especial al courier: fee estandar", query.edit_calls[-1]["text"])
+        self.assertIn("Mercado: 4", query.edit_calls[-1]["text"])
 
     def test_pickup_detail_from_preview_returns_to_preview(self):
         namespace = _extract_namespace()

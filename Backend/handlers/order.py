@@ -49,6 +49,9 @@ from order_delivery import (
     publish_route_to_couriers,
     build_market_launch_status_text,
     build_courier_order_preview_text,
+    build_order_price_summary_text,
+    build_order_creation_summary_text,
+    build_route_creation_summary_text,
 )
 from services import (
     ensure_user, get_user_by_telegram_id, get_ally_by_user_id,
@@ -103,6 +106,13 @@ PEDIDO_BASE_CALLBACK_PATTERN = (
 PICKUP_PREVIEW_CONFIRM_CALLBACK = "pickup_preview_confirm"
 PICKUP_PREVIEW_CHANGE_CALLBACK = "pickup_preview_change"
 PICKUP_PREVIEW_CALLBACK_PATTERN = r"^pickup_preview_(confirm|change)$"
+
+
+def _append_success_followup(success_text, followup_text):
+    """Concatena un seguimiento corto sin perder el resumen principal del servicio."""
+    if not followup_text:
+        return success_text
+    return "{}\n\n{}".format(success_text, followup_text)
 
 
 def _order_city_hint(context):
@@ -5077,25 +5087,26 @@ def admin_pedido_confirmar_callback(update, context):
         )
     except Exception as e:
         logger.warning("admin_pedido_confirmar_callback publish: %s", e)
-    comision_str = " | Comision: ${:,}".format(comision) if comision > 0 else " | Comision: fee estandar"
+    price_block = build_order_price_summary_text(
+        get_order_by_id(order_id),
+        label="Valor del servicio",
+    )
+    comision_line = (
+        "Comision especial al courier: ${:,}".format(comision)
+        if comision > 0
+        else "Comision especial al courier: fee estandar"
+    )
     visibilidad_str = "Solo equipo propio" if team_only else "Todos los equipos"
     success_title = "Pedido especial publicado." if published_count >= 0 else "Pedido especial creado."
-    success_msg = (
-        "{}\n"
-        "ID: #{}\n"
-        "Tarifa: ${:,}{}\n"
-        "{}\n"
-        "Visibilidad: {}\n"
-        "{}".format(
-            success_title,
-            order_id,
-            total_fee,
-            " (+ ${:,} incentivo)".format(incentivo) if incentivo else "",
-            comision_str,
-            visibilidad_str,
-            build_market_launch_status_text(published_count),
-        )
-    )
+    success_lines = [
+        success_title,
+        "ID: #{}".format(order_id),
+        price_block or "Valor del servicio: ${:,}".format(total_fee),
+        comision_line,
+        "Visibilidad: {}".format(visibilidad_str),
+        build_market_launch_status_text(published_count),
+    ]
+    success_msg = "\n".join(line for line in success_lines if line)
     # Ofrecer guardar cliente/direccion cuando aplique y completar GPS si la direccion ya existia.
     cust_name = context.user_data.get("admin_ped_cust_name", "")
     cust_phone = context.user_data.get("admin_ped_cust_phone", "")
@@ -5367,7 +5378,7 @@ def admin_ped_tmpl_info_callback(update, context):
     lines = [
         "Plantilla: {}".format(tname),
         "Pickup: {}".format(pickup_addr or "no definido"),
-        "Tarifa: ${:,}".format(tarifa or 0),
+        "Valor configurado: ${:,}".format(tarifa or 0),
     ]
     if comision:
         lines.append("Comision al courier: ${:,}".format(comision))
@@ -5518,7 +5529,7 @@ def admin_pedido_tmpl_sel_callback(update, context):
     query.edit_message_text(
         'Plantilla "{}" cargada.\n'
         "Pickup: {}\n"
-        "Tarifa: ${:,}\n\n"
+        "Valor configurado: ${:,}\n\n"
         "Ahora ingresa el nombre del cliente:".format(
             tname,
             pickup_addr,
@@ -5691,6 +5702,7 @@ def pedido_guardar_cust_parking_callback(update, context):
     query.answer()
     address_id = context.user_data.pop("pedido_guardar_parking_address_id", None)
     customer_name = context.user_data.get("customer_name", "")
+    success_text = context.user_data.get("pedido_success_text", "Pedido creado exitosamente.")
     if address_id:
         if query.data == "pedido_guardar_cust_parking_si":
             set_address_parking_status(address_id, "ALLY_YES")
@@ -5698,8 +5710,12 @@ def pedido_guardar_cust_parking_callback(update, context):
             set_address_parking_status(address_id, "PENDING_REVIEW")
     context.user_data.clear()
     show_main_menu(
-        update, context,
-        "Pedido creado exitosamente.\nCliente '{}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.".format(customer_name)
+        update,
+        context,
+        _append_success_followup(
+            success_text,
+            "Cliente '{}' guardado para futuros pedidos.".format(customer_name),
+        ),
     )
     return ConversationHandler.END
 
@@ -6021,8 +6037,8 @@ def _pedido_confirmar_como_ruta(query, context):
             pass
 
     count = publish_route_to_couriers(route_id, ally_id, context, admin_id_override=admin_id_snapshot)
-    route_title = "Ruta #{} creada y publicada.".format(route_id) if count >= 0 else "Ruta #{} creada.".format(route_id)
-    msg = "{}\n{}".format(route_title, build_market_launch_status_text(count))
+    route_row = get_route_by_id(route_id)
+    msg = build_route_creation_summary_text(route_row, build_market_launch_status_text(count))
 
     query.edit_message_text(msg)
     context.user_data.clear()
@@ -6271,6 +6287,8 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
         dropoff_barrio=customer_barrio,
     )
     market_status_text = build_market_launch_status_text(published_count)
+    success_text = build_order_creation_summary_text(order_preview_row, market_status_text)
+    context.user_data["pedido_success_text"] = success_text
 
     try:
         context.bot.send_message(
@@ -6288,8 +6306,7 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
 
     if should_offer_save_customer:
         query.edit_message_text(
-            "Pedido #{} creado exitosamente.\n\n{}\n\n".format(order_id, market_status_text)
-            + "Quieres guardar este cliente para futuros pedidos?",
+            _append_success_followup(success_text, "Quieres guardar este cliente para futuros pedidos?"),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Si, guardar cliente", callback_data="pedido_guardar_si")],
                 [InlineKeyboardButton("No, solo este pedido", callback_data="pedido_guardar_no")],
@@ -6312,14 +6329,11 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
             context.user_data["guardar_dir_existing_cust_id"] = existing_customer["id"]
 
     if existing_customer and has_valid_coords(dropoff_lat, dropoff_lng) and not addr_already_saved:
-        success_text = (
-            "Pedido #{} creado exitosamente.\n{}\n\n".format(order_id, market_status_text)
-            + "Deseas agregar esta direccion a la agenda de {}?".format(
-                existing_customer["name"] or "este cliente"
-            )
+        save_prompt = "Deseas agregar esta direccion a la agenda de {}?".format(
+            existing_customer["name"] or "este cliente"
         )
         query.edit_message_text(
-            success_text,
+            _append_success_followup(success_text, save_prompt),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Si, agregar", callback_data="pedido_guardar_dir_si")],
                 [InlineKeyboardButton("No", callback_data="pedido_guardar_dir_no")],
@@ -6334,7 +6348,7 @@ def _handle_post_order_ui(query, update, context, order_id, ally_id, published_c
     context.user_data.clear()
     show_main_menu(
         update, context,
-        "Pedido #{} creado exitosamente.\n{}".format(order_id, market_status_text),
+        success_text,
     )
     return ConversationHandler.END
 
@@ -6462,6 +6476,7 @@ def pedido_guardar_cliente_callback(update, context):
     query = update.callback_query
     query.answer()
     data = query.data
+    success_text = context.user_data.get("pedido_success_text", "Pedido creado exitosamente.")
 
     if data == "pedido_guardar_si":
         ally_id = context.user_data.get("active_ally_id")
@@ -6506,24 +6521,40 @@ def pedido_guardar_cliente_callback(update, context):
                     [InlineKeyboardButton("No / No lo se", callback_data="pedido_guardar_cust_parking_no")],
                 ]
                 query.edit_message_text(
-                    "Cliente '{}' guardado.\n\n"
-                    "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
-                    "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(customer_name),
+                    _append_success_followup(
+                        success_text,
+                        "Cliente '{}' guardado.\n\n"
+                        "En ese punto de entrega hay dificultad para parquear moto o bicicleta?\n"
+                        "(zona restringida, riesgo de comparendo o sin lugar seguro para dejar el vehiculo)".format(
+                            customer_name
+                        ),
+                    ),
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
                 return PEDIDO_GUARDAR_CUST_PARKING
             else:
                 context.user_data.clear()
-                show_main_menu(update, context, "Pedido creado exitosamente.\nCliente '{}' guardado para futuros pedidos.\nPronto un repartidor sera asignado.".format(customer_name))
+                show_main_menu(
+                    update,
+                    context,
+                    _append_success_followup(
+                        success_text,
+                        "Cliente '{}' guardado para futuros pedidos.".format(customer_name),
+                    ),
+                )
                 return ConversationHandler.END
         except Exception as e:
             context.user_data.clear()
-            show_main_menu(update, context, "Pedido creado exitosamente.\nError al guardar cliente: {}\nPronto un repartidor sera asignado.".format(str(e)))
+            show_main_menu(
+                update,
+                context,
+                _append_success_followup(success_text, "Error al guardar cliente: {}".format(str(e))),
+            )
             return ConversationHandler.END
 
     elif data == "pedido_guardar_no":
         context.user_data.clear()
-        show_main_menu(update, context, "Pedido creado exitosamente.\nPronto un repartidor sera asignado.")
+        show_main_menu(update, context, success_text)
         return ConversationHandler.END
 
     return PEDIDO_GUARDAR_CLIENTE
@@ -6569,6 +6600,7 @@ def pedido_guardar_dir_existente_callback(update, context):
     """Ofrece agregar nueva direccion a cliente ya existente tras crear pedido."""
     query = update.callback_query
     query.answer()
+    success_text = context.user_data.get("pedido_success_text", "Pedido creado exitosamente.")
     if query.data == "pedido_guardar_dir_si":
         cust_id = context.user_data.get("guardar_dir_existing_cust_id")
         address = context.user_data.get("customer_address", "")
@@ -6588,15 +6620,29 @@ def pedido_guardar_dir_existente_callback(update, context):
                 lng=lng,
             )
             if save_result["action"] == "created":
-                query.edit_message_text("Direccion guardada en la agenda del cliente.")
+                query.edit_message_text(
+                    _append_success_followup(success_text, "Direccion guardada en la agenda del cliente.")
+                )
             elif save_result["action"] == "coords_updated":
-                query.edit_message_text("La direccion ya existia y se completo su geolocalizacion.")
+                query.edit_message_text(
+                    _append_success_followup(
+                        success_text,
+                        "La direccion ya existia y se completo su geolocalizacion.",
+                    )
+                )
             else:
-                query.edit_message_text("La direccion ya estaba guardada en la agenda del cliente.")
+                query.edit_message_text(
+                    _append_success_followup(
+                        success_text,
+                        "La direccion ya estaba guardada en la agenda del cliente.",
+                    )
+                )
         except Exception as e:
-            query.edit_message_text("No se pudo guardar la direccion: {}".format(e))
+            query.edit_message_text(
+                _append_success_followup(success_text, "No se pudo guardar la direccion: {}".format(e))
+            )
     else:
-        query.edit_message_text("OK, no se guardo la direccion.")
+        query.edit_message_text(_append_success_followup(success_text, "OK, no se guardo la direccion."))
     context.user_data.clear()
     show_main_menu(update, context)
     return ConversationHandler.END

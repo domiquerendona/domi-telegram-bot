@@ -96,11 +96,13 @@ from services import (
     PARKING_FEE_AMOUNT,
     get_ally_parking_fee_enabled,
     build_offer_demand_preview,
+    get_route_by_id,
 )
 from order_delivery import (
     publish_route_to_couriers,
     build_market_launch_status_text,
     build_courier_route_preview_text,
+    build_route_creation_summary_text,
 )
 
 
@@ -1286,12 +1288,8 @@ def ruta_confirmacion_callback(update, context):
         context.user_data.clear()
         show_main_menu(update, context)
         return ConversationHandler.END
-    if count > 0:
-        base_msg = "Ruta #{} creada exitosamente.\n{}".format(route_id, build_market_launch_status_text(count))
-    elif count < 0:
-        base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
-    else:
-        base_msg = "Ruta #{} creada.\n{}".format(route_id, build_market_launch_status_text(count))
+    route_row = get_route_by_id(route_id)
+    base_msg = build_route_creation_summary_text(route_row, build_market_launch_status_text(count))
     query.edit_message_text(base_msg)
     context.user_data.clear()
     show_main_menu(update, context)
