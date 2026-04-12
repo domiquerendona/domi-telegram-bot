@@ -786,6 +786,48 @@ Trabajar solo en el objetivo indicado
 
 Mostrar evidencia si ejecuta comandos
 
+8B. Reglas específicas para Gemini (y cualquier agente externo nuevo)
+
+INCIDENTE DOCUMENTADO — 2026-04-12:
+Gemini realizó un "refactor de seguridad" no solicitado que borró ~6.200 líneas de código crítico
+en dos archivos clave: Backend/services.py (4.540 → 188 líneas) y Backend/handlers/registration.py
+(2.245 → 229 líneas). Luego hizo 5 commits intentando reparar el daño sin lograrlo.
+Claude tuvo que revertir con `git revert` al commit 01cb0da. Commit de revert: 8c07583.
+
+REGLAS PERMANENTES para Gemini (y cualquier agente que no sea Claude o Codex):
+
+PROHIBIDO hacer refactors, "mejoras de seguridad" o reestructuraciones de código sin
+  instrucción EXPLÍCITA de Luis Felipe que diga exactamente qué cambiar y en qué archivo.
+
+PROHIBIDO borrar más de 20 líneas de código en un solo commit sin mostrar primero el
+  bloque exacto que se va a eliminar y recibir aprobación explícita.
+
+PROHIBIDO modificar Backend/services.py, Backend/db.py, Backend/main.py,
+  Backend/order_delivery.py o cualquier archivo de handlers/ sin una instrucción
+  específica que nombre el archivo y la función objetivo.
+
+PROHIBIDO crear archivos nuevos (docs/, .vscode/, scripts/) sin instrucción explícita.
+
+PROHIBIDO hacer más de 1 commit por tarea. Si una tarea requiere más de un commit,
+  pausar y reportar a Luis Felipe antes de continuar.
+
+Todo commit de Gemini DEBE usar el prefijo: [gemini] feat/fix/docs: ...
+  Sin este prefijo, el commit se considera no autorizado.
+
+Gemini DEBE registrar su sesión en WORKLOG.md antes de tocar cualquier archivo,
+  igual que Claude y Codex (ver sección 15A).
+
+Si Gemini detecta un problema en el código que no fue parte de su tarea asignada:
+  PROHIBIDO corregirlo directamente.
+  Obligatorio: reportar a Luis Felipe con archivo, función y descripción del problema.
+  Esperar instrucción explícita antes de actuar.
+
+Señal de alarma — si un commit de Gemini tiene:
+  - Más de 100 líneas eliminadas
+  - Palabras como "refactor", "seguridad", "robustecimiento", "importer" en el mensaje
+  - Archivos críticos (services.py, db.py, main.py, handlers/) modificados sin tarea previa
+  → REVERTIR inmediatamente y consultar a Luis Felipe.
+
 9. Reglas del sistema de recargas (CRÍTICAS)
 
 El sistema de recargas transfiere saldo del Admin hacia Repartidores/Aliados. Es el componente financiero más crítico del sistema.
@@ -1412,10 +1454,10 @@ Error corregido (2026-03-26):
     no bajo el admin_id de plataforma. Esto preserva la asignacion de equipo correcta.
 
 
-15. Colaboración entre agentes IA (Claude Code y Codex)
+15. Colaboración entre agentes IA (Claude Code, Codex, Gemini y otros)
 
-Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code y Codex.
-En ocasiones ambos agentes trabajan al mismo tiempo sobre la misma rama (staging).
+Luis Felipe trabaja en VS Code con múltiples agentes activos simultáneamente: Claude Code, Codex y ocasionalmente Gemini u otros.
+En ocasiones varios agentes trabajan al mismo tiempo sobre la misma rama (staging).
 Estas reglas garantizan la armonia del codigo y que ningun agente deshaga el trabajo del otro.
 
 15A. Registro obligatorio — WORKLOG.md

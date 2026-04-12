@@ -1,6 +1,6 @@
 # WORKLOG — Registro de Sesiones de Agentes IA
 
-> Archivo mantenido por **Claude Code** y **Codex**.
+> Archivo mantenido por **Claude Code**, **Codex** y **Gemini**.
 > Actualizar al INICIO y al FIN de cada sesión de trabajo.
 > Reglas completas: AGENTS.md Sección 15.
 
@@ -18,6 +18,8 @@
 
 | Fecha | Agente | Archivos tocados | Tarea | Estado |
 |-------|--------|------------------|-------|--------|
+| 2026-04-12 | claude | AGENTS.md, WORKLOG.md | Revert daño Gemini (6 commits, ~6.200 líneas borradas) + documentar reglas 8B en AGENTS.md | COMPLETADO |
+| 2026-04-12 | gemini | Backend/services.py, Backend/handlers/registration.py, Backend/handlers/common.py, CLAUDE.md, .vscode/mcp.json, docs/security_checklist.md | ⚠️ INCIDENTE: "refactor de seguridad" no solicitado — destruyó services.py (4540→188 líneas) y registration.py (2245→229 líneas). Commits: 42d27fd..8233618. Revertido por Claude en 8c07583. Ver AGENTS.md sección 8B. | REVERTIDO |
 | 2026-04-09 | codex | AGENTS.md, CLAUDE.md, WORKLOG.md, docs/callback_governance_2026-03-12.md, Backend/main.py, Backend/services.py, Backend/order_delivery.py, Backend/handlers/order.py, Backend/handlers/recharges.py, Backend/handlers/customer_agenda.py, Backend/handlers/location_agenda.py, tests/test_admin_special_order_addresses.py, tests/test_callback_routing.py | Panel admin determinístico: callbacks con admin_id explícito para saldo/movimientos/clientes/direcciones/plantillas/historial, retiro desde Sociedad con retorno guiado al pedido especial y validación transversal de ownership | COMPLETADO |
 | 2026-04-09 | codex | AGENTS.md, CLAUDE.md, WORKLOG.md, docs/callback_governance_2026-03-12.md, Backend/main.py, Backend/handlers/order.py, tests/test_admin_special_order_addresses.py, tests/test_callback_routing.py | Pedido especial admin: actor explícito en callback, validación determinística de admin_id, bloqueo profesional con CTA a Sociedad y documentación de saldo personal vs Sociedad | COMPLETADO |
 | 2026-04-09 | codex | WORKLOG.md, Backend/handlers/ally_bandeja.py | Cierre de brecha final: bandeja del aliado deja de usar preview/creacion duplicados y depende del flujo unificado que pregunta base requerida | COMPLETADO |
