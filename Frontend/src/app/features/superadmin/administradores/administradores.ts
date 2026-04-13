@@ -56,14 +56,27 @@ interface Courier {
       <!-- ===== VISTA: ADMINS BOT ===== -->
       <ng-container *ngIf="vista() === 'bot'">
 
-        <div class="filtros">
-          <button
-            *ngFor="let f of filtroOpciones"
-            [class.activo]="filtroActivo() === f.valor"
-            (click)="filtroActivo.set(f.valor)">
-            {{ f.label }}
-          </button>
-          <span class="total">{{ filtrados().length }} registros</span>
+        <div class="controles-bot">
+          <div class="filtros">
+            <button
+              *ngFor="let f of filtroOpciones"
+              [class.activo]="filtroActivo() === f.valor"
+              (click)="setFiltroBot(f.valor)">
+              {{ f.label }}
+            </button>
+            <span class="total">{{ filtrados().length }} registros</span>
+          </div>
+          <div class="buscador">
+            <span class="material-icons icono-buscar">search</span>
+            <input
+              type="text"
+              [(ngModel)]="busquedaBot"
+              placeholder="Buscar por nombre, teléfono o ciudad..."
+              class="input-buscar" />
+            <button *ngIf="busquedaBot" class="btn-limpiar" (click)="busquedaBot = ''">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
         </div>
 
         <div class="estado" *ngIf="cargando()">Cargando...</div>
@@ -104,7 +117,9 @@ interface Courier {
                 </td>
               </tr>
               <tr *ngIf="filtrados().length === 0">
-                <td colspan="6" class="vacio">No hay administradores en este estado.</td>
+                <td colspan="6" class="vacio">
+                  {{ busquedaBot ? 'Sin resultados para "' + busquedaBot + '"' : 'No hay administradores en este estado.' }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -271,14 +286,29 @@ interface Courier {
 
     .tabs button:hover:not(.activo) { color: #374151; }
 
+    /* Controles Bot (filtros + buscador) */
+    .controles-bot {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
     /* Filtros */
     .filtros {
       display: flex;
       gap: 8px;
-      margin-bottom: 20px;
       flex-wrap: wrap;
       align-items: center;
     }
+
+    .buscador { position: relative; display: flex; align-items: center; max-width: 440px; }
+    .icono-buscar { position: absolute; left: 10px; font-size: 18px; color: #9ca3af; }
+    .input-buscar { width: 100%; padding: 8px 36px 8px 36px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; transition: border-color .15s; background: white; }
+    .input-buscar:focus { border-color: #4338ca; }
+    .btn-limpiar { position: absolute; right: 6px; background: none; border: none; cursor: pointer; color: #9ca3af; display: flex; align-items: center; padding: 2px; }
+    .btn-limpiar:hover { color: #374151; }
+    .btn-limpiar .material-icons { font-size: 16px; }
 
     .filtros button {
       padding: 6px 16px;
@@ -477,6 +507,9 @@ export class AdministradoresComponent implements OnInit {
   // Vista activa
   vista = signal<'bot' | 'panel'>('bot');
 
+  // Búsqueda en Bot admins
+  busquedaBot = '';
+
   // Formulario crear
   creandoVisible = signal(false);
   creando = signal(false);
@@ -508,6 +541,7 @@ export class AdministradoresComponent implements OnInit {
 
   cambiarVista(v: 'bot' | 'panel') {
     this.vista.set(v);
+    this.busquedaBot = '';
     if (v === 'panel') {
       if (this.webUsers().length === 0 && !this.cargandoPanel()) this.cargarPanel();
       if (this.couriers().length === 0) this.cargarCouriers();
@@ -528,10 +562,25 @@ export class AdministradoresComponent implements OnInit {
     });
   }
 
+  setFiltroBot(valor: string) {
+    this.filtroActivo.set(valor);
+    this.busquedaBot = '';
+  }
+
   filtrados() {
     const f = this.filtroActivo();
-    if (f === 'TODOS') return this.admins();
-    return this.admins().filter(a => a.status === f);
+    const q = this.busquedaBot.toLowerCase().trim();
+    let lista = f === 'TODOS' ? this.admins() : this.admins().filter(a => a.status === f);
+    if (q) {
+      lista = lista.filter(a =>
+        (a.full_name ?? '').toLowerCase().includes(q) ||
+        (a.phone ?? '').includes(q) ||
+        (a.city ?? '').toLowerCase().includes(q) ||
+        (a.barrio ?? '').toLowerCase().includes(q) ||
+        (a.team_name ?? '').toLowerCase().includes(q)
+      );
+    }
+    return lista;
   }
 
   etiquetaEstado(status: string): string {

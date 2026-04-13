@@ -1,9 +1,11 @@
 import { Component, OnInit, OnDestroy, signal, inject } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
 import { ConfirmService } from '../../../core/services/confirm.service';
+import { fmtFecha, fmtRelativo } from '../../../core/utils/fecha';
 
 interface Order {
   id: number;
@@ -25,22 +27,38 @@ interface Order {
 @Component({
   selector: 'app-orders',
   standalone: true,
-  imports: [NgFor, NgIf, NgClass],
+  imports: [NgFor, NgIf, NgClass, FormsModule],
   template: `
     <div class="page">
       <div class="page-header">
         <h1>Pedidos</h1>
-        <span class="total">{{ orders().length }} registros</span>
+        <span class="total">{{ filtrados().length }} registros</span>
         <span class="auto-badge" *ngIf="filtroActivo() === 'ACTIVE'">↻ auto</span>
-        <button class="btn-refresh" (click)="cargar(filtroActivo())">↻ Actualizar</button>
+        <span class="ultima-act" *ngIf="ultimaActualizacion()">{{ tiempoDesde() }}</span>
+        <button class="btn-refresh" (click)="recargarManual()">
+          <span class="material-icons">refresh</span> Actualizar
+        </button>
       </div>
 
-      <div class="filtros">
-        <button *ngFor="let f of filtroOpciones"
-          [class.activo]="filtroActivo() === f.valor"
-          (click)="setFiltro(f.valor)">
-          {{ f.label }}
-        </button>
+      <div class="controles">
+        <div class="filtros">
+          <button *ngFor="let f of filtroOpciones"
+            [class.activo]="filtroActivo() === f.valor"
+            (click)="setFiltro(f.valor)">
+            {{ f.label }}
+          </button>
+        </div>
+        <div class="buscador">
+          <span class="material-icons icono-buscar">search</span>
+          <input
+            type="text"
+            [(ngModel)]="busqueda"
+            placeholder="Buscar por cliente, teléfono, aliado o #ID..."
+            class="input-buscar" />
+          <button *ngIf="busqueda" class="btn-limpiar" (click)="busqueda = ''">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
       </div>
 
       <div class="estado" *ngIf="cargando()">Cargando...</div>
@@ -62,7 +80,7 @@ interface Order {
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let o of orders()">
+            <tr *ngFor="let o of filtrados()">
               <td class="id-cell">#{{ o.id }}</td>
               <td>
                 <div class="nombre">{{ o.customer_name }}</div>
@@ -84,13 +102,15 @@ interface Order {
               <td>
                 <span class="badge" [ngClass]="o.status.toLowerCase()">{{ etiqueta(o.status) }}</span>
               </td>
-              <td class="fecha">{{ formatDate(o.created_at) }}</td>
+              <td class="fecha">{{ fmtFecha(o.created_at) }}</td>
               <td>
                 <button *ngIf="cancelable(o.status)" class="btn-cancel" (click)="cancelar(o)">Cancelar</button>
               </td>
             </tr>
-            <tr *ngIf="orders().length === 0">
-              <td colspan="9" class="vacio">No hay pedidos en este estado.</td>
+            <tr *ngIf="filtrados().length === 0">
+              <td colspan="9" class="vacio">
+                {{ busqueda ? 'Sin resultados para "' + busqueda + '"' : 'No hay pedidos en este estado.' }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -99,17 +119,29 @@ interface Order {
   `,
   styles: [`
     .page { padding: 24px; }
-    .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
     h1 { font-size: 24px; font-weight: 700; margin: 0; }
     .total { font-size: 14px; color: #6b7280; }
     .auto-badge { font-size: 11px; color: #10b981; font-weight: 600; background: #d1fae5; padding: 2px 8px; border-radius: 10px; }
-    .btn-refresh { margin-left: auto; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; }
+    .ultima-act { font-size: 12px; color: #9ca3af; }
+    .btn-refresh { margin-left: auto; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; display: flex; align-items: center; gap: 4px; }
     .btn-refresh:hover { border-color: #4338ca; color: #4338ca; }
+    .btn-refresh .material-icons { font-size: 16px; }
 
-    .filtros { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .controles { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+
+    .filtros { display: flex; gap: 8px; flex-wrap: wrap; }
     .filtros button { padding: 6px 16px; border-radius: 20px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; transition: all 0.15s; }
     .filtros button:hover { border-color: #4338ca; color: #4338ca; }
     .filtros button.activo { background: #4338ca; color: white; border-color: #4338ca; }
+
+    .buscador { position: relative; display: flex; align-items: center; max-width: 440px; }
+    .icono-buscar { position: absolute; left: 10px; font-size: 18px; color: #9ca3af; }
+    .input-buscar { width: 100%; padding: 8px 36px 8px 36px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; transition: border-color .15s; background: white; }
+    .input-buscar:focus { border-color: #4338ca; }
+    .btn-limpiar { position: absolute; right: 6px; background: none; border: none; cursor: pointer; color: #9ca3af; display: flex; align-items: center; padding: 2px; }
+    .btn-limpiar:hover { color: #374151; }
+    .btn-limpiar .material-icons { font-size: 16px; }
 
     .tabla-wrapper { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 900px; }
@@ -140,16 +172,20 @@ interface Order {
   `]
 })
 export class OrdersComponent implements OnInit, OnDestroy {
-  orders = signal<Order[]>([]);
-  cargando = signal(true);
-  error = signal('');
-  filtroActivo = signal('ACTIVE');
+  orders              = signal<Order[]>([]);
+  cargando            = signal(true);
+  error               = signal('');
+  filtroActivo        = signal('ACTIVE');
+  ultimaActualizacion = signal<Date | null>(null);
+  tiempoDesde         = signal('');
+  busqueda            = '';
 
-  private intervalo: any = null;
+  private intervaloRefresh: any = null;
+  private intervaloRelativo: any = null;
 
   filtroOpciones = [
-    { label: 'Activos', valor: 'ACTIVE' },
-    { label: 'Todos', valor: 'TODOS' },
+    { label: 'Activos',    valor: 'ACTIVE' },
+    { label: 'Todos',      valor: 'TODOS' },
     { label: 'Entregados', valor: 'DELIVERED' },
     { label: 'Cancelados', valor: 'CANCELLED' },
   ];
@@ -160,18 +196,28 @@ export class OrdersComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.cargar('ACTIVE');
-    this.intervalo = setInterval(() => {
+    this.intervaloRefresh = setInterval(() => {
       if (this.filtroActivo() === 'ACTIVE') this.cargar('ACTIVE');
     }, 30000);
+    this.intervaloRelativo = setInterval(() => {
+      const u = this.ultimaActualizacion();
+      if (u) this.tiempoDesde.set(fmtRelativo(u));
+    }, 5000);
   }
 
   ngOnDestroy() {
-    if (this.intervalo) clearInterval(this.intervalo);
+    if (this.intervaloRefresh)   clearInterval(this.intervaloRefresh);
+    if (this.intervaloRelativo)  clearInterval(this.intervaloRelativo);
   }
 
   setFiltro(valor: string) {
     this.filtroActivo.set(valor);
+    this.busqueda = '';
     this.cargar(valor);
+  }
+
+  recargarManual() {
+    this.cargar(this.filtroActivo());
   }
 
   cargar(filtro: string) {
@@ -179,9 +225,27 @@ export class OrdersComponent implements OnInit, OnDestroy {
     this.error.set('');
     const params = filtro !== 'TODOS' ? `?status=${filtro}` : '';
     this.http.get<Order[]>(`${environment.apiBaseUrl}/admin/orders${params}`).subscribe({
-      next: (data) => { this.orders.set(data); this.cargando.set(false); },
+      next: (data) => {
+        this.orders.set(data);
+        this.cargando.set(false);
+        const ahora = new Date();
+        this.ultimaActualizacion.set(ahora);
+        this.tiempoDesde.set(fmtRelativo(ahora));
+      },
       error: () => { this.error.set('No se pudo conectar con el servidor.'); this.cargando.set(false); }
     });
+  }
+
+  filtrados() {
+    const q = this.busqueda.toLowerCase().trim();
+    if (!q) return this.orders();
+    return this.orders().filter(o =>
+      (o.customer_name ?? '').toLowerCase().includes(q) ||
+      (o.customer_phone ?? '').includes(q) ||
+      (o.ally_name ?? '').toLowerCase().includes(q) ||
+      (o.courier_name ?? '').toLowerCase().includes(q) ||
+      String(o.id).includes(q)
+    );
   }
 
   cancelable(status: string) {
@@ -210,8 +274,5 @@ export class OrdersComponent implements OnInit, OnDestroy {
     return val.toLocaleString('es-CO');
   }
 
-  formatDate(dt: string) {
-    if (!dt) return '—';
-    return dt.slice(0, 16).replace('T', ' ');
-  }
+  fmtFecha = fmtFecha;
 }

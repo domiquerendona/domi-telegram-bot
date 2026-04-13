@@ -1,5 +1,6 @@
 import { Component, OnInit, signal, inject } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
@@ -20,7 +21,7 @@ interface Courier {
 @Component({
   selector: 'app-repartidores',
   standalone: true,
-  imports: [NgFor, NgIf, NgClass],
+  imports: [NgFor, NgIf, NgClass, FormsModule],
   template: `
     <div class="page">
       <div class="page-header">
@@ -28,12 +29,25 @@ interface Courier {
         <span class="total">{{ filtrados().length }} registros</span>
       </div>
 
-      <div class="filtros">
-        <button *ngFor="let f of filtroOpciones"
-          [class.activo]="filtroActivo() === f.valor"
-          (click)="filtroActivo.set(f.valor)">
-          {{ f.label }}
-        </button>
+      <div class="controles">
+        <div class="filtros">
+          <button *ngFor="let f of filtroOpciones"
+            [class.activo]="filtroActivo() === f.valor"
+            (click)="setFiltro(f.valor)">
+            {{ f.label }}
+          </button>
+        </div>
+        <div class="buscador">
+          <span class="material-icons icono-buscar">search</span>
+          <input
+            type="text"
+            [(ngModel)]="busqueda"
+            placeholder="Buscar por nombre, teléfono o ciudad..."
+            class="input-buscar" />
+          <button *ngIf="busqueda" class="btn-limpiar" (click)="busqueda = ''">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
       </div>
 
       <div class="estado" *ngIf="cargando()">Cargando...</div>
@@ -58,7 +72,7 @@ interface Courier {
                 <div class="sub">CC {{ c.id_number }}</div>
               </td>
               <td>{{ c.phone }}</td>
-              <td>{{ c.city }}, {{ c.barrio }}</td>
+              <td>{{ c.city }}<span *ngIf="c.barrio">, {{ c.barrio }}</span></td>
               <td>
                 <span *ngIf="c.plate">{{ c.plate }}</span>
                 <span *ngIf="c.bike_type" class="sub"> · {{ c.bike_type }}</span>
@@ -78,7 +92,9 @@ interface Courier {
               </td>
             </tr>
             <tr *ngIf="filtrados().length === 0">
-              <td colspan="6" class="vacio">No hay repartidores en este estado.</td>
+              <td colspan="6" class="vacio">
+                {{ busqueda ? 'Sin resultados para "' + busqueda + '"' : 'No hay repartidores en este estado.' }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -87,13 +103,25 @@ interface Courier {
   `,
   styles: [`
     .page { padding: 24px; }
-    .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+    .page-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
     h1 { font-size: 24px; font-weight: 700; margin: 0; }
     .total { font-size: 14px; color: #6b7280; }
-    .filtros { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+
+    .controles { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+
+    .filtros { display: flex; gap: 8px; flex-wrap: wrap; }
     .filtros button { padding: 6px 16px; border-radius: 20px; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 13px; color: #374151; transition: all 0.15s; }
     .filtros button:hover { border-color: #4338ca; color: #4338ca; }
     .filtros button.activo { background: #4338ca; color: white; border-color: #4338ca; }
+
+    .buscador { position: relative; display: flex; align-items: center; max-width: 400px; }
+    .icono-buscar { position: absolute; left: 10px; font-size: 18px; color: #9ca3af; }
+    .input-buscar { width: 100%; padding: 8px 36px 8px 36px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; transition: border-color .15s; background: white; }
+    .input-buscar:focus { border-color: #4338ca; }
+    .btn-limpiar { position: absolute; right: 6px; background: none; border: none; cursor: pointer; color: #9ca3af; display: flex; align-items: center; padding: 2px; }
+    .btn-limpiar:hover { color: #374151; }
+    .btn-limpiar .material-icons { font-size: 16px; }
+
     .tabla-wrapper { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
     table { width: 100%; border-collapse: collapse; }
     thead { background: #f9fafb; }
@@ -109,8 +137,8 @@ interface Courier {
     .acciones { display: flex; gap: 8px; align-items: center; }
     .btn { padding: 5px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; transition: opacity 0.15s; }
     .btn:hover { opacity: 0.85; }
-    .aprobar  { background: #10b981; color: white; }
-    .rechazar { background: #ef4444; color: white; }
+    .aprobar   { background: #10b981; color: white; }
+    .rechazar  { background: #ef4444; color: white; }
     .inactivar { background: #f59e0b; color: white; }
     .reactivar { background: #3b82f6; color: white; }
     .sin-accion { color: #d1d5db; }
@@ -120,17 +148,18 @@ interface Courier {
   `]
 })
 export class RepartidoresComponent implements OnInit {
-  couriers = signal<Courier[]>([]);
-  cargando = signal(true);
-  error = signal('');
+  couriers     = signal<Courier[]>([]);
+  cargando     = signal(true);
+  error        = signal('');
   filtroActivo = signal('PENDING');
+  busqueda     = '';
 
   filtroOpciones = [
     { label: 'Pendientes', valor: 'PENDING' },
-    { label: 'Aprobados', valor: 'APPROVED' },
-    { label: 'Inactivos', valor: 'INACTIVE' },
+    { label: 'Aprobados',  valor: 'APPROVED' },
+    { label: 'Inactivos',  valor: 'INACTIVE' },
     { label: 'Rechazados', valor: 'REJECTED' },
-    { label: 'Todos', valor: 'TODOS' },
+    { label: 'Todos',      valor: 'TODOS' },
   ];
 
   private toast   = inject(ToastService);
@@ -148,9 +177,24 @@ export class RepartidoresComponent implements OnInit {
     });
   }
 
+  setFiltro(valor: string) {
+    this.filtroActivo.set(valor);
+    this.busqueda = '';
+  }
+
   filtrados() {
-    const f = this.filtroActivo();
-    return f === 'TODOS' ? this.couriers() : this.couriers().filter(c => c.status === f);
+    const f   = this.filtroActivo();
+    const q   = this.busqueda.toLowerCase().trim();
+    let lista = f === 'TODOS' ? this.couriers() : this.couriers().filter(c => c.status === f);
+    if (q) {
+      lista = lista.filter(c =>
+        c.full_name.toLowerCase().includes(q) ||
+        (c.phone ?? '').includes(q) ||
+        (c.city ?? '').toLowerCase().includes(q) ||
+        (c.barrio ?? '').toLowerCase().includes(q)
+      );
+    }
+    return lista;
   }
 
   etiqueta(s: string) {
