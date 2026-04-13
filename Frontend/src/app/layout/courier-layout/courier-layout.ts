@@ -2,12 +2,13 @@ import { Component, signal, inject } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive, Router, ActivatedRoute, NavigationEnd } from '@angular/router';
 import { AuthService } from '../../core/services/auth.service';
 import { FooterComponent } from '../components/footer/footer';
+import { ToastComponent } from '../components/toast/toast';
 import { filter, map } from 'rxjs/operators';
 
 @Component({
   selector: 'app-courier-layout',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, FooterComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, FooterComponent, ToastComponent],
   template: `
   <div class="app">
 
@@ -81,6 +82,7 @@ import { filter, map } from 'rxjs/operators';
 
     </div>
   </div>
+  <app-toast></app-toast>
   `,
   styles: [`
   .app {

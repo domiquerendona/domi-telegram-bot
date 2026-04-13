@@ -1,7 +1,8 @@
-import { Component, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, OnInit, OnDestroy, signal, inject } from '@angular/core';
 import { NgFor, NgIf } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { ToastService } from '../../../core/services/toast.service';
 
 interface SupportRequest {
   id: number;
@@ -175,6 +176,7 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
 
   private intervalo: any = null;
 
+  private toast = inject(ToastService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
@@ -201,14 +203,14 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
       cancel_courier: 'Cancelar con falla del courier',
       cancel_ally: 'Cancelar con falla del aliado/admin',
     };
-    if (!confirm(`¿${labels[action]} para el pedido #${s.order_id}?`)) return;
+    if (!window.confirm(`¿${labels[action]} para el pedido #${s.order_id}?`)) return;
 
     this.resolviendoId.set(s.id);
     this.http.post(`${environment.apiBaseUrl}/admin/support-requests/${s.id}/resolve`, { action }).subscribe({
-      next: () => { this.resolviendoId.set(null); this.cargar(); },
+      next: () => { this.resolviendoId.set(null); this.toast.success('Solicitud resuelta.'); this.cargar(); },
       error: (e) => {
         this.resolviendoId.set(null);
-        alert(e.error?.detail ?? 'Error al procesar la solicitud.');
+        this.toast.error(e.error?.detail ?? 'Error al procesar la solicitud.');
       }
     });
   }

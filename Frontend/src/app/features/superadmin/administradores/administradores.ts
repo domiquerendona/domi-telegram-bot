@@ -1,8 +1,9 @@
-import { Component, OnInit, signal, computed } from '@angular/core';
+import { Component, OnInit, signal, computed, inject } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { ToastService } from '../../../core/services/toast.service';
 
 interface Admin {
   id: number;
@@ -496,6 +497,7 @@ export class AdministradoresComponent implements OnInit {
     Object.fromEntries(this.couriers().map(c => [c.id, c.full_name]))
   );
 
+  private toast = inject(ToastService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
@@ -539,12 +541,13 @@ export class AdministradoresComponent implements OnInit {
 
   accionBot(a: Admin, tipo: string) {
     const labels: Record<string, string> = {
-      approve: 'aprobar', reject: 'rechazar', deactivate: 'inactivar', reactivate: 'reactivar'
+      approve: 'Aprobar', reject: 'Rechazar', deactivate: 'Inactivar', reactivate: 'Reactivar'
     };
-    if (!confirm(`¿${labels[tipo] ?? tipo} a ${a.full_name}?`)) return;
+    const label = labels[tipo] ?? tipo;
+    if (!window.confirm(`¿${label} a ${a.full_name}?`)) return;
     this.http.post(`${environment.apiBaseUrl}/admin/admins/${a.id}/${tipo}`, {}).subscribe({
-      next: () => this.cargarBot(),
-      error: (e) => alert(e.error?.detail ?? 'Error al ejecutar la acción.')
+      next: () => { this.toast.success(`${label} ejecutado correctamente.`); this.cargarBot(); },
+      error: (e) => this.toast.error(e.error?.detail ?? 'Error al ejecutar la acción.')
     });
   }
 
@@ -618,10 +621,10 @@ export class AdministradoresComponent implements OnInit {
 
   cambiarEstadoPanel(u: WebPanelUser, status: string) {
     const accion = status === 'INACTIVE' ? 'inactivar' : 'activar';
-    if (!confirm(`¿${accion} al usuario "${u.username}"?`)) return;
+    if (!window.confirm(`¿${accion} al usuario "${u.username}"?`)) return;
     this.http.patch(`${environment.apiBaseUrl}/admin/web-users/${u.id}/status`, { status }).subscribe({
-      next: () => this.cargarPanel(),
-      error: (e) => alert(e.error?.detail ?? 'Error al cambiar el estado.')
+      next: () => { this.toast.success(`Usuario ${accion === 'inactivar' ? 'inactivado' : 'activado'} correctamente.`); this.cargarPanel(); },
+      error: (e) => this.toast.error(e.error?.detail ?? 'Error al cambiar el estado.')
     });
   }
 

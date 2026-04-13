@@ -974,12 +974,15 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - Campo `created_at: Optional[str]` — fecha de creación del usuario del panel (mapeado desde índice 7 en row SQLite)
 
 **Frontend Angular:**
-- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`
+- `AuthService` (`core/services/auth.service.ts`) — mantiene `_role` y `_permissions` como signals, mapa estático `ROLE_PERMISSIONS` espejo del backend, métodos: `setUser(role)`, `hasPermission(perm)`, `isPlatformAdmin()`, `isCourier()`, `homeRoute()`, `clear()`. **IMPORTANTE:** `role` es un **getter** (`get role()`) — llamarlo como `this.authService.role` sin paréntesis.
+- `HeaderComponent` (`layout/components/header/header.ts`) — muestra datos reales: `displayName()` desde `authService.username()`, `roleLabel()` desde `authService.role` (getter), `initials()` de las primeras 2 palabras del nombre.
+- `ToastService` (`core/services/toast.service.ts`) — notificaciones no bloqueantes con signal stack. Métodos: `success()`, `error()`, `info()`, `show()`, `remove()`. Auto-dismiss 4s. Usado en todos los componentes de features en lugar de `alert()`.
+- `ToastComponent` (`layout/components/toast/toast.ts`) — componente visual del toast, posicionado fixed bottom-right. Importado en `SuperadminLayoutComponent` y `CourierLayoutComponent`.
 - `LoginComponent` (`features/login/login.ts`) — dos vistas: `'login'` y `'forgot'`, controladas por `signal<Vista>('login')`. Vista login: validación de campos vacíos con mensajes específicos antes de llamar a la API; toggle de visibilidad de contraseña (ícono ojito) con `signal(false)` para `mostrarPassword`; botón `.toggle-password` posicionado absolutamente dentro de `.password-wrapper`; íconos `visibility` / `visibility_off` de `material-symbols-outlined`. Vista forgot: formulario de un campo (usuario) que llama `POST /auth/forgot-password`; muestra mensaje de éxito genérico (sin revelar si el usuario existe); botón "← Volver al inicio de sesión".
 - `AdministradoresComponent` (`features/superadmin/administradores/administradores.ts`) — formulario "Nuevo usuario del panel" incluye toggle ojito para el campo contraseña (`mostrarPassword = signal(false)`); se resetea a `false` al abrir/cerrar el formulario vía `toggleCrear()`.
 - `RoleGuard` (`core/guards/role.guard.ts`) — guard funcional `CanActivateFn`, lee `route.data[‘requiredPermission’]`
 - Rutas protegidas con `requiredPermission: ‘manage_settings’`: `settings` y `administradores`
-- Sidebar admin: items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
+- `SidebarComponent` (`layout/components/sidebar/sidebar.ts`) — modal de confirmación de logout con signal `showLogoutModal`; `confirmarLogout()` / `cancelarLogout()` / `logout()`. Items "Administradores" y "Configuración" visibles solo si `authService.isPlatformAdmin()`; "Mi perfil" visible para todos los roles admin
 - Layout courier (`layout/courier-layout/courier-layout.ts`) — sidebar morado `#4338ca` 260px (idéntico al admin), header con barra de búsqueda y avatar, footer con `base="/courier"`. Incluye rutas legales/soporte bajo `/courier/`.
 - `CourierDashboardComponent` (`features/courier/dashboard/`) — KPIs del repartidor desde `GET /courier/dashboard`. Diseño con tarjetas de gradiente igual al admin (indigo, blue, teal, purple, dark). Control flow `@if`.
 - `CourierGananciasComponent` (`features/courier/ganancias/`) — tabla de entregas filtrada por periodo desde `GET /courier/earnings`. Tabs de periodo con paleta morada (`#4338ca`). Tarjetas de resumen con gradiente. Control flow `@if/@for`.
@@ -1010,6 +1013,41 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
 - `CANCELAR_VOLVER_MENU_FILTER` agregado explícitamente en los estados de texto libre que lo faltaban: `ADMIN_PEDIDO_CUST_PHONE`, `ADMIN_PEDIDO_CUST_ADDR`, `ADMIN_PEDIDO_INC_MONTO`, `ADMIN_PEDIDO_SEL_CUST_BUSCAR`.
 - `admin_pedido_cancelar_callback` registrado en `ADMIN_PEDIDO_CUST_ADDR` y `ADMIN_PEDIDO_CUST_DEDUP` como `CallbackQueryHandler`.
 - `_OPTIONS_HINT` agregado a los prompts de teléfono y dirección del cliente para indicar que se puede escribir `/cancel`.
+
+**Mejoras panel web — Fase 1 (2026-04-12):**
+
+- **`HeaderComponent` (`layout/components/header/header.ts`)** — muestra datos reales del usuario autenticado en lugar de valores hardcodeados:
+  - `displayName()` → `authService.username()` (fallback `'Usuario'`)
+  - `roleLabel()` → etiqueta legible según `authService.role` (getter, no método — sin paréntesis)
+  - `initials()` → iniciales del nombre (máx 2 palabras, mayúsculas)
+
+- **`ToastService` (`core/services/toast.service.ts`)** — NUEVO servicio de notificaciones no bloqueantes:
+  - Signal `toasts: Signal<Toast[]>` — stack de toasts activos
+  - Métodos: `show(message, type, duration)`, `success(message)`, `error(message)`, `info(message)`, `remove(id)`
+  - Auto-dismiss configurable (default 4000ms)
+  - Tipos: `'success'` (verde) | `'error'` (rojo) | `'info'` (azul)
+
+- **`ToastComponent` (`layout/components/toast/toast.ts`)** — NUEVO componente de presentación:
+  - Posicionado `fixed` bottom-right (z-index 2000)
+  - Íconos `check_circle` / `error` / `info` de Material Symbols
+  - Click-to-dismiss; animación slide-in
+  - Añadido a `SuperadminLayoutComponent` y `CourierLayoutComponent` como `<app-toast>`
+
+- **`SidebarComponent` (`layout/components/sidebar/sidebar.ts`)** — confirmación de cierre de sesión:
+  - Signal `showLogoutModal = signal(false)`
+  - `confirmarLogout()` abre el modal; `cancelarLogout()` lo cierra; `logout()` ejecuta el cierre y navega a `/login`
+  - Modal con overlay, ícono, botones Cancelar / Sí cerrar sesión — CSS integrado en el propio componente
+
+- **Console.logs eliminados** — `auth.interceptor.ts` limpiado de todos los `console.log`.
+
+- **`alert()` / `confirm()` reemplazados** en todos los componentes de features:
+  - `repartidores.ts` — toast success al ejecutar acción; toast error en fallo
+  - `aliados.ts` — ídem
+  - `orders.ts` — toast success al cancelar pedido; toast error en fallo
+  - `settings.ts` — toast success al guardar configuración; toast error en fallo
+  - `administradores.ts` — toast en `accionBot` y `cambiarEstadoPanel`
+  - `solicitudes-soporte.ts` — toast success al resolver; toast error en fallo
+  - Los `window.confirm()` se mantienen como guard antes de acciones destructivas
 
 **Bugs corregidos en `db.py` (2026-04-01):**
 - `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)

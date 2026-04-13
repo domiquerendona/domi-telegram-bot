@@ -118,10 +118,23 @@ import { AuthService } from '../../../core/services/auth.service';
 
     <!-- ================= LOGOUT ================= -->
     <div class="logout">
-      <a (click)="logout()" style="cursor:pointer">
+      <a (click)="confirmarLogout()" style="cursor:pointer">
         <span class="material-icons">logout</span>
         <span *ngIf="!collapsed()">Cerrar sesión</span>
       </a>
+    </div>
+
+    <!-- Modal confirmación logout -->
+    <div class="modal-overlay" *ngIf="showLogoutModal()" (click)="cancelarLogout()">
+      <div class="modal" (click)="$event.stopPropagation()">
+        <span class="material-icons modal-icon">logout</span>
+        <h3>¿Cerrar sesión?</h3>
+        <p>Se cerrará tu sesión actual en el panel.</p>
+        <div class="modal-btns">
+          <button class="btn-cancel" (click)="cancelarLogout()">Cancelar</button>
+          <button class="btn-confirm" (click)="logout()">Sí, cerrar sesión</button>
+        </div>
+      </div>
     </div>
 
   </aside>
@@ -232,24 +245,105 @@ import { AuthService } from '../../../core/services/auth.service';
       top: 0;
     }
   }
+
+  /* Modal overlay */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal {
+    background: white;
+    border-radius: 16px;
+    padding: 32px 28px 24px;
+    width: 340px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    color: #111827;
+  }
+
+  .modal-icon {
+    font-size: 40px;
+    color: #4338ca;
+    margin-bottom: 12px;
+  }
+
+  .modal h3 {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+
+  .modal p {
+    font-size: 14px;
+    color: #6b7280;
+    margin: 0 0 24px;
+  }
+
+  .modal-btns {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+
+  .btn-cancel {
+    padding: 10px 22px;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    background: white;
+    color: #374151;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s;
+  }
+
+  .btn-cancel:hover { background: #f3f4f6; }
+
+  .btn-confirm {
+    padding: 10px 22px;
+    border-radius: 8px;
+    border: none;
+    background: #4338ca;
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+  }
+
+  .btn-confirm:hover { background: #3730a3; }
   `]
 })
 export class SidebarComponent {
 
-  // Signal que controla si el sidebar está colapsado
-  collapsed = signal(false);
+  collapsed      = signal(false);
+  showLogoutModal = signal(false);
 
   constructor(
     private router: Router,
     public authService: AuthService,
   ) {}
 
-  // Método que alterna el estado del sidebar
   toggle() {
     this.collapsed.update(v => !v);
   }
 
+  confirmarLogout() {
+    this.showLogoutModal.set(true);
+  }
+
+  cancelarLogout() {
+    this.showLogoutModal.set(false);
+  }
+
   logout() {
+    this.showLogoutModal.set(false);
     this.authService.clear();
     this.router.navigate(['/login']);
   }

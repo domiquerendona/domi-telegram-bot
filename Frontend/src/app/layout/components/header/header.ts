@@ -1,72 +1,38 @@
-// Importamos lo necesario desde Angular
 import { Component, inject } from '@angular/core';
 import { Router, ActivatedRoute, NavigationEnd } from '@angular/router';
 import { filter, map } from 'rxjs/operators';
+import { AuthService } from '../../../core/services/auth.service';
 
 @Component({
-  // Selector que se usa en el HTML para llamar el componente
   selector: 'app-header',
-
-  // Indicamos que es un componente standalone (Angular moderno)
   standalone: true,
-
-  // ================================
-  // TEMPLATE (HTML DEL HEADER)
-  // ================================
   template: `
   <header class="header">
 
-    <!-- IZQUIERDA -->
-    <!-- Aquí mostramos el título dinámico de la página -->
     <div class="left">
       <h2 class="title">{{ pageTitle }}</h2>
     </div>
 
-    <!-- CENTRO (BARRA DE BÚSQUEDA) -->
     <div class="center">
       <div class="search-box">
-
-        <!-- Icono de búsqueda -->
         <span class="material-icons search-icon">search</span>
-
-        <!-- Input para buscar -->
-        <input 
-          type="text" 
-          placeholder="Buscar usuarios, pedidos, aliados..."
-        />
-
-        <!-- Atajo de teclado visual -->
+        <input type="text" placeholder="Buscar usuarios, pedidos, aliados..." />
         <span class="shortcut">⌘ K</span>
       </div>
     </div>
 
-    <!-- DERECHA -->
     <div class="right">
-
-      <!-- Información del administrador -->
       <div class="admin-info">
-        <span class="admin-title">Admin Principal</span>
-        <span class="admin-role">admin</span>
+        <span class="admin-title">{{ displayName() }}</span>
+        <span class="admin-role">{{ roleLabel() }}</span>
       </div>
-
-      <!-- Avatar con iniciales -->
-      <div class="avatar">
-        AP
-      </div>
-
-      <!-- Icono desplegable -->
+      <div class="avatar">{{ initials() }}</div>
       <span class="material-icons dropdown">expand_more</span>
-
     </div>
 
   </header>
   `,
-
-  // ================================
-  // ESTILOS DEL COMPONENTE (CSS)
-  // ================================
   styles: [`
-  /* Contenedor principal del header */
   .header {
     height: 80px;
     background: white;
@@ -76,22 +42,8 @@ import { filter, map } from 'rxjs/operators';
     padding: 0 30px;
     border-bottom: 1px solid #e5e7eb;
   }
-
-  /* Título dinámico */
-  .title {
-    font-size: 22px;
-    font-weight: 600;
-    color: #111827;
-  }
-
-  /* Centro del header */
-  .center {
-    flex: 1;
-    display: flex;
-    justify-content: center;
-  }
-
-  /* Caja de búsqueda */
+  .title { font-size: 22px; font-weight: 600; color: #111827; }
+  .center { flex: 1; display: flex; justify-content: center; }
   .search-box {
     width: 500px;
     background: #f3f4f6;
@@ -100,30 +52,11 @@ import { filter, map } from 'rxjs/operators';
     align-items: center;
     padding: 8px 15px;
     gap: 10px;
-    transition: all 0.2s ease;
+    transition: all .2s;
   }
-
-  /* Cambio de color cuando el input está activo */
-  .search-box:focus-within {
-    background: #e5e7eb;
-  }
-
-  /* Input interno */
-  .search-box input {
-    flex: 1;
-    border: none;
-    background: transparent;
-    outline: none;
-    font-size: 14px;
-  }
-
-  /* Icono lupa */
-  .search-icon {
-    font-size: 20px;
-    color: #6b7280;
-  }
-
-  /* Atajo visual */
+  .search-box:focus-within { background: #e5e7eb; }
+  .search-box input { flex: 1; border: none; background: transparent; outline: none; font-size: 14px; }
+  .search-icon { font-size: 20px; color: #6b7280; }
   .shortcut {
     font-size: 12px;
     background: white;
@@ -132,106 +65,56 @@ import { filter, map } from 'rxjs/operators';
     color: #6b7280;
     border: 1px solid #e5e7eb;
   }
-
-  /* Sección derecha */
-  .right {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-  }
-
-  /* Contenedor del admin */
-  .admin-info {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-  }
-
-  .admin-title {
-    font-size: 14px;
-    font-weight: 600;
-    color: #111827;
-  }
-
-  .admin-role {
-    font-size: 12px;
-    color: #6b7280;
-  }
-
-  /* Avatar circular */
+  .right { display: flex; align-items: center; gap: 15px; }
+  .admin-info { display: flex; flex-direction: column; align-items: flex-end; }
+  .admin-title { font-size: 14px; font-weight: 600; color: #111827; }
+  .admin-role  { font-size: 12px; color: #6b7280; }
   .avatar {
-    width: 40px;
-    height: 40px;
+    width: 40px; height: 40px;
     border-radius: 50%;
     background: linear-gradient(135deg, #5b21b6, #4338ca);
     color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 14px;
   }
-
-  /* Icono dropdown */
-  .dropdown {
-    color: #6b7280;
-    cursor: pointer;
-  }
-
-  /* Responsive tablet */
-  @media (max-width: 1024px) {
-    .search-box {
-      width: 300px;
-    }
-  }
-
-  /* Responsive móvil */
-  @media (max-width: 768px) {
-    .center {
-      display: none;
-    }
-  }
+  .dropdown { color: #6b7280; cursor: pointer; }
+  @media (max-width: 1024px) { .search-box { width: 300px; } }
+  @media (max-width: 768px)  { .center { display: none; } }
   `]
 })
 export class HeaderComponent {
+  private authService = inject(AuthService);
+  private router      = inject(Router);
+  private route       = inject(ActivatedRoute);
 
-  // Inyectamos el Router para escuchar cambios de navegación
-  router = inject(Router);
-
-  // Inyectamos ActivatedRoute para acceder a la ruta actual
-  route = inject(ActivatedRoute);
-
-  // Variable donde guardaremos el título dinámico
   pageTitle = '';
 
   constructor() {
+    this.router.events.pipe(
+      filter(e => e instanceof NavigationEnd),
+      map(() => {
+        let r = this.route.firstChild;
+        while (r?.firstChild) r = r.firstChild;
+        return r?.snapshot.data['title'] ?? 'Dashboard';
+      })
+    ).subscribe(title => this.pageTitle = title);
+  }
 
-    // Escuchamos los eventos del router
-    this.router.events
-      .pipe(
+  displayName(): string {
+    const u = this.authService.username();
+    return u || 'Usuario';
+  }
 
-        // Filtramos solo cuando la navegación termina
-        filter(event => event instanceof NavigationEnd),
+  roleLabel(): string {
+    const role = this.authService.role;
+    return role === 'ADMIN_PLATFORM' ? 'Admin Plataforma'
+         : role === 'ADMIN_LOCAL'    ? 'Admin Local'
+         : role === 'COURIER'        ? 'Repartidor'
+         : 'Panel Web';
+  }
 
-        // Mapeamos el evento para obtener el título desde la ruta
-        map(() => {
-
-          // Tomamos la primera ruta hija
-          let currentRoute = this.route.firstChild;
-
-          // Recorremos hasta llegar a la última ruta hija activa
-          while (currentRoute?.firstChild) {
-            currentRoute = currentRoute.firstChild;
-          }
-
-          // Retornamos el título definido en el data del routing
-          // Si no existe, usamos 'Dashboard' por defecto
-          return currentRoute?.snapshot.data['title'] ?? 'Dashboard';
-        })
-      )
-
-      // Nos suscribimos y actualizamos el título
-      .subscribe(title => {
-        this.pageTitle = title;
-      });
+  initials(): string {
+    const name = this.displayName();
+    return name.split(' ').slice(0, 2).map(w => w[0]?.toUpperCase() ?? '').join('') || 'U';
   }
 }

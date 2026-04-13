@@ -8,16 +8,12 @@ import { RouterOutlet } from '@angular/router';
 import { SidebarComponent } from '../components/sidebar/sidebar';
 import { HeaderComponent } from '../components/header/header';
 import { FooterComponent } from '../components/footer/footer';
+import { ToastComponent } from '../components/toast/toast';
 
 @Component({
-  // Nombre de la etiqueta HTML personalizada
   selector: 'app-superadmin-layout',
-
-  // Componente standalone (Angular moderno)
   standalone: true,
-
-  // Componentes que usa el layout
-  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent],
+  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent, ToastComponent],
 
   template: `
   <div class="app">
@@ -31,12 +27,12 @@ import { FooterComponent } from '../components/footer/footer';
       <div class="content-container">
         <router-outlet></router-outlet>
       </div>
- <app-footer></app-footer>
-     
+      <app-footer></app-footer>
 
     </div>
 
   </div>
+  <app-toast></app-toast>
   `,
 
 styles: [`

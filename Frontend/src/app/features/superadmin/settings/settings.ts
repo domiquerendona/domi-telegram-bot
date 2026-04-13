@@ -1,8 +1,9 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, OnInit, signal, inject } from '@angular/core';
 import { NgIf, NgFor } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { environment } from '../../../../environments/environment';
+import { ToastService } from '../../../core/services/toast.service';
 
 interface PricingField {
   key: string;
@@ -114,6 +115,7 @@ export class SettingsComponent implements OnInit {
     { key: 'buy_extra_fee',                   label: 'Recargo compras',       desc: 'Cargo por producto adicional en compras',        unit: '$',  tipo: 'money' },
   ];
 
+  private toast = inject(ToastService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() { this.cargar(); }
@@ -142,11 +144,12 @@ export class SettingsComponent implements OnInit {
       next: () => {
         this.guardando.set(false);
         this.guardado.set(true);
+        this.toast.success('Configuración guardada correctamente.');
         setTimeout(() => this.guardado.set(false), 3000);
       },
       error: () => {
         this.guardando.set(false);
-        alert('Error al guardar los cambios.');
+        this.toast.error('Error al guardar los cambios.');
       }
     });
   }
