@@ -3,12 +3,13 @@ import { RouterOutlet, RouterLink, RouterLinkActive, Router, ActivatedRoute, Nav
 import { AuthService } from '../../core/services/auth.service';
 import { FooterComponent } from '../components/footer/footer';
 import { ToastComponent } from '../components/toast/toast';
+import { ConfirmModalComponent } from '../components/confirm-modal/confirm-modal';
 import { filter, map } from 'rxjs/operators';
 
 @Component({
   selector: 'app-courier-layout',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, FooterComponent, ToastComponent],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, FooterComponent, ToastComponent, ConfirmModalComponent],
   template: `
   <div class="app">
 
@@ -83,6 +84,7 @@ import { filter, map } from 'rxjs/operators';
     </div>
   </div>
   <app-toast></app-toast>
+  <app-confirm-modal></app-confirm-modal>
   `,
   styles: [`
   .app {

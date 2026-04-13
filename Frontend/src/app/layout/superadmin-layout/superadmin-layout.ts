@@ -9,11 +9,12 @@ import { SidebarComponent } from '../components/sidebar/sidebar';
 import { HeaderComponent } from '../components/header/header';
 import { FooterComponent } from '../components/footer/footer';
 import { ToastComponent } from '../components/toast/toast';
+import { ConfirmModalComponent } from '../components/confirm-modal/confirm-modal';
 
 @Component({
   selector: 'app-superadmin-layout',
   standalone: true,
-  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent, ToastComponent],
+  imports: [RouterOutlet, SidebarComponent, HeaderComponent, FooterComponent, ToastComponent, ConfirmModalComponent],
 
   template: `
   <div class="app">
@@ -33,6 +34,7 @@ import { ToastComponent } from '../components/toast/toast';
 
   </div>
   <app-toast></app-toast>
+  <app-confirm-modal></app-confirm-modal>
   `,
 
 styles: [`

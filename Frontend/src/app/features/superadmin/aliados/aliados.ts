@@ -3,6 +3,7 @@ import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
+import { ConfirmService } from '../../../core/services/confirm.service';
 
 interface Ally {
   id: number;
@@ -127,7 +128,8 @@ export class AliadosComponent implements OnInit {
     { label: 'Todos', valor: 'TODOS' },
   ];
 
-  private toast = inject(ToastService);
+  private toast   = inject(ToastService);
+  private confirm = inject(ConfirmService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() { this.cargar(); }
@@ -150,12 +152,13 @@ export class AliadosComponent implements OnInit {
     return { PENDING: 'Pendiente', APPROVED: 'Aprobado', INACTIVE: 'Inactivo', REJECTED: 'Rechazado' }[s] ?? s;
   }
 
-  accion(a: Ally, tipo: string) {
+  async accion(a: Ally, tipo: string) {
     const labels: Record<string, string> = {
       approve: 'Aprobar', reject: 'Rechazar', deactivate: 'Inactivar', reactivate: 'Reactivar'
     };
     const label = labels[tipo] ?? tipo;
-    if (!window.confirm(`¿${label} a ${a.business_name}?`)) return;
+    const ok = await this.confirm.ask(`¿${label} a ${a.business_name}?`, label);
+    if (!ok) return;
     this.http.post(`${environment.apiBaseUrl}/admin/allies/${a.id}/${tipo}`, {}).subscribe({
       next: () => { this.toast.success(`${label} ejecutado correctamente.`); this.cargar(); },
       error: (e) => this.toast.error(e.error?.detail ?? 'Error al ejecutar la acción.')

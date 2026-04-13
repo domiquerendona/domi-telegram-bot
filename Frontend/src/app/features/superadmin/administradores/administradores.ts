@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
+import { ConfirmService } from '../../../core/services/confirm.service';
 
 interface Admin {
   id: number;
@@ -497,7 +498,8 @@ export class AdministradoresComponent implements OnInit {
     Object.fromEntries(this.couriers().map(c => [c.id, c.full_name]))
   );
 
-  private toast = inject(ToastService);
+  private toast   = inject(ToastService);
+  private confirm = inject(ConfirmService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
@@ -539,12 +541,13 @@ export class AdministradoresComponent implements OnInit {
     return map[status] ?? status;
   }
 
-  accionBot(a: Admin, tipo: string) {
+  async accionBot(a: Admin, tipo: string) {
     const labels: Record<string, string> = {
       approve: 'Aprobar', reject: 'Rechazar', deactivate: 'Inactivar', reactivate: 'Reactivar'
     };
     const label = labels[tipo] ?? tipo;
-    if (!window.confirm(`¿${label} a ${a.full_name}?`)) return;
+    const ok = await this.confirm.ask(`¿${label} a ${a.full_name}?`, label);
+    if (!ok) return;
     this.http.post(`${environment.apiBaseUrl}/admin/admins/${a.id}/${tipo}`, {}).subscribe({
       next: () => { this.toast.success(`${label} ejecutado correctamente.`); this.cargarBot(); },
       error: (e) => this.toast.error(e.error?.detail ?? 'Error al ejecutar la acción.')
@@ -619,9 +622,10 @@ export class AdministradoresComponent implements OnInit {
     });
   }
 
-  cambiarEstadoPanel(u: WebPanelUser, status: string) {
+  async cambiarEstadoPanel(u: WebPanelUser, status: string) {
     const accion = status === 'INACTIVE' ? 'inactivar' : 'activar';
-    if (!window.confirm(`¿${accion} al usuario "${u.username}"?`)) return;
+    const ok = await this.confirm.ask(`¿${accion} al usuario "${u.username}"?`, accion === 'inactivar' ? 'Inactivar' : 'Activar');
+    if (!ok) return;
     this.http.patch(`${environment.apiBaseUrl}/admin/web-users/${u.id}/status`, { status }).subscribe({
       next: () => { this.toast.success(`Usuario ${accion === 'inactivar' ? 'inactivado' : 'activado'} correctamente.`); this.cargarPanel(); },
       error: (e) => this.toast.error(e.error?.detail ?? 'Error al cambiar el estado.')

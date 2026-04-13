@@ -3,6 +3,7 @@ import { NgFor, NgIf } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
+import { ConfirmService } from '../../../core/services/confirm.service';
 
 interface SupportRequest {
   id: number;
@@ -176,7 +177,8 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
 
   private intervalo: any = null;
 
-  private toast = inject(ToastService);
+  private toast   = inject(ToastService);
+  private confirm = inject(ConfirmService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
@@ -197,13 +199,14 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
     });
   }
 
-  resolver(s: SupportRequest, action: string) {
+  async resolver(s: SupportRequest, action: string) {
     const labels: Record<string, string> = {
       fin: 'Finalizar la entrega',
       cancel_courier: 'Cancelar con falla del courier',
       cancel_ally: 'Cancelar con falla del aliado/admin',
     };
-    if (!window.confirm(`¿${labels[action]} para el pedido #${s.order_id}?`)) return;
+    const ok = await this.confirm.ask(`¿${labels[action]} para el pedido #${s.order_id}?`, labels[action]);
+    if (!ok) return;
 
     this.resolviendoId.set(s.id);
     this.http.post(`${environment.apiBaseUrl}/admin/support-requests/${s.id}/resolve`, { action }).subscribe({

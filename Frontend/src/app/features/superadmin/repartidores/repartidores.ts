@@ -3,6 +3,7 @@ import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
+import { ConfirmService } from '../../../core/services/confirm.service';
 
 interface Courier {
   id: number;
@@ -132,7 +133,8 @@ export class RepartidoresComponent implements OnInit {
     { label: 'Todos', valor: 'TODOS' },
   ];
 
-  private toast = inject(ToastService);
+  private toast   = inject(ToastService);
+  private confirm = inject(ConfirmService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() { this.cargar(); }
@@ -155,12 +157,13 @@ export class RepartidoresComponent implements OnInit {
     return { PENDING: 'Pendiente', APPROVED: 'Aprobado', INACTIVE: 'Inactivo', REJECTED: 'Rechazado' }[s] ?? s;
   }
 
-  accion(c: Courier, tipo: string) {
+  async accion(c: Courier, tipo: string) {
     const labels: Record<string, string> = {
       approve: 'Aprobar', reject: 'Rechazar', deactivate: 'Inactivar', reactivate: 'Reactivar'
     };
     const label = labels[tipo] ?? tipo;
-    if (!window.confirm(`¿${label} a ${c.full_name}?`)) return;
+    const ok = await this.confirm.ask(`¿${label} a ${c.full_name}?`, label);
+    if (!ok) return;
     this.http.post(`${environment.apiBaseUrl}/admin/couriers/${c.id}/${tipo}`, {}).subscribe({
       next: () => { this.toast.success(`${label} ejecutado correctamente.`); this.cargar(); },
       error: (e) => this.toast.error(e.error?.detail ?? 'Error al ejecutar la acción.')

@@ -3,6 +3,7 @@ import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
+import { ConfirmService } from '../../../core/services/confirm.service';
 
 interface Order {
   id: number;
@@ -153,7 +154,8 @@ export class OrdersComponent implements OnInit, OnDestroy {
     { label: 'Cancelados', valor: 'CANCELLED' },
   ];
 
-  private toast = inject(ToastService);
+  private toast   = inject(ToastService);
+  private confirm = inject(ConfirmService);
   constructor(private http: HttpClient) {}
 
   ngOnInit() {
@@ -186,8 +188,9 @@ export class OrdersComponent implements OnInit, OnDestroy {
     return ['PENDING', 'PUBLISHED', 'ACCEPTED'].includes(status);
   }
 
-  cancelar(o: Order) {
-    if (!window.confirm(`¿Cancelar pedido #${o.id} de ${o.customer_name}?`)) return;
+  async cancelar(o: Order) {
+    const ok = await this.confirm.ask(`¿Cancelar pedido #${o.id} de ${o.customer_name}?`, 'Cancelar pedido');
+    if (!ok) return;
     this.http.post(`${environment.apiBaseUrl}/admin/orders/${o.id}/cancel`, {}).subscribe({
       next: () => { this.toast.success(`Pedido #${o.id} cancelado.`); this.cargar(this.filtroActivo()); },
       error: (e) => this.toast.error(e.error?.detail ?? 'Error al cancelar el pedido'),
