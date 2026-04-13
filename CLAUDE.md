@@ -1047,7 +1047,39 @@ El panel soporta múltiples usuarios con roles distintos. Los usuarios se almace
   - `settings.ts` — toast success al guardar configuración; toast error en fallo
   - `administradores.ts` — toast en `accionBot` y `cambiarEstadoPanel`
   - `solicitudes-soporte.ts` — toast success al resolver; toast error en fallo
-  - Los `window.confirm()` se mantienen como guard antes de acciones destructivas
+
+- **`ConfirmService` (`core/services/confirm.service.ts`)** — NUEVO servicio modal de confirmación:
+  - Signal `current = signal<ConfirmRequest | null>(null)` — request activa
+  - `ask(message, confirmLabel, cancelLabel): Promise<boolean>` — retorna promesa resuelta al confirmar o cancelar
+  - `confirm()` / `cancel()` — resuelven la promesa y limpian el signal
+  - Reemplaza todos los `window.confirm()` en `repartidores.ts`, `aliados.ts`, `orders.ts`, `administradores.ts`, `solicitudes-soporte.ts`
+
+- **`ConfirmModalComponent` (`layout/components/confirm-modal/confirm-modal.ts`)** — NUEVO modal visual:
+  - Overlay con z-index 3000, centrado con flexbox
+  - Ícono `help_outline` Material Icons, mensaje configurable, botones Cancelar / acción
+  - Click en overlay cancela; añadido a `SuperadminLayoutComponent` y `CourierLayoutComponent` como `<app-confirm-modal>`
+
+**Mejoras panel web — Fase 2 (2026-04-12):**
+
+- **Barra de búsqueda de texto** en tablas con datos tabulares:
+  - `RepartidoresComponent` — filtra por nombre, teléfono, ciudad, barrio
+  - `AliadosComponent` — filtra por negocio, propietario, teléfono, ciudad, barrio
+  - `OrdersComponent` — filtra por cliente, teléfono, aliado, courier, ID de pedido
+  - `AdministradoresComponent` (tab Admins Bot) — filtra por nombre, teléfono, ciudad, barrio, equipo
+  - Buscador con ícono `search`, botón X para limpiar, max-width 440px
+  - Al cambiar de filtro de estado / tab → `busqueda` se resetea automáticamente
+  - Empty state muestra `'Sin resultados para "X"'` cuando hay búsqueda activa
+
+- **Indicador de última actualización** en `OrdersComponent`:
+  - Signal `ultimaActualizacion = signal<Date | null>(null)` actualizado al cargar
+  - Signal `tiempoDesde = signal('')` actualizado cada 5s via `intervaloRelativo` (pattern similar al auto-refresh)
+  - Badge "↻ auto" cuando filtro es ACTIVE; texto "hace X seg/min/h" junto al botón Actualizar
+  - Botón Actualizar con ícono Material Icons `refresh`
+
+- **Utilidad de fechas compartida** (`core/utils/fecha.ts`):
+  - `fmtFecha(dt)` — formatea ISO a `'12 abr 2026, 3:45 pm'`; retorna `'—'` si null/inválido
+  - `fmtRelativo(desde)` — retorna texto relativo: `'hace X seg'`, `'hace X min'`, `'hace X h'`
+  - Usada en `OrdersComponent` (columna Fecha + indicador relative); `fmtFecha` expuesta como propiedad de clase para usar en template
 
 **Bugs corregidos en `db.py` (2026-04-01):**
 - `get_courier_web_earnings`: columna `o.incentivo` → `o.additional_incentive`; `o.dropoff_city` → `o.customer_city`; `a.name` → `a.business_name`; filtro por `delivered_at` en lugar de `created_at`; índices de row actualizados (columna `status` eliminada del SELECT)
