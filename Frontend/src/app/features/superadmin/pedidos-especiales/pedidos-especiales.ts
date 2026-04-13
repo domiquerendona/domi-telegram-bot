@@ -2,8 +2,9 @@ import { Component, signal, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NgIf, NgFor, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { AuthService } from '../../../core/services/auth.service';
 import { environment } from '../../../../environments/environment';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
+import { fmtFecha } from '../../../core/utils/fecha';
 
 interface OrdenEspecial {
   id: number;
@@ -41,7 +42,7 @@ interface MetricasResponse {
 @Component({
   selector: 'app-pedidos-especiales',
   standalone: true,
-  imports: [NgIf, NgFor, NgClass, FormsModule],
+  imports: [NgIf, NgFor, NgClass, FormsModule, FormatMoneyPipe],
   template: `
     <div class="page">
       <div class="page-header">
@@ -91,28 +92,28 @@ interface MetricasResponse {
         <div class="card card-purple">
           <span class="material-symbols-outlined">local_atm</span>
           <div class="card-body">
-            <div class="card-value">{{ fmt(datos()!.resumen.total_tarifas) }}</div>
+            <div class="card-value">{{ datos()!.resumen.total_tarifas | fmtMoney }}</div>
             <div class="card-label">Total tarifas cobradas</div>
           </div>
         </div>
         <div class="card card-indigo">
           <span class="material-symbols-outlined">handshake</span>
           <div class="card-body">
-            <div class="card-value">{{ fmt(datos()!.resumen.total_comisiones) }}</div>
+            <div class="card-value">{{ datos()!.resumen.total_comisiones | fmtMoney }}</div>
             <div class="card-label">Total comisiones al courier</div>
           </div>
         </div>
         <div class="card card-orange">
           <span class="material-symbols-outlined">account_balance</span>
           <div class="card-body">
-            <div class="card-value">{{ fmt(datos()!.resumen.total_fees_admin) }}</div>
+            <div class="card-value">{{ datos()!.resumen.total_fees_admin | fmtMoney }}</div>
             <div class="card-label">Fees pagados a plataforma</div>
           </div>
         </div>
         <div class="card card-green">
           <span class="material-symbols-outlined">trending_up</span>
           <div class="card-body">
-            <div class="card-value">{{ fmt(datos()!.resumen.ganancia_neta) }}</div>
+            <div class="card-value">{{ datos()!.resumen.ganancia_neta | fmtMoney }}</div>
             <div class="card-label">Ganancia neta del admin</div>
           </div>
         </div>
@@ -137,7 +138,7 @@ interface MetricasResponse {
           <tbody>
             <tr *ngFor="let o of datos()!.pedidos">
               <td class="id-cell">#{{ o.id }}</td>
-              <td>{{ fmtFecha(o.created_at) }}</td>
+              <td>{{ fmtFechaUtil(o.created_at) }}</td>
               <td>
                 <span class="badge" [ngClass]="badgeStatus(o.status)">{{ o.status }}</span>
               </td>
@@ -146,18 +147,18 @@ interface MetricasResponse {
                 <div class="sub" *ngIf="o.customer_barrio">{{ o.customer_barrio }}, {{ o.customer_city }}</div>
               </td>
               <td>{{ o.courier_name || '—' }}</td>
-              <td class="num">{{ fmt(o.total_fee) }}</td>
-              <td class="num">{{ o.special_commission > 0 ? fmt(o.special_commission) : '—' }}</td>
+              <td class="num">{{ o.total_fee | fmtMoney }}</td>
+              <td class="num">{{ o.special_commission > 0 ? (o.special_commission | fmtMoney) : '—' }}</td>
               <td class="num fee-col">
                 <ng-container *ngIf="o.status === 'DELIVERED'">
-                  <span title="Plataforma: {{ fmt(o.platform_fee) }}{{ o.tech_dev_fee > 0 ? ' + Tech: ' + fmt(o.tech_dev_fee) : '' }}">
-                    {{ fmt(o.fee_admin_pagado) }}
+                  <span [title]="'Plataforma: ' + (o.platform_fee | fmtMoney) + (o.tech_dev_fee > 0 ? ' + Tech: ' + (o.tech_dev_fee | fmtMoney) : '')">
+                    {{ o.fee_admin_pagado | fmtMoney }}
                   </span>
                 </ng-container>
                 <span *ngIf="o.status !== 'DELIVERED'" class="na">—</span>
               </td>
               <td class="num" [class.ganancia-pos]="o.ganancia_neta > 0" [class.ganancia-neg]="o.ganancia_neta < 0">
-                {{ o.status === 'DELIVERED' ? fmt(o.ganancia_neta) : '—' }}
+                {{ o.status === 'DELIVERED' ? (o.ganancia_neta | fmtMoney) : '—' }}
               </td>
             </tr>
           </tbody>
@@ -287,7 +288,9 @@ export class PedidosEspecialesComponent implements OnInit {
     { val: 'todo', label: 'Todo' },
   ];
 
-  constructor(private http: HttpClient, public authService: AuthService) {}
+  fmtFechaUtil = fmtFecha;
+
+  constructor(private http: HttpClient) {}
 
   ngOnInit() { this.cargar(); }
 
@@ -299,28 +302,14 @@ export class PedidosEspecialesComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    const token = localStorage.getItem('admin_token');
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     const url = `${environment.apiBaseUrl}/admin/pedidos-especiales/metricas?periodo=${this.periodo()}`;
-    this.http.get<MetricasResponse>(url, { headers }).subscribe({
+    this.http.get<MetricasResponse>(url).subscribe({
       next: (r) => { this.datos.set(r); this.cargando.set(false); },
       error: (e) => {
         this.error.set('Error al cargar datos: ' + (e?.error?.detail || e?.message || 'desconocido'));
         this.cargando.set(false);
       },
     });
-  }
-
-  fmt(n: number): string {
-    if (n == null) return '—';
-    return '$' + n.toLocaleString('es-CO');
-  }
-
-  fmtFecha(s: string): string {
-    if (!s) return '—';
-    const d = new Date(s);
-    if (isNaN(d.getTime())) return s.slice(0, 10);
-    return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
   }
 
   badgeStatus(status: string): Record<string, boolean> {

@@ -1,6 +1,7 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
 
 interface CourierDashboard {
   entregas_hoy: number;
@@ -13,7 +14,7 @@ interface CourierDashboard {
 @Component({
   selector: 'app-courier-dashboard',
   standalone: true,
-  imports: [],
+  imports: [FormatMoneyPipe],
   template: `
   <div class="page">
     <div class="page-header">
@@ -57,14 +58,14 @@ interface CourierDashboard {
           <span class="material-symbols-outlined">trending_up</span>
           <div>
             <div class="card-label">Ganancias este mes</div>
-            <div class="card-value">{{ fmt(data()!.tarifa_mes) }}</div>
+            <div class="card-value">{{ data()!.tarifa_mes | fmtMoney }}</div>
           </div>
         </div>
         <div class="card dark">
           <span class="material-symbols-outlined">account_balance_wallet</span>
           <div>
             <div class="card-label">Saldo disponible</div>
-            <div class="card-value">{{ fmt(data()!.saldo) }}</div>
+            <div class="card-value">{{ data()!.saldo | fmtMoney }}</div>
           </div>
         </div>
       </div>
@@ -121,16 +122,10 @@ export class CourierDashboardComponent implements OnInit {
   cargar() {
     this.cargando.set(true);
     this.error.set('');
-    const token = localStorage.getItem('admin_token');
-    this.http.get<CourierDashboard>(`${environment.apiBaseUrl}/courier/dashboard`, {
-      headers: { Authorization: `Bearer ${token}` }
-    }).subscribe({
+    this.http.get<CourierDashboard>(`${environment.apiBaseUrl}/courier/dashboard`).subscribe({
       next: (res) => { this.data.set(res); this.cargando.set(false); },
       error: (e) => { this.error.set(e.error?.detail ?? 'Error al cargar datos'); this.cargando.set(false); }
     });
   }
 
-  fmt(v: number): string {
-    return '$' + v.toLocaleString('es-CO');
-  }
 }

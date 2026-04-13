@@ -2,6 +2,8 @@ import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
+import { fmtFecha } from '../../../core/utils/fecha';
 
 interface Resumen {
   hoy: number;
@@ -34,7 +36,7 @@ interface GananciasData {
 @Component({
   selector: 'app-ganancias',
   standalone: true,
-  imports: [NgFor, NgIf],
+  imports: [NgFor, NgIf, FormatMoneyPipe],
   template: `
     <div class="page">
       <div class="page-header">
@@ -51,19 +53,19 @@ interface GananciasData {
         <div class="cards">
           <div class="card">
             <div class="card-label">Hoy</div>
-            <div class="card-value">{{ fmt(data().resumen.hoy) }}</div>
+            <div class="card-value">{{ data().resumen.hoy | fmtMoney }}</div>
           </div>
           <div class="card">
             <div class="card-label">Esta semana</div>
-            <div class="card-value">{{ fmt(data().resumen.semana) }}</div>
+            <div class="card-value">{{ data().resumen.semana | fmtMoney }}</div>
           </div>
           <div class="card accent">
             <div class="card-label">Este mes</div>
-            <div class="card-value">{{ fmt(data().resumen.mes) }}</div>
+            <div class="card-value">{{ data().resumen.mes | fmtMoney }}</div>
           </div>
           <div class="card dark">
             <div class="card-label">Total histórico</div>
-            <div class="card-value">{{ fmt(data().resumen.total) }}</div>
+            <div class="card-value">{{ data().resumen.total | fmtMoney }}</div>
           </div>
         </div>
 
@@ -89,7 +91,7 @@ interface GananciasData {
                       <span class="rank">{{ i + 1 }}</span>
                       {{ r.nombre }}
                     </td>
-                    <td class="monto">{{ fmt(r.total) }}</td>
+                    <td class="monto">{{ r.total | fmtMoney }}</td>
                   </tr>
                   <tr *ngIf="data().por_admin.length === 0">
                     <td colspan="2" class="vacio">Sin ganancias aún.</td>
@@ -121,8 +123,8 @@ interface GananciasData {
                     <td><span class="kind-badge" [class]="kindClass(h.kind)">{{ kindLabel(h.kind) }}</span></td>
                     <td class="sub-text">{{ h.admin_nombre || '—' }}</td>
                     <td class="nota">{{ h.note || '—' }}</td>
-                    <td class="monto">{{ fmt(h.amount) }}</td>
-                    <td class="fecha">{{ fmtDate(h.created_at) }}</td>
+                    <td class="monto">{{ h.amount | fmtMoney }}</td>
+                    <td class="fecha">{{ fmtFecha(h.created_at) }}</td>
                   </tr>
                   <tr *ngIf="data().historial.length === 0">
                     <td colspan="5" class="vacio">Sin movimientos.</td>
@@ -211,15 +213,7 @@ export class GananciasComponent implements OnInit {
     });
   }
 
-  fmt(val: number) {
-    if (!val) return '$0';
-    return '$' + val.toLocaleString('es-CO');
-  }
-
-  fmtDate(dt: string) {
-    if (!dt) return '—';
-    return dt.slice(0, 16).replace('T', ' ');
-  }
+  fmtFecha = fmtFecha;
 
   kindLabel(kind: string) {
     return { FEE_INCOME: 'Comisión', PLATFORM_FEE: 'Fee plataforma', INCOME: 'Ingreso externo' }[kind] ?? kind;

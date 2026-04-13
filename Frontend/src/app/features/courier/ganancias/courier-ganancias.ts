@@ -1,6 +1,8 @@
 import { Component, OnInit, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
+import { fmtFecha } from '../../../core/utils/fecha';
 
 interface OrderEarning {
   order_id: number;
@@ -23,7 +25,7 @@ interface EarningsResponse {
 @Component({
   selector: 'app-courier-ganancias',
   standalone: true,
-  imports: [],
+  imports: [FormatMoneyPipe],
   template: `
   <div class="page">
     <div class="page-header">
@@ -54,21 +56,21 @@ interface EarningsResponse {
           <span class="material-symbols-outlined">payments</span>
           <div>
             <div class="slabel">Tarifa total</div>
-            <div class="svalue">{{ fmt(data()!.total_tarifa) }}</div>
+            <div class="svalue">{{ data()!.total_tarifa | fmtMoney }}</div>
           </div>
         </div>
         <div class="scard teal">
           <span class="material-symbols-outlined">star</span>
           <div>
             <div class="slabel">Incentivos</div>
-            <div class="svalue">{{ fmt(data()!.total_incentivo) }}</div>
+            <div class="svalue">{{ data()!.total_incentivo | fmtMoney }}</div>
           </div>
         </div>
         <div class="scard purple">
           <span class="material-symbols-outlined">trending_up</span>
           <div>
             <div class="slabel">Total ganado</div>
-            <div class="svalue">{{ fmt(data()!.total) }}</div>
+            <div class="svalue">{{ data()!.total | fmtMoney }}</div>
           </div>
         </div>
       </div>
@@ -93,12 +95,12 @@ interface EarningsResponse {
             <tbody>
               @for (o of data()!.orders; track o.order_id) {
                 <tr>
-                  <td>{{ formatDate(o.delivered_at) }}</td>
+                  <td>{{ fmtFecha(o.delivered_at) }}</td>
                   <td>{{ o.ally_name }}</td>
                   <td>{{ o.dropoff_city }}</td>
-                  <td>{{ fmt(o.total_fee) }}</td>
-                  <td>{{ fmt(o.incentivo) }}</td>
-                  <td class="total-col">{{ fmt(o.total_fee + o.incentivo) }}</td>
+                  <td>{{ o.total_fee | fmtMoney }}</td>
+                  <td>{{ o.incentivo | fmtMoney }}</td>
+                  <td class="total-col">{{ (o.total_fee + o.incentivo) | fmtMoney }}</td>
                 </tr>
               }
             </tbody>
@@ -223,21 +225,11 @@ export class CourierGananciasComponent implements OnInit {
     this.period.set(p);
     this.cargando.set(true);
     this.error.set('');
-    const token = localStorage.getItem('admin_token');
-    this.http.get<EarningsResponse>(`${environment.apiBaseUrl}/courier/earnings?period=${p}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    }).subscribe({
+    this.http.get<EarningsResponse>(`${environment.apiBaseUrl}/courier/earnings?period=${p}`).subscribe({
       next: (res) => { this.data.set(res); this.cargando.set(false); },
       error: (e) => { this.error.set(e.error?.detail ?? 'Error al cargar ganancias'); this.cargando.set(false); }
     });
   }
 
-  fmt(v: number): string {
-    return '$' + v.toLocaleString('es-CO');
-  }
-
-  formatDate(s: string): string {
-    if (!s) return '';
-    return new Date(s).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
-  }
+  fmtFecha = fmtFecha;
 }

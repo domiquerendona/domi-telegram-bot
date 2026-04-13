@@ -2,8 +2,7 @@ import { Component, signal, OnInit, Inject, PLATFORM_ID } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NgIf, isPlatformBrowser } from '@angular/common';
 import { environment } from '../../../../environments/environment';
-
-import { CommonModule } from '@angular/common';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
 
 interface DashboardStats {
   admins: { total: number; activos: number; pendientes: number };
@@ -19,7 +18,7 @@ interface DashboardStats {
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [NgIf],
+  imports: [NgIf, FormatMoneyPipe],
   template: `
     <div class="page">
       <div class="page-header">
@@ -65,21 +64,21 @@ interface DashboardStats {
             <span class="material-symbols-outlined">account_balance_wallet</span>
             <div>
               <div class="card-label">Saldo plataforma</div>
-              <div class="card-value">{{ fmt(s().saldo_plataforma) }}</div>
+              <div class="card-value">{{ s().saldo_plataforma | fmtMoney }}</div>
             </div>
           </div>
           <div class="card purple">
             <span class="material-symbols-outlined">trending_up</span>
             <div>
               <div class="card-label">Ganancias este mes</div>
-              <div class="card-value">{{ fmt(s().ganancias_mes) }}</div>
+              <div class="card-value">{{ s().ganancias_mes | fmtMoney }}</div>
             </div>
           </div>
           <div class="card slate">
             <span class="material-symbols-outlined">leaderboard</span>
             <div>
               <div class="card-label">Ganancias totales</div>
-              <div class="card-value">{{ fmt(s().ganancias_total) }}</div>
+              <div class="card-value">{{ s().ganancias_total | fmtMoney }}</div>
             </div>
           </div>
         </div>
@@ -192,8 +191,4 @@ export class DashboardComponent implements OnInit {
     });
   }
 
-  fmt(val: number) {
-    if (!val) return '$0';
-    return '$' + val.toLocaleString('es-CO');
-  }
 }

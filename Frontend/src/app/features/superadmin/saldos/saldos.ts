@@ -2,6 +2,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { FormatMoneyPipe } from '../../../core/pipes/format-money.pipe';
 
 interface BalanceRow {
   id: number;
@@ -21,7 +22,7 @@ interface SaldosData {
 @Component({
   selector: 'app-saldos',
   standalone: true,
-  imports: [NgFor, NgIf, NgClass],
+  imports: [NgFor, NgIf, NgClass, FormatMoneyPipe],
   template: `
     <div class="page">
       <div class="page-header">
@@ -56,7 +57,7 @@ interface SaldosData {
                   <td class="nombre">{{ r.nombre }}</td>
                   <td>{{ r.ciudad || '—' }}</td>
                   <td><span class="badge" [ngClass]="r.status.toLowerCase()">{{ etiqueta(r.status) }}</span></td>
-                  <td class="balance" [class.cero]="r.balance === 0">{{ formatBalance(r.balance) }}</td>
+                  <td class="balance" [class.cero]="r.balance === 0">{{ r.balance | fmtMoney }}</td>
                 </tr>
                 <tr *ngIf="data().admins.length === 0">
                   <td colspan="4" class="vacio">Sin registros.</td>
@@ -90,7 +91,7 @@ interface SaldosData {
                   <td>{{ r.ciudad || '—' }}</td>
                   <td class="sub-text">{{ r.admin_nombre || '—' }}</td>
                   <td><span class="badge" [ngClass]="r.status.toLowerCase()">{{ etiqueta(r.status) }}</span></td>
-                  <td class="balance" [class.cero]="r.balance === 0">{{ formatBalance(r.balance) }}</td>
+                  <td class="balance" [class.cero]="r.balance === 0">{{ r.balance | fmtMoney }}</td>
                 </tr>
                 <tr *ngIf="data().couriers.length === 0">
                   <td colspan="5" class="vacio">Sin repartidores con saldo activo.</td>
@@ -124,7 +125,7 @@ interface SaldosData {
                   <td>{{ r.ciudad || '—' }}</td>
                   <td class="sub-text">{{ r.admin_nombre || '—' }}</td>
                   <td><span class="badge" [ngClass]="r.status.toLowerCase()">{{ etiqueta(r.status) }}</span></td>
-                  <td class="balance" [class.cero]="r.balance === 0">{{ formatBalance(r.balance) }}</td>
+                  <td class="balance" [class.cero]="r.balance === 0">{{ r.balance | fmtMoney }}</td>
                 </tr>
                 <tr *ngIf="data().aliados.length === 0">
                   <td colspan="5" class="vacio">Sin aliados con saldo activo.</td>
@@ -196,8 +197,4 @@ export class SaldosComponent implements OnInit {
     return { APPROVED: 'Aprobado', INACTIVE: 'Inactivo', PENDING: 'Pendiente', REJECTED: 'Rechazado' }[s] ?? s;
   }
 
-  formatBalance(val: number) {
-    if (!val) return '$0';
-    return '$' + val.toLocaleString('es-CO');
-  }
 }

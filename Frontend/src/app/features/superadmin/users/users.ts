@@ -2,6 +2,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { NgFor, NgIf, NgClass } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
+import { fmtFecha } from '../../../core/utils/fecha';
 
 interface UserRow {
   id: number;
@@ -69,7 +70,7 @@ interface UserRow {
                   {{ etiqueta(u.status) }}
                 </span>
               </td>
-              <td class="fecha">{{ fmtDate(u.created_at) }}</td>
+              <td class="fecha">{{ fmtFecha(u.created_at) }}</td>
             </tr>
             <tr *ngIf="filtrados().length === 0">
               <td colspan="7" class="vacio">No hay usuarios en este filtro.</td>
@@ -175,8 +176,5 @@ export class UsersComponent implements OnInit {
     }[s] ?? (s ? s : 'Sin estado');
   }
 
-  fmtDate(dt: string) {
-    if (!dt) return '—';
-    return dt.slice(0, 10);
-  }
+  fmtFecha = fmtFecha;
 }

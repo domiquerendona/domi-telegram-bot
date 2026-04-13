@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { environment } from '../../../../environments/environment';
 import { ToastService } from '../../../core/services/toast.service';
 import { ConfirmService } from '../../../core/services/confirm.service';
+import { fmtFecha } from '../../../core/utils/fecha';
 
 interface SupportRequest {
   id: number;
@@ -49,7 +50,7 @@ interface SupportRequest {
 
           <div class="card-header">
             <span class="badge pedido">#{{ s.order_id }}</span>
-            <span class="fecha">{{ formatDate(s.created_at) }}</span>
+            <span class="fecha">{{ fmtFecha(s.created_at) }}</span>
           </div>
 
           <div class="info-grid">
@@ -233,8 +234,5 @@ export class SolicitudesSoporteComponent implements OnInit, OnDestroy {
     return map[s] ?? s;
   }
 
-  formatDate(dt: string) {
-    if (!dt) return '—';
-    return dt.slice(0, 16).replace('T', ' ');
-  }
+  fmtFecha = fmtFecha;
 }
